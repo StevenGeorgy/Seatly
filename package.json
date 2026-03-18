@@ -1,8 +1,11 @@
 {
   "name": "seatly",
   "private": true,
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "seed:users": "tsx scripts/seed-users.ts"
+    "seed:users": "tsx scripts/seed-users.ts",
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.45.0",

@@ -16,11 +16,12 @@
 
 ## FOUNDATION
 
-- [ ] Monorepo folder structure created (apps/web, apps/mobile, packages/tokens, packages/types)
+- [x] Monorepo folder structure created (apps/web, apps/mobile, packages/tokens, packages/types)
 - [ ] .gitignore created and committed
 - [ ] .env.example created and committed
 - [ ] .cursorrules file created in project root
-- [ ] packages/tokens/index.ts created with colour, spacing, and font placeholders
+- [x] packages/tokens/index.ts created with colour, spacing, and font placeholders
+- [x] Web app skeleton (layout, routes, auth shell, mock auth)
 - [ ] BACKEND.md in project root
 - [ ] CHECKLIST.md in project root
 - [ ] README.md in project root
@@ -54,12 +55,12 @@
 - [ ] Session handling and token refresh working
 
 ### Web App
-- [ ] Login screen (email + password)
+- [x] Login screen (email + password)
 - [ ] Sign up screen for restaurant owners
-- [ ] Role-based redirect on login (host → floor plan, owner → dashboard)
+- [x] Role-based redirect on login (host → floor plan, owner → dashboard)
 - [ ] Forgot password flow
 - [ ] Password reset flow
-- [ ] Protected route wrapper (unauthenticated users redirected to login)
+- [x] Protected route wrapper (unauthenticated users redirected to login)
 
 ### Mobile App
 - [ ] Onboarding splash screen
