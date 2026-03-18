@@ -1,0 +1,12 @@
+{
+  "name": "seatly",
+  "private": true,
+  "scripts": {
+    "seed:users": "tsx scripts/seed-users.ts"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.0"
+  }
+}
