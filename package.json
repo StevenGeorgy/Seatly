@@ -4,8 +4,10 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "seed:users": "tsx scripts/seed-users.ts",
+    "fix:profile": "tsx scripts/fix-profile.ts",
     "dev": "npm run dev --workspace=apps/web",
-    "build": "npm run build --workspace=apps/web"
+    "build": "npm run build --workspace=apps/web",
+    "start": "npm run start --workspace=apps/web"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.45.0",

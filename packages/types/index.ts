@@ -17,6 +17,7 @@ export interface User {
   fullName: string;
   role: Role;
   restaurantId: string | null;
+  avatarUrl: string | null;
 }
 
 export interface NavItem {

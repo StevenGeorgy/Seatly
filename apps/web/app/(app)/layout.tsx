@@ -11,11 +11,11 @@ export default function AppLayout({
 }) {
   return (
     <ProtectedRoute>
-      <div className="flex min-h-screen bg-background">
+      <div className="flex min-h-screen bg-background-dark">
         <Sidebar />
         <div className="flex flex-1 flex-col">
           <Header />
-          <main className="flex-1 p-lg">{children}</main>
+          <main className="flex-1 p-xl">{children}</main>
         </div>
       </div>
     </ProtectedRoute>

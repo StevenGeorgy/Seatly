@@ -126,6 +126,17 @@ const config: Config = {
       backgroundColor: {
         "gold-tint": colours.goldTintBg,
         "surface-glass": colours.surfaceGlass,
+        "gold-glass": colours.goldGlass,
+        "auth-card": colours.authCardBg,
+        "auth-input": colours.authInputBg,
+      },
+      borderColor: {
+        "gold-glass": colours.goldGlassBorder,
+        "auth-card": colours.authCardBorder,
+        "auth-input": colours.authInputBorder,
+      },
+      ringColor: {
+        "auth-focus": colours.authFocusRing,
       },
       keyframes: {
         fadeInUp: {
@@ -157,6 +168,7 @@ const config: Config = {
         waveform: "waveform 1.2s ease-in-out infinite",
       },
       transitionDuration: {
+        "200": "200ms",
         "400": "400ms",
         "600": "600ms",
       },

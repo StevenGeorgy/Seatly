@@ -73,6 +73,15 @@ export const colours = {
   goldBorderGradient: "linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.5), transparent)",
   noiseOpacity: "0.025",
   goldShimmerLight: "rgba(255, 255, 255, 0.12)",
+  // Liquid glass
+  goldGlass: "rgba(20, 20, 20, 0.6)",
+  goldGlassBorder: "rgba(212, 175, 55, 0.15)",
+  // Auth screens
+  authCardBg: "rgba(20, 20, 20, 0.7)",
+  authCardBorder: "rgba(212, 175, 55, 0.2)",
+  authInputBg: "rgba(255, 255, 255, 0.05)",
+  authInputBorder: "rgba(255, 255, 255, 0.1)",
+  authFocusRing: "rgba(212, 175, 55, 0.3)",
 } as const;
 
 export const spacing = {

@@ -71,3 +71,97 @@ When creating a new screen:
 3. Never start from a blank component
 4. Apply the correct role permission for this screen
 5. Import all values from packages/tokens
+
+## UI DESIGN RULES — MANDATORY FOR EVERY SCREEN
+
+### Theme
+- Dark mode only — never use light backgrounds
+- Black and gold — Apple Mac sleek minimal
+- Every screen must feel premium and consistent
+- Reference UI_STYLE_GUIDE.md for all values
+
+### Backgrounds
+- Main screen background: backgroundDark (#0A0A0A)
+- Cards and panels: surfaceDark (#141414)
+- Elevated elements (modals, dropdowns): surfaceDarkElevated (#1A1A1A)
+- Inputs: surfaceDark (#141414)
+- Never use white, grey, or any light colour as a background
+
+### Typography
+- Headings: font-bold or font-semibold, tight letter spacing
+- Body: text-base, leading-relaxed
+- Labels and captions: text-xs uppercase tracking-widest text-gold
+- Never use more than 2 font weights on a single screen
+
+### Colours
+- All colours from packages/tokens only
+- Never hardcode any hex value
+- Gold is used on: active states, CTAs, key metrics, brand elements, focus rings
+- Gold is NOT used on: body text, backgrounds, regular borders
+
+### Buttons
+- Primary: bg-gold text-text-on-gold rounded-md font-semibold hover:bg-gold-muted
+- Secondary: border border-gold text-gold hover:bg-gold/10
+- Destructive: bg-error text-white
+- All buttons: hover:scale-[1.02] transition-transform duration-400
+
+### Inputs
+- Background: bg-surface-dark
+- Border: border-border-dark
+- Focus: focus:border-gold focus:ring-1 focus:ring-gold
+- Text: text-text-on-dark
+- Placeholder: text-text-muted-on-dark
+- Border radius: rounded-md
+
+### Cards
+- Background: bg-surface-dark
+- Border: border border-border-card
+- Border radius: rounded-lg
+- Padding: p-xl
+- Hover: hover:border-gold/50 hover:shadow-gold-glow-hover
+
+### Navigation (Web Sidebar)
+- Active item: border-l-2 border-gold bg-gold/10 text-gold font-medium
+- Inactive item: text-text-muted-on-dark
+- Hover: hover:bg-gold/5 hover:text-text-on-dark
+
+### Badges and Status
+- VIP badge: gold border and text
+- Allergy badge: error colour, always visible
+- Status pills: rounded-full with appropriate status colour
+
+### Spacing
+- All spacing from packages/tokens only
+- Screen padding: px-xl py-2xl
+- Card padding: p-xl
+- Between sections: gap-2xl or gap-3xl
+- Between elements: gap-md or gap-lg
+
+### Every Screen Must Have
+- Loading state (spinner or skeleton)
+- Empty state (icon, message, optional CTA)
+- Error state (message, retry button)
+- All three states use tokens, not custom colours
+
+### Animations
+- Transitions: duration-400 ease-out
+- Hover effects: scale-[1.02] on buttons
+- Page entry: fadeInUp with Intersection Observer
+- Never use jarring or fast animations
+
+### Allergy Alerts — Special Rule
+- Allergies are ALWAYS shown in error colour
+- Never muted, never hidden, always visible
+- This applies to every screen where guest data is shown
+
+### Mobile Specific (Expo)
+- Import from packages/tokens/theme.native.ts
+- Never hardcode values in StyleSheet.create
+- Status bar: always light
+- Safe area: always respected
+- Tab bar: dark background, gold active icon
+
+### Web Specific (Next.js)
+- Import from packages/tokens
+- Tailwind classes only — no inline styles
+- No hardcoded values in className strings
