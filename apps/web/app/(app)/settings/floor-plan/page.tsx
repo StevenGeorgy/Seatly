@@ -1,24 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { FloorPlanEditor } from "@/components/floor-plan/FloorPlanEditor";
 import { PAGE_HEADERS } from "@/lib/page-headers";
 
-export default function FloorPlanEditorPage({
-  searchParams,
-}: {
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
-  const stateParam = searchParams.state;
-  const state =
-    typeof stateParam === "string"
-      ? stateParam
-      : Array.isArray(stateParam)
-        ? stateParam[0]
-        : undefined;
+export default function FloorPlanEditorPage() {
+  const searchParams = useSearchParams();
+  const state = searchParams.get("state") ?? undefined;
 
   const loading = state === "loading";
   const error = state === "error";

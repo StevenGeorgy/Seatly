@@ -53,6 +53,16 @@ async function fetchUserProfile(
   };
 }
 
+function isInvalidRefreshTokenError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const maybeMessage = "message" in error ? (error as { message?: unknown }).message : null;
+  const message = typeof maybeMessage === "string" ? maybeMessage.toLowerCase() : "";
+  return (
+    message.includes("invalid refresh token") ||
+    message.includes("refresh token not found")
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,12 +83,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else {
           setUser(null);
         }
+      } catch (error) {
+        if (isInvalidRefreshTokenError(error)) {
+          // Local browser token is stale/corrupt; clear local auth state quietly.
+          await supabase.auth.signOut({ scope: "local" });
+          if (!cancelled) setUser(null);
+        } else {
+          throw error;
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
-    initAuth();
+    void initAuth();
 
     const {
       data: { subscription },

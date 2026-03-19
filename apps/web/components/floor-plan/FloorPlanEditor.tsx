@@ -58,6 +58,12 @@ import { FloorPlanRotationHandle } from "@/components/floor-plan/floor-plan-rota
 const SAVE_DEBOUNCE_MS = 250;
 const GRID_SIZE = 24;
 const MAX_UNDO_HISTORY = 50;
+const CONTROL_EDGE_OFFSET = 12;
+
+function normalizeAngle360(deg: number) {
+  const normalized = ((deg % 360) + 360) % 360;
+  return Math.round(normalized);
+}
 
 function snapToGrid(val: number) {
   return Math.round(val / GRID_SIZE) * GRID_SIZE;
@@ -138,8 +144,14 @@ export function FloorPlanEditor() {
   const [draggingWallId, setDraggingWallId] = useState<string | null>(null);
   const [draggingWallEndpoint, setDraggingWallEndpoint] = useState<"1" | "2" | null>(null);
   const [dragWallPosition, setDragWallPosition] = useState({ x1: 0, y1: 0, x2: 0, y2: 0 });
+  const [rotatingWallId, setRotatingWallId] = useState<string | null>(null);
+  const [rotateWallPosition, setRotateWallPosition] = useState({ x1: 0, y1: 0, x2: 0, y2: 0 });
   const [draggingInteriorId, setDraggingInteriorId] = useState<string | null>(null);
   const [dragInteriorPosition, setDragInteriorPosition] = useState({ x: 0, y: 0 });
+  const [rotatingTableId, setRotatingTableId] = useState<string | null>(null);
+  const [rotateTableDeg, setRotateTableDeg] = useState(0);
+  const [rotatingInteriorId, setRotatingInteriorId] = useState<string | null>(null);
+  const [rotateInteriorDeg, setRotateInteriorDeg] = useState(0);
   const [addLevelModalOpen, setAddLevelModalOpen] = useState(false);
   const [editMode, setEditMode] = useState(true);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -151,7 +163,32 @@ export function FloorPlanEditor() {
   const [undoHistory, setUndoHistory] = useState<FloorPlanData[]>([]);
   const [redoHistory, setRedoHistory] = useState<FloorPlanData[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const pendingPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const dragFrameRef = useRef<number | null>(null);
   const saveStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wallRotateMetaRef = useRef<{
+    wallId: string;
+    cx: number;
+    cy: number;
+    halfLen: number;
+    startPointerAngle: number;
+    startWallAngle: number;
+  } | null>(null);
+  const tableRotateMetaRef = useRef<{
+    tableId: string;
+    cx: number;
+    cy: number;
+    startPointerAngle: number;
+    startRotation: number;
+  } | null>(null);
+  const interiorRotateMetaRef = useRef<{
+    interiorId: string;
+    cx: number;
+    cy: number;
+    startPointerAngle: number;
+    startRotation: number;
+  } | null>(null);
   const debouncedSave = useDebouncedSave(() => {
     setSaveStatus("saved");
     if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
@@ -418,6 +455,43 @@ export function FloorPlanEditor() {
     persist({ ...data, interior: data.interior.filter((i) => i.id !== id) });
   };
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!editMode) return;
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName.toLowerCase();
+      const isTypingContext =
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        target.isContentEditable;
+      if (isTypingContext) return;
+
+      if (selectedTableId) {
+        event.preventDefault();
+        handleDelete(selectedTableId);
+        setSelectedTableId(null);
+        return;
+      }
+      if (selectedInteriorId) {
+        event.preventDefault();
+        handleDeleteInterior(selectedInteriorId);
+        setSelectedInteriorId(null);
+        return;
+      }
+      if (selectedWallId) {
+        event.preventDefault();
+        handleDeleteWall(selectedWallId);
+        setSelectedWallId(null);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editMode, selectedTableId, selectedInteriorId, selectedWallId, handleDeleteWall, handleDeleteInterior]);
+
   const handleRotateTable = (id: string) => {
     const t = tables.find((x) => x.id === id);
     if (!t) return;
@@ -499,16 +573,83 @@ export function FloorPlanEditor() {
     setDragWallPosition({ x1: wall.x1, y1: wall.y1, x2: wall.x2, y2: wall.y2 });
     if (allowEndpoints && dist1 < endpointRadius && dist1 <= dist2) {
       setDraggingWallEndpoint("1");
-      setDragOffset({ x: clickX - wall.x1, y: clickY - wall.y1 });
+      const nextOffset = { x: clickX - wall.x1, y: clickY - wall.y1 };
+      setDragOffset(nextOffset);
+      dragOffsetRef.current = nextOffset;
     } else if (allowEndpoints && dist2 < endpointRadius) {
       setDraggingWallEndpoint("2");
-      setDragOffset({ x: clickX - wall.x2, y: clickY - wall.y2 });
+      const nextOffset = { x: clickX - wall.x2, y: clickY - wall.y2 };
+      setDragOffset(nextOffset);
+      dragOffsetRef.current = nextOffset;
     } else {
       setDraggingWallEndpoint(null);
       const midX = (wall.x1 + wall.x2) / 2;
       const midY = (wall.y1 + wall.y2) / 2;
-      setDragOffset({ x: clickX - midX, y: clickY - midY });
+      const nextOffset = { x: clickX - midX, y: clickY - midY };
+      setDragOffset(nextOffset);
+      dragOffsetRef.current = nextOffset;
     }
+  };
+
+  const handleWallRotateStart = (e: React.MouseEvent<HTMLButtonElement>, wall: FloorPlanWall) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = (wall.x1 + wall.x2) / 2;
+    const cy = (wall.y1 + wall.y2) / 2;
+    const halfLen = Math.max(1, Math.hypot(wall.x2 - wall.x1, wall.y2 - wall.y1) / 2);
+    const startPointerAngle = Math.atan2((e.clientY - rect.top) / scale - cy, (e.clientX - rect.left) / scale - cx);
+    const startWallAngle = Math.atan2(wall.y2 - wall.y1, wall.x2 - wall.x1);
+    wallRotateMetaRef.current = {
+      wallId: wall.id,
+      cx,
+      cy,
+      halfLen,
+      startPointerAngle,
+      startWallAngle,
+    };
+    setRotatingWallId(wall.id);
+    setRotateWallPosition({ x1: wall.x1, y1: wall.y1, x2: wall.x2, y2: wall.y2 });
+  };
+
+  const handleTableRotateStart = (e: React.MouseEvent<HTMLButtonElement>, table: FloorPlanTable) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const size = getTableSize(table.capacity, normalizeTableShape(table.shape));
+    const cx = table.positionX + size.w / 2;
+    const cy = table.positionY + size.h / 2;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const startPointerAngle = Math.atan2((e.clientY - rect.top) / scale - cy, (e.clientX - rect.left) / scale - cx);
+    tableRotateMetaRef.current = {
+      tableId: table.id,
+      cx,
+      cy,
+      startPointerAngle,
+      startRotation: normalizeFloorPlanRotation(table.rotation ?? 0),
+    };
+    setRotatingTableId(table.id);
+    setRotateTableDeg(normalizeFloorPlanRotation(table.rotation ?? 0));
+  };
+
+  const handleInteriorRotateStart = (e: React.MouseEvent<HTMLButtonElement>, item: FloorPlanInterior) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const cx = item.x + item.w / 2;
+    const cy = item.y + item.h / 2;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const startPointerAngle = Math.atan2((e.clientY - rect.top) / scale - cy, (e.clientX - rect.left) / scale - cx);
+    interiorRotateMetaRef.current = {
+      interiorId: item.id,
+      cx,
+      cy,
+      startPointerAngle,
+      startRotation: normalizeFloorPlanRotation(item.rotation ?? 0),
+    };
+    setRotatingInteriorId(item.id);
+    setRotateInteriorDeg(normalizeFloorPlanRotation(item.rotation ?? 0));
   };
 
   const handleInteriorDragStart = (e: React.MouseEvent, item: FloorPlanInterior) => {
@@ -516,10 +657,12 @@ export function FloorPlanEditor() {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!item || !rect) return;
     setDraggingInteriorId(item.id);
-    setDragOffset({
+    const nextOffset = {
       x: (e.clientX - rect.left) / scale - item.x,
       y: (e.clientY - rect.top) / scale - item.y,
-    });
+    };
+    setDragOffset(nextOffset);
+    dragOffsetRef.current = nextOffset;
     setDragInteriorPosition({ x: item.x, y: item.y });
   };
 
@@ -528,18 +671,20 @@ export function FloorPlanEditor() {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!table || !rect) return;
     setDraggingId(id);
-    setDragOffset({
+    const nextOffset = {
       x: (e.clientX - rect.left) / scale - table.positionX,
       y: (e.clientY - rect.top) / scale - table.positionY,
-    });
+    };
+    setDragOffset(nextOffset);
+    dragOffsetRef.current = nextOffset;
     setDragPosition({ x: table.positionX, y: table.positionY });
   };
 
-  const handleDragMove = (e: React.MouseEvent) => {
+  const applyDragFromClientPoint = useCallback((clientX: number, clientY: number) => {
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const rawX = (e.clientX - rect.left) / scale - dragOffset.x;
-    const rawY = (e.clientY - rect.top) / scale - dragOffset.y;
+    const rawX = (clientX - rect.left) / scale - dragOffsetRef.current.x;
+    const rawY = (clientY - rect.top) / scale - dragOffsetRef.current.y;
     if (draggingId) {
       const x = Math.max(0, Math.min(canvasSize.w - 80, rawX));
       const y = Math.max(0, Math.min(canvasSize.h - 80, rawY));
@@ -580,7 +725,28 @@ export function FloorPlanEditor() {
         setDragInteriorPosition({ x, y });
       }
     }
-  };
+  }, [
+    scale,
+    draggingId,
+    draggingWallId,
+    draggingWallEndpoint,
+    draggingInteriorId,
+    canvasSize.w,
+    canvasSize.h,
+    data.walls,
+    data.interior,
+  ]);
+
+  const handleDragMove = useCallback((e: MouseEvent) => {
+    pendingPointerRef.current = { clientX: e.clientX, clientY: e.clientY };
+    if (dragFrameRef.current != null) return;
+    dragFrameRef.current = window.requestAnimationFrame(() => {
+      dragFrameRef.current = null;
+      const pending = pendingPointerRef.current;
+      if (!pending) return;
+      applyDragFromClientPoint(pending.clientX, pending.clientY);
+    });
+  }, [applyDragFromClientPoint]);
 
   const tablesRef = useRef(tables);
   const dragPositionRef = useRef(dragPosition);
@@ -596,7 +762,106 @@ export function FloorPlanEditor() {
   dragWallPositionRef.current = dragWallPosition;
   dragInteriorPositionRef.current = dragInteriorPosition;
 
+  const handleWallRotateMove = useCallback((e: MouseEvent) => {
+    const meta = wallRotateMetaRef.current;
+    if (!meta || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / scale;
+    const py = (e.clientY - rect.top) / scale;
+    const pointerAngle = Math.atan2(py - meta.cy, px - meta.cx);
+    const angleDelta = pointerAngle - meta.startPointerAngle;
+    const nextAngle = meta.startWallAngle + angleDelta;
+    const dx = Math.cos(nextAngle) * meta.halfLen;
+    const dy = Math.sin(nextAngle) * meta.halfLen;
+    setRotateWallPosition({
+      x1: Math.max(0, Math.min(canvasSize.w, meta.cx - dx)),
+      y1: Math.max(0, Math.min(canvasSize.h, meta.cy - dy)),
+      x2: Math.max(0, Math.min(canvasSize.w, meta.cx + dx)),
+      y2: Math.max(0, Math.min(canvasSize.h, meta.cy + dy)),
+    });
+  }, [canvasSize.w, canvasSize.h, scale]);
+
+  const handleTableRotateMove = useCallback((e: MouseEvent) => {
+    const meta = tableRotateMetaRef.current;
+    if (!meta || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / scale;
+    const py = (e.clientY - rect.top) / scale;
+    const pointerAngle = Math.atan2(py - meta.cy, px - meta.cx);
+    const angleDeltaDeg = ((pointerAngle - meta.startPointerAngle) * 180) / Math.PI;
+    setRotateTableDeg(normalizeAngle360(meta.startRotation + angleDeltaDeg));
+  }, [scale]);
+
+  const handleInteriorRotateMove = useCallback((e: MouseEvent) => {
+    const meta = interiorRotateMetaRef.current;
+    if (!meta || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / scale;
+    const py = (e.clientY - rect.top) / scale;
+    const pointerAngle = Math.atan2(py - meta.cy, px - meta.cx);
+    const angleDeltaDeg = ((pointerAngle - meta.startPointerAngle) * 180) / Math.PI;
+    setRotateInteriorDeg(normalizeAngle360(meta.startRotation + angleDeltaDeg));
+  }, [scale]);
+
+  const handleWallRotateEnd = useCallback(() => {
+    const meta = wallRotateMetaRef.current;
+    if (!meta) return;
+    const pos = rotateWallPosition;
+    persist({
+      ...data,
+      walls: data.walls.map((w) =>
+        w.id === meta.wallId
+          ? {
+              ...w,
+              x1: pos.x1,
+              y1: pos.y1,
+              x2: pos.x2,
+              y2: pos.y2,
+            }
+          : w
+      ),
+    });
+    setRotatingWallId(null);
+    wallRotateMetaRef.current = null;
+  }, [rotateWallPosition, persist, data]);
+
+  const handleTableRotateEnd = useCallback(() => {
+    const meta = tableRotateMetaRef.current;
+    if (!meta) return;
+    persist({
+      ...data,
+      tables: data.tables.map((t) =>
+        t.id === meta.tableId ? { ...t, rotation: normalizeAngle360(rotateTableDeg) } : t
+      ),
+    });
+    setRotatingTableId(null);
+    tableRotateMetaRef.current = null;
+  }, [rotateTableDeg, persist, data]);
+
+  const handleInteriorRotateEnd = useCallback(() => {
+    const meta = interiorRotateMetaRef.current;
+    if (!meta) return;
+    persist({
+      ...data,
+      interior: data.interior.map((i) =>
+        i.id === meta.interiorId ? { ...i, rotation: normalizeAngle360(rotateInteriorDeg) } : i
+      ),
+    });
+    setRotatingInteriorId(null);
+    interiorRotateMetaRef.current = null;
+  }, [rotateInteriorDeg, persist, data]);
+
   const handleDragEnd = useCallback(() => {
+    if (dragFrameRef.current != null) {
+      window.cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = null;
+    }
+    const pending = pendingPointerRef.current;
+    if (pending) {
+      applyDragFromClientPoint(pending.clientX, pending.clientY);
+    }
+    pendingPointerRef.current = null;
+
     const tableId = draggingId;
     const wallId = draggingWallId;
     const interiorId = draggingInteriorId;
@@ -640,20 +905,61 @@ export function FloorPlanEditor() {
       });
       setDraggingInteriorId(null);
     }
-  }, [draggingId, draggingWallId, draggingInteriorId, persist, data]);
+  }, [draggingId, draggingWallId, draggingInteriorId, persist, data, applyDragFromClientPoint]);
 
   const isDragging = draggingId || draggingWallId || draggingInteriorId;
   useEffect(() => {
     if (!isDragging) return;
-    const onMove = (e: MouseEvent) => handleDragMove(e as unknown as React.MouseEvent);
+    const onMove = (e: MouseEvent) => handleDragMove(e);
     const onUp = () => handleDragEnd();
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (dragFrameRef.current != null) {
+        window.cancelAnimationFrame(dragFrameRef.current);
+        dragFrameRef.current = null;
+      }
+      pendingPointerRef.current = null;
     };
-  }, [isDragging, dragOffset, handleDragEnd]);
+  }, [isDragging, handleDragMove, handleDragEnd]);
+
+  useEffect(() => {
+    if (!rotatingWallId) return;
+    const onMove = (e: MouseEvent) => handleWallRotateMove(e);
+    const onUp = () => handleWallRotateEnd();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [rotatingWallId, handleWallRotateMove, handleWallRotateEnd]);
+
+  useEffect(() => {
+    if (!rotatingTableId) return;
+    const onMove = (e: MouseEvent) => handleTableRotateMove(e);
+    const onUp = () => handleTableRotateEnd();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [rotatingTableId, handleTableRotateMove, handleTableRotateEnd]);
+
+  useEffect(() => {
+    if (!rotatingInteriorId) return;
+    const onMove = (e: MouseEvent) => handleInteriorRotateMove(e);
+    const onUp = () => handleInteriorRotateEnd();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [rotatingInteriorId, handleInteriorRotateMove, handleInteriorRotateEnd]);
 
   const sectionOptions = levels.length > 0 ? levels.map((l) => l.name) : ["Main Floor"];
   const visibleTables =
@@ -1018,11 +1324,12 @@ export function FloorPlanEditor() {
         >
           {walls.map((w) => {
             const isDragging = draggingWallId === w.id;
+            const isRotating = rotatingWallId === w.id;
             const isSelected = selectedWallId === w.id;
-            const x1 = isDragging ? dragWallPosition.x1 : w.x1;
-            const y1 = isDragging ? dragWallPosition.y1 : w.y1;
-            const x2 = isDragging ? dragWallPosition.x2 : w.x2;
-            const y2 = isDragging ? dragWallPosition.y2 : w.y2;
+            const x1 = isDragging ? dragWallPosition.x1 : isRotating ? rotateWallPosition.x1 : w.x1;
+            const y1 = isDragging ? dragWallPosition.y1 : isRotating ? rotateWallPosition.y1 : w.y1;
+            const x2 = isDragging ? dragWallPosition.x2 : isRotating ? rotateWallPosition.x2 : w.x2;
+            const y2 = isDragging ? dragWallPosition.y2 : isRotating ? rotateWallPosition.y2 : w.y2;
             const dx = x2 - x1;
             const dy = y2 - y1;
             const length = Math.hypot(dx, dy) || 1;
@@ -1040,11 +1347,18 @@ export function FloorPlanEditor() {
             return (
               <div
                 key={w.id}
-                className={`absolute select-none transition-opacity duration-200 ${
-                  editMode ? "cursor-grab hover:opacity-100" : "cursor-default"
-                } ${isDragging ? "cursor-grabbing z-20 opacity-100" : "z-0 opacity-90"}`}
-                style={{ left: minX, top: minY, width: boxW, height: boxH }}
+                className={`absolute select-none transition-colors duration-200 ${
+                  editMode ? "cursor-grab" : "cursor-default"
+                } ${isDragging ? "cursor-grabbing z-20" : "z-0"}`}
+                style={{
+                  left: minX,
+                  top: minY,
+                  width: boxW,
+                  height: boxH,
+                  transition: isDragging ? "none" : "opacity 0.2s ease-out",
+                }}
                 onMouseDown={(e) => {
+                  e.preventDefault();
                   if (editMode) {
                     const wasSelected = selectedWallId === w.id;
                     setSelectedWallId(w.id);
@@ -1056,11 +1370,16 @@ export function FloorPlanEditor() {
                 title="Drag to move · Drag endpoints to change length or angle"
               >
                 {editMode && isSelected && (
-                  <FloorPlanRotationHandle onRotateClick={() => handleRotateWall(w.id, 1)} ariaLabel="Rotate wall 45 degrees" />
+                  <FloorPlanRotationHandle
+                    onRotateMouseDown={(e) => handleWallRotateStart(e, w)}
+                    ariaLabel="Hold and drag to rotate wall"
+                    rotationDeg={angleDeg}
+                    orbitRadius={Math.max(displayLength / 2 + CONTROL_EDGE_OFFSET, 28)}
+                  />
                 )}
                 <div
                   className={`absolute flex items-center justify-center rounded-sm border text-xs font-medium uppercase tracking-wider ${
-                    isSelected ? "border-gold shadow-gold-glow-hover" : ""
+                    isSelected ? "border-gold bg-gold/10" : ""
                   }`}
                   style={{
                     left: rectLeft,
@@ -1073,6 +1392,7 @@ export function FloorPlanEditor() {
                     borderColor: isSelected ? colours.gold : colours.floorPlanInteriorWallSegmentBorder,
                     borderWidth: 1,
                     color: colours.floorPlanWallsPlacedText,
+                    boxShadow: isSelected ? `inset 0 0 0 1px ${colours.gold}` : undefined,
                   }}
                 >
                   WALL
@@ -1099,6 +1419,22 @@ export function FloorPlanEditor() {
                     />
                   </>
                 )}
+                {editMode && (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      handleDeleteWall(w.id);
+                      if (selectedWallId === w.id) setSelectedWallId(null);
+                    }}
+                    className={`absolute right-0 top-0 z-40 flex h-5 w-5 translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white transition-opacity hover:bg-error ${
+                      isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
+                    aria-label="Remove wall"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1111,7 +1447,7 @@ export function FloorPlanEditor() {
             const IconComponent = INTERIOR_ICONS[i.type];
             const preset = INTERIOR_PRESETS.find((p) => p.type === i.type);
             const displayLabel = i.label?.trim() || preset?.label || i.type;
-            const rotationDeg = normalizeFloorPlanRotation(i.rotation ?? 0);
+            const rotationDeg = rotatingInteriorId === i.id ? rotateInteriorDeg : normalizeFloorPlanRotation(i.rotation ?? 0);
             const seatedLine =
               isSeatingInterior(i.type) && i.seatedCapacity != null && i.seatedCapacity > 0
                 ? `${i.seatedCapacity} seats`
@@ -1120,12 +1456,19 @@ export function FloorPlanEditor() {
               <div
                 key={i.id}
                 className={`group absolute select-none overflow-visible transition-all duration-400 ease-out ${
-                  editMode ? "cursor-grab hover:border-gold/40 hover:shadow-gold-glow-hover" : "cursor-default"
-                } border ${
-                  isDragging ? "cursor-grabbing z-20 border-gold/40 shadow-gold-glow-hover" : "z-0 border-transparent"
-                } ${isInteriorSelected ? "ring-2 ring-gold ring-offset-2 ring-offset-background-dark" : ""}`}
-                style={{ left: x, top: y, width: i.w, height: i.h }}
+                  editMode ? "cursor-grab" : "cursor-default"
+                } ${
+                  isDragging ? "cursor-grabbing z-20" : "z-0"
+                }`}
+                style={{
+                  left: x,
+                  top: y,
+                  width: i.w,
+                  height: i.h,
+                  transition: isDragging ? "none" : undefined,
+                }}
                 onMouseDown={(e) => {
+                  e.preventDefault();
                   if (editMode) {
                     handleInteriorDragStart(e, i);
                     setSelectedInteriorId(i.id);
@@ -1136,19 +1479,27 @@ export function FloorPlanEditor() {
                 title="Drag to move"
               >
                 {editMode && isInteriorSelected && (
-                  <FloorPlanRotationHandle onRotateClick={() => handleRotateInterior(i.id)} />
+                  <FloorPlanRotationHandle
+                    onRotateMouseDown={(e) => handleInteriorRotateStart(e, i)}
+                    rotationDeg={rotationDeg}
+                    orbitRadius={Math.max(i.w, i.h) / 2 + CONTROL_EDGE_OFFSET}
+                  />
                 )}
                 <div
-                  className="h-full w-full"
+                  className={`h-full w-full ${isInteriorSelected ? "bg-gold/10" : ""}`}
                   style={{
                     transform: `rotate(${rotationDeg}deg)`,
                     transformOrigin: "center center",
+                    borderRadius: "inherit",
+                    outline: isInteriorSelected ? `1px solid ${colours.gold}` : undefined,
+                    outlineOffset: "-1px",
                   }}
                 >
                   <div
                     className={`flex h-full w-full min-h-0 min-w-0 overflow-hidden transition-transform duration-400 ease-out ${
-                      isDragging ? "scale-[1.02]" : "group-hover:scale-[1.02]"
+                      isDragging ? "scale-[1.01]" : ""
                     }`}
+                    style={{ transition: isDragging ? "none" : undefined }}
                   >
                     <InteriorCanvasVisual
                       type={i.type}
@@ -1158,6 +1509,7 @@ export function FloorPlanEditor() {
                       seatedLine={seatedLine}
                       IconComponent={IconComponent}
                       isSmall={isSmall}
+                      isSelected={isInteriorSelected}
                     />
                   </div>
                 </div>
@@ -1168,7 +1520,9 @@ export function FloorPlanEditor() {
                       ev.stopPropagation();
                       handleDeleteInterior(i.id);
                     }}
-                    className="absolute -right-1 -top-1 z-40 flex h-5 w-5 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-error"
+                    className={`absolute right-0 top-0 z-40 flex h-5 w-5 translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white transition-opacity hover:bg-error ${
+                      isInteriorSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
                     aria-label="Remove"
                   >
                     ×
@@ -1185,15 +1539,13 @@ export function FloorPlanEditor() {
             const shape = normalizeTableShape(t.shape);
             const size = getTableSize(t.capacity, shape);
             const chairPositions = getChairPositions(t.capacity, size.w, size.h);
-            const rotationDeg = normalizeFloorPlanRotation(t.rotation ?? 0);
+            const rotationDeg = rotatingTableId === t.id ? rotateTableDeg : normalizeFloorPlanRotation(t.rotation ?? 0);
             return (
               <div
                 key={t.id}
-                className={`group absolute overflow-visible transition-all duration-400 ease-out ${
-                  editMode ? "cursor-grab hover:shadow-gold-glow-hover" : "cursor-default"
-                } ${isDragging ? "cursor-grabbing z-10 shadow-gold-glow-hover" : "shadow-soft"} ${
-                  isSelected ? "ring-2 ring-gold ring-offset-2 ring-offset-background-dark" : ""
-                }`}
+                className={`group absolute overflow-visible transition-shadow duration-200 ${
+                  editMode ? "cursor-grab" : "cursor-default"
+                } ${isDragging ? "cursor-grabbing z-10" : "z-0 shadow-soft"}`}
                 style={{
                   left: x,
                   top: y,
@@ -1213,7 +1565,11 @@ export function FloorPlanEditor() {
                 title="Drag to move"
               >
                 {editMode && isSelected && (
-                  <FloorPlanRotationHandle onRotateClick={() => handleRotateTable(t.id)} />
+                  <FloorPlanRotationHandle
+                    onRotateMouseDown={(e) => handleTableRotateStart(e, t)}
+                    rotationDeg={rotationDeg}
+                    orbitRadius={Math.max(size.w, size.h) / 2 + CONTROL_EDGE_OFFSET}
+                  />
                 )}
                 <div
                   className="relative h-full w-full"
@@ -1223,14 +1579,21 @@ export function FloorPlanEditor() {
                   }}
                 >
                   <div
-                    className={`relative h-full w-full transition-transform duration-400 ease-out ${
-                      isDragging ? "scale-[1.02]" : "group-hover:scale-[1.02]"
+                    className={`relative h-full w-full transition-transform duration-200 ${
+                      isDragging ? "scale-[1.01]" : ""
                     }`}
                   >
                     <div
                       className={`absolute inset-0 flex flex-col items-center justify-center gap-0 border-2 shadow-inner ${getTableShapeBorderRadiusClass(shape)} bg-gradient-to-b from-surface-dark-elevated to-surface-dark ${
-                        isSelected ? "border-gold" : t.isActive ? "border-gold/40" : "border-border-dark"
+                        isSelected
+                          ? "border-gold bg-gold/10"
+                          : t.isActive
+                            ? "border-gold/40"
+                            : "border-border-dark"
                       }`}
+                      style={{
+                        boxShadow: isSelected ? `inset 0 0 0 1px ${colours.gold}` : undefined,
+                      }}
                     >
                       <span className="text-base font-bold text-text-on-dark leading-tight">
                         {t.tableNumber}
@@ -1253,6 +1616,22 @@ export function FloorPlanEditor() {
                     ))}
                   </div>
                 </div>
+                {editMode && (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      handleDelete(t.id);
+                      if (selectedTableId === t.id) setSelectedTableId(null);
+                    }}
+                    className={`absolute right-0 top-0 z-40 flex h-5 w-5 translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white transition-opacity hover:bg-error ${
+                      isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                    }`}
+                    aria-label="Remove table"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             );
           })}

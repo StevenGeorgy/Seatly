@@ -16,6 +16,7 @@ export type InteriorCanvasVisualProps = {
   seatedLine: string | null;
   IconComponent: LucideIcon;
   isSmall: boolean;
+  isSelected?: boolean;
 };
 
 export function InteriorCanvasVisual({
@@ -26,16 +27,19 @@ export function InteriorCanvasVisual({
   seatedLine,
   IconComponent,
   isSmall,
+  isSelected = false,
 }: InteriorCanvasVisualProps) {
   const iconSize = isSmall ? 12 : parseInt(iconPx, 10);
   const labelClass = isSmall
     ? "text-[8px] font-medium uppercase tracking-wider"
     : "text-[10px] font-medium uppercase tracking-wider";
+  const isCompact = w < 84 || h < 52;
 
   if (type === "pillar") {
-    const diameter = Math.min(w, h);
+    const hasLabelSpace = h >= 56;
+    const diameter = Math.max(16, Math.min(w, hasLabelSpace ? h - 16 : h) - 2);
     return (
-      <div className="flex h-full w-full flex-col items-center justify-start gap-px pt-xs">
+      <div className="flex h-full w-full flex-col items-center justify-center">
         <div
           className="relative shrink-0 rounded-full"
           style={{
@@ -62,9 +66,11 @@ export function InteriorCanvasVisual({
             }}
           />
         </div>
-        <span className={`mt-px max-w-full shrink-0 truncate px-xs text-center text-text-muted-on-dark ${labelClass}`}>
-          {displayLabel}
-        </span>
+        {hasLabelSpace && (
+          <span className={`mt-px max-w-full shrink-0 truncate px-xs text-center text-text-muted-on-dark ${labelClass}`}>
+            {displayLabel}
+          </span>
+        )}
       </div>
     );
   }
@@ -143,10 +149,20 @@ export function InteriorCanvasVisual({
           borderLeftColor: colours.floorPlanInteriorBoothAccent,
         }}
       >
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-xs p-xs">
-          <IconComponent className="text-gold/70" size={iconSize} strokeWidth={1.5} />
-          <span className={`max-w-full truncate text-center text-text-muted-on-dark ${labelClass}`}>{displayLabel}</span>
-          {seatedLine && (
+        <div
+          className={`flex min-h-0 flex-1 flex-col items-center justify-center ${
+            isCompact ? "gap-px px-xs py-px" : "gap-xs p-xs"
+          }`}
+        >
+          {!isCompact && <IconComponent className="text-gold/70" size={iconSize} strokeWidth={1.5} />}
+          <span
+            className={`max-w-full truncate text-center text-text-muted-on-dark ${
+              isCompact ? "text-[8px] font-medium uppercase tracking-wide" : labelClass
+            }`}
+          >
+            {displayLabel}
+          </span>
+          {!isCompact && seatedLine && (
             <span className={`max-w-full truncate text-center font-medium text-gold/90 ${isSmall ? "text-[7px]" : "text-[9px]"}`}>
               {seatedLine}
             </span>
@@ -180,20 +196,31 @@ export function InteriorCanvasVisual({
         className="flex h-full w-full min-h-0 flex-col overflow-hidden rounded-lg border"
         style={{
           backgroundColor: colours.floorPlanInteriorCounterBg,
-          borderColor: colours.floorPlanInteriorCounterBorder,
+          borderColor: isSelected ? colours.gold : colours.floorPlanInteriorCounterBorder,
+          boxShadow: isSelected ? `inset 0 0 0 1px ${colours.gold}` : undefined,
         }}
       >
-        <div className="flex shrink-0 flex-col items-center gap-xs pt-xs">
-          <IconComponent className="text-gold/70" size={iconSize} strokeWidth={1.5} />
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col justify-center gap-1 px-sm py-xs">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-px w-full shrink-0" style={{ backgroundColor: colours.floorPlanInteriorCounterLine }} />
-          ))}
-        </div>
-        <span className={`max-w-full shrink-0 truncate px-xs pb-xs text-center text-text-muted-on-dark ${labelClass}`}>
-          {displayLabel}
-        </span>
+        {isCompact ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-xs py-px">
+            <span className="max-w-full truncate text-center text-[8px] font-semibold uppercase tracking-wide text-text-on-dark">
+              {displayLabel}
+            </span>
+          </div>
+        ) : (
+          <>
+            <div className="flex shrink-0 flex-col items-center gap-xs pt-xs">
+              <IconComponent className="text-gold/70" size={iconSize} strokeWidth={1.5} />
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col justify-center gap-1 px-sm py-xs">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-px w-full shrink-0" style={{ backgroundColor: colours.floorPlanInteriorCounterLine }} />
+              ))}
+            </div>
+            <span className={`max-w-full shrink-0 truncate px-xs pb-xs text-center text-text-on-dark ${labelClass}`}>
+              {displayLabel}
+            </span>
+          </>
+        )}
       </div>
     );
   }

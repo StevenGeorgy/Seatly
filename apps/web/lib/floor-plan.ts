@@ -116,12 +116,13 @@ export function rotateWallEndpoints45Degrees(w: FloorPlanWall, direction: 1 | -1
   return { ...w, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
 }
 
-/** Display angle (0–315, 45° steps) derived from wall segment geometry. */
+/** Display angle (0–359) derived from wall segment geometry. */
 export function wallRotationDisplayDegrees(w: FloorPlanWall): number {
   const dx = w.x2 - w.x1;
   const dy = w.y2 - w.y1;
   const deg = (Math.atan2(dy, dx) * 180) / Math.PI;
-  return normalizeFloorPlanRotation(deg);
+  const normalized = ((deg % 360) + 360) % 360;
+  return Math.round(normalized);
 }
 
 export type FloorPlanInterior = {
