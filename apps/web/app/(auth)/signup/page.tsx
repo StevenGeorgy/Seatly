@@ -70,7 +70,9 @@ function SignUpPage() {
   const [restaurantName, setRestaurantName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -83,6 +85,8 @@ function SignUpPage() {
     restaurantName.trim().length > 0 &&
     email.trim().length > 0 &&
     isValidPassword(password) &&
+    confirmPassword.trim().length > 0 &&
+    confirmPassword === password &&
     agreedToTerms &&
     !isSubmitting;
 
@@ -93,6 +97,12 @@ function SignUpPage() {
 
     setIsSubmitting(true);
     try {
+      if (password !== confirmPassword) {
+        setError("Passwords do not match");
+        setIsSubmitting(false);
+        return;
+      }
+
       const res = await fetch("/api/signup-restaurant-owner", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -319,6 +329,42 @@ function SignUpPage() {
                 </span>
               </div>
             )}
+          </div>
+
+          <div>
+            <label
+              htmlFor="confirmPassword"
+              className="mb-xs block text-xs font-medium uppercase tracking-widest text-gold"
+            >
+              Confirm password
+            </label>
+            <div className="relative">
+              <input
+                id="confirmPassword"
+                type={showConfirmPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="new-password"
+                disabled={isSubmitting}
+                className="w-full rounded-lg border border-auth-input bg-auth-input px-md py-sm pr-3xl text-text-on-dark placeholder-text-muted-on-dark transition-colors duration-200 focus:border-gold focus:outline-none focus:ring-2 focus:ring-auth-focus disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                className="absolute right-md top-1/2 -translate-y-1/2 text-text-muted-on-dark transition-colors duration-200 hover:text-gold"
+                tabIndex={-1}
+                aria-label={
+                  showConfirmPassword ? "Hide confirm password" : "Show confirm password"
+                }
+              >
+                {showConfirmPassword ? (
+                  <EyeOffIcon className="h-xl w-xl" />
+                ) : (
+                  <EyeIcon className="h-xl w-xl" />
+                )}
+              </button>
+            </div>
           </div>
 
           <label className="flex cursor-pointer items-start gap-md">

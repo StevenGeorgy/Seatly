@@ -61,10 +61,6 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: "AI",
-    items: [{ href: "/assistant", label: "AI Assistant", roles: ["owner", "admin"] }],
-  },
-  {
     label: "ADMIN",
     items: [{ href: "/admin", label: "Admin", roles: ["admin"] }],
   },

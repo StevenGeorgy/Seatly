@@ -3,6 +3,7 @@
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { Header } from "@/components/layout/Header";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { AssistantFloatingWidget } from "@/components/assistant/AssistantFloatingWidget";
 
 export default function AppLayout({
   children,
@@ -17,6 +18,7 @@ export default function AppLayout({
           <Header />
           <main className="flex-1 p-xl">{children}</main>
         </div>
+        <AssistantFloatingWidget />
       </div>
     </ProtectedRoute>
   );

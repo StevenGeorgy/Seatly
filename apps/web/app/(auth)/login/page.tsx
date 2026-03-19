@@ -51,6 +51,7 @@ function EyeOffIcon({ className }: { className?: string }) {
 function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -65,6 +66,16 @@ function LoginForm() {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("seatly_remember_login");
+      if (stored === "1") setRememberMe(true);
+      if (stored === "0") setRememberMe(false);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const canSubmit = email.trim().length > 0 && password.length > 0 && !isSubmitting;
 
   async function handleSubmit(e: React.FormEvent) {
@@ -74,6 +85,15 @@ function LoginForm() {
 
     setIsSubmitting(true);
     try {
+      try {
+        window.localStorage.setItem(
+          "seatly_remember_login",
+          rememberMe ? "1" : "0"
+        );
+      } catch {
+        // ignore
+      }
+
       const supabase = createClient();
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
@@ -176,8 +196,9 @@ function LoginForm() {
 
       setUserFromSession(profile);
       router.replace(getRoleHome(profile.role));
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || "Something went wrong. Please try again.");
       setIsSubmitting(false);
     }
   }
@@ -264,6 +285,17 @@ function LoginForm() {
               </button>
             </div>
           </div>
+
+          <label className="flex cursor-pointer items-start gap-md">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              disabled={isSubmitting}
+              className="mt-1 h-4 w-4 shrink-0 cursor-pointer rounded border border-auth-input bg-auth-input accent-gold transition-colors duration-200 focus:ring-2 focus:ring-auth-focus focus:ring-offset-0 focus:ring-offset-transparent disabled:cursor-not-allowed"
+            />
+            <span className="text-sm text-text-muted-on-dark">Remember me</span>
+          </label>
 
           {successMessage && (
             <div className="rounded-lg border-l-4 border-success bg-success-muted px-md py-sm text-sm text-success">
