@@ -10,7 +10,7 @@ interface CardProps {
 export function Card({ children, className = "" }: CardProps) {
   return (
     <div
-      className={`rounded-lg border border-gold-glass bg-gold-glass p-xl backdrop-blur-xl transition-shadow duration-400 hover:shadow-gold-glow ${className}`}
+      className={`app-card p-xl ${className}`}
     >
       {children}
     </div>

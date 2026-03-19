@@ -178,7 +178,7 @@ export default function MenuPage({
       <PageHeader title="Menu Management" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 lg:col-span-4 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">
           <div className="mb-lg">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Categories
@@ -210,7 +210,7 @@ export default function MenuPage({
             })}
           </div>
 
-          <div className="mt-lg rounded-lg border border-border-card bg-surface-dark p-xl">
+          <div className="mt-lg app-card p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Quick actions
             </p>
@@ -233,7 +233,7 @@ export default function MenuPage({
           </div>
         </section>
 
-        <section className="col-span-12 lg:col-span-8 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-8 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -254,7 +254,7 @@ export default function MenuPage({
             {filteredDishes.map((d) => (
               <article
                 key={d.id}
-                className="rounded-lg border border-border-card bg-surface-dark p-xl"
+                className="app-card p-xl"
               >
                 <div className="flex flex-col gap-md sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">

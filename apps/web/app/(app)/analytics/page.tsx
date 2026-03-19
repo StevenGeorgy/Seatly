@@ -100,7 +100,7 @@ export default function AnalyticsPage({
       <PageHeader title="Analytics Dashboard" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 xl:col-span-8 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 xl:col-span-8 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -132,7 +132,7 @@ export default function AnalyticsPage({
           </div>
 
           <div className="grid grid-cols-12 gap-md">
-            <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark p-xl">
+            <div className="col-span-12 lg:col-span-6 app-card p-xl">
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                 Revenue line (placeholder)
               </p>
@@ -149,7 +149,7 @@ export default function AnalyticsPage({
               </div>
             </div>
 
-            <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark p-xl">
+            <div className="col-span-12 lg:col-span-6 app-card p-xl">
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                 No-show rate (placeholder)
               </p>
@@ -171,7 +171,7 @@ export default function AnalyticsPage({
               </div>
             </div>
 
-            <div className="col-span-12 rounded-lg border border-border-card bg-surface-dark p-xl">
+            <div className="col-span-12 app-card p-xl">
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                 Top 10 dishes (preview)
               </p>
@@ -220,7 +220,7 @@ export default function AnalyticsPage({
           </div>
         </section>
 
-        <aside className="col-span-12 xl:col-span-4 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <aside className="col-span-12 xl:col-span-4 app-card-elevated p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Booking sources (placeholder)
           </p>

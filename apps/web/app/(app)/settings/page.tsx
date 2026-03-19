@@ -65,7 +65,7 @@ export default function SettingsPage({
       <PageHeader title="Settings" />
 
       <div className="space-y-lg">
-        <section className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -124,7 +124,7 @@ export default function SettingsPage({
         </section>
 
         <section className="grid grid-cols-12 gap-lg">
-          <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+          <div className="col-span-12 lg:col-span-6 app-card-elevated p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Booking window
             </p>
@@ -152,7 +152,7 @@ export default function SettingsPage({
             </div>
           </div>
 
-          <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+          <div className="col-span-12 lg:col-span-6 app-card-elevated p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Deposit policy (mock)
               </p>
@@ -185,7 +185,7 @@ export default function SettingsPage({
         </section>
 
         <section className="grid grid-cols-12 gap-lg">
-          <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+          <div className="col-span-12 lg:col-span-6 app-card-elevated p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Loyalty config (mock)
             </p>
@@ -213,7 +213,7 @@ export default function SettingsPage({
             </div>
           </div>
 
-          <div className="col-span-12 lg:col-span-6 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+          <div className="col-span-12 lg:col-span-6 app-card-elevated p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Notifications (mock)
             </p>
@@ -248,7 +248,7 @@ export default function SettingsPage({
           </div>
         </section>
 
-        <section className="rounded-lg border border-border-card bg-surface-dark p-xl">
+        <section className="app-card p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Next steps
           </p>

@@ -116,7 +116,7 @@ export default function StaffPage({
       <PageHeader title="Staff Management" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -142,7 +142,7 @@ export default function StaffPage({
             {STAFF.map((m) => (
               <article
                 key={m.id}
-                className="rounded-lg border border-border-card bg-surface-dark p-xl"
+                className="app-card p-xl"
               >
                 <div className="flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">

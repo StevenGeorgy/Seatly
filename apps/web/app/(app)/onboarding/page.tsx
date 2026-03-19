@@ -115,7 +115,7 @@ export default function OnboardingPage({
       <PageHeader title="Restaurant Onboarding Wizard" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 lg:col-span-4 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Steps
           </p>
@@ -153,7 +153,7 @@ export default function OnboardingPage({
           </div>
         </section>
 
-        <section className="col-span-12 lg:col-span-8 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-8 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -173,7 +173,7 @@ export default function OnboardingPage({
             </div>
           </div>
 
-          <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+          <div className="app-card p-xl">
             {step.key === 1 ? (
               <div className="space-y-md">
                 <div className="grid grid-cols-12 gap-md">
@@ -240,7 +240,7 @@ export default function OnboardingPage({
                     />
                   </div>
                   <div className="col-span-12">
-                    <div className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+                    <div className="app-card-elevated p-xl">
                       <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                         Hours preview (mock)
                       </p>
@@ -255,7 +255,7 @@ export default function OnboardingPage({
 
             {step.key === 3 ? (
               <div className="space-y-md">
-                <div className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+                <div className="app-card-elevated p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     Floor plan setup (mock)
                   </p>
@@ -274,7 +274,7 @@ export default function OnboardingPage({
 
             {step.key === 4 ? (
               <div className="space-y-md">
-                <div className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+                <div className="app-card-elevated p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     Service periods (mock)
                   </p>
@@ -293,7 +293,7 @@ export default function OnboardingPage({
 
             {step.key === 5 ? (
               <div className="space-y-md">
-                <div className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+                <div className="app-card-elevated p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     Menu setup (mock)
                   </p>
@@ -312,7 +312,7 @@ export default function OnboardingPage({
 
             {step.key === 6 ? (
               <div className="space-y-md">
-                <div className="rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+                <div className="app-card-elevated p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     Staff setup (mock)
                   </p>
@@ -331,7 +331,7 @@ export default function OnboardingPage({
 
             {step.key === 7 ? (
               <div className="space-y-md">
-                <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+                <div className="app-card p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     Ready to go live
                   </p>

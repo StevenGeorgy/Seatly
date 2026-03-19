@@ -171,7 +171,7 @@ export default function GuestProfilePage({
       <PageHeader title="Guest Profile" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 app-card-elevated p-xl">
           <div className="flex flex-col gap-lg sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-md">
@@ -209,7 +209,7 @@ export default function GuestProfilePage({
             </div>
 
             <div className="w-full sm:max-w-md">
-              <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+              <div className="app-card p-xl">
                 <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                   Preferences
                 </p>
@@ -246,7 +246,7 @@ export default function GuestProfilePage({
 
           <div className="mt-lg grid grid-cols-12 gap-lg">
             <div className="col-span-12 lg:col-span-7">
-              <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+              <div className="app-card p-xl">
                 <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                   Visit timeline
                 </p>
@@ -280,7 +280,7 @@ export default function GuestProfilePage({
             </div>
 
             <div className="col-span-12 lg:col-span-5">
-              <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+              <div className="app-card p-xl">
                 <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                   Loyalty & insights
                 </p>

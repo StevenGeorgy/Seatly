@@ -90,7 +90,7 @@ export default function MarketingPage({
       <PageHeader title="Marketing Messages" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 lg:col-span-4 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Guest segments
           </p>
@@ -120,7 +120,7 @@ export default function MarketingPage({
             })}
           </div>
 
-          <div className="mt-lg rounded-lg border border-border-card bg-surface-dark p-xl">
+          <div className="mt-lg app-card p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Preview count
             </p>
@@ -133,7 +133,7 @@ export default function MarketingPage({
           </div>
         </section>
 
-        <section className="col-span-12 lg:col-span-8 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 lg:col-span-8 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -191,7 +191,7 @@ export default function MarketingPage({
 
               <div className="col-span-12">
                 <div className="flex flex-col gap-md sm:flex-row sm:items-center sm:justify-between">
-                  <div className="rounded-lg border border-border-card bg-surface-dark p-xl">
+                  <div className="app-card p-xl">
                     <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                       Delivery preview
                     </p>

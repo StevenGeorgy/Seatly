@@ -97,7 +97,7 @@ export default function MyTablesPage({
       <PageHeader title="My Tables" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">

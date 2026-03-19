@@ -8,6 +8,23 @@
   --shimmer-light: rgba(255, 255, 255, 0.12);
   --surface-glass: rgba(20, 20, 20, 0.6);
   --surface-dark: #141414;
+  /* Floor plan left panel - from packages/tokens */
+  --fp-panel-bg: rgba(10, 10, 10, 0.95);
+  --fp-panel-border: rgba(255, 255, 255, 0.05);
+  --fp-icon-muted: rgba(255, 255, 255, 0.5);
+  --fp-icon-hover: rgba(255, 255, 255, 0.7);
+  --fp-section-label: rgba(212, 175, 55, 0.75);
+  --fp-inactive-border: rgba(212, 175, 55, 0.25);
+  --fp-inactive-text: rgba(212, 175, 55, 0.7);
+  --fp-card-bg: rgba(255, 255, 255, 0.03);
+  --fp-card-border: rgba(255, 255, 255, 0.06);
+  --fp-card-label: rgba(255, 255, 255, 0.7);
+  --fp-pill-border: rgba(255, 255, 255, 0.06);
+  --fp-wall-pill-text: rgba(212, 175, 55, 0.6);
+  --fp-walls-placed: rgba(255, 255, 255, 0.45);
+  --fp-empty-text: rgba(255, 255, 255, 0.5);
+  --fp-add-level-text: rgba(212, 175, 55, 0.5);
+  --fp-section-divider: rgba(255, 255, 255, 0.04);
 }
 
 /* Glass card with backdrop-blur fallback */
@@ -85,6 +102,16 @@ html {
   }
   50% {
     background-position: 100% 50%;
+  }
+}
+
+/* App theme - black & gold cards (dashboard style) */
+@layer components {
+  .app-card {
+    @apply relative overflow-hidden rounded-card-radius-large border border-card-border bg-card-bg shadow-inset-card transition-all duration-400 hover:border-gold/30;
+  }
+  .app-card-elevated {
+    @apply relative overflow-hidden rounded-card-radius-large border border-card-border bg-surface-dark-elevated shadow-inset-card transition-all duration-400 hover:border-gold/30;
   }
 }
 

@@ -95,7 +95,7 @@ export default function ShiftsPage({
       <PageHeader title="Shift Management" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 xl:col-span-8 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 xl:col-span-8 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -121,7 +121,7 @@ export default function ShiftsPage({
             {SHIFTS.map((s) => (
               <article
                 key={s.id}
-                className="rounded-lg border border-border-card bg-surface-dark p-xl"
+                className="app-card p-xl"
               >
                 <div className="flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
@@ -172,7 +172,7 @@ export default function ShiftsPage({
           </div>
         </section>
 
-        <aside className="col-span-12 xl:col-span-4 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <aside className="col-span-12 xl:col-span-4 app-card-elevated p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Blackout dates
           </p>

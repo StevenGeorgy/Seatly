@@ -113,7 +113,7 @@ export default function StaffSchedulePage({
       <PageHeader title="Staff Scheduling" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
@@ -137,7 +137,7 @@ export default function StaffSchedulePage({
             {DAYS.map((d) => {
               const entries = WEEK_AVAILABILITY.filter((a) => a.day === d);
               return (
-                <div key={d} className="rounded-lg border border-border-card bg-surface-dark p-xl">
+                <div key={d} className="app-card p-xl">
                   <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
                     {d}
                   </p>

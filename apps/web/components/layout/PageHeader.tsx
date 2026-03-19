@@ -11,7 +11,7 @@ export function PageHeader({ title, breadcrumb }: PageHeaderProps) {
           {breadcrumb.join(" / ")}
         </nav>
       )}
-      <h1 className="text-2xl font-bold text-text-on-dark">{title}</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-text-on-dark">{title}</h1>
     </header>
   );
 }

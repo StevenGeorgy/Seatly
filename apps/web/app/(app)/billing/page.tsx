@@ -89,7 +89,7 @@ export default function BillingPage({
       <PageHeader title="Billing" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 xl:col-span-5 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 xl:col-span-5 app-card-elevated p-xl">
           <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
             Current plan (mock)
           </p>
@@ -119,7 +119,7 @@ export default function BillingPage({
             </button>
           </div>
 
-          <div className="mt-lg rounded-lg border border-border-card bg-surface-dark p-xl">
+          <div className="mt-lg app-card p-xl">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Billing notifications (mock)
             </p>
@@ -129,7 +129,7 @@ export default function BillingPage({
           </div>
         </section>
 
-        <section className="col-span-12 xl:col-span-7 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 xl:col-span-7 app-card-elevated p-xl">
           <div className="mb-lg flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">

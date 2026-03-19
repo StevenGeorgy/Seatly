@@ -1,7 +1,17 @@
 import type { NavItem } from "@seatly/types";
+import type { LucideIcon } from "lucide-react";
+import {
+  LayoutGrid,
+  Users,
+  BarChart3,
+  Settings,
+  Sparkles,
+  Shield,
+} from "lucide-react";
 
 export interface NavSection {
   label: string;
+  icon: LucideIcon;
   items: NavItem[];
 }
 
@@ -21,6 +31,7 @@ export function getActiveNavHref(pathname: string, hrefs: string[]): string | nu
 export const NAV_SECTIONS: NavSection[] = [
   {
     label: "OPERATIONS",
+    icon: LayoutGrid,
     items: [
       { href: "/floor-plan", label: "Floor Plan", roles: ["host", "owner", "admin"] },
       { href: "/reservations", label: "Reservations", roles: ["host", "owner", "admin"] },
@@ -32,6 +43,7 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: "GUESTS",
+    icon: Users,
     items: [
       { href: "/crm", label: "CRM", roles: ["owner", "admin"] },
       { href: "/guests/search", label: "Guest Search", roles: ["host", "waiter", "owner", "admin"] },
@@ -39,6 +51,7 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: "BUSINESS",
+    icon: BarChart3,
     items: [
       { href: "/dashboard", label: "Dashboard", roles: ["owner", "admin"] },
       { href: "/analytics", label: "Analytics", roles: ["owner", "admin"] },
@@ -50,6 +63,7 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: "MANAGE",
+    icon: Settings,
     items: [
       { href: "/settings/staff", label: "Staff", roles: ["owner", "admin"] },
       { href: "/staff/schedule", label: "Schedule", roles: ["owner", "admin"] },
@@ -61,7 +75,13 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: "AI",
+    icon: Sparkles,
+    items: [{ href: "/assistant", label: "AI Assistant", roles: ["owner", "admin"] }],
+  },
+  {
     label: "ADMIN",
+    icon: Shield,
     items: [{ href: "/admin", label: "Admin", roles: ["admin"] }],
   },
 ];

@@ -140,7 +140,7 @@ export default function GuestSearchPage({
       <PageHeader title="Guest Search" />
 
       <div className="grid grid-cols-12 gap-lg">
-        <section className="col-span-12 rounded-lg border border-border-card bg-surface-dark-elevated p-xl">
+        <section className="col-span-12 app-card-elevated p-xl">
           <div className="mb-lg">
             <p className="text-xs font-medium uppercase tracking-widest text-text-muted-on-dark">
               Results for
@@ -154,7 +154,7 @@ export default function GuestSearchPage({
             {results.map((g) => (
               <article
                 key={g.id}
-                className="rounded-lg border border-border-card bg-surface-dark p-xl"
+                className="app-card p-xl"
               >
                 <div className="flex flex-col gap-md sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">

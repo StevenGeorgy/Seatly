@@ -1,9 +1,11 @@
 "use client";
 
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
-import { Header } from "@/components/layout/Header";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { AppSidebar } from "@/components/layout/AppSidebar";
+import { TopNavBar } from "@/components/layout/TopNavBar";
 import { AssistantFloatingWidget } from "@/components/assistant/AssistantFloatingWidget";
+import { RestaurantProvider } from "@/lib/RestaurantContext";
+import { NavSectionProvider } from "@/lib/NavSectionContext";
 
 export default function AppLayout({
   children,
@@ -12,14 +14,21 @@ export default function AppLayout({
 }) {
   return (
     <ProtectedRoute>
-      <div className="flex min-h-screen bg-background-dark">
-        <Sidebar />
-        <div className="flex flex-1 flex-col">
-          <Header />
-          <main className="flex-1 p-xl">{children}</main>
-        </div>
-        <AssistantFloatingWidget />
-      </div>
+      <RestaurantProvider>
+        <NavSectionProvider>
+          <div className="flex min-h-screen bg-background-dark">
+            <AppSidebar />
+            <div className="relative flex flex-1 flex-col">
+              <TopNavBar />
+              <div className="pointer-events-none absolute inset-0 top-top-nav-height bg-gold-glow-section bg-no-repeat" />
+              <main className="relative flex-1 px-page-padding py-page-padding">
+          <div className="mx-auto max-w-content-max">{children}</div>
+        </main>
+            </div>
+            <AssistantFloatingWidget />
+          </div>
+        </NavSectionProvider>
+      </RestaurantProvider>
     </ProtectedRoute>
   );
 }
