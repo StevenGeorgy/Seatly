@@ -5,6 +5,19 @@ export interface NavSection {
   items: NavItem[];
 }
 
+/**
+ * Single active nav item: longest href that matches pathname (exact or prefix).
+ * So /reservations/new highlights "New Reservation", not "Reservations".
+ */
+export function getActiveNavHref(pathname: string, hrefs: string[]): string | null {
+  const normalized = pathname.replace(/\/$/, "") || "/";
+  const matches = hrefs.filter(
+    (href) => normalized === href || normalized.startsWith(`${href}/`)
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (a.length >= b.length ? a : b));
+}
+
 export const NAV_SECTIONS: NavSection[] = [
   {
     label: "OPERATIONS",
