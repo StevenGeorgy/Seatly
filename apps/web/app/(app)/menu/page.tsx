@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type MenuCategoryKey = "starters" | "mains" | "desserts" | "beverages";
 
@@ -134,7 +135,7 @@ export default function MenuPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Menu Management" />
+        <PageHeader {...PAGE_HEADERS.menu} />
         <LoadingState />
       </div>
     );
@@ -143,7 +144,7 @@ export default function MenuPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Menu Management" />
+        <PageHeader {...PAGE_HEADERS.menu} />
         <EmptyState
           title="No menu categories"
           message="Set up your menu categories first."
@@ -155,7 +156,7 @@ export default function MenuPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Menu Management" />
+        <PageHeader {...PAGE_HEADERS.menu} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -175,7 +176,7 @@ export default function MenuPage({
 
   return (
     <div>
-      <PageHeader title="Menu Management" />
+      <PageHeader {...PAGE_HEADERS.menu} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">

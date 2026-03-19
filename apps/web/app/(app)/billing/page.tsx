@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type BillingInvoice = {
   id: string;
@@ -47,7 +48,7 @@ export default function BillingPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Billing" />
+        <PageHeader {...PAGE_HEADERS.billing} />
         <LoadingState />
       </div>
     );
@@ -56,7 +57,7 @@ export default function BillingPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Billing" />
+        <PageHeader {...PAGE_HEADERS.billing} />
         <EmptyState
           title="No billing history"
           message="Invoices and plan details will appear here."
@@ -68,7 +69,7 @@ export default function BillingPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Billing" />
+        <PageHeader {...PAGE_HEADERS.billing} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -86,7 +87,7 @@ export default function BillingPage({
 
   return (
     <div>
-      <PageHeader title="Billing" />
+      <PageHeader {...PAGE_HEADERS.billing} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 xl:col-span-5 app-card-elevated p-xl">

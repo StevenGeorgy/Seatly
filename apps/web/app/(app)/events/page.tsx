@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type EventStatus = "draft" | "live" | "ended";
 
@@ -65,7 +66,7 @@ export default function EventsPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Events Management" />
+        <PageHeader {...PAGE_HEADERS.events} />
         <LoadingState />
       </div>
     );
@@ -74,7 +75,7 @@ export default function EventsPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Events Management" />
+        <PageHeader {...PAGE_HEADERS.events} />
         <EmptyState
           title="No events yet"
           message="Create your first event to start collecting ticket reservations."
@@ -86,7 +87,7 @@ export default function EventsPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Events Management" />
+        <PageHeader {...PAGE_HEADERS.events} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -125,7 +126,7 @@ export default function EventsPage({
 
   return (
     <div>
-      <PageHeader title="Events Management" />
+      <PageHeader {...PAGE_HEADERS.events} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

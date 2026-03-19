@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type WizardStep = {
   key: number;
@@ -71,7 +72,7 @@ export default function OnboardingPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Restaurant Onboarding Wizard" />
+        <PageHeader {...PAGE_HEADERS.onboarding} />
         <LoadingState />
       </div>
     );
@@ -80,7 +81,7 @@ export default function OnboardingPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Restaurant Onboarding Wizard" />
+        <PageHeader {...PAGE_HEADERS.onboarding} />
         <EmptyState
           title="Onboarding not available"
           message="Create a restaurant account first."
@@ -92,7 +93,7 @@ export default function OnboardingPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Restaurant Onboarding Wizard" />
+        <PageHeader {...PAGE_HEADERS.onboarding} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -112,7 +113,7 @@ export default function OnboardingPage({
 
   return (
     <div>
-      <PageHeader title="Restaurant Onboarding Wizard" />
+      <PageHeader {...PAGE_HEADERS.onboarding} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">

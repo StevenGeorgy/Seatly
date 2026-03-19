@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 export default function SettingsPage({
   searchParams,
@@ -23,7 +24,7 @@ export default function SettingsPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Settings" />
+        <PageHeader {...PAGE_HEADERS.settings} />
         <LoadingState />
       </div>
     );
@@ -32,7 +33,7 @@ export default function SettingsPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Settings" />
+        <PageHeader {...PAGE_HEADERS.settings} />
         <EmptyState
           title="No settings configured"
           message="Complete your restaurant profile and booking rules to enable live reservations."
@@ -44,7 +45,7 @@ export default function SettingsPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Settings" />
+        <PageHeader {...PAGE_HEADERS.settings} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -62,7 +63,7 @@ export default function SettingsPage({
 
   return (
     <div>
-      <PageHeader title="Settings" />
+      <PageHeader {...PAGE_HEADERS.settings} />
 
       <div className="space-y-lg">
         <section className="app-card-elevated p-xl">

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type GuestSearchResult = {
   id: string;
@@ -77,7 +78,7 @@ export default function GuestSearchPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Guest Search" />
+        <PageHeader {...PAGE_HEADERS.guestSearch} />
         <LoadingState />
       </div>
     );
@@ -86,7 +87,7 @@ export default function GuestSearchPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Guest Search" />
+        <PageHeader {...PAGE_HEADERS.guestSearch} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -105,7 +106,7 @@ export default function GuestSearchPage({
   if (empty || qNormalized.length === 0) {
     return (
       <div>
-        <PageHeader title="Guest Search" />
+        <PageHeader {...PAGE_HEADERS.guestSearch} />
         <EmptyState
           title="Type a name or phone"
           message="Use search mid-service to pull allergy alerts and visit history."
@@ -117,7 +118,7 @@ export default function GuestSearchPage({
   if (results.length === 0) {
     return (
       <div>
-        <PageHeader title="Guest Search" />
+        <PageHeader {...PAGE_HEADERS.guestSearch} />
 
         <EmptyState
           title="No matches"
@@ -137,7 +138,7 @@ export default function GuestSearchPage({
 
   return (
     <div>
-      <PageHeader title="Guest Search" />
+      <PageHeader {...PAGE_HEADERS.guestSearch} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

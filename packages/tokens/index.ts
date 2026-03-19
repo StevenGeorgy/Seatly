@@ -4,6 +4,9 @@
  * NEVER hardcode values in components.
  */
 
+/** Primary dark surface — cards, floor plan editor (single shade) */
+const SURFACE_DARK_HEX = "#141414";
+
 export const colours = {
   primary: "#2563eb",
   primaryHover: "#1d4ed8",
@@ -44,7 +47,7 @@ export const colours = {
   // Dark theme (login, premium screens)
   backgroundDark: "#0A0A0A",
   surfaceDarkAlt: "#0F0F0F",
-  surfaceDark: "#141414",
+  surfaceDark: SURFACE_DARK_HEX,
   surfaceDarkElevated: "#1A1A1A",
   borderDark: "#262626",
   borderCard: "rgba(212, 175, 55, 0.12)",
@@ -102,13 +105,13 @@ export const colours = {
   pagePadding: "40px",
   contentMaxWidth: "1400px",
   sectionGap: "32px",
-  statCardBg: "#141414",
+  statCardBg: SURFACE_DARK_HEX,
   statCardBorder: "rgba(212, 175, 55, 0.12)",
   statCardGoldTop: "rgba(212, 175, 55, 0.4)",
   statCardHoverBorder: "rgba(212, 175, 55, 0.3)",
   statCardHoverShadow: "0 0 30px rgba(212, 175, 55, 0.08)",
   cardRadiusLarge: "20px",
-  cardBg: "#141414",
+  cardBg: SURFACE_DARK_HEX,
   cardBorder: "rgba(212, 175, 55, 0.12)",
   rowDivider: "rgba(255, 255, 255, 0.03)",
   headerDividerGradient: "linear-gradient(90deg, rgba(212, 175, 55, 0.3), transparent)",
@@ -135,9 +138,12 @@ export const colours = {
   statusSeatedText: "rgba(134, 239, 172, 0.9)",
   statusOverdueBg: "rgba(239, 68, 68, 0.1)",
   statusOverdueText: "rgba(252, 165, 165, 0.9)",
-  // Floor plan editor canvas
-  floorPlanCanvasBg: "rgba(255, 255, 255, 0.01)",
-  floorPlanCanvasDot: "rgba(255, 255, 255, 0.05)",
+  // Floor plan editor canvas — same solid as surfaceDark (one shade with toolbar / status)
+  floorPlanCanvasBg: SURFACE_DARK_HEX,
+  floorPlanCanvasDot: "rgba(255, 255, 255, 0.035)",
+  // Canvas container — fixed grid on outer wrapper (never scaled); dot size/colour stay identical at all zoom levels
+  floorPlanCanvasContainerBg: "rgba(10, 10, 10, 0.98)",
+  floorPlanCanvasContainerDotGrid: "radial-gradient(circle, rgba(255, 255, 255, 0.08) 1px, transparent 1px)",
   floorPlanSaveSuccess: "rgba(34, 197, 94, 0.9)",
   floorPlanSavePending: "rgba(212, 175, 55, 0.7)",
   floorPlanWallBorder: "rgba(255, 255, 255, 0.2)",
@@ -176,6 +182,32 @@ export const colours = {
   floorPlanDeleteBorder: "rgba(239, 68, 68, 0.3)",
   floorPlanDeleteText: "rgba(239, 68, 68, 0.8)",
   floorPlanDeleteHoverBg: "rgba(239, 68, 68, 0.2)",
+  // Floor plan editor — interior element canvas (distinct visuals)
+  floorPlanInteriorSofaBg: "rgba(80, 60, 40, 0.4)",
+  floorPlanInteriorSofaBorder: "rgba(150, 100, 50, 0.4)",
+  floorPlanInteriorSofaCushionDivider: "rgba(120, 90, 55, 0.35)",
+  floorPlanInteriorBoothBg: "rgba(40, 40, 60, 0.4)",
+  floorPlanInteriorBoothBorder: "rgba(100, 100, 130, 0.35)",
+  floorPlanInteriorBoothAccent: "rgba(212, 175, 55, 0.4)",
+  floorPlanInteriorBarBg: "rgba(40, 30, 20, 0.5)",
+  floorPlanInteriorBarBorder: "rgba(120, 80, 40, 0.5)",
+  floorPlanInteriorBarPattern: "rgba(90, 70, 45, 0.35)",
+  floorPlanInteriorCounterBg: "rgba(35, 35, 35, 0.6)",
+  floorPlanInteriorCounterBorder: "rgba(80, 80, 80, 0.45)",
+  floorPlanInteriorCounterLine: "rgba(255, 255, 255, 0.06)",
+  floorPlanInteriorPillarBg: "rgba(60, 60, 60, 0.8)",
+  floorPlanInteriorPillarBorder: "rgba(100, 100, 100, 0.6)",
+  floorPlanInteriorPillarCross: "rgba(160, 160, 160, 0.45)",
+  floorPlanInteriorStageBg: "rgba(30, 30, 50, 0.6)",
+  floorPlanInteriorStageBorder: "rgba(80, 80, 120, 0.5)",
+  floorPlanInteriorLoungeBg: "rgba(50, 35, 55, 0.4)",
+  floorPlanInteriorLoungeBorder: "rgba(100, 75, 110, 0.35)",
+  floorPlanInteriorLoungeCushionDivider: "rgba(85, 60, 95, 0.35)",
+  floorPlanInteriorWallSegmentBg: "rgba(50, 50, 50, 0.8)",
+  floorPlanInteriorWallSegmentBorder: "rgba(100, 100, 100, 0.3)",
+  floorPlanRotationHandleBg: "#141414",
+  floorPlanRotationHandleBorder: "rgba(212, 175, 55, 0.85)",
+  floorPlanRotationStem: "rgba(212, 175, 55, 0.55)",
 } as const;
 
 export const spacing = {
@@ -248,6 +280,12 @@ export const spacing = {
   floorPlanFormFieldGap: "8px",
   floorPlanDeleteButtonHeight: "32px",
   floorPlanEmptyIconSize: "24px",
+  floorPlanRotationHandleSize: "20px",
+  floorPlanRotationHandleIconSize: "12px",
+  floorPlanRotationStemHeight: "20px",
+  floorPlanInteriorIconSize: "20px",
+  floorPlanInteriorPillarCrossThickness: "1px",
+  floorPlanBoothLeftBorderWidth: "4px",
 } as const;
 
 export const fontSizes = {
@@ -320,6 +358,8 @@ export const borderRadius = {
   buttonRadius: "10px",
   floorPlanPillRadius: "6px",
   floorPlanCardRadius: "10px",
+  /** Sofa back-heavy corners (top wider than bottom). */
+  floorPlanSofaBackRadius: "8px 8px 4px 4px",
 } as const;
 
 export const shadows = {
@@ -328,6 +368,9 @@ export const shadows = {
   lg: "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
   soft: "0 4px 24px rgba(0, 0, 0, 0.12)",
   softHover: "0 8px 32px rgba(0, 0, 0, 0.16)",
+  /** Stage elevated look (floor plan editor interior). */
+  floorPlanStageElevated:
+    "0 4px 12px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
 } as const;
 
 export const tokens = {

@@ -5,6 +5,20 @@
 
 export type TableShape = "round" | "square" | "rectangle";
 
+const VALID_SHAPES: TableShape[] = ["round", "square", "rectangle"];
+
+/** Tailwind border-radius classes for canvas — mutually exclusive (no rounded-lg + rounded-full conflict). */
+export function getTableShapeBorderRadiusClass(shape: TableShape | string | undefined): string {
+  if (shape === "round") return "rounded-full";
+  if (shape === "rectangle") return "rounded-lg";
+  if (shape === "square") return "rounded-md";
+  return "rounded-full";
+}
+
+export function normalizeTableShape(shape: unknown): TableShape {
+  return VALID_SHAPES.includes(shape as TableShape) ? (shape as TableShape) : "round";
+}
+
 export type FloorPlanLevel = {
   id: string;
   name: string;
@@ -22,6 +36,8 @@ export type FloorPlanTable = {
   shape: TableShape;
   positionX: number;
   positionY: number;
+  /** Degrees; multiples of 45 only (0–315). */
+  rotation?: number;
   isActive: boolean;
   isCombinable?: boolean;
   isGhost?: boolean;
@@ -38,6 +54,76 @@ export type FloorPlanWall = {
 
 export type InteriorType = "bar" | "counter" | "pillar" | "stage" | "sofa" | "booth" | "lounge";
 
+/** Sofa, booth, lounge can store how many guests can sit there. */
+export const SEATING_INTERIOR_TYPES: InteriorType[] = ["sofa", "booth", "lounge"];
+
+export function isSeatingInterior(type: InteriorType): boolean {
+  return SEATING_INTERIOR_TYPES.includes(type);
+}
+
+/** Default seat counts when adding seating furniture from presets. */
+export function defaultSeatedCapacityForInterior(type: InteriorType): number | undefined {
+  if (type === "sofa") return 4;
+  if (type === "booth") return 4;
+  if (type === "lounge") return 6;
+  return undefined;
+}
+
+export const INTERIOR_DIM_MIN = 16;
+export const INTERIOR_DIM_MAX = 480;
+
+export function clampInteriorDimension(n: number): number {
+  return Math.max(INTERIOR_DIM_MIN, Math.min(INTERIOR_DIM_MAX, Math.round(n)));
+}
+
+/** Valid floor-plan rotation steps in degrees. */
+export const FLOOR_PLAN_ROTATION_DEGREES = [0, 45, 90, 135, 180, 225, 270, 315] as const;
+
+/** Snap to nearest 45° and normalize to 0–315. */
+export function normalizeFloorPlanRotation(deg: number): number {
+  const stepped = Math.round(deg / 45) * 45;
+  const m = stepped % 360;
+  return m < 0 ? m + 360 : m;
+}
+
+/** Next rotation in 45° steps (e.g. 315 → 0). */
+export function stepFloorPlanRotation(rotation: number, deltaSteps: number): number {
+  const current = normalizeFloorPlanRotation(rotation);
+  let idx = FLOOR_PLAN_ROTATION_DEGREES.indexOf(current as (typeof FLOOR_PLAN_ROTATION_DEGREES)[number]);
+  if (idx < 0) idx = 0;
+  const len = FLOOR_PLAN_ROTATION_DEGREES.length;
+  const j = (((idx + deltaSteps) % len) + len) % len;
+  return FLOOR_PLAN_ROTATION_DEGREES[j];
+}
+
+/** Rotate wall endpoints 45° around segment midpoint (no separate rotation field on wall). */
+export function rotateWallEndpoints45Degrees(w: FloorPlanWall, direction: 1 | -1): FloorPlanWall {
+  const cx = (w.x1 + w.x2) / 2;
+  const cy = (w.y1 + w.y2) / 2;
+  const rad = (direction * Math.PI) / 4;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const rot = (x: number, y: number) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    return {
+      x: cx + dx * cos - dy * sin,
+      y: cy + dx * sin + dy * cos,
+    };
+  };
+  const p1 = rot(w.x1, w.y1);
+  const p2 = rot(w.x2, w.y2);
+  return { ...w, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+}
+
+/** Display angle (0–315, 45° steps) derived from wall segment geometry. */
+export function wallRotationDisplayDegrees(w: FloorPlanWall): number {
+  const dx = w.x2 - w.x1;
+  const dy = w.y2 - w.y1;
+  const deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return normalizeFloorPlanRotation(deg);
+}
+
 export type FloorPlanInterior = {
   id: string;
   levelId: string;
@@ -47,6 +133,10 @@ export type FloorPlanInterior = {
   w: number;
   h: number;
   label?: string;
+  /** Degrees; multiples of 45 only (0–315). */
+  rotation?: number;
+  /** Guests that can sit on sofa / booth / lounge (optional). */
+  seatedCapacity?: number;
 };
 
 export type FloorPlanData = {
@@ -83,6 +173,7 @@ function migrateLegacyTables(legacy: Array<Record<string, unknown>>): FloorPlanD
     isActive: (t.isActive as boolean) ?? true,
     isCombinable: (t.isCombinable as boolean) ?? false,
     isGhost: (t.isGhost as boolean) ?? false,
+    rotation: normalizeFloorPlanRotation((t.rotation as number) ?? 0),
   }));
   return {
     levels: [...DEFAULT_LEVELS],
@@ -110,6 +201,25 @@ export function loadFloorPlanData(): FloorPlanData {
     if (!data.interior) data.interior = [];
     data.tables.forEach((t) => {
       if (!t.levelId) t.levelId = data.levels[0]?.id ?? "l-ground";
+      t.shape = normalizeTableShape(t.shape);
+      t.rotation = normalizeFloorPlanRotation(t.rotation ?? 0);
+    });
+    data.interior.forEach((item) => {
+      item.w = clampInteriorDimension(item.w || INTERIOR_DIM_MIN);
+      item.h = clampInteriorDimension(item.h || INTERIOR_DIM_MIN);
+      item.rotation = normalizeFloorPlanRotation(item.rotation ?? 0);
+      if (item.type === "pillar") {
+        const s = Math.min(item.w, item.h);
+        item.w = s;
+        item.h = s;
+      }
+      if (!isSeatingInterior(item.type)) {
+        item.seatedCapacity = undefined;
+      } else {
+        const def = defaultSeatedCapacityForInterior(item.type) ?? 4;
+        const raw = item.seatedCapacity ?? def;
+        item.seatedCapacity = Math.max(1, Math.min(24, Math.round(raw)));
+      }
     });
     return data;
   } catch {
@@ -174,6 +284,7 @@ export function applyLayoutTemplate(template: LayoutTemplate): FloorPlanData {
         levelId,
         positionX: snap(GRID + col * 72),
         positionY: snap(GRID + row * 68),
+        rotation: normalizeFloorPlanRotation(t.rotation ?? 0),
       });
     });
   });
@@ -188,6 +299,7 @@ export function applyLayoutTemplate(template: LayoutTemplate): FloorPlanData {
     ...i,
     id: `i-${Date.now()}-${idx}`,
     levelId: levelIds[0] ?? "",
+    rotation: normalizeFloorPlanRotation(i.rotation ?? 0),
   }));
 
   return { levels, tables, walls, interior };

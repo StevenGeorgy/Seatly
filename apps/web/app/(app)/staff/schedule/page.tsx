@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type Availability = {
   id: string;
@@ -71,7 +72,7 @@ export default function StaffSchedulePage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Staff Scheduling" />
+        <PageHeader {...PAGE_HEADERS.staffSchedule} />
         <LoadingState />
       </div>
     );
@@ -80,7 +81,7 @@ export default function StaffSchedulePage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Staff Scheduling" />
+        <PageHeader {...PAGE_HEADERS.staffSchedule} />
         <EmptyState
           title="Schedule is empty"
           message="Assign staff to shifts to populate the weekly view."
@@ -92,7 +93,7 @@ export default function StaffSchedulePage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Staff Scheduling" />
+        <PageHeader {...PAGE_HEADERS.staffSchedule} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -110,7 +111,7 @@ export default function StaffSchedulePage({
 
   return (
     <div>
-      <PageHeader title="Staff Scheduling" />
+      <PageHeader {...PAGE_HEADERS.staffSchedule} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type SegmentKey = "vip" | "allergies" | "high-risk" | "recent";
 
@@ -48,7 +49,7 @@ export default function MarketingPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Marketing Messages" />
+        <PageHeader {...PAGE_HEADERS.marketing} />
         <LoadingState />
       </div>
     );
@@ -57,7 +58,7 @@ export default function MarketingPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Marketing Messages" />
+        <PageHeader {...PAGE_HEADERS.marketing} />
         <EmptyState
           title="No guests available for segments"
           message="Once guests match your filters, you can compose and send marketing messages."
@@ -69,7 +70,7 @@ export default function MarketingPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Marketing Messages" />
+        <PageHeader {...PAGE_HEADERS.marketing} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -87,7 +88,7 @@ export default function MarketingPage({
 
   return (
     <div>
-      <PageHeader title="Marketing Messages" />
+      <PageHeader {...PAGE_HEADERS.marketing} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 lg:col-span-4 app-card-elevated p-xl">

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type TicketStatus = "new" | "preparing" | "ready" | "served";
 
@@ -80,7 +81,7 @@ export default function KitchenPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Kitchen Display" />
+        <PageHeader {...PAGE_HEADERS.kitchen} />
         <LoadingState />
       </div>
     );
@@ -89,7 +90,7 @@ export default function KitchenPage({
   if (empty || TICKETS.length === 0) {
     return (
       <div>
-        <PageHeader title="Kitchen Display" />
+        <PageHeader {...PAGE_HEADERS.kitchen} />
         <EmptyState
           title="No active tickets"
           message="Tickets will appear as new reservations place orders."
@@ -101,7 +102,7 @@ export default function KitchenPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Kitchen Display" />
+        <PageHeader {...PAGE_HEADERS.kitchen} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -119,7 +120,7 @@ export default function KitchenPage({
 
   return (
     <div>
-      <PageHeader title="Kitchen Display" />
+      <PageHeader {...PAGE_HEADERS.kitchen} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

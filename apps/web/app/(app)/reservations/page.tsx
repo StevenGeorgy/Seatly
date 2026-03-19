@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type ReservationStatus = "confirmed" | "seated" | "cancelled" | "pending";
 
@@ -100,7 +101,7 @@ export default function ReservationsPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Today's Reservations" />
+        <PageHeader {...PAGE_HEADERS.reservations} />
         <LoadingState />
       </div>
     );
@@ -109,7 +110,7 @@ export default function ReservationsPage({
   if (empty || RESERVATIONS.length === 0) {
     return (
       <div>
-        <PageHeader title="Today's Reservations" />
+        <PageHeader {...PAGE_HEADERS.reservations} />
         <EmptyState
           title="No reservations yet"
           message="When guests book, their reservations appear in this timeline."
@@ -121,7 +122,7 @@ export default function ReservationsPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Today's Reservations" />
+        <PageHeader {...PAGE_HEADERS.reservations} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -139,7 +140,7 @@ export default function ReservationsPage({
 
   return (
     <div>
-      <PageHeader title="Today's Reservations" />
+      <PageHeader {...PAGE_HEADERS.reservations} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

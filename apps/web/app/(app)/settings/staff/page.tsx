@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type StaffRole = "owner" | "admin" | "host" | "waiter" | "kitchen";
 
@@ -69,7 +70,7 @@ export default function StaffPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Staff Management" />
+        <PageHeader {...PAGE_HEADERS.staff} />
         <LoadingState />
       </div>
     );
@@ -78,7 +79,7 @@ export default function StaffPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Staff Management" />
+        <PageHeader {...PAGE_HEADERS.staff} />
         <EmptyState
           title="No staff profiles"
           message="Add staff to start managing roles and scheduling."
@@ -90,7 +91,7 @@ export default function StaffPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Staff Management" />
+        <PageHeader {...PAGE_HEADERS.staff} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -113,7 +114,7 @@ export default function StaffPage({
 
   return (
     <div>
-      <PageHeader title="Staff Management" />
+      <PageHeader {...PAGE_HEADERS.staff} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

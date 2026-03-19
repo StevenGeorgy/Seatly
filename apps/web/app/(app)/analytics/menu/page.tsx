@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type RankedDish = {
   name: string;
@@ -81,7 +82,7 @@ export default function MenuAnalyticsPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Most Ordered Items" />
+        <PageHeader {...PAGE_HEADERS.analyticsMenu} />
         <LoadingState />
       </div>
     );
@@ -90,7 +91,7 @@ export default function MenuAnalyticsPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Most Ordered Items" />
+        <PageHeader {...PAGE_HEADERS.analyticsMenu} />
         <EmptyState
           title="No menu performance data"
           message="Once you have orders, this screen will rank items by orders, revenue, and margin."
@@ -102,7 +103,7 @@ export default function MenuAnalyticsPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Most Ordered Items" />
+        <PageHeader {...PAGE_HEADERS.analyticsMenu} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -120,7 +121,7 @@ export default function MenuAnalyticsPage({
 
   return (
     <div>
-      <PageHeader title="Most Ordered Items" />
+      <PageHeader {...PAGE_HEADERS.analyticsMenu} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 xl:col-span-9 app-card-elevated p-xl">

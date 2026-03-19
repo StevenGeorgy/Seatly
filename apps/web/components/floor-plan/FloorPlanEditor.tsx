@@ -31,6 +31,18 @@ import {
   saveFloorPlanData,
   applyLayoutTemplate,
   LAYOUT_TEMPLATES,
+  getTableShapeBorderRadiusClass,
+  normalizeTableShape,
+  clampInteriorDimension,
+  INTERIOR_DIM_MIN,
+  INTERIOR_DIM_MAX,
+  isSeatingInterior,
+  defaultSeatedCapacityForInterior,
+  normalizeFloorPlanRotation,
+  stepFloorPlanRotation,
+  rotateWallEndpoints45Degrees,
+  wallRotationDisplayDegrees,
+  FLOOR_PLAN_ROTATION_DEGREES,
   type FloorPlanData,
   type FloorPlanTable,
   type FloorPlanLevel,
@@ -39,6 +51,9 @@ import {
   type TableShape,
   type InteriorType,
 } from "@/lib/floor-plan";
+import { colours } from "@seatly/tokens";
+import { InteriorCanvasVisual } from "@/components/floor-plan/interior-canvas-visual";
+import { FloorPlanRotationHandle } from "@/components/floor-plan/floor-plan-rotation-handle";
 
 const SAVE_DEBOUNCE_MS = 250;
 const GRID_SIZE = 24;
@@ -48,9 +63,10 @@ function snapToGrid(val: number) {
   return Math.round(val / GRID_SIZE) * GRID_SIZE;
 }
 
-function getTableSize(capacity: number, shape: TableShape) {
+function getTableSize(capacity: number, shape: TableShape | undefined) {
+  const s = normalizeTableShape(shape);
   const base = capacity <= 2 ? 44 : capacity <= 4 ? 52 : capacity <= 6 ? 60 : 68;
-  if (shape === "rectangle") return { w: base + 16, h: base - 8 };
+  if (s === "rectangle") return { w: base + 16, h: base - 8 };
   return { w: base, h: base };
 }
 
@@ -69,7 +85,7 @@ function getChairPositions(capacity: number, tableW: number, tableH: number): { 
   return positions;
 }
 
-const DEFAULT_SECTIONS = ["Main Floor", "Patio", "Bar", "Private Room"];
+/** Section options are derived from levels - levels and sections stay in sync */
 const SHAPE_OPTIONS: { value: TableShape; label: string; Icon: typeof Circle }[] = [
   { value: "round", label: "Round", Icon: Circle },
   { value: "square", label: "Square", Icon: Square },
@@ -77,13 +93,13 @@ const SHAPE_OPTIONS: { value: TableShape; label: string; Icon: typeof Circle }[]
 ];
 
 const INTERIOR_PRESETS: { type: InteriorType; label: string; w: number; h: number }[] = [
-  { type: "bar", label: "Bar", w: 120, h: 24 },
-  { type: "counter", label: "Counter", w: 80, h: 20 },
-  { type: "pillar", label: "Pillar", w: 24, h: 24 },
-  { type: "stage", label: "Stage", w: 100, h: 60 },
-  { type: "sofa", label: "Sofa", w: 80, h: 28 },
+  { type: "bar", label: "Bar", w: 160, h: 40 },
+  { type: "counter", label: "Counter", w: 100, h: 36 },
+  { type: "pillar", label: "Pillar", w: 40, h: 40 },
+  { type: "stage", label: "Stage", w: 180, h: 80 },
+  { type: "sofa", label: "Sofa", w: 120, h: 48 },
   { type: "booth", label: "Booth", w: 70, h: 36 },
-  { type: "lounge", label: "Lounge", w: 90, h: 32 },
+  { type: "lounge", label: "Lounge", w: 160, h: 56 },
 ];
 
 const INTERIOR_ICONS: Record<InteriorType, typeof Wine> = {
@@ -159,6 +175,14 @@ export function FloorPlanEditor() {
   }, []);
 
   useEffect(() => {
+    if (!editMode) {
+      setSelectedTableId(null);
+      setSelectedWallId(null);
+      setSelectedInteriorId(null);
+    }
+  }, [editMode]);
+
+  useEffect(() => {
     const loaded = loadFloorPlanData();
     setData(loaded);
     if (!currentLevelId && loaded.levels.length > 0) {
@@ -168,7 +192,9 @@ export function FloorPlanEditor() {
 
   useEffect(() => {
     if (data.levels.length > 0 && !currentLevelId) {
-      setCurrentLevelId(data.levels[0].id);
+      const firstLevel = data.levels[0];
+      setCurrentLevelId(firstLevel.id);
+      setSectionFilter(firstLevel.name);
     }
   }, [data.levels, currentLevelId]);
 
@@ -253,6 +279,7 @@ export function FloorPlanEditor() {
 
   const handleQuickAdd = (capacity: number) => {
     if (!currentLevelId) return;
+    const currentLevel = levels.find((l) => l.id === currentLevelId);
     const id = `t-${Date.now()}`;
     const col = levelTables.length % 5;
     const row = Math.floor(levelTables.length / 5);
@@ -261,26 +288,33 @@ export function FloorPlanEditor() {
       levelId: currentLevelId,
       tableNumber: getNextTableNumber(),
       capacity,
-      section: "Main Floor",
+      section: currentLevel?.name ?? "Main Floor",
       shape: "round",
       positionX: snapToGrid(GRID_SIZE + col * 80),
       positionY: snapToGrid(GRID_SIZE + row * 70),
+      rotation: normalizeFloorPlanRotation(0),
       isActive: true,
     };
     persist({ ...data, tables: [...tables, newTable] });
   };
 
   const handleAdd = (tableData: Omit<FloorPlanTable, "id" | "positionX" | "positionY" | "levelId">) => {
-    if (!currentLevelId) return;
+    const levelId =
+      tableData.section && levels.length > 0
+        ? levels.find((l) => l.name === tableData.section)?.id ?? currentLevelId
+        : currentLevelId;
+    if (!levelId) return;
     const id = `t-${Date.now()}`;
-    const col = levelTables.length % 5;
-    const row = Math.floor(levelTables.length / 5);
+    const levelTablesForPlacement = tables.filter((t) => t.levelId === levelId);
+    const col = levelTablesForPlacement.length % 5;
+    const row = Math.floor(levelTablesForPlacement.length / 5);
     const newTable: FloorPlanTable = {
       ...tableData,
       id,
-      levelId: currentLevelId,
+      levelId,
       positionX: snapToGrid(GRID_SIZE + col * 80),
       positionY: snapToGrid(GRID_SIZE + row * 70),
+      rotation: normalizeFloorPlanRotation(tableData.rotation ?? 0),
       isActive: tableData.isActive ?? true,
     };
     persist({ ...data, tables: [...tables, newTable] });
@@ -325,9 +359,11 @@ export function FloorPlanEditor() {
   };
 
   const handleEdit = (id: string, editData: Partial<FloorPlanTable>) => {
+    const patch = { ...editData };
+    if (patch.rotation !== undefined) patch.rotation = normalizeFloorPlanRotation(patch.rotation);
     persist({
       ...data,
-      tables: tables.map((t) => (t.id === id ? { ...t, ...editData } : t)),
+      tables: tables.map((t) => (t.id === id ? { ...t, ...patch } : t)),
     });
     setEditingId(null);
   };
@@ -363,20 +399,53 @@ export function FloorPlanEditor() {
     const levelInterior = data.interior.filter((i) => i.levelId === currentLevelId);
     const col = levelInterior.length % 4;
     const row = Math.floor(levelInterior.length / 4);
+    const seated = defaultSeatedCapacityForInterior(type);
     const newInterior: FloorPlanInterior = {
       id,
       levelId: currentLevelId,
       type,
       x: snapToGrid(48 + col * (w + 24)),
       y: snapToGrid(60 + row * (h + 24)),
-      w,
-      h,
+      w: clampInteriorDimension(w),
+      h: clampInteriorDimension(h),
+      rotation: normalizeFloorPlanRotation(0),
+      ...(seated != null ? { seatedCapacity: seated } : {}),
     };
     persist({ ...data, interior: [...data.interior, newInterior] });
   };
 
   const handleDeleteInterior = (id: string) => {
     persist({ ...data, interior: data.interior.filter((i) => i.id !== id) });
+  };
+
+  const handleRotateTable = (id: string) => {
+    const t = tables.find((x) => x.id === id);
+    if (!t) return;
+    const next = stepFloorPlanRotation(t.rotation ?? 0, 1);
+    persist({
+      ...data,
+      tables: tables.map((x) => (x.id === id ? { ...x, rotation: next } : x)),
+    });
+  };
+
+  const handleRotateInterior = (id: string) => {
+    const item = data.interior.find((x) => x.id === id);
+    if (!item) return;
+    const next = stepFloorPlanRotation(item.rotation ?? 0, 1);
+    persist({
+      ...data,
+      interior: data.interior.map((x) => (x.id === id ? { ...x, rotation: next } : x)),
+    });
+  };
+
+  const handleRotateWall = (id: string, direction: 1 | -1) => {
+    const w = data.walls.find((x) => x.id === id);
+    if (!w) return;
+    const next = rotateWallEndpoints45Degrees(w, direction);
+    persist({
+      ...data,
+      walls: data.walls.map((x) => (x.id === id ? next : x)),
+    });
   };
 
   const handleApplyTemplate = (templateId: string) => {
@@ -414,21 +483,24 @@ export function FloorPlanEditor() {
     if (currentLevelId === levelId) setCurrentLevelId(nextLevels[0].id);
   };
 
-  const handleWallDragStart = (e: React.MouseEvent, wall: FloorPlanWall) => {
+  const scale = zoom / 100;
+
+  const handleWallDragStart = (e: React.MouseEvent, wall: FloorPlanWall, wallWasAlreadySelected: boolean) => {
     e.stopPropagation();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
+    const clickX = (e.clientX - rect.left) / scale;
+    const clickY = (e.clientY - rect.top) / scale;
     const dist1 = Math.hypot(clickX - wall.x1, clickY - wall.y1);
     const dist2 = Math.hypot(clickX - wall.x2, clickY - wall.y2);
     const endpointRadius = 24;
+    const allowEndpoints = editMode && wallWasAlreadySelected;
     setDraggingWallId(wall.id);
     setDragWallPosition({ x1: wall.x1, y1: wall.y1, x2: wall.x2, y2: wall.y2 });
-    if (dist1 < endpointRadius && dist1 <= dist2) {
+    if (allowEndpoints && dist1 < endpointRadius && dist1 <= dist2) {
       setDraggingWallEndpoint("1");
       setDragOffset({ x: clickX - wall.x1, y: clickY - wall.y1 });
-    } else if (dist2 < endpointRadius) {
+    } else if (allowEndpoints && dist2 < endpointRadius) {
       setDraggingWallEndpoint("2");
       setDragOffset({ x: clickX - wall.x2, y: clickY - wall.y2 });
     } else {
@@ -445,8 +517,8 @@ export function FloorPlanEditor() {
     if (!item || !rect) return;
     setDraggingInteriorId(item.id);
     setDragOffset({
-      x: e.clientX - rect.left - item.x,
-      y: e.clientY - rect.top - item.y,
+      x: (e.clientX - rect.left) / scale - item.x,
+      y: (e.clientY - rect.top) / scale - item.y,
     });
     setDragInteriorPosition({ x: item.x, y: item.y });
   };
@@ -457,8 +529,8 @@ export function FloorPlanEditor() {
     if (!table || !rect) return;
     setDraggingId(id);
     setDragOffset({
-      x: e.clientX - rect.left - table.positionX,
-      y: e.clientY - rect.top - table.positionY,
+      x: (e.clientX - rect.left) / scale - table.positionX,
+      y: (e.clientY - rect.top) / scale - table.positionY,
     });
     setDragPosition({ x: table.positionX, y: table.positionY });
   };
@@ -466,8 +538,8 @@ export function FloorPlanEditor() {
   const handleDragMove = (e: React.MouseEvent) => {
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const rawX = e.clientX - rect.left - dragOffset.x;
-    const rawY = e.clientY - rect.top - dragOffset.y;
+    const rawX = (e.clientX - rect.left) / scale - dragOffset.x;
+    const rawY = (e.clientY - rect.top) / scale - dragOffset.y;
     if (draggingId) {
       const x = Math.max(0, Math.min(canvasSize.w - 80, rawX));
       const y = Math.max(0, Math.min(canvasSize.h - 80, rawY));
@@ -583,13 +655,23 @@ export function FloorPlanEditor() {
     };
   }, [isDragging, dragOffset, handleDragEnd]);
 
+  const sectionOptions = levels.length > 0 ? levels.map((l) => l.name) : ["Main Floor"];
   const visibleTables =
     sectionFilter === "all"
       ? levelTables
-      : levelTables.filter((t) => t.section === sectionFilter || t.id === draggingId);
+      : levelTables.filter((t) => {
+          const tableLevel = levels.find((l) => l.id === t.levelId);
+          return (tableLevel?.name === sectionFilter || t.id === draggingId);
+        });
   const editingTable = editingId ? tables.find((t) => t.id === editingId) : null;
 
-  const displayTables = sectionFilter === "all" ? levelTables : levelTables.filter((t) => t.section === sectionFilter);
+  const displayTables =
+    sectionFilter === "all"
+      ? levelTables
+      : levelTables.filter((t) => {
+          const tableLevel = levels.find((l) => l.id === t.levelId);
+          return tableLevel?.name === sectionFilter;
+        });
 
   const selectedTable = selectedTableId ? tables.find((t) => t.id === selectedTableId) : null;
 
@@ -599,7 +681,7 @@ export function FloorPlanEditor() {
 
   return (
     <div className="flex h-full w-full flex-row min-h-[500px] overflow-hidden">
-      <section className="flex h-full w-[260px] shrink-0 flex-col overflow-hidden border-r bg-[var(--fp-panel-bg)] [border-color:var(--fp-panel-border)]">
+      <section className="flex h-full w-[260px] min-w-[260px] shrink-0 flex-col overflow-hidden border-r bg-[var(--fp-panel-bg)] [border-color:var(--fp-panel-border)]">
         <div className="flex shrink-0 flex-col overflow-hidden px-floor-plan-panel-padding-compact pt-floor-plan-panel-padding-compact">
           <div className="flex min-w-0 items-center justify-between gap-sm">
             <h2 className="min-w-0 truncate text-floor-plan-header-title-compact font-semibold text-text-on-dark">Floor Plan</h2>
@@ -650,7 +732,10 @@ export function FloorPlanEditor() {
                 <div key={l.id} className="group flex items-center">
                   <button
                     type="button"
-                    onClick={() => setCurrentLevelId(l.id)}
+                    onClick={() => {
+                      setCurrentLevelId(l.id);
+                      setSectionFilter(l.name);
+                    }}
                     className={`inline-flex h-floor-plan-level-pill-h items-center gap-floor-plan-level-pill-gap rounded-md px-floor-plan-level-pill-px text-floor-plan-level-tab font-medium transition-all ${
                       currentLevelId === l.id
                         ? "bg-gold text-text-on-gold"
@@ -758,9 +843,15 @@ export function FloorPlanEditor() {
               {selectedTable && (
                 <SelectedTableCard
                   table={selectedTable}
-                  sections={DEFAULT_SECTIONS}
+                  sections={[...new Set([...sectionOptions, selectedTable.section])]}
                   shapeOptions={SHAPE_OPTIONS}
-                  onSave={(d) => handleEdit(selectedTable.id, d)}
+                  onSave={(d) => {
+                    if (d.section) {
+                      const level = levels.find((l) => l.name === d.section);
+                      if (level) d = { ...d, levelId: level.id };
+                    }
+                    handleEdit(selectedTable.id, d);
+                  }}
                   onDelete={() => {
                     handleDelete(selectedTable.id);
                     setSelectedTableId(null);
@@ -770,11 +861,12 @@ export function FloorPlanEditor() {
               {selectedInterior && (
                 <SelectedInteriorCard
                   item={selectedInterior}
-                  onSave={(label) => {
+                  snapDim={(n) => clampInteriorDimension(snapToGrid(n))}
+                  onSave={(updates) => {
                     persist({
                       ...data,
                       interior: data.interior.map((i) =>
-                        i.id === selectedInterior.id ? { ...i, label } : i
+                        i.id === selectedInterior.id ? { ...i, ...updates } : i
                       ),
                     });
                   }}
@@ -787,6 +879,7 @@ export function FloorPlanEditor() {
               {selectedWall && (
                 <SelectedWallCard
                   wall={selectedWall}
+                  onRotate={(direction) => handleRotateWall(selectedWall.id, direction)}
                   onDelete={() => {
                     handleDeleteWall(selectedWall.id);
                     setSelectedWallId(null);
@@ -806,15 +899,22 @@ export function FloorPlanEditor() {
         </div>
       </section>
 
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden border border-border-dark rounded-lg">
-        <div className="flex h-floor-plan-toolbar shrink-0 items-center gap-md border-b border-border-dark bg-surface-dark-elevated px-lg py-md">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden border border-border-dark rounded-lg bg-surface-dark">
+        <div className="flex h-floor-plan-toolbar shrink-0 items-center gap-md border-b border-border-dark bg-surface-dark px-lg py-md">
             <select
               value={sectionFilter}
-              onChange={(e) => setSectionFilter(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSectionFilter(value);
+                if (value !== "all") {
+                  const level = levels.find((l) => l.name === value);
+                  if (level) setCurrentLevelId(level.id);
+                }
+              }}
               className="rounded-md border border-border-dark bg-surface-dark px-md py-sm text-sm text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
             >
-              <option value="all">All sections</option>
-              {DEFAULT_SECTIONS.map((s) => (
+              <option value="all">All levels</option>
+              {sectionOptions.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
@@ -860,7 +960,7 @@ export function FloorPlanEditor() {
             <div className="flex items-center gap-0 rounded-md border border-border-dark overflow-hidden">
               <button
                 type="button"
-                onClick={() => setZoom((z) => Math.max(50, z - 10))}
+                onClick={() => setZoom((z) => Math.max(50, z - 5))}
                 className="flex items-center justify-center p-sm text-text-muted-on-dark hover:bg-gold/5 hover:text-gold transition-colors"
                 aria-label="Zoom out"
               >
@@ -871,7 +971,7 @@ export function FloorPlanEditor() {
               </span>
               <button
                 type="button"
-                onClick={() => setZoom((z) => Math.min(150, z + 10))}
+                onClick={() => setZoom((z) => Math.min(150, z + 5))}
                 className="flex items-center justify-center p-sm text-text-muted-on-dark hover:bg-gold/5 hover:text-gold transition-colors"
                 aria-label="Zoom in"
               >
@@ -882,12 +982,39 @@ export function FloorPlanEditor() {
 
         <div
           ref={canvasContainerRef}
-          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          className="relative flex min-h-0 flex-1 flex-col overflow-auto"
+          style={{
+            backgroundColor: "rgba(10, 10, 10, 0.98)",
+            backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+            backgroundPosition: "0 0",
+          }}
+        >
+        <div
+          className="shrink-0 bg-transparent"
+          style={{
+            width: canvasSize.w * (zoom / 100),
+            height: canvasSize.h * (zoom / 100),
+            minWidth: canvasSize.w * (zoom / 100),
+            minHeight: canvasSize.h * (zoom / 100),
+          }}
         >
         <div
           ref={canvasRef}
-          className="relative min-h-0 flex-1 overflow-hidden bg-floor-plan-canvas bg-floor-plan-dot-grid bg-floor-plan-grid"
-          style={{ width: canvasSize.w, height: canvasSize.h }}
+          className="relative bg-transparent"
+          style={{
+            width: canvasSize.w,
+            height: canvasSize.h,
+            transform: `scale(${zoom / 100})`,
+            transformOrigin: "0 0",
+          }}
+          onClick={(e) => {
+            if (e.target === canvasRef.current) {
+              setSelectedTableId(null);
+              setSelectedInteriorId(null);
+              setSelectedWallId(null);
+            }
+          }}
         >
           {walls.map((w) => {
             const isDragging = draggingWallId === w.id;
@@ -919,17 +1046,21 @@ export function FloorPlanEditor() {
                 style={{ left: minX, top: minY, width: boxW, height: boxH }}
                 onMouseDown={(e) => {
                   if (editMode) {
-                    handleWallDragStart(e, w);
+                    const wasSelected = selectedWallId === w.id;
                     setSelectedWallId(w.id);
                     setSelectedTableId(null);
                     setSelectedInteriorId(null);
+                    handleWallDragStart(e, w, wasSelected);
                   }
                 }}
                 title="Drag to move · Drag endpoints to change length or angle"
               >
+                {editMode && isSelected && (
+                  <FloorPlanRotationHandle onRotateClick={() => handleRotateWall(w.id, 1)} ariaLabel="Rotate wall 45 degrees" />
+                )}
                 <div
-                  className={`absolute flex items-center justify-center rounded-sm border bg-surface-dark text-xs font-medium uppercase tracking-wider text-text-muted-on-dark ${
-                    isSelected ? "border-gold" : "border-floor-plan-wall-border"
+                  className={`absolute flex items-center justify-center rounded-sm border text-xs font-medium uppercase tracking-wider ${
+                    isSelected ? "border-gold shadow-gold-glow-hover" : ""
                   }`}
                   style={{
                     left: rectLeft,
@@ -938,11 +1069,15 @@ export function FloorPlanEditor() {
                     height: 16,
                     transform: `rotate(${angleDeg}deg)`,
                     transformOrigin: "center center",
+                    backgroundColor: colours.floorPlanInteriorWallSegmentBg,
+                    borderColor: isSelected ? colours.gold : colours.floorPlanInteriorWallSegmentBorder,
+                    borderWidth: 1,
+                    color: colours.floorPlanWallsPlacedText,
                   }}
                 >
                   WALL
                 </div>
-                {editMode && (
+                {editMode && isSelected && (
                   <>
                     <div
                       className="absolute cursor-grab rounded-full border-2 border-gold/50 bg-gold/25 hover:bg-gold/40"
@@ -971,21 +1106,24 @@ export function FloorPlanEditor() {
             const isDragging = draggingInteriorId === i.id;
             const x = isDragging ? dragInteriorPosition.x : i.x;
             const y = isDragging ? dragInteriorPosition.y : i.y;
-            const isLoungeFurniture = ["sofa", "booth", "lounge"].includes(i.type);
+            const isInteriorSelected = selectedInteriorId === i.id;
             const isSmall = i.w <= 32 || i.h <= 32;
             const IconComponent = INTERIOR_ICONS[i.type];
             const preset = INTERIOR_PRESETS.find((p) => p.type === i.type);
-            const label = preset?.label ?? i.type;
+            const displayLabel = i.label?.trim() || preset?.label || i.type;
+            const rotationDeg = normalizeFloorPlanRotation(i.rotation ?? 0);
+            const seatedLine =
+              isSeatingInterior(i.type) && i.seatedCapacity != null && i.seatedCapacity > 0
+                ? `${i.seatedCapacity} seats`
+                : null;
             return (
               <div
                 key={i.id}
-                className={`group absolute flex flex-col items-center justify-start select-none shadow-soft transition-all duration-400 ${
-                  editMode ? "cursor-grab hover:scale-[1.02] hover:border-gold/40 hover:shadow-gold-glow-hover" : "cursor-default"
-                } ${
-                  isLoungeFurniture ? "rounded-xl" : "rounded-lg"
-                } border border-border-dark bg-surface-dark ${
-                  isDragging ? "cursor-grabbing z-20 scale-[1.02] border-gold/40 shadow-gold-glow-hover" : "z-0"
-                }`}
+                className={`group absolute select-none overflow-visible transition-all duration-400 ease-out ${
+                  editMode ? "cursor-grab hover:border-gold/40 hover:shadow-gold-glow-hover" : "cursor-default"
+                } border ${
+                  isDragging ? "cursor-grabbing z-20 border-gold/40 shadow-gold-glow-hover" : "z-0 border-transparent"
+                } ${isInteriorSelected ? "ring-2 ring-gold ring-offset-2 ring-offset-background-dark" : ""}`}
                 style={{ left: x, top: y, width: i.w, height: i.h }}
                 onMouseDown={(e) => {
                   if (editMode) {
@@ -997,20 +1135,32 @@ export function FloorPlanEditor() {
                 }}
                 title="Drag to move"
               >
-                <div className="flex flex-1 min-h-0 w-full items-center justify-center p-xs">
-                  <IconComponent
-                    className="text-gold/60 group-hover:text-gold/80 transition-colors"
-                    size={isSmall ? 12 : 18}
-                    strokeWidth={1.5}
-                  />
-                </div>
-                <span
-                  className={`w-full truncate text-center font-medium uppercase tracking-wider text-text-muted-on-dark group-hover:text-gold/80 transition-colors pb-xs ${
-                    isSmall ? "text-[8px]" : "text-[10px]"
-                  }`}
+                {editMode && isInteriorSelected && (
+                  <FloorPlanRotationHandle onRotateClick={() => handleRotateInterior(i.id)} />
+                )}
+                <div
+                  className="h-full w-full"
+                  style={{
+                    transform: `rotate(${rotationDeg}deg)`,
+                    transformOrigin: "center center",
+                  }}
                 >
-                  {label}
-                </span>
+                  <div
+                    className={`flex h-full w-full min-h-0 min-w-0 overflow-hidden transition-transform duration-400 ease-out ${
+                      isDragging ? "scale-[1.02]" : "group-hover:scale-[1.02]"
+                    }`}
+                  >
+                    <InteriorCanvasVisual
+                      type={i.type}
+                      w={i.w}
+                      h={i.h}
+                      displayLabel={displayLabel}
+                      seatedLine={seatedLine}
+                      IconComponent={IconComponent}
+                      isSmall={isSmall}
+                    />
+                  </div>
+                </div>
                 {editMode && (
                   <button
                     type="button"
@@ -1018,7 +1168,7 @@ export function FloorPlanEditor() {
                       ev.stopPropagation();
                       handleDeleteInterior(i.id);
                     }}
-                    className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-error"
+                    className="absolute -right-1 -top-1 z-40 flex h-5 w-5 items-center justify-center rounded-full border border-error/50 bg-error/90 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-error"
                     aria-label="Remove"
                   >
                     ×
@@ -1032,14 +1182,16 @@ export function FloorPlanEditor() {
             const isSelected = selectedTableId === t.id;
             const x = isDragging ? dragPosition.x : t.positionX;
             const y = isDragging ? dragPosition.y : t.positionY;
-            const size = getTableSize(t.capacity, t.shape);
+            const shape = normalizeTableShape(t.shape);
+            const size = getTableSize(t.capacity, shape);
             const chairPositions = getChairPositions(t.capacity, size.w, size.h);
+            const rotationDeg = normalizeFloorPlanRotation(t.rotation ?? 0);
             return (
               <div
                 key={t.id}
-                className={`absolute overflow-visible transition-all duration-400 ${
-                  editMode ? "cursor-grab hover:scale-[1.02] hover:shadow-gold-glow-hover" : "cursor-default"
-                } ${isDragging ? "cursor-grabbing z-10 scale-[1.02] shadow-gold-glow-hover" : "shadow-soft"} ${
+                className={`group absolute overflow-visible transition-all duration-400 ease-out ${
+                  editMode ? "cursor-grab hover:shadow-gold-glow-hover" : "cursor-default"
+                } ${isDragging ? "cursor-grabbing z-10 shadow-gold-glow-hover" : "shadow-soft"} ${
                   isSelected ? "ring-2 ring-gold ring-offset-2 ring-offset-background-dark" : ""
                 }`}
                 style={{
@@ -1047,7 +1199,7 @@ export function FloorPlanEditor() {
                   top: y,
                   width: size.w,
                   height: size.h,
-                  transition: isDragging ? "none" : "box-shadow 0.4s ease-out, transform 0.4s ease-out",
+                  transition: isDragging ? "none" : "box-shadow 0.4s ease-out",
                 }}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -1060,59 +1212,86 @@ export function FloorPlanEditor() {
                 }}
                 title="Drag to move"
               >
+                {editMode && isSelected && (
+                  <FloorPlanRotationHandle onRotateClick={() => handleRotateTable(t.id)} />
+                )}
                 <div
-                  className={`absolute inset-0 flex flex-col items-center justify-center gap-0 rounded-lg border-2 shadow-inner ${
-                    t.shape === "round" ? "rounded-full" : ""
-                  } bg-gradient-to-b from-surface-dark-elevated to-surface-dark ${
-                    isSelected ? "border-gold" : t.isActive ? "border-gold/40" : "border-border-dark"
-                  }`}
+                  className="relative h-full w-full"
+                  style={{
+                    transform: `rotate(${rotationDeg}deg)`,
+                    transformOrigin: "center center",
+                  }}
                 >
-                  <span className="text-base font-bold text-text-on-dark leading-tight">
-                    {t.tableNumber}
-                  </span>
-                  <span className="text-xs font-medium text-text-muted-on-dark">
-                    {t.capacity}
-                  </span>
-                </div>
-                {chairPositions.map((pos, i) => (
                   <div
-                    key={i}
-                    className="absolute rounded-full border border-gold/20 bg-surface-dark-elevated shadow-sm"
-                    style={{
-                      left: pos.x - 6,
-                      top: pos.y - 6,
-                      width: 12,
-                      height: 12,
-                    }}
-                  />
-                ))}
+                    className={`relative h-full w-full transition-transform duration-400 ease-out ${
+                      isDragging ? "scale-[1.02]" : "group-hover:scale-[1.02]"
+                    }`}
+                  >
+                    <div
+                      className={`absolute inset-0 flex flex-col items-center justify-center gap-0 border-2 shadow-inner ${getTableShapeBorderRadiusClass(shape)} bg-gradient-to-b from-surface-dark-elevated to-surface-dark ${
+                        isSelected ? "border-gold" : t.isActive ? "border-gold/40" : "border-border-dark"
+                      }`}
+                    >
+                      <span className="text-base font-bold text-text-on-dark leading-tight">
+                        {t.tableNumber}
+                      </span>
+                      <span className="text-xs font-medium text-text-muted-on-dark">
+                        {t.capacity}
+                      </span>
+                    </div>
+                    {chairPositions.map((pos, i) => (
+                      <div
+                        key={i}
+                        className="absolute rounded-full border border-gold/20 bg-surface-dark-elevated shadow-sm"
+                        style={{
+                          left: pos.x - 6,
+                          top: pos.y - 6,
+                          width: 12,
+                          height: 12,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             );
           })}
         </div>
+        </div>
+        </div>
 
-        <div className="flex h-floor-plan-status shrink-0 items-center justify-between gap-md border-t border-border-dark bg-surface-dark-alt px-md py-sm rounded-b-xl">
-          <span className="text-xs text-text-muted-on-dark">
+        <div
+          className="flex shrink-0 items-center justify-between gap-md px-md"
+          style={{
+            height: 36,
+            minHeight: 36,
+            backgroundColor: "rgba(10, 10, 10, 0.9)",
+            borderTop: "1px solid rgba(255, 255, 255, 0.05)",
+            fontSize: 12,
+            color: "rgba(255, 255, 255, 0.3)",
+          }}
+        >
+          <span>
             {levelTables.length} tables · {walls.length + interior.length} elements
           </span>
           <span
-            className={`text-xs font-medium ${
-              saveStatus === "saving"
-                ? "text-floor-plan-save-pending"
-                : saveStatus === "saved"
-                  ? "text-floor-plan-save-success"
-                  : "text-text-muted-on-dark"
-            }`}
+            className={saveStatus === "saving" ? "font-medium text-floor-plan-save-pending" : "font-medium"}
+            style={
+              saveStatus === "saved"
+                ? { color: "rgba(34, 197, 94, 0.7)" }
+                : saveStatus === "saving"
+                  ? undefined
+                  : { color: "rgba(255, 255, 255, 0.3)" }
+            }
           >
             {saveStatus === "saving" ? "Unsaved changes" : saveStatus === "saved" ? "All changes saved ✓" : "All changes saved ✓"}
           </span>
-        </div>
         </div>
       </section>
 
       {addModalOpen && (
         <TableFormModal
-          sections={DEFAULT_SECTIONS}
+          sections={sectionOptions}
           shapeOptions={SHAPE_OPTIONS}
           levelName={levels.find((l) => l.id === currentLevelId)?.name}
           onClose={() => setAddModalOpen(false)}
@@ -1262,6 +1441,7 @@ function SelectedTableCard({
   const [section, setSection] = useState(table.section);
   const [shape, setShape] = useState<TableShape>(table.shape);
   const [isActive, setIsActive] = useState(table.isActive);
+  const [rotation, setRotation] = useState(() => normalizeFloorPlanRotation(table.rotation ?? 0));
 
   useEffect(() => {
     setTableNumber(table.tableNumber);
@@ -1269,7 +1449,8 @@ function SelectedTableCard({
     setSection(table.section);
     setShape(table.shape);
     setIsActive(table.isActive);
-  }, [table.id, table.tableNumber, table.capacity, table.section, table.shape, table.isActive]);
+    setRotation(normalizeFloorPlanRotation(table.rotation ?? 0));
+  }, [table.id, table.tableNumber, table.capacity, table.section, table.shape, table.isActive, table.rotation]);
 
   const handleSave = () => {
     if (!tableNumber.trim()) return;
@@ -1280,6 +1461,7 @@ function SelectedTableCard({
       section: section || (sections[0] ?? "Main Floor"),
       shape,
       isActive,
+      rotation: normalizeFloorPlanRotation(rotation),
     });
   };
 
@@ -1335,26 +1517,46 @@ function SelectedTableCard({
           <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
             Shape
           </label>
-          <div className="flex gap-xs">
+          <div className="flex flex-wrap gap-xs">
             {shapeOptions.map(({ value, label, Icon }) => (
               <button
                 key={value}
                 type="button"
+                title={label}
                 onClick={() => {
                   setShape(value);
                   onSave({ shape: value });
                 }}
-                className={`flex h-floor-plan-input-h-compact flex-1 items-center justify-center gap-xs rounded-floor-plan-pill border px-sm text-floor-plan-input-font font-medium transition-all ${
+                className={`flex h-floor-plan-input-h-compact flex-1 items-center justify-center rounded-floor-plan-pill border px-sm transition-all ${
                   shape === value
                     ? "border-gold bg-gold/10 text-gold"
                     : "border-floor-plan-input-border bg-floor-plan-input-bg text-floor-plan-card-label hover:border-gold"
                 }`}
               >
-                <Icon className="h-3 w-3" strokeWidth={1.5} />
-                {label}
+                <Icon className="h-4 w-4" strokeWidth={1.5} />
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+            Rotation
+          </label>
+          <select
+            value={rotation}
+            onChange={(e) => {
+              const v = normalizeFloorPlanRotation(Number(e.target.value));
+              setRotation(v);
+              onSave({ rotation: v });
+            }}
+            className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
+          >
+            {FLOOR_PLAN_ROTATION_DEGREES.map((deg) => (
+              <option key={deg} value={deg}>
+                {deg}°
+              </option>
+            ))}
+          </select>
         </div>
         <div className="flex items-center justify-between">
           <label className="text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
@@ -1395,17 +1597,51 @@ function SelectedTableCard({
 
 type SelectedInteriorCardProps = {
   item: FloorPlanInterior;
-  onSave: (label: string) => void;
+  snapDim: (n: number) => number;
+  onSave: (updates: Partial<Pick<FloorPlanInterior, "label" | "w" | "h" | "seatedCapacity" | "rotation">>) => void;
   onDelete: () => void;
 };
 
-function SelectedInteriorCard({ item, onSave, onDelete }: SelectedInteriorCardProps) {
+function SelectedInteriorCard({ item, snapDim, onSave, onDelete }: SelectedInteriorCardProps) {
   const preset = INTERIOR_PRESETS.find((p) => p.type === item.type);
+  const seating = isSeatingInterior(item.type);
+  const defaultSeats = defaultSeatedCapacityForInterior(item.type) ?? 4;
+
   const [label, setLabel] = useState(item.label ?? preset?.label ?? item.type);
+  const [w, setW] = useState(item.w);
+  const [h, setH] = useState(item.h);
+  const [rotation, setRotation] = useState(() => normalizeFloorPlanRotation(item.rotation ?? 0));
+  const [seatedCapacity, setSeatedCapacity] = useState(
+    item.seatedCapacity ?? (seating ? defaultSeats : 0)
+  );
 
   useEffect(() => {
     setLabel(item.label ?? preset?.label ?? item.type);
-  }, [item.id, item.label, item.type, preset?.label]);
+    setW(item.w);
+    setH(item.h);
+    setRotation(normalizeFloorPlanRotation(item.rotation ?? 0));
+    setSeatedCapacity(item.seatedCapacity ?? (isSeatingInterior(item.type) ? defaultSeatedCapacityForInterior(item.type) ?? 4 : 0));
+  }, [item.id, item.label, item.type, item.w, item.h, item.rotation, item.seatedCapacity, preset?.label]);
+
+  const commitDims = () => {
+    let nw = snapDim(Number(w) || preset?.w || 24);
+    let nh = snapDim(Number(h) || preset?.h || 24);
+    if (item.type === "pillar") {
+      const s = Math.min(nw, nh);
+      nw = s;
+      nh = s;
+    }
+    setW(nw);
+    setH(nh);
+    onSave({ w: nw, h: nh });
+  };
+
+  const commitSeats = () => {
+    if (!seating) return;
+    const n = Math.max(1, Math.min(24, Math.round(Number(seatedCapacity) || 1)));
+    setSeatedCapacity(n);
+    onSave({ seatedCapacity: n });
+  };
 
   return (
     <div className="rounded-floor-plan-card border border-floor-plan-selected-card-border bg-floor-plan-selected-card-bg p-floor-plan-selected-padding">
@@ -1426,10 +1662,80 @@ function SelectedInteriorCard({ item, onSave, onDelete }: SelectedInteriorCardPr
             type="text"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            onBlur={() => onSave(label)}
+            onBlur={() => onSave({ label })}
             className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark placeholder-text-muted-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
           />
         </div>
+        <div className="grid grid-cols-2 gap-xs">
+          <div>
+            <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+              Width
+            </label>
+            <input
+              type="number"
+              min={16}
+              max={480}
+              value={w}
+              onChange={(e) => setW(Number(e.target.value) || 0)}
+              onBlur={commitDims}
+              className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
+            />
+          </div>
+          <div>
+            <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+              Height
+            </label>
+            <input
+              type="number"
+              min={INTERIOR_DIM_MIN}
+              max={INTERIOR_DIM_MAX}
+              value={h}
+              onChange={(e) => setH(Number(e.target.value) || 0)}
+              onBlur={commitDims}
+              className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
+            />
+          </div>
+        </div>
+        <p className="text-floor-plan-field-label-size text-text-muted-on-dark">
+          Width and height snap to the layout grid when you leave the field.
+          {item.type === "pillar" ? " Pillars stay square (uses the smaller side)." : ""}
+        </p>
+        <div>
+          <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+            Rotation
+          </label>
+          <select
+            value={rotation}
+            onChange={(e) => {
+              const v = normalizeFloorPlanRotation(Number(e.target.value));
+              setRotation(v);
+              onSave({ rotation: v });
+            }}
+            className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
+          >
+            {FLOOR_PLAN_ROTATION_DEGREES.map((deg) => (
+              <option key={deg} value={deg}>
+                {deg}°
+              </option>
+            ))}
+          </select>
+        </div>
+        {seating && (
+          <div>
+            <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+              Seats
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={24}
+              value={seatedCapacity}
+              onChange={(e) => setSeatedCapacity(Number(e.target.value) || 1)}
+              onBlur={commitSeats}
+              className="h-floor-plan-input-h-compact w-full rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold"
+            />
+          </div>
+        )}
         <button
           type="button"
           onClick={() => {
@@ -1446,14 +1752,48 @@ function SelectedInteriorCard({ item, onSave, onDelete }: SelectedInteriorCardPr
 
 type SelectedWallCardProps = {
   wall: FloorPlanWall;
+  onRotate: (direction: 1 | -1) => void;
   onDelete: () => void;
 };
 
-function SelectedWallCard({ wall, onDelete }: SelectedWallCardProps) {
+function SelectedWallCard({ wall, onRotate, onDelete }: SelectedWallCardProps) {
+  const displayAngle = wallRotationDisplayDegrees(wall);
   return (
     <div className="rounded-floor-plan-card border border-floor-plan-selected-card-border bg-floor-plan-selected-card-bg p-floor-plan-selected-padding">
       <div className="space-y-floor-plan-selected-field-gap">
-        <p className="text-floor-plan-input-font text-floor-plan-card-label">Wall</p>
+        <div>
+          <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+            Element type
+          </label>
+          <p className="flex h-floor-plan-input-h-compact items-center rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-floor-plan-input-px text-floor-plan-input-font text-text-on-dark">
+            Wall
+          </p>
+        </div>
+        <div>
+          <label className="mb-xs block text-floor-plan-field-label-size font-medium uppercase tracking-floor-plan-label-tracking text-floor-plan-field-label">
+            Rotation
+          </label>
+          <div className="flex items-center gap-xs">
+            <button
+              type="button"
+              onClick={() => onRotate(-1)}
+              className="h-floor-plan-input-h-compact shrink-0 rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-sm text-floor-plan-input-font text-text-on-dark transition-colors hover:border-gold"
+            >
+              −45°
+            </button>
+            <span className="min-w-0 flex-1 text-center text-floor-plan-input-font text-text-on-dark">{displayAngle}°</span>
+            <button
+              type="button"
+              onClick={() => onRotate(1)}
+              className="h-floor-plan-input-h-compact shrink-0 rounded-floor-plan-pill border border-floor-plan-input-border bg-floor-plan-input-bg px-sm text-floor-plan-input-font text-text-on-dark transition-colors hover:border-gold"
+            >
+              +45°
+            </button>
+          </div>
+          <p className="mt-xs text-floor-plan-field-label-size text-text-muted-on-dark">
+            Angle follows wall direction (endpoints). Use the handle on the canvas or ±45° here.
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => {
@@ -1509,6 +1849,7 @@ function TableEditPopover({
       isActive,
       isCombinable,
       isGhost,
+      rotation: normalizeFloorPlanRotation(table.rotation ?? 0),
     });
   };
 
@@ -1548,15 +1889,15 @@ function TableEditPopover({
           <button
             key={value}
             type="button"
+            title={label}
             onClick={() => setShape(value)}
-            className={`flex flex-1 items-center justify-center gap-xs rounded-md border px-sm py-xs text-xs font-medium transition-all ${
+            className={`flex flex-1 items-center justify-center rounded-md border px-sm py-xs transition-all ${
               shape === value
                 ? "border-gold bg-gold/10 text-gold"
                 : "border-card-border bg-card-bg text-text-muted-on-dark hover:border-gold/50"
             }`}
           >
-            <Icon className="h-3 w-3" strokeWidth={1.5} />
-            {label}
+            <Icon className="h-4 w-4" strokeWidth={1.5} />
           </button>
         ))}
       </div>
@@ -1647,7 +1988,7 @@ function TableFormModal({
   const [capacity, setCapacity] = useState(2);
   const [minCapacity, setMinCapacity] = useState(2);
   const [maxCapacity, setMaxCapacity] = useState(2);
-  const [section, setSection] = useState(sections[0] ?? "Main Floor");
+  const [section, setSection] = useState(levelName ?? sections[0] ?? "Main Floor");
   const [shape, setShape] = useState<TableShape>("round");
   const [isActive, setIsActive] = useState(true);
   const [isCombinable, setIsCombinable] = useState(false);
@@ -1760,15 +2101,15 @@ function TableFormModal({
                 <button
                   key={value}
                   type="button"
+                  title={label}
                   onClick={() => setShape(value)}
-                  className={`flex flex-1 items-center justify-center gap-sm rounded-md border px-md py-sm text-sm font-medium transition-all ${
+                  className={`flex flex-1 items-center justify-center rounded-md border px-md py-sm transition-all ${
                     shape === value
                       ? "border-gold bg-gold/10 text-gold"
                       : "border-card-border bg-card-bg text-text-muted-on-dark hover:border-gold/50"
                   }`}
                 >
                   <Icon className="h-4 w-4" strokeWidth={1.5} />
-                  {label}
                 </button>
               ))}
             </div>

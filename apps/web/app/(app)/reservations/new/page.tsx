@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 export default function NewReservationPage({
   searchParams,
@@ -23,7 +24,7 @@ export default function NewReservationPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="New Reservation" />
+        <PageHeader {...PAGE_HEADERS.newReservation} />
         <LoadingState />
       </div>
     );
@@ -32,7 +33,7 @@ export default function NewReservationPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="New Reservation" />
+        <PageHeader {...PAGE_HEADERS.newReservation} />
         <EmptyState
           title="Nothing to show"
           message="Open the reservation form to capture the guest details."
@@ -44,7 +45,7 @@ export default function NewReservationPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="New Reservation" />
+        <PageHeader {...PAGE_HEADERS.newReservation} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -62,7 +63,7 @@ export default function NewReservationPage({
 
   return (
     <div>
-      <PageHeader title="New Reservation" />
+      <PageHeader {...PAGE_HEADERS.newReservation} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

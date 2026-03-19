@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type WaitlistGuest = {
   id: string;
@@ -59,7 +60,7 @@ export default function WaitlistPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Waitlist" />
+        <PageHeader {...PAGE_HEADERS.waitlist} />
         <LoadingState />
       </div>
     );
@@ -68,7 +69,7 @@ export default function WaitlistPage({
   if (empty || WAITLIST_GUESTS.length === 0) {
     return (
       <div>
-        <PageHeader title="Waitlist" />
+        <PageHeader {...PAGE_HEADERS.waitlist} />
         <EmptyState
           title="Waitlist is clear"
           message="Walk-ins will appear here when they join."
@@ -80,7 +81,7 @@ export default function WaitlistPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Waitlist" />
+        <PageHeader {...PAGE_HEADERS.waitlist} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -98,7 +99,7 @@ export default function WaitlistPage({
 
   return (
     <div>
-      <PageHeader title="Waitlist" />
+      <PageHeader {...PAGE_HEADERS.waitlist} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type ShiftPeriod = {
   id: string;
@@ -53,7 +54,7 @@ export default function ShiftsPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Shift Management" />
+        <PageHeader {...PAGE_HEADERS.shifts} />
         <LoadingState />
       </div>
     );
@@ -62,7 +63,7 @@ export default function ShiftsPage({
   if (empty) {
     return (
       <div>
-        <PageHeader title="Shift Management" />
+        <PageHeader {...PAGE_HEADERS.shifts} />
         <EmptyState
           title="No shifts defined"
           message="Create service periods to enable booking slots."
@@ -74,7 +75,7 @@ export default function ShiftsPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Shift Management" />
+        <PageHeader {...PAGE_HEADERS.shifts} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -92,7 +93,7 @@ export default function ShiftsPage({
 
   return (
     <div>
-      <PageHeader title="Shift Management" />
+      <PageHeader {...PAGE_HEADERS.shifts} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 xl:col-span-8 app-card-elevated p-xl">

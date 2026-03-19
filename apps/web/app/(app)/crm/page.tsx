@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type GuestProfile = {
   id: string;
@@ -68,7 +69,7 @@ export default function CrmPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Guest CRM" />
+        <PageHeader {...PAGE_HEADERS.crm} />
         <LoadingState />
       </div>
     );
@@ -77,7 +78,7 @@ export default function CrmPage({
   if (empty || GUESTS.length === 0) {
     return (
       <div>
-        <PageHeader title="Guest CRM" />
+        <PageHeader {...PAGE_HEADERS.crm} />
         <EmptyState
           title="No guests found"
           message="Search for a guest by name or phone during service."
@@ -89,7 +90,7 @@ export default function CrmPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Guest CRM" />
+        <PageHeader {...PAGE_HEADERS.crm} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -107,7 +108,7 @@ export default function CrmPage({
 
   return (
     <div>
-      <PageHeader title="Guest CRM" />
+      <PageHeader {...PAGE_HEADERS.crm} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

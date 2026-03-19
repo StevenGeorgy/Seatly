@@ -14,6 +14,7 @@ import {
   Star,
   AlertTriangle,
   Sparkles,
+  LayoutDashboard,
 } from "lucide-react";
 
 type NoShowFlag = {
@@ -98,9 +99,13 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <div className="space-y-section-gap">
-        <div>
-          <div className="h-8 w-48 animate-pulse rounded bg-surface-dark" />
-          <div className="mt-xs h-4 w-32 animate-pulse rounded bg-surface-dark" />
+        <div className="flex items-start gap-md">
+          <div className="h-10 w-10 shrink-0 animate-pulse rounded-lg bg-surface-dark" />
+          <div>
+            <div className="h-3 w-16 animate-pulse rounded bg-surface-dark" />
+            <div className="mt-2 h-8 w-48 animate-pulse rounded bg-surface-dark" />
+            <div className="mt-2 h-4 w-32 animate-pulse rounded bg-surface-dark" />
+          </div>
         </div>
         <LoadingState />
       </div>
@@ -110,13 +115,19 @@ export default function DashboardPage() {
   if (empty) {
     return (
       <div className="space-y-section-gap">
-        <div>
-          <h1 className="text-greeting font-bold text-text-on-dark">
-            {getGreeting()}, {user?.fullName ?? "there"}
-          </h1>
-          <p className="mt-xs text-sm text-header-date-muted">{formatDate()}</p>
-          <p className="mt-0.5 text-xs text-text-muted-on-dark">{getServiceContext()}</p>
-          <div className="my-2xl h-px bg-header-divider-gradient" />
+        <div className="flex items-start gap-md">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border-card bg-surface-dark">
+            <LayoutDashboard className="h-5 w-5 text-gold" strokeWidth={1.5} />
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-widest text-gold">Business</p>
+            <h1 className="mt-0.5 text-greeting font-bold text-text-on-dark">
+              {getGreeting()}, {user?.fullName ?? "there"}
+            </h1>
+            <p className="mt-xs text-sm text-header-date-muted">{formatDate()}</p>
+            <p className="mt-0.5 text-xs text-text-muted-on-dark">{getServiceContext()}</p>
+            <div className="mt-md h-px w-12 rounded-full bg-gold/50" />
+          </div>
         </div>
         <EmptyState
           title="No dashboard data yet"
@@ -129,13 +140,19 @@ export default function DashboardPage() {
   if (error) {
     return (
       <div className="space-y-section-gap">
-        <div>
-          <h1 className="text-greeting font-bold text-text-on-dark">
-            {getGreeting()}, {user?.fullName ?? "there"}
-          </h1>
-          <p className="mt-xs text-sm text-header-date-muted">{formatDate()}</p>
-          <p className="mt-0.5 text-xs text-text-muted-on-dark">{getServiceContext()}</p>
-          <div className="my-2xl h-px bg-header-divider-gradient" />
+        <div className="flex items-start gap-md">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border-card bg-surface-dark">
+            <LayoutDashboard className="h-5 w-5 text-gold" strokeWidth={1.5} />
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-widest text-gold">Business</p>
+            <h1 className="mt-0.5 text-greeting font-bold text-text-on-dark">
+              {getGreeting()}, {user?.fullName ?? "there"}
+            </h1>
+            <p className="mt-xs text-sm text-header-date-muted">{formatDate()}</p>
+            <p className="mt-0.5 text-xs text-text-muted-on-dark">{getServiceContext()}</p>
+            <div className="mt-md h-px w-12 rounded-full bg-gold/50" />
+          </div>
         </div>
         <div className="flex flex-col items-center justify-center rounded-xl border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
@@ -188,13 +205,19 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-section-gap transition-all duration-400 ease-out">
-      <div>
-        <h1 className="text-greeting font-bold tracking-tight text-text-on-dark">
-          {getGreeting()}, {user?.fullName ?? "there"}
-        </h1>
-        <p className="mt-sm text-sm leading-relaxed text-header-date-muted">{formatDate()}</p>
-        <p className="mt-1 text-xs uppercase tracking-widest text-gold/80">{getServiceContext()}</p>
-        <div className="my-2xl h-px bg-header-divider-gradient" />
+      <div className="flex items-start gap-md">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border-card bg-surface-dark">
+          <LayoutDashboard className="h-5 w-5 text-gold" strokeWidth={1.5} />
+        </div>
+        <div>
+          <p className="text-xs font-medium uppercase tracking-widest text-gold">Business</p>
+          <h1 className="mt-0.5 text-greeting font-bold tracking-tight text-text-on-dark">
+            {getGreeting()}, {user?.fullName ?? "there"}
+          </h1>
+          <p className="mt-sm text-sm leading-relaxed text-header-date-muted">{formatDate()}</p>
+          <p className="mt-1 text-xs uppercase tracking-widest text-gold/80">{getServiceContext()}</p>
+          <div className="mt-md h-px w-12 rounded-full bg-gold/50" />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-stat-card-gap md:grid-cols-4">

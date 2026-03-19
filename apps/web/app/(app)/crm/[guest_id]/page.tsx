@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type GuestProfile = {
   id: string;
@@ -127,7 +128,7 @@ export default function GuestProfilePage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="Guest Profile" />
+        <PageHeader {...PAGE_HEADERS.guestProfile} />
         <LoadingState />
       </div>
     );
@@ -136,7 +137,7 @@ export default function GuestProfilePage({
   if (error) {
     return (
       <div>
-        <PageHeader title="Guest Profile" />
+        <PageHeader {...PAGE_HEADERS.guestProfile} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -155,7 +156,7 @@ export default function GuestProfilePage({
   if (empty || !guest) {
     return (
       <div>
-        <PageHeader title="Guest Profile" />
+        <PageHeader {...PAGE_HEADERS.guestProfile} />
         <EmptyState
           title="Guest not found"
           message="This guest profile may not exist in the restaurant database yet."
@@ -168,7 +169,7 @@ export default function GuestProfilePage({
 
   return (
     <div>
-      <PageHeader title="Guest Profile" />
+      <PageHeader {...PAGE_HEADERS.guestProfile} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

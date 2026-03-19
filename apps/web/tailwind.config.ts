@@ -279,6 +279,7 @@ const config: Config = {
         "header-divider-gradient": colours.headerDividerGradient,
         "grid-pattern": `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cdefs%3E%3Cpattern id='d' width='24' height='24' patternUnits='userSpaceOnUse'%3E%3Ccircle cx='12' cy='12' r='0.5' fill='white'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100' height='100' fill='url(%23d)'/%3E%3C/svg%3E")`,
         "floor-plan-dot-grid": `radial-gradient(circle, ${colours.floorPlanCanvasDot} 2px, transparent 0)`,
+        "floor-plan-canvas-container-dot-grid": colours.floorPlanCanvasContainerDotGrid,
       },
       backgroundSize: {
         "floor-plan-grid": `${spacing.floorPlanCanvasGridSpacing} ${spacing.floorPlanCanvasGridSpacing}`,
@@ -292,6 +293,7 @@ const config: Config = {
         "floor-plan-delete-bg": colours.floorPlanDeleteBg,
         "floor-plan-delete-hover-bg": colours.floorPlanDeleteHoverBg,
         "floor-plan-canvas": colours.floorPlanCanvasBg,
+        "floor-plan-canvas-container": colours.floorPlanCanvasContainerBg,
         "gold-tint": colours.goldTintBg,
         "surface-glass": colours.surfaceGlass,
         "surface-glass-soft": colours.surfaceGlassSoft,

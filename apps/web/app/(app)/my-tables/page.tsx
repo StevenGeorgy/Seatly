@@ -2,6 +2,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 
 type TableStatus = "empty" | "seated" | "arriving" | "overdue" | "reserved";
 
@@ -55,7 +56,7 @@ export default function MyTablesPage({
   if (loading) {
     return (
       <div>
-        <PageHeader title="My Tables" />
+        <PageHeader {...PAGE_HEADERS.myTables} />
         <LoadingState />
       </div>
     );
@@ -64,7 +65,7 @@ export default function MyTablesPage({
   if (empty || MY_TABLES.length === 0) {
     return (
       <div>
-        <PageHeader title="My Tables" />
+        <PageHeader {...PAGE_HEADERS.myTables} />
         <EmptyState
           title="No tables assigned"
           message="When the host assigns you tables, they’ll appear here."
@@ -76,7 +77,7 @@ export default function MyTablesPage({
   if (error) {
     return (
       <div>
-        <PageHeader title="My Tables" />
+        <PageHeader {...PAGE_HEADERS.myTables} />
         <div className="flex flex-col items-center justify-center rounded-lg border border-error bg-error-muted p-xl text-center">
           <p className="text-base font-medium text-error">
             Something went wrong. Please try again.
@@ -94,7 +95,7 @@ export default function MyTablesPage({
 
   return (
     <div>
-      <PageHeader title="My Tables" />
+      <PageHeader {...PAGE_HEADERS.myTables} />
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 app-card-elevated p-xl">

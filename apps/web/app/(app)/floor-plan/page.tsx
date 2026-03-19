@@ -2,22 +2,60 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Layers } from "lucide-react";
+import {
+  Edit3,
+  Layers,
+  Wine,
+  RectangleHorizontal,
+  Circle,
+  Music2,
+  Sofa,
+  LayoutGrid,
+  Armchair,
+} from "lucide-react";
+import { InteriorCanvasVisual } from "@/components/floor-plan/interior-canvas-visual";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PAGE_HEADERS } from "@/lib/page-headers";
 import {
   loadFloorPlanData,
+  getTableShapeBorderRadiusClass,
+  normalizeTableShape,
+  normalizeFloorPlanRotation,
+  isSeatingInterior,
   type FloorPlanData,
   type FloorPlanTable,
+  type FloorPlanInterior,
 } from "@/lib/floor-plan";
+
+const LIVE_INTERIOR_ICONS: Record<FloorPlanInterior["type"], typeof Wine> = {
+  bar: Wine,
+  counter: RectangleHorizontal,
+  pillar: Circle,
+  stage: Music2,
+  sofa: Sofa,
+  booth: LayoutGrid,
+  lounge: Armchair,
+};
+
+const INTERIOR_TYPE_LABELS: Record<FloorPlanInterior["type"], string> = {
+  bar: "Bar",
+  counter: "Counter",
+  pillar: "Pillar",
+  stage: "Stage",
+  sofa: "Sofa",
+  booth: "Booth",
+  lounge: "Lounge",
+};
 
 const GRID_SIZE = 24;
 
 type TableStatus = "empty" | "seated" | "arriving" | "overdue" | "reserved";
 
-function getTableSize(capacity: number, shape: string) {
+function getTableSize(capacity: number, shape: string | undefined) {
+  const s = normalizeTableShape(shape);
   const base = capacity <= 2 ? 36 : capacity <= 4 ? 44 : capacity <= 6 ? 52 : 60;
-  if (shape === "rectangle") return { w: base + 16, h: base - 8 };
+  if (s === "rectangle") return { w: base + 16, h: base - 8 };
   return { w: base, h: base };
 }
 
@@ -101,7 +139,7 @@ export default function FloorPlanPage() {
   if (!hasAnyTables) {
     return (
       <div>
-        <PageHeader title="Live Floor Plan" />
+        <PageHeader {...PAGE_HEADERS.floorPlan} />
         <EmptyState
           title="No tables to display"
           message="Add tables in the Floor Plan Editor to see your layout here."
@@ -120,7 +158,16 @@ export default function FloorPlanPage() {
 
   return (
     <div>
-      <PageHeader title="Live Floor Plan" />
+      <div className="mb-xl flex flex-wrap items-start justify-between gap-lg">
+        <PageHeader {...PAGE_HEADERS.floorPlan} />
+        <Link
+          href="/settings/floor-plan"
+          className="flex shrink-0 items-center gap-xs rounded-md border border-gold bg-gold/10 px-lg py-md text-sm font-semibold text-gold transition-all duration-400 hover:scale-[1.02] hover:bg-gold/20"
+        >
+          <Edit3 className="h-4 w-4" strokeWidth={1.5} />
+          Edit Floor
+        </Link>
+      </div>
 
       <div className="grid grid-cols-12 gap-lg">
         <section className="col-span-12 lg:col-span-8 app-card-elevated p-xl">
@@ -238,18 +285,38 @@ export default function FloorPlanPage() {
               ))}
             </svg>
             {interior.map((i) => {
-              const isLoungeFurniture = ["sofa", "booth", "lounge"].includes(i.type);
+              const baseLabel = INTERIOR_TYPE_LABELS[i.type] ?? i.type;
+              const displayLabel = i.label?.trim() || baseLabel;
+              const seatLine =
+                isSeatingInterior(i.type) && i.seatedCapacity != null && i.seatedCapacity > 0
+                  ? `${i.seatedCapacity} seats`
+                  : null;
+              const rotationDeg = normalizeFloorPlanRotation(i.rotation ?? 0);
+              const IconComponent = LIVE_INTERIOR_ICONS[i.type];
+              const isSmall = i.w <= 32 || i.h <= 32;
               return (
                 <div
                   key={i.id}
-                  className={`absolute flex items-center justify-center border border-gold/20 bg-white/[0.06] shadow-soft ${
-                    isLoungeFurniture ? "rounded-xl" : "rounded-lg"
-                  }`}
+                  className="absolute shadow-soft"
                   style={{ left: i.x, top: i.y, width: i.w, height: i.h }}
                 >
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted-on-dark">
-                    {i.type}
-                  </span>
+                  <div
+                    className="h-full w-full"
+                    style={{
+                      transform: `rotate(${rotationDeg}deg)`,
+                      transformOrigin: "center center",
+                    }}
+                  >
+                    <InteriorCanvasVisual
+                      type={i.type}
+                      w={i.w}
+                      h={i.h}
+                      displayLabel={displayLabel}
+                      seatedLine={seatLine}
+                      IconComponent={IconComponent}
+                      isSmall={isSmall}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -258,7 +325,8 @@ export default function FloorPlanPage() {
                 const status = statusByTable[t.id] ?? "empty";
                 const isSelected = selectedId === t.id;
                 const isVip = vipTableIds.has(t.id);
-                const size = getTableSize(t.capacity, t.shape);
+                const shape = normalizeTableShape(t.shape);
+                const size = getTableSize(t.capacity, shape);
                 const chairPositions = getChairPositions(t.capacity, size.w, size.h);
                 const guestName = status === "seated" ? "Guest" : "—";
                 const serverInitials = status === "seated" ? "—" : "—";
@@ -274,6 +342,7 @@ export default function FloorPlanPage() {
                     : tableLabelMode === "guest"
                       ? t.tableNumber
                       : t.tableNumber;
+                const rotationDeg = normalizeFloorPlanRotation(t.rotation ?? 0);
                 return (
                   <button
                     key={t.id}
@@ -289,29 +358,35 @@ export default function FloorPlanPage() {
                       height: size.h,
                     }}
                   >
-                    {chairPositions.map((pos, i) => (
-                      <div
-                        key={i}
-                        className="absolute z-0 rounded-full border border-gold/20 bg-surface-dark-elevated shadow-sm"
-                        style={{
-                          left: pos.x - 6,
-                          top: pos.y - 6,
-                          width: 12,
-                          height: 12,
-                        }}
-                      />
-                    ))}
                     <div
-                      className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-0 rounded-lg shadow-inner ${
-                        t.shape === "round" ? "rounded-full" : ""
-                      } ${getTableStyles(status)} ${isVip ? "ring-2 ring-gold ring-inset" : ""}`}
+                      className="relative h-full w-full"
+                      style={{
+                        transform: `rotate(${rotationDeg}deg)`,
+                        transformOrigin: "center center",
+                      }}
                     >
-                      <span className="text-sm font-bold text-text-on-dark leading-tight">
-                        {primaryLabel}
-                      </span>
-                      <span className="text-[10px] font-medium text-text-muted-on-dark">
-                        {secondaryLabel}
-                      </span>
+                      {chairPositions.map((pos, i) => (
+                        <div
+                          key={i}
+                          className="absolute z-0 rounded-full border border-gold/20 bg-surface-dark-elevated shadow-sm"
+                          style={{
+                            left: pos.x - 6,
+                            top: pos.y - 6,
+                            width: 12,
+                            height: 12,
+                          }}
+                        />
+                      ))}
+                      <div
+                        className={`absolute inset-0 z-10 flex flex-col items-center justify-center gap-0 shadow-inner ${getTableShapeBorderRadiusClass(shape)} ${getTableStyles(status)} ${isVip ? "ring-2 ring-gold ring-inset" : ""}`}
+                      >
+                        <span className="text-sm font-bold text-text-on-dark leading-tight">
+                          {primaryLabel}
+                        </span>
+                        <span className="text-[10px] font-medium text-text-muted-on-dark">
+                          {secondaryLabel}
+                        </span>
+                      </div>
                     </div>
                   </button>
                 );
