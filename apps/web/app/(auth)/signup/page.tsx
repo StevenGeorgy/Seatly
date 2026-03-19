@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { createClient } from "@/lib/supabase/client";
 import type { User, Role } from "@seatly/types";
@@ -74,6 +75,7 @@ function SignUpPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { setUserFromSession } = useAuth();
+  const router = useRouter();
 
   const passwordStrength = getPasswordStrength(password);
   const canSubmit =
@@ -91,51 +93,57 @@ function SignUpPage() {
 
     setIsSubmitting(true);
     try {
-      const supabase = createClient();
-      const { data, error: fnError } = await supabase.functions.invoke(
-        "signup-restaurant-owner",
-        {
-          body: {
-            full_name: fullName.trim(),
-            restaurant_name: restaurantName.trim(),
-            email: email.trim().toLowerCase(),
-            password,
-          },
-        }
-      );
+      const res = await fetch("/api/signup-restaurant-owner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name: fullName.trim(),
+          restaurant_name: restaurantName.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+        }),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        profile?: {
+          id: string;
+          email?: string;
+          fullName?: string;
+          full_name?: string;
+          role?: string;
+          restaurantId?: string | null;
+          restaurant_id?: string | null;
+          avatarUrl?: string | null;
+          avatar_url?: string | null;
+        };
+      };
 
       const err = data?.error;
-      if (err) {
-        const msg = typeof err === "string" ? err : (err as { message?: string }).message;
+      if (err || !res.ok) {
+        const msg = typeof err === "string" ? err : "";
         if (
-          typeof msg === "string" &&
-          (msg.toLowerCase().includes("already") || msg.toLowerCase().includes("exists"))
+          res.status === 503 ||
+          msg.toLowerCase().includes("not configured") ||
+          msg.toLowerCase().includes("missing env")
+        ) {
+          setError(msg || "Check .env: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, then restart dev.");
+        } else if (
+          msg.toLowerCase().includes("already") ||
+          msg.toLowerCase().includes("exists") ||
+          res.status === 409
         ) {
           setError("Email already in use");
-        } else if (
-          typeof msg === "string" &&
-          msg.toLowerCase().includes("password")
-        ) {
+        } else if (msg.toLowerCase().includes("password")) {
           setError("Password must be at least 8 characters and include a number");
         } else {
-          setError(msg ?? "Something went wrong");
+          setError(msg || "Something went wrong");
         }
         setIsSubmitting(false);
         return;
       }
 
-      if (fnError) {
-        if (fnError.message.includes("Failed to send")) {
-          setError(
-            "Unable to reach signup service. Ensure the Edge Function is deployed."
-          );
-        } else {
-          setError(fnError.message ?? "Something went wrong. Please try again.");
-        }
-        setIsSubmitting(false);
-        return;
-      }
-
+      const supabase = createClient();
       const profileFromFn = data?.profile;
       if (!profileFromFn || !profileFromFn.id) {
         setError("Account created but profile missing. Please sign in manually.");
@@ -164,7 +172,7 @@ function SignUpPage() {
       };
 
       setUserFromSession(profile);
-      window.location.href = "/onboarding";
+      router.push("/onboarding");
     } catch {
       setError("Something went wrong. Please try again.");
       setIsSubmitting(false);

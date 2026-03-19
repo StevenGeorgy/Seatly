@@ -59,34 +59,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const supabase = useMemo(() => createClient(), []);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function initAuth() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session?.user) {
-        const profile = await fetchUserProfile(supabase, session.user.id);
-        setUser(profile);
-      } else {
-        setUser(null);
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (session?.user) {
+          const profile = await fetchUserProfile(supabase, session.user.id);
+          if (!cancelled) setUser(profile);
+        } else {
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     }
 
     initAuth();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        const profile = await fetchUserProfile(supabase, session.user.id);
-        setUser(profile);
-      } else {
-        setUser(null);
-      }
-      setLoading(false);
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Defer DB calls — awaiting supabase.from inside this callback can deadlock auth (stuck loading).
+      queueMicrotask(() => {
+        void (async () => {
+          try {
+            if (session?.user) {
+              const profile = await fetchUserProfile(supabase, session.user.id);
+              if (!cancelled) setUser(profile);
+            } else if (!cancelled) {
+              setUser(null);
+            }
+          } finally {
+            if (!cancelled) setLoading(false);
+          }
+        })();
+      });
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, [supabase]);
 
   const logout = useCallback(async () => {

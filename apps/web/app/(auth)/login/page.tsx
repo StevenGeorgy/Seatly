@@ -98,14 +98,68 @@ function LoginForm() {
         return;
       }
 
-      const { data: profileRow, error: profileError } = await supabase
-        .from("user_profiles")
-        .select("id, email, full_name, role, restaurant_id, avatar_url")
-        .eq("auth_user_id", data.user.id)
-        .single();
+      const token = data.session?.access_token;
+      if (!token) {
+        setError("Sign in incomplete. Please try again.");
+        setIsSubmitting(false);
+        return;
+      }
 
-      if (profileError || !profileRow) {
-        setError("Profile not found. Please contact support.");
+      async function loadProfileViaApi(): Promise<{
+        id: string;
+        email: string | null;
+        full_name: string | null;
+        role: string;
+        restaurant_id: string | null;
+        avatar_url: string | null;
+      } | null> {
+        const res = await fetch("/api/auth/session-profile", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 404) return null;
+        if (!res.ok) {
+          const j = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(j.error ?? "Could not load profile");
+        }
+        const j = (await res.json()) as {
+          profile: {
+            id: string;
+            email: string | null;
+            full_name: string | null;
+            role: string;
+            restaurant_id: string | null;
+            avatar_url: string | null;
+          };
+        };
+        return j.profile ?? null;
+      }
+
+      let profileRow = await loadProfileViaApi();
+      let repairHint: string | null = null;
+
+      if (!profileRow) {
+        const repairRes = await fetch("/api/auth/repair-profile", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const repairJson = (await repairRes.json()) as {
+          error?: string;
+          hint?: string;
+          repaired?: boolean;
+        };
+        if (!repairRes.ok && repairJson.error) {
+          repairHint = repairJson.error;
+        } else if (!repairJson.repaired && repairJson.hint) {
+          repairHint = repairJson.hint;
+        }
+        profileRow = await loadProfileViaApi();
+      }
+
+      if (!profileRow) {
+        setError(
+          repairHint ??
+            "No Seatly profile linked to this Auth user. Check user_profiles.auth_user_id matches your user id in Authentication, or complete staff signup."
+        );
         await supabase.auth.signOut();
         setIsSubmitting(false);
         return;
