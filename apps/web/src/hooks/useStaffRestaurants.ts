@@ -1,0 +1,71 @@
+import { useEffect, useMemo, useState } from "react";
+
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import type { UserRestaurantRole } from "@/types/auth";
+
+export type StaffRestaurantRow = {
+  id: string;
+  name: string | null;
+  slug: string;
+};
+
+/**
+ * Restaurants the user has a staff role for (Bible: multi-location switcher).
+ */
+export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
+  const idKey = useMemo(() => {
+    const ids = [...new Set(restaurantRoles.map((r) => r.restaurant_id))];
+    return ids.sort().join(",");
+  }, [restaurantRoles]);
+
+  const [restaurants, setRestaurants] = useState<StaffRestaurantRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const ids = idKey ? idKey.split(",") : [];
+    if (ids.length === 0) {
+      setRestaurants([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
+    if (!isSupabaseConfigured()) {
+      setRestaurants([]);
+      setError(new Error("Supabase env vars are not set."));
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    void (async () => {
+      const client = getSupabaseBrowserClient();
+      const { data, error: qErr } = await client
+        .from("restaurants")
+        .select("id, name, slug")
+        .in("id", ids);
+
+      if (cancelled) return;
+
+      if (qErr) {
+        setError(new Error(qErr.message));
+        setRestaurants([]);
+        setLoading(false);
+        return;
+      }
+
+      setRestaurants((data ?? []) as StaffRestaurantRow[]);
+      setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [idKey]);
+
+  return { restaurants, loading, error };
+}

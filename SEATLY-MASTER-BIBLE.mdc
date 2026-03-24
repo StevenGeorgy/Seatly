@@ -1,0 +1,2166 @@
+# SEATLY — Master Product Bible
+
+> **Web App · Mobile App · Backend · Design System**
+>
+> Drop this file into Cursor and tag it on every task.
+> This is the single source of truth for everything Seatly.
+>
+> Last updated: March 2026
+
+## 01 — What Is Seatly
+
+### Product Vision
+
+Seatly is a bilingual (English + French) marketplace platform that serves two audiences simultaneously: restaurant businesses and their customers. It operates on a marketplace model — restaurants pay to use the platform, and customers use it for free to discover, book, and order.
+
+### For Businesses
+
+Seatly is an all-in-one restaurant operating system that replaces every disconnected tool a restaurant currently uses. It handles:
+
+-   Reservations, floor plan management, and waitlist
+
+-   Orders and kitchen display system (KDS)
+
+-   Staff scheduling optimised against busy/quiet hours and staff preferences
+
+-   Menu management with AI-driven insights — e.g. if sardines are only ordered by 0.5% of customers and the cost of stocking them loses the restaurant money, Seatly flags it
+
+-   AI that identifies customer habits and recommends new menu items, deals, or events based on order history and preferences
+
+-   Revenue tracking, analytics, demand forecasting, and expense management
+
+-   CRM with full guest profiles, loyalty tracking, and communication logs
+
+-   Accountant-ready exports and receipt scanning
+
+-   Optional delivery (restaurant opts in — handled by restaurant's own drivers or a courier API)
+
+### For Customers
+
+Seatly is a personal dining planner. Customers use it to:
+
+-   Discover restaurants nearby with a map view, recommended lists, search, and AI chat
+
+-   Book reservations, pre-order with a booking, or order at the table via QR code
+
+-   Plan dates, events, and outings — including a budget planner (e.g. "I have $100 for a date night, show me what's nearby")
+
+-   Earn loyalty points the more they use Seatly — redeemable for free menu items, discounts off their bill, and free event tickets
+
+-   Pay through the app with Stripe
+
+### Business Model
+
+  ------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Revenue stream**        **Details**
+
+  Per-booking fee           $1.00 CAD charged to the restaurant per reservation — billed when the reservation status changes to "confirmed". No charge for cancellations before confirmation.
+
+  Monthly software fee      SaaS subscription tiers for the restaurant dashboard — tiers TBD near launch
+
+  Platform fee (payments)   $1.00 flat fee per payment transaction processed through Seatly (restaurants keep the rest via Stripe Connect)
+
+  Delivery (optional)       Restaurant opts in — restaurant uses their own drivers. No third-party courier. DB fields live in orders table.
+  ------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+### Markets
+
+-   Canada — primary market, launched first
+
+-   French Canada — bilingual from day one (English + French minimum on all user-facing strings)
+
+-   All money defaults to CAD, timezone defaults to America/Toronto
+
+
+> ⚠ BILLING: Subscription tier pricing and tier names are NOT finalised. Do not hardcode tier names or prices anywhere in the UI. Use a config or feature flag system. The $1.00 per booking and $1.00 platform fee are confirmed.
+
+### Current Development Stage
+
+The Supabase backend (database + edge functions) is fully built. The web UI exists as a Figma Make prototype (Vite + React + Tailwind + shadcn/ui). The mobile app has not been started. No production traffic yet — pre-launch.
+
+## 02 — Architecture Overview
+
+Seatly is two client apps sharing one Supabase backend. There is no separate API server — all backend logic lives in Supabase (PostgreSQL, RLS policies, and Edge Functions).
+
+  ---------------------- --------------------------------------------------------------------------------------
+  **Layer**              **Technology**
+
+  Web app                Vite + React + TypeScript + Tailwind CSS + shadcn/ui (keep as-is, wire to Supabase)
+
+  Mobile app             React Native + Expo SDK 52 + TypeScript + NativeWind (not yet started)
+
+  Backend                Supabase — PostgreSQL 17, hosted in ca-central-1 (Canada)
+
+  Auth                   Supabase Auth — email, Google, Apple (iOS only)
+
+  Payments               Stripe Connect — platform takes $1.00 fee, restaurants receive payout
+
+  AI                     Claude API — called only via Supabase Edge Functions, never direct from client
+
+  Maps                   Google Maps API
+
+  Push notifications     Expo Push Notifications (mobile) + in-app + email + SMS
+
+  Storage                Supabase Storage — restaurant-images, menu-item-images, avatars, receipts, exports
+
+  i18n                   i18next — English + French minimum on all user-facing strings
+  ---------------------- --------------------------------------------------------------------------------------
+
+### One App, Role-Based Routing
+
+Both the web app and mobile app serve all user types from a single codebase. After login, the app reads the user's role and routes accordingly:
+
+  -------------------------------------------- ------------------------------------------------------------------------
+  **User type**                                **What they see**
+
+  Customer (no row in user_restaurant_roles)   Customer experience — discover, book, order, loyalty, profile
+
+  Owner                                        Full restaurant dashboard — all pages including billing and settings
+
+  Manager                                      Full dashboard except billing
+
+  Server                                       Floor plan, reservations, orders
+
+  Host                                         Floor plan, reservations, waitlist
+
+  Kitchen                                      Kitchen display system (KDS) only
+
+  Bar                                          Bar orders only
+
+  Staff                                        Schedule and clock in/out only
+  -------------------------------------------- ------------------------------------------------------------------------
+
+
+> **RULE:** Role is determined by user_restaurant_roles table. If NO row exists for a user → they are a customer. If ANY row exists → they are staff and see the staff experience. Customers never see staff screens. Staff never see customer screens.
+
+### Web Dashboard — Role Access Per Page
+
+Every dashboard route enforces role-based access. This is the complete matrix. Implement using useUser() hook — redirect unauthorised roles back to their permitted page.
+
+  ------------------------- ------------------------------------------------
+  **Dashboard page**        **Who can access**
+
+  /dashboard (Overview)     owner, manager
+
+  /dashboard/reservations   owner, manager, server, host
+
+  /dashboard/floor-plan     owner, manager, server, host
+
+  /dashboard/waitlist       owner, manager, host
+
+  /dashboard/orders         owner, manager, server, kitchen, bar
+
+  /dashboard/menu           owner, manager
+
+  /dashboard/staff          owner, manager
+
+  /dashboard/crm            owner, manager
+
+  /dashboard/analytics      owner, manager
+
+  /dashboard/expenses       owner, manager
+
+  /dashboard/events         owner, manager
+
+  /dashboard/export         owner only
+
+  /dashboard/settings       owner only (billing tab: owner only)
+
+  /dashboard/waitlist       owner, manager, host
+  ------------------------- ------------------------------------------------
+
+Staff-only roles (server, host, kitchen, bar, staff) see a filtered sidebar showing only their permitted pages. Never hardcode the full sidebar for all users — always derive it from the current role. Kitchen sees all order items. Bar sees only drink-category items.
+
+### Multi-Location
+
+One owner login can manage multiple restaurant locations. Each restaurant is a separate row in the restaurants table with its own data. On web, a dropdown in the sidebar (RestaurantSwitcher) lets the owner switch between locations. On mobile, a switcher screen appears before the dashboard loads. All queries are scoped to the currently selected restaurant_id.
+
+## 03 — Web App
+
+  ---------------------- ------------------------------------------------------------------------
+  **Framework**          **Vite + React 18 + TypeScript (strict, no any)**
+
+  Styling                Tailwind CSS + shadcn/ui
+
+  Forms                  react-hook-form + zod validation
+
+  Tables                 \@tanstack/react-table
+
+  Charts                 recharts
+
+  Floor plan             react-konva + konva
+
+  Drag to reorder        \@dnd-kit/core
+
+  Animations             framer-motion
+
+  Toasts                 sonner (via shadcn)
+
+  Date picker            react-day-picker
+
+  i18n                   i18next
+
+  Auth                   Supabase Auth
+
+  Payments               Stripe Connect (@stripe/stripe-js)
+
+  AI                     Claude API via Supabase Edge Functions only — never call from client
+  ---------------------- ------------------------------------------------------------------------
+
+### Route Structure
+
+### Public / Marketing (no auth required)
+
+-   / → Seatly landing page (same app — marketing + dashboard in one)
+
+-   /features → Features page
+
+-   /pricing → Pricing page (do not hardcode tier prices — use config)
+
+-   /about → About page
+
+### Auth Routes
+
+-   /login → Login (email, Google)
+
+-   /register → Register (email, Google)
+
+-   /forgot-password → Password reset
+
+-   /setup → Post-register onboarding wizard for new restaurant owners. Guides them through: restaurant profile (name, address, cuisine, hours), menu setup (add categories and items), table configuration (add tables and sections), staff invites (optional), and opening settings (deposit policy, cancellation window). Calls signup-restaurant-owner edge function on completion.
+
+### Customer Routes (logged in, no restaurant role)
+
+-   /discover → Map view + recommended list + search + filters + AI chat
+
+-   /[restaurantSlug] → Public restaurant page — info, menu browser, booking, ordering, events, gift cards
+
+-   /account → Customer dashboard — my bookings, my orders, loyalty points balance, profile settings
+
+
+> ⚠ /[restaurantSlug] and /account are NOT YET BUILT. These are the top priority after wiring the dashboard to Supabase.
+
+### Staff / Owner Dashboard Routes (auth + role required)
+
+-   /dashboard → Overview — KPIs, today's reservations timeline, alerts panel
+
+-   /dashboard/reservations → Reservation list + calendar + new reservation modal
+
+-   /dashboard/floor-plan → Live floor plan (read-only realtime) + edit mode (react-konva)
+
+-   /dashboard/waitlist → Realtime waitlist board
+
+-   /dashboard/orders → Orders + kitchen display system
+
+-   /dashboard/menu → Menu management + AI suggestions panel
+
+-   /dashboard/staff → Staff roster + shift scheduler + clock records + availability editor
+
+-   /dashboard/crm → Guest list + guest profile drawer + loyalty + communication log
+
+-   /dashboard/analytics → Revenue charts, peak hours heatmap, menu performance
+
+-   /dashboard/expenses → Expense list + receipt uploader (AI scans receipts)
+
+-   /dashboard/events → Events + ticket management
+
+-   /dashboard/export → Accountant export builder (generates PDF report)
+
+-   /dashboard/settings → Restaurant settings, hours, deposit policy, loyalty config, billing
+
+### Absolute Rules — Web App
+
+Every developer must follow these on every file, no exceptions:
+
+-   TypeScript everywhere — never use any
+
+-   Never write Supabase queries directly in UI components — always use hooks
+
+-   Never call the Claude API from the client — always go through Edge Functions
+
+-   Never use Claude for financial calculations — hardcoded math only
+
+-   Money in DB is numeric (decimal dollars, e.g. 24.99) — NOT cents integers
+
+-   Always format money with formatCurrency() — never manual string concatenation
+
+-   All user-facing strings go through i18n keys — never hardcode display text
+
+-   All forms use react-hook-form + zod validation
+
+-   Never bypass RLS — every API route validates the JWT
+
+-   File naming: Components = PascalCase, hooks = camelCase with use prefix
+
+-   No hardcoded colour hex values anywhere — use Tailwind tokens only
+
+
+> **MONEY RULE:** formatCurrency(24.99, "cad") → "$24.99" \| formatCurrency(1250.00, "cad") → "$1,250.00" — import from @/lib/utils/formatCurrency
+
+### What Is Already Built (Web)
+
+-   All UI components and page layouts in Figma Make — treat as the visual reference
+
+-   All Supabase migrations and database schema
+
+-   All Edge Functions (11 deployed — see Section 6)
+
+-   All custom hooks (/hooks/)
+
+-   TypeScript types (/types/database.ts)
+
+-   Supabase client setup (/lib/supabase/)
+
+-   Stripe helpers (/lib/stripe/)
+
+-   Utility functions (/lib/utils/)
+
+### What Still Needs Building (Web)
+
+-   Wire every dashboard page to real Supabase hooks — currently UI prototype with mock data
+
+-   /[restaurantSlug] — full customer restaurant page with menu browser, booking, ordering, Stripe checkout
+
+-   /account — customer account area (bookings, orders, loyalty points, profile)
+
+-   /discover — customer discovery page (map, recommended list, search, AI chat)
+
+-   Deploy 5 missing Edge Functions (see Section 6)
+
+-   QR code walk-in ordering flow (tables.qr_code_url already exists in DB)
+
+-   Auth middleware protecting /dashboard/* routes
+
+## 04 — Mobile App
+
+  ---------------------- ----------------------------------------------------------------------------
+  **Framework**          **React Native + Expo SDK 52**
+
+  Routing                Expo Router (file-based)
+
+  Language               TypeScript (strict mode, no any)
+
+  Styling                NativeWind + StyleSheet
+
+  Forms                  react-hook-form + zod
+
+  Maps                   Google Maps (react-native-maps)
+
+  Biometric              expo-local-authentication
+
+  Push notifications     Expo Push Notifications — token stored in user_profiles.expo_push_token
+
+  Storage                AsyncStorage (non-sensitive only — never sessions)
+
+  Auth                   Supabase Auth (email, Google, Apple iOS only)
+
+  Payments               Stripe (react-native-stripe-sdk) — Apple Pay (iOS), Google Pay (Android)
+
+  AI                     Claude API via Supabase Edge Functions only
+
+  i18n                   i18next — English + French minimum
+  ---------------------- ----------------------------------------------------------------------------
+
+### Mobile App Status
+
+
+> ⚠ The mobile app has NOT been started. Zero screens exist. The backend, hooks, types, and Supabase client are all ready — only screens and components need to be built.
+
+### Folder Structure — Mobile
+
+app/
+>
+├── onboarding.tsx ← first-launch only (AsyncStorage guard)
+>
+├── (auth)/
+>
+│ ├── login.tsx
+>
+│ ├── register.tsx
+>
+│ └── forgot-password.tsx
+>
+├── (customer)/
+>
+│ ├── \_layout.tsx ← customer tab bar
+>
+│ ├── discover/
+>
+│ │ ├── index.tsx ← map view (default)
+>
+│ │ ├── list.tsx ← recommended list + search
+>
+│ │ └── [id].tsx ← restaurant detail
+>
+│ ├── bookings/
+>
+│ │ ├── index.tsx ← upcoming/past tabs
+>
+│ │ └── [id].tsx ← reservation detail
+>
+│ ├── orders/
+>
+│ │ ├── index.tsx ← my orders history
+>
+│ │ └── [id].tsx ← order detail
+>
+│ ├── loyalty.tsx ← points balance + redemption
+>
+│ ├── ai-chat.tsx ← personal dining AI
+>
+│ └── profile/
+>
+│ ├── index.tsx
+>
+│ └── dietary.tsx
+>
+├── (staff)/
+>
+│ ├── \_layout.tsx ← staff tab bar
+>
+│ ├── dashboard.tsx ← owners/managers only
+>
+│ ├── floor.tsx
+>
+│ ├── schedule.tsx
+>
+│ └── notifications.tsx
+>
+└── booking/
+>
+└── [restaurantId]/
+>
+├── step1-date.tsx
+>
+├── step2-time.tsx
+>
+├── step3-table.tsx
+>
+├── step4-preorder.tsx ← browse menu, add items
+>
+├── step5-review.tsx
+>
+├── step6-payment.tsx ← Stripe, Apple Pay, Google Pay
+>
+└── step7-confirmation.tsx
+
+### Customer Experience — Mobile
+
+### Discovery
+
+Default view is a map (Google Maps) showing nearby restaurants. Customers can switch to a list view with recommended restaurants. A search bar lets them search by name or cuisine. Filters allow narrowing by cuisine type, price range, distance, rating, dietary options, and availability. An AI chat button opens the personal dining assistant.
+
+### AI Chat — Customer
+
+The customer AI assistant helps with: finding restaurants near them, budget planning (e.g. "I have $100 for a date night"), recommending based on dietary preferences or occasion, answering menu questions for a specific restaurant, and helping plan events. Powered by the ai-chat Edge Function.
+
+### Booking Flow (7 steps)
+
+-   Step 1 — Select date
+
+-   Step 2 — Select time slot (from get-availability edge function)
+
+-   Step 3 — Select table from floor plan (optional — can skip to auto-assign)
+
+-   Step 4 — Pre-order from menu (optional — menu_items where is_preorderable = true)
+
+-   Step 5 — Review booking summary + special requests + occasion
+
+-   Step 6 — Payment (deposit if required, pre-order total, or free) — Stripe, Apple Pay, Google Pay
+
+-   Step 7 — Confirmation with confirmation_code displayed in monospace font
+
+### QR Code Dine-In Ordering
+
+When a customer scans a QR code at a table (tables.qr_code_url), the mobile app opens an ordering flow: browse the full menu, add items with modifiers, review cart, pay via Stripe. Order goes directly to the kitchen (orders + order_items, realtime). No reservation required. Customers can order as a guest (no account) — orders.is_guest_checkout = true, no loyalty points earned, payment entered manually each time.
+
+### Loyalty Points
+
+Customers earn points on every transaction processed through Seatly. Points accumulate in the guests.loyalty_points_balance field and are tracked in loyalty_transactions. Customers can redeem points for:
+
+-   Free menu items — redeem points to cover the cost of specific menu items
+
+-   Discounts off their bill — apply points as a dollar discount at checkout
+
+-   Free event tickets — redeem points to attend restaurant events
+
+
+  Loyalty tier system (Bronze/Silver/Gold/etc.) is NOT finalised. Do not hardcode tier names anywhere. Use guests.loyalty_tier field — value comes from DB. VIP early reservation access is NOT part of the redemption system.
+
+### Staff Experience — Mobile
+
+Staff see different tabs depending on their role after login. The app checks user_restaurant_roles after authentication.
+
+  ---------------------- -------------------------------------------------------
+  **Role**               **Mobile tabs available**
+
+  owner                  Dashboard (KPIs), Floor plan, Schedule, Notifications
+
+  manager                Floor plan, Reservations, Schedule, Notifications
+
+  server                 Floor plan, Orders, Schedule, Notifications
+
+  host                   Floor plan, Waitlist, Reservations, Notifications
+
+  kitchen                Orders (KDS view), Notifications
+
+  bar                    Orders (bar items only), Notifications
+
+  staff                  Schedule, Clock in/out, Notifications
+  ---------------------- -------------------------------------------------------
+
+### Staff Mobile Screens — Detailed
+
+Each staff screen below must be built. These are the exact screens, their purpose, and what they must contain.
+
+### Floor Plan — staff
+
+Live realtime view of all tables. Colour coded: green = empty, gold = reserved, red = occupied, grey = cleaning. Tapping a table opens a bottom sheet: table number, capacity, current guest name and party size, action buttons (Seat Guest, Mark Cleaning, Clear Table). Hosts seat walk-ins here. Servers see their section.
+
+### Reservations — staff
+
+Today reservations sorted by time. Each row: time, guest name, party size, status chip, special request indicator. Tap to open detail + check in button. Filter chips: All, Upcoming, Seated, Completed. Pull to refresh.
+
+### Orders / KDS — staff
+
+Kitchen Display System. Three columns: Pending, In Progress, Ready. Each card: table number, items with quantity, time since ordered, advance status button. Kitchen marks preparing to ready. Server marks served. Bar role sees drinks only.
+
+### Schedule — staff
+
+Weekly calendar of the logged-in staff member's own shifts. Days across top, shift blocks show start/end time and shift name. Tap a shift for Shift Detail. Week navigation arrows. Staff see own schedule only. Owner/manager can see all staff.
+
+### My Hours — staff
+
+Most important screen for regular staff. Shows: clock in/out button (large, gold, prominent), current status (clocked in at [time] or not clocked in), this week hours table (day, shift, hours worked, pay per shift), total hours this week, estimated pay = hours x hourly_rate from user_restaurant_roles. All pay amounts in CAD via formatCurrency(). Data from staff_clock_records + user_restaurant_roles.hourly_rate.
+
+### Clock In Confirmation — staff
+
+Full screen shown after clocking in. Gold checkmark, Clocked In heading, timestamp (Saturday March 23 at 5:47 PM), shift name if matched to staff_shifts, Done button back to My Hours. Creates staff_clock_records row with clocked_in_at = now().
+
+### Shift Detail — staff
+
+Shown when tapping a shift in Schedule. Shows: restaurant name, date, start and end time, role for shift, confirmed status chip, manager notes, Confirm Shift button (sets confirmed_at), Request Swap button (text field, sends notification to manager). Read-only for past shifts.
+
+### Notifications — staff
+
+All notifications for this staff member from notifications table. Each row: type icon, title, body, time ago. Unread rows have gold left border. Tap marks is_read = true. Pull to refresh. Staff see: shift_reminder (24h before shift), no_show_flag (managers only), waitlist_ready (hosts only), booking_confirmed (if assigned waiter).
+
+### Owner Mobile Dashboard — owner only
+
+KPI overview for owners on the go. Four large KPI cards: tonight covers, today revenue, open orders, no-show risks. Scrollable today reservation timeline below. Simple bar chart of this week covers. AI chat button top right. Read-only — owners do detailed management on web dashboard.
+
+### Mobile — Absolute Rules
+
+-   TypeScript everywhere — never use any
+
+-   Never write Supabase queries directly in screens — always use hooks
+
+-   Never call Claude API from the client — always through Edge Functions
+
+-   Never use Claude for financial calculations — hardcoded math only
+
+-   Money in DB is numeric (decimal dollars) — NOT cents integers. Use formatCurrency()
+
+-   All user-facing strings through i18n keys — never hardcode display text
+
+-   Always respect safe area insets (react-native-safe-area-context)
+
+-   Always handle keyboard avoiding on forms (KeyboardAvoidingView)
+
+-   Paginate all lists — default 50 items per page
+
+-   Never store sensitive data in AsyncStorage — sessions managed by Supabase client
+
+-   Always check biometric availability before showing biometric button
+
+-   iOS only: Show "Continue with Apple" button — hide on Android
+
+-   Android only: Show fingerprint label — iOS uses Face ID label
+
+### Available Hooks — Mobile
+
+These hooks are already built. Never query Supabase directly in screens — always use these:
+
+useUser() // current user_profile + role
+>
+useRestaurant(restaurantId?) // restaurant data
+>
+useReservations(filters?) // customer's own reservations
+>
+useAvailability(\...) // time slots via get-availability edge fn
+>
+useNearbyRestaurants(\...) // discover — with menu data
+>
+useFloorPlan(restaurantId) // live table statuses, realtime
+>
+useStaffShifts(staffId, \...) // staff schedule
+>
+useNotifications() // realtime subscription
+>
+useOrders(reservationId?) // pre-order + dine-in order data
+>
+useMenuItems(restaurantId) // menu categories + items
+>
+useGuest(restaurantId) // customer's guest profile at restaurant
+>
+useWaitlist(restaurantId) // realtime waitlist
+
+## 05 — Customer Ordering
+
+Customers can order food through Seatly in three distinct flows. The backend fully supports all three.
+
+### Flow 1 — Pre-Order with Reservation
+
+During the 7-step booking flow (Step 4), customers can browse menu_items where is_preorderable = true and add items to their pre-order. Pre-orders create an order record with is_preorder = true, linked to the reservation via reservations.preorder_order_id. Payment is collected at Step 6 along with any deposit.
+
+### Flow 2 — QR Code Dine-In Ordering
+
+Every table has a qr_code_url stored in the tables table. Scanning the QR code on mobile opens an ordering flow with the full menu (no pre-order filter — all available items). Customer selects items, adds modifier options, reviews cart, and pays via Stripe. The order is created in real-time and fires to the kitchen display. No reservation or account required — guest checkout supported.
+
+### Flow 3 — Online Ordering (Takeout/Pickup/Delivery)
+
+Available on the /[restaurantSlug] web page and mobile. Requires the restaurant to have opted into this service (stored in restaurants.settings_json). Delivery is only available if the restaurant opts in — they use their own drivers, no third-party courier. Takeout and pickup are available immediately when opted in.
+
+### Guest Checkout (No Account Required)
+
+Customers can book reservations and place orders without creating a Seatly account. This applies to all ordering flows. Here is what changes for guest checkout:
+
+-   reservations.is_guest_checkout = true — name, email, phone captured directly on the reservation
+
+-   orders.is_guest_checkout = true — set on any order placed without an account
+
+-   No loyalty points earned — points require a Seatly account linked to a guests record
+
+-   Payment entered manually every time — no saved card, no Stripe customer on file
+
+-   Booking confirmation sent to guest_email on the reservation
+
+-   A guests CRM record is still created for the restaurant so staff can see the booking
+
+
+  Encourage account creation by surfacing the benefit clearly: "Create an account to earn loyalty points and save your payment method." Never block checkout — just inform.
+
+  -------------------------------- --------------------------------------------------------------
+  **Field**                        **Notes**
+
+  orders.is_preorder               true = pre-order tied to reservation
+
+  orders.status                    pending → confirmed → preparing → ready → served → cancelled
+
+  order_items.status               ordered → preparing → ready → served
+
+  order_items.kitchen_started_at   Set when kitchen starts preparing
+
+  order_items.kitchen_ready_at     Set when item is ready to serve
+
+  menu_items.is_preorderable       Only these items show in pre-order step
+
+  menu_items.is_available          86'd items — hide from all ordering flows
+
+  menu_items.is_featured           Show in featured section on restaurant page
+
+  tables.qr_code_url               QR code for dine-in ordering — already generated in DB
+
+  restaurants.settings_json        Controls which ordering options are enabled per restaurant
+  -------------------------------- --------------------------------------------------------------
+
+### Delivery
+
+Delivery is optional and fully restaurant-controlled. When a restaurant opts in, they use their own drivers — there is no third-party courier integration. Seatly facilitates the order and payment flow; the restaurant manages fulfilment entirely.
+
+The following delivery fields are now live in the orders table:
+
+-   order_type — text: dine_in \| preorder \| takeout \| delivery (null = legacy dine-in)
+
+-   delivery_address — text: customer delivery address
+
+-   delivery_notes — text: delivery instructions from customer
+
+-   estimated_delivery_at — timestamptz: set by restaurant staff
+
+-   delivery_status — text: pending \| preparing \| ready_for_pickup \| out_for_delivery \| delivered \| failed
+
+-   driver_name — text: restaurant's own driver
+
+-   driver_phone — text: restaurant's own driver phone
+
+
+  Delivery fields are in the DB. Do not build delivery UI until the restaurant has opted in via settings_json. All delivery rows must have order_type = "delivery" set explicitly.
+
+## 06 — Backend & Edge Functions
+
+Project ID: exbjodmnpdiayfzrdyux \| Region: ca-central-1 \| Postgres: 17.6
+
+### Edge Functions — Deployed (11)
+
+  --------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Function**                **Purpose**
+
+  get-availability            Compute available time slots for a shift/date/party size — called during booking
+
+  close-bill                  Close order, calculate totals, trigger Stripe payment
+
+  check-in-guest              Mark reservation checked_in_at — called by host on arrival
+
+  signup-restaurant-owner     Post-register onboarding wizard — creates restaurant record, owner role, and Stripe Connect account. Wizard steps: restaurant profile → menu setup → table configuration → staff invites → opening settings
+
+  detect-duplicates           Find likely duplicate guest records in CRM
+
+  calculate-demand-forecast   AI forecast for next 14 days of covers and revenue
+
+  calculate-no-show-risk      CRON — score upcoming reservations for no-show risk nightly
+
+  run-auto-tagging            CRON — auto-tag guests by behaviour (VIP, at-risk, loyal, etc.)
+
+  compute-analytics           CRON — aggregate daily stats into restaurant_analytics table
+
+  calculate-lifetime-value    CRON/trigger — recalculate guest lifetime value scores
+
+  expire-loyalty-points       CRON — expire stale loyalty points
+  --------------------------- ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+### Edge Functions — NOT YET DEPLOYED (5) — PRIORITY
+
+
+> ⚠ These 5 functions are documented and needed but not deployed. Deploy in this order:
+
+-   1\. ai-chat — Customer AI assistant + owner insights + menu builder (SSE streaming). Blocks all AI features.
+
+-   2\. send-booking-reminders — Triggered by CRON. Sends push + email 24h and 2h before reservations. Blocks automated reminders.
+
+-   3\. ai-menu-suggestions — Analyse menu performance → generate suggestion cards for owner dashboard.
+
+-   4\. generate-accountant-export — Build full PDF financial report, store in exports storage bucket.
+
+-   5\. scan-receipt — Claude Vision — extract vendor, amount, category from receipt photo for expenses page.
+
+## 07 — Database Schema (Complete)
+
+
+  ⚡ = realtime subscription available on this table \| All 37 tables have RLS enabled
+
+### Users & Auth
+
+### user_profiles
+
+Every Seatly user — customers and staff alike. Created automatically on signup.
+
+  ---------------------------------------------- ----------------------------------------------------------------------------------------------
+  **Column**                                     **Notes**
+
+  id                                             uuid PK
+
+  auth_user_id                                   uuid → auth.users (unique)
+
+  full_name, phone, email, avatar_url            Basic contact info
+
+  role                                           text default "customer" — legacy single-role field. Use user_restaurant_roles for staff.
+
+  restaurant_id                                  uuid → restaurants (nullable) — primary restaurant association
+
+  birthday                                       date
+
+  dietary_restrictions, allergies                text[] — synced to guests record per restaurant
+
+  seating_preference, noise_preference           text
+
+  preferred_language, preferred_locale           text — default "en"
+
+  notification_preferences_json                  jsonb — which notification types the user has enabled
+
+  car_details_json                               jsonb — for valet/parking features
+
+  expo_push_token                                text — updated on every mobile app launch
+
+  stripe_customer_id, stripe_payment_method_id   text — Stripe identifiers
+
+  created_at                                     timestamptz
+  ---------------------------------------------- ----------------------------------------------------------------------------------------------
+
+### user_restaurant_roles
+
+Determines if a user is staff and at which restaurant. If NO row exists → customer. If a row exists → staff with that role.
+
+  -------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Column**                 **Notes**
+
+  id                         uuid PK
+
+  user_id                    uuid → user_profiles
+
+  restaurant_id              uuid → restaurants
+
+  role                       text CHECK: owner \| manager \| server \| host \| kitchen \| bar \| staff
+
+  is_primary                 boolean — primary restaurant for multi-location staff
+
+  hourly_rate                numeric default 0.00 — staff hourly rate in CAD for this role at this restaurant. Used by staff_clock_records.labour_cost. Set by owner when adding staff.
+
+  employment_type            text — full_time \| part_time \| casual (nullable)
+
+  created_at                 timestamptz
+  -------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+### staff_availability
+
+Staff's available days and hours — used by scheduler to suggest optimal shifts.
+
+  --------------------------------- --------------------------------------------
+  **Column**                        **Notes**
+
+  id                                uuid PK
+
+  staff_id                          uuid → user_profiles
+
+  restaurant_id                     uuid → restaurants
+
+  day_of_week                       integer (0=Sunday, 6=Saturday)
+
+  available_from, available_until   time
+
+  is_available                      boolean default true
+  --------------------------------- --------------------------------------------
+
+### Restaurants
+
+### restaurants
+
+Core restaurant record. 7 rows in DB (test data).
+
+  ----------------------------------------------- --------------------------------------------------------------------------------------------------
+  **Column**                                      **Notes**
+
+  id, name, slug                                  slug is unique — used in /[restaurantSlug] URL
+
+  logo_url, cover_photo_url                       Use cover_photo_url for all cover image references — cover_image_url is a duplicate, ignore it
+
+  cuisine_type, description                       text
+
+  address, city, province, country                text
+
+  lat, lng                                        numeric — for map discovery
+
+  phone, email, website                           text
+
+  hours_json                                      jsonb — NO separate restaurant_hours table exists
+
+  settings_json                                   jsonb — feature flags per restaurant (delivery, takeout, online ordering, etc.)
+
+  plan                                            text default "free" — subscription tier (do not hardcode tier names in UI)
+
+  is_active                                       boolean
+
+  timezone                                        text default "America/Toronto"
+
+  currency                                        text default "CAD"
+
+  tax_rate                                        numeric default 0.13 (13% — Ontario HST)
+
+  deposit_policy_json                             jsonb — deposit rules per shift/party size
+
+  loyalty_config_json                             jsonb — points earn rate, redemption rules per restaurant
+
+  stripe_account_id, stripe_onboarding_complete   Stripe Connect — must be complete before payments work
+
+  avg_rating, total_reviews                       numeric/integer — updated by compute-analytics
+
+  price_range                                     integer 1-4 ($ to $$$$)
+
+  booking_advance_days                            integer default 30 — how far ahead customers can book
+
+  cancellation_hours                              integer default 24 — hours before reservation for free cancellation
+
+  no_show_fee, accepts_walkins                    numeric/boolean
+
+  current_shift_briefing                          text — AI-generated briefing for today's service
+
+  business_type                                   text — restaurant, bar, cafe, etc.
+  ----------------------------------------------- --------------------------------------------------------------------------------------------------
+
+### restaurant_sections
+
+Named areas of the restaurant (e.g. Main Floor, Patio, Bar). Tables belong to sections.
+
+  -------------------------- --------------------------------------------
+  **Column**                 **Notes**
+
+  id, restaurant_id, name    Basic fields
+
+  sort_order                 integer — display order
+
+  is_active                  boolean
+  -------------------------- --------------------------------------------
+
+### floor_plans
+
+Canvas layout data for the floor plan editor (react-konva on web). One record per section.
+
+  ----------------------------- ----------------------------------------------------------
+  **Column**                    **Notes**
+
+  id, restaurant_id             Basic fields
+
+  section_id                    uuid → restaurant_sections (nullable)
+
+  name                          text default "Main Floor"
+
+  layout                        jsonb — {walls: [], tables: [], decorations: []}
+
+  canvas_width, canvas_height   integer — default 800×600
+
+  is_active                     boolean
+  ----------------------------- ----------------------------------------------------------
+
+### restaurant_analytics
+
+Pre-aggregated nightly by compute-analytics Edge Function. 30 rows of test data in DB.
+
+  ------------------------------------------------------ ----------------------------------------------
+  **Column**                                             **Notes**
+
+  date                                                   date — one row per restaurant per day
+
+  total_covers, total_revenue, total_orders              Core daily metrics
+
+  avg_spend_per_cover                                    numeric
+
+  no_show_count, cancellation_count, walk_in_count       integer
+
+  food_revenue, drinks_revenue, tip_total                Revenue breakdown
+
+  discount_total, deposit_revenue, deposit_forfeitures   numeric
+
+  gift_card_revenue, event_revenue, promo_usage_count    numeric/integer
+
+  labour_cost                                            numeric — from staff_clock_records
+
+  new_guests_count, returning_guests_count               integer
+
+  loyalty_points_issued, loyalty_points_redeemed         integer
+
+  avg_table_turn_minutes                                 integer
+
+  vip_guest_count                                        integer
+
+  top_dishes_json, booking_sources_json                  jsonb — top dishes array, source breakdown
+
+  computed_at                                            timestamptz
+  ------------------------------------------------------ ----------------------------------------------
+
+### Reservations
+
+### shifts (service config — NOT staff shifts)
+
+Service time slots configured by the owner. 4 rows in DB. Used by get-availability edge function.
+
+  -------------------------------- -------------------------------------------------
+  **Column**                       **Notes**
+
+  name, display_name               e.g. "dinner", "Dinner Service"
+
+  days_of_week                     integer[] — 0=Sun, 6=Sat
+
+  start_time, end_time             time
+
+  slot_duration_minutes            integer default 30
+
+  max_covers                       integer — total covers allowed per slot
+
+  turn_time_minutes                integer default 90 — how long a table is held
+
+  min_party_size, max_party_size   integer
+
+  advance_booking_days             integer default 30
+
+  vip_early_access_hours           integer default 0 — VIP booking window
+
+  blackout_dates                   date[] — no bookings on these dates
+
+  is_active                        boolean
+  -------------------------------- -------------------------------------------------
+
+### reservations ⚡
+
+Named reservations — NOT bookings. Single reserved_at timestamptz — NOT split date + time.
+
+  ------------------------------------------------------------------------------------ ----------------------------------------------------------------------------------------------------
+  **Column**                                                                           **Notes**
+
+  id, restaurant_id, guest_id                                                          Core FKs
+
+  table_id                                                                             uuid → tables (nullable — assigned after seating)
+
+  shift_id                                                                             uuid → shifts
+
+  party_size                                                                           integer
+
+  reserved_at                                                                          timestamptz — single field, not date + time
+
+  status                                                                               pending \| confirmed \| seated \| completed \| cancelled \| no_show
+
+  source                                                                               app \| web \| phone \| walkin
+
+  confirmation_code                                                                    text unique — display in monospace font
+
+  special_request, occasion, dietary_notes, internal_notes                             text
+
+  no_show_risk_score                                                                   integer — set by calculate-no-show-risk CRON
+
+  waiter_id                                                                            uuid → user_profiles — assigned server
+
+  deposit_amount, deposit_status, deposit_stripe_payment_intent_id                     Deposit handling
+
+  preorder_order_id                                                                    uuid → orders — linked pre-order
+
+  reminder_sent_24h, reminder_sent_2h                                                  boolean — set by send-booking-reminders
+
+  confirmed_at, checked_in_at, seated_at, completed_at, cancelled_at, checked_out_at   timestamptz lifecycle fields
+
+  cancellation_reason                                                                  text
+
+  is_guest_checkout                                                                    boolean default false — true = booked without Seatly account. No loyalty points. Manual payment.
+
+  guest_email, guest_phone, guest_full_name                                            text — only set when is_guest_checkout = true. Used for confirmation + reminders.
+  ------------------------------------------------------------------------------------ ----------------------------------------------------------------------------------------------------
+
+### tables ⚡
+
+Physical tables. 10 rows in DB. Realtime — floor plan subscribes to status changes.
+
+  -------------------------- ---------------------------------------------------------------------------------
+  **Column**                 **Notes**
+
+  table_number, label        text — display identifiers
+
+  capacity, min_party        integer
+
+  section, section_id        text + uuid → restaurant_sections
+
+  position_x, position_y     float — canvas coordinates for floor plan
+
+  shape                      text default "rectangle" — rectangle \| circle \| square
+
+  status                     text default "empty" — empty \| reserved \| occupied \| cleaning \| blocked
+
+  combined_with              uuid[] — IDs of tables this table is combined with
+
+  qr_code_url                text — QR code URL for dine-in ordering
+
+  notes                      text — internal notes about the table
+
+  is_active                  boolean
+
+  updated_at                 timestamptz — used for realtime conflict detection
+  -------------------------- ---------------------------------------------------------------------------------
+
+
+> **TABLE STATUS DEFAULT:** "empty" — NOT "available". Always use "empty" in code.
+
+### waitlist ⚡
+
+  -------------------------- -------------------------------------------------------------
+  **Column**                 **Notes**
+
+  guest_name, phone          text — for walk-ins without an account
+
+  user_profile_id            uuid → user_profiles (nullable — for app users)
+
+  party_size                 integer
+
+  position                   integer — queue position
+
+  status                     text default "waiting"
+
+  estimated_wait_minutes     integer
+
+  contact_method             sms \| email \| app
+
+  remote_join                boolean — joined via app without being physically present
+
+  notified_at, response      timestamptz/text — table ready notification handling
+  -------------------------- -------------------------------------------------------------
+
+### Menu & Orders
+
+### menu_categories
+
+  ------------------------------ ----------------------------------------------------------------------
+  **Column**                     **Notes**
+
+  name, name_fr                  Bilingual category names
+
+  description                    text
+
+  sort_order                     integer
+
+  available_from, available_to   time — time-restricted categories (e.g. breakfast only until 11am)
+
+  is_active                      boolean
+  ------------------------------ ----------------------------------------------------------------------
+
+### menu_items
+
+20 rows of test data in DB.
+
+  ------------------------------------- ----------------------------------------------------------------------------------------------------------------------------------
+  **Column**                            **Notes**
+
+  name, name_fr                         Bilingual item names
+
+  description, description_fr           Bilingual descriptions
+
+  price                                 numeric — decimal dollars (e.g. 24.99) — NOT cents
+
+  cost_price                            numeric — used by AI for profitability analysis
+
+  category                              text — category name (legacy) — prefer menu_categories FK
+
+  photo_url                             text
+
+  allergens                             text[] — nuts \| dairy \| gluten \| shellfish \| eggs \| soy \| fish \| sesame
+
+  dietary_flags                         text[] — vegan \| vegetarian \| gluten-free \| halal \| kosher \| nut-free \| dairy-free \| high-protein \| low-carb \| keto
+
+  calories, protein_g, carbs_g, fat_g   Nutrition info
+
+  is_available                          boolean — 86'd items (out of stock)
+
+  is_preorderable                       boolean — show in booking pre-order step
+
+  is_featured                           boolean — show in featured section on restaurant page
+
+  is_active                             boolean — menu item exists / is not deleted
+
+  preparation_time_minutes              integer
+
+  spice_level                           text
+
+  pairing_suggestions                   text
+
+  loyalty_points_value                  integer — points earned when this item is ordered
+
+  sort_order                            integer
+  ------------------------------------- ----------------------------------------------------------------------------------------------------------------------------------
+
+### menu_item_modifiers + menu_item_modifier_options
+
+Modifier groups for menu items (e.g. "Doneness": Rare, Medium, Well Done).
+
+  --------------------------------------------- ----------------------------------------------
+  **Column**                                    **Notes**
+
+  menu_item_modifiers: name                     Group name (e.g. "Doneness")
+
+  is_required, min_selections, max_selections   Validation rules
+
+  menu_item_modifier_options: name              Option name (e.g. "Rare")
+
+  price                                         numeric — upcharge (0.00 if no extra cost)
+
+  is_available                                  boolean
+  --------------------------------------------- ----------------------------------------------
+
+### orders ⚡
+
+  ------------------------------------------------ -------------------------------------------------------------------------------------
+  **Column**                                       **Notes**
+
+  reservation_id                                   uuid → reservations
+
+  restaurant_id, guest_id                          Core FKs
+
+  is_preorder                                      boolean default false
+
+  order_type                                       text — dine_in \| preorder \| takeout \| delivery (null = legacy dine-in)
+
+  is_guest_checkout                                boolean default false — true = ordered without Seatly account, no points earned
+
+  delivery_address, delivery_notes                 text — only populated when order_type = delivery
+
+  estimated_delivery_at                            timestamptz — set by restaurant staff
+
+  delivery_status                                  pending \| preparing \| ready_for_pickup \| out_for_delivery \| delivered \| failed
+
+  driver_name, driver_phone                        text — restaurant's own delivery driver
+
+  subtotal, tax_amount, tip_amount, total_amount   numeric — all decimal dollars
+
+  discount_amount, discount_reason                 Discount handling
+
+  split_type, split_count                          Bill splitting — none \| equal \| custom
+
+  promo_code_id                                    uuid → promo_codes
+
+  gift_card_id                                     uuid → gift_cards
+
+  loyalty_points_redeemed, loyalty_points_earned   integer
+
+  corporate_account_id                             uuid → corporate_accounts
+
+  room_number                                      text — hotel/corporate dining
+
+  billed_at, paid_at                               timestamptz lifecycle fields
+  ------------------------------------------------ -------------------------------------------------------------------------------------
+
+### order_items ⚡
+
+  -------------------------------------- ----------------------------------------------------------------------
+  **Column**                             **Notes**
+
+  order_id, menu_item_id                 Core FKs
+
+  quantity                               integer
+
+  unit_price, line_total                 numeric — decimal dollars
+
+  modifications                          text — selected modifier options as text
+
+  course                                 text — starter \| main \| dessert \| drink
+
+  status                                 ordered → preparing → ready → served
+
+  added_by                               uuid → user_profiles — staff who added the item (null if customer)
+
+  kitchen_started_at, kitchen_ready_at   timestamptz — KDS timing
+
+  rating                                 integer — per-item post-meal rating
+  -------------------------------------- ----------------------------------------------------------------------
+
+### Payments
+
+### payments
+
+  ------------------------------------------ --------------------------------------------------------------------------------
+  **Column**                                 **Notes**
+
+  reservation_id, order_id                   uuid FKs (nullable — one or the other)
+
+  restaurant_id, guest_id, user_profile_id   Core FKs
+
+  stripe_payment_intent_id                   text unique
+
+  stripe_charge_id                           text
+
+  amount                                     numeric — total charged to customer
+
+  platform_fee                               numeric default 1.00 — Seatly's $1.00 per transaction
+
+  restaurant_payout                          numeric — amount - platform_fee
+
+  currency                                   text default "cad"
+
+  status                                     pending \| processing \| succeeded \| failed \| refunded \| partially_refunded
+
+  payment_type                               deposit \| preorder \| full_payment \| gift_card
+
+  refunded_amount, refund_reason             Refund handling
+  ------------------------------------------ --------------------------------------------------------------------------------
+
+### gift_cards
+
+  ------------------------------------------ --------------------------------------------
+  **Column**                                 **Notes**
+
+  code                                       text unique — gift card code
+
+  initial_value, remaining_value             numeric — decimal dollars
+
+  purchased_by_guest_id                      uuid → guests
+
+  recipient_email, recipient_name, message   Gift card recipient info
+
+  stripe_payment_intent_id                   text
+
+  is_active                                  boolean
+
+  expires_at                                 timestamptz
+
+  redeemed_at                                timestamptz
+  ------------------------------------------ --------------------------------------------
+
+### promo_codes
+
+  -------------------------- --------------------------------------------
+  **Column**                 **Notes**
+
+  code                       text
+
+  discount_type              text — percentage \| fixed
+
+  discount_value             numeric
+
+  max_uses, uses_count       integer — usage limits
+
+  valid_from, valid_until    date
+
+  is_active                  boolean
+  -------------------------- --------------------------------------------
+
+### corporate_accounts
+
+  ---------------------------------------------- --------------------------------------------
+  **Column**                                     **Notes**
+
+  company_name, billing_email, billing_address   text
+
+  credit_limit, current_balance                  numeric
+
+  payment_terms_days                             integer — e.g. net 30
+  ---------------------------------------------- --------------------------------------------
+
+### Guest CRM
+
+### guests
+
+The restaurant's view of a customer. One row per customer per restaurant. Separate from user_profiles (which is platform-wide).
+
+  ------------------------------------------------------------------------------------ ----------------------------------------------------------------------------
+  **Column**                                                                           **Notes**
+
+  user_profile_id                                                                      uuid → user_profiles (nullable — walk-in guests may not have an account)
+
+  full_name, email, phone                                                              text — may differ from user_profiles
+
+  birthday, anniversary                                                                date
+
+  tags                                                                                 text[] — set by run-auto-tagging or manually
+
+  dietary_restrictions, allergies                                                      text[]
+
+  seating_preference, noise_preference                                                 text
+
+  favourite_dishes, favourite_drinks                                                   text[]
+
+  internal_notes                                                                       text — private staff notes
+
+  total_visits, total_spend                                                            integer/numeric
+
+  average_spend_per_visit, highest_single_bill                                         numeric
+
+  food_spend_total, drinks_spend_total                                                 numeric
+
+  no_show_count, cancellation_count                                                    integer
+
+  no_show_risk_score, lifetime_value_score                                             integer — AI-calculated
+
+  is_vip, is_blocked                                                                   boolean
+
+  loyalty_points_balance, loyalty_points_earned_total, loyalty_points_redeemed_total   integer
+
+  loyalty_tier                                                                         text — TBD, do not hardcode tier names
+
+  preferred_server_id                                                                  uuid → user_profiles — guest's preferred server
+
+  sms_opt_in, email_opt_in                                                             boolean
+
+  acquisition_source                                                                   text — how they first found the restaurant
+
+  duplicate_of                                                                         uuid → guests (self-ref) — set by detect-duplicates edge fn
+
+  stripe_payment_method_id                                                             text
+
+  total_deposits_paid, total_deposits_forfeited                                        numeric
+
+  last_visit_at, first_visit_at, last_contacted_at                                     timestamptz
+  ------------------------------------------------------------------------------------ ----------------------------------------------------------------------------
+
+### guest_notes
+
+Pinned internal notes about a guest, optionally tied to a specific visit.
+
+  -------------------------- --------------------------------------------
+  **Column**                 **Notes**
+
+  guest_id, restaurant_id    Core FKs
+
+  reservation_id             uuid → reservations (nullable)
+
+  staff_id                   uuid → user_profiles — who wrote it
+
+  note                       text
+
+  category                   text — preference \| incident \| general
+
+  is_pinned                  boolean
+  -------------------------- --------------------------------------------
+
+### guest_surveys
+
+Post-visit feedback collected after a reservation is completed.
+
+  -------------------------------------------------------------- --------------------------------------------
+  **Column**                                                     **Notes**
+
+  reservation_id                                                 uuid → reservations (nullable)
+
+  overall_rating, food_rating, service_rating, ambience_rating   integer 1-5
+
+  would_recommend                                                boolean
+
+  responses_json                                                 jsonb — custom question responses
+  -------------------------------------------------------------- --------------------------------------------
+
+### allergy_incidents
+
+Log of allergy events — for liability and kitchen awareness.
+
+  -------------------------- --------------------------------------------
+  **Column**                 **Notes**
+
+  guest_id, restaurant_id    Core FKs
+
+  reservation_id, dish_id    uuid FKs (nullable)
+
+  allergen                   text
+
+  severity                   text — mild \| moderate \| severe
+
+  action_taken               text
+
+  reported_by                uuid → user_profiles
+  -------------------------- --------------------------------------------
+
+### loyalty_transactions
+
+  -------------------------- -----------------------------------------------------------
+  **Column**                 **Notes**
+
+  guest_id, restaurant_id    Core FKs
+
+  order_id                   uuid → orders (nullable)
+
+  type                       text — earn \| redeem \| expire \| adjustment
+
+  points                     integer — positive for earn, negative for redeem/expire
+
+  balance_after              integer — running balance
+
+  description                text
+  -------------------------- -----------------------------------------------------------
+
+### communication_log
+
+  -------------------------------------- ------------------------------------------------
+  **Column**                             **Notes**
+
+  channel                                sms \| email \| push \| phone
+
+  type, subject, body                    Message content
+
+  status                                 text — sent \| delivered \| opened \| failed
+
+  campaign_id                            text — for bulk campaigns
+
+  opened_at, replied_at, reply_content   Engagement tracking
+  -------------------------------------- ------------------------------------------------
+
+### Staff
+
+### staff_shifts (work assignments — NOT service config)
+
+
+  staff_shifts = when a specific person is working. shifts = service config (slot durations, covers). They are different tables.
+
+  -------------------------------- -------------------------------------------------------------------------
+  **Column**                       **Notes**
+
+  staff_id                         uuid → user_profiles
+
+  shift_id                         uuid → shifts (service config — the service period they're covering)
+
+  scheduled_date                   date
+
+  scheduled_start, scheduled_end   time
+
+  role_for_shift                   text — their role for this specific shift
+
+  confirmed_at                     timestamptz — staff confirmed they're working
+
+  notes                            text
+  -------------------------------- -------------------------------------------------------------------------
+
+### staff_clock_records
+
+  ------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Column**                      **Notes**
+
+  staff_shift_id                  uuid → staff_shifts (nullable)
+
+  clocked_in_at, clocked_out_at   timestamptz
+
+  hours_worked                    numeric — calculated on clock out
+
+  hourly_rate                     numeric — copied from user_restaurant_roles.hourly_rate at the moment of clock out. This locks the rate at the time worked even if the rate changes later.
+
+  labour_cost                     numeric — hours_worked × hourly_rate
+  ------------------------------- --------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+### Events
+
+### events
+
+  ------------------------------- -----------------------------------------------
+  **Column**                      **Notes**
+
+  name, description               text
+
+  date, start_time, end_time      date/time
+
+  price_per_person                numeric
+
+  capacity, tickets_sold          integer
+
+  is_recurring, recurrence_rule   boolean/text — recurring event support
+
+  stripe_product_id               text — Stripe product for ticket sales
+
+  cover_image_url                 text
+
+  min_age, dress_code             integer/text
+
+  is_private                      boolean — private events not shown publicly
+
+  menu_id                         uuid — event-specific menu (nullable)
+  ------------------------------- -----------------------------------------------
+
+### event_tickets
+
+  ----------------------------------- -----------------------------------------------
+  **Column**                          **Notes**
+
+  event_id, guest_id, restaurant_id   Core FKs
+
+  quantity                            integer
+
+  total_amount                        numeric
+
+  stripe_payment_intent_id            text
+
+  status                              pending \| confirmed \| cancelled \| refunded
+  ----------------------------------- -----------------------------------------------
+
+### AI & System
+
+### ai_conversations
+
+  -------------------------- ---------------------------------------------------------------------------------
+  **Column**                 **Notes**
+
+  user_id                    uuid → user_profiles
+
+  restaurant_id              uuid → restaurants (nullable — customer chats may not be restaurant-specific)
+
+  context_type               customer_chat \| owner_insights \| menu_builder
+
+  messages                   jsonb array — [{role, content, timestamp}]
+  -------------------------- ---------------------------------------------------------------------------------
+
+### ai_menu_suggestions
+
+  -------------------------- -----------------------------------------------------
+  **Column**                 **Notes**
+
+  suggestion_type            add_item \| remove_item \| price_change \| new_menu
+
+  title, reasoning           text — shown to owner in suggestion card
+
+  data                       jsonb — structured data for the suggestion
+
+  status                     pending \| accepted \| rejected
+  -------------------------- -----------------------------------------------------
+
+### notifications ⚡
+
+  -------------------------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Column**                 **Notes**
+
+  user_id, restaurant_id     Core FKs
+
+  type                       booking_confirmed \| booking_reminder_24h \| booking_reminder_2h \| booking_cancelled \| preorder_ready \| shift_reminder \| no_show_flag \| new_review \| payment_received \| ai_insight \| waitlist_ready \| event_reminder \| loyalty_milestone
+
+  title, body                text — notification content
+
+  data                       jsonb — deep link payload
+
+  is_read                    boolean default false
+
+  sent_push                  boolean — push notification fired
+  -------------------------- ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+### Expenses & Exports
+
+### expenses
+
+  ---------------------------------- --------------------------------------------------------------------------------------------------------------------
+  **Column**                         **Notes**
+
+  category                           food_cost \| beverages \| utilities \| rent \| equipment \| marketing \| staff \| supplies \| maintenance \| other
+
+  vendor_name, description, notes    text
+
+  amount, tax_amount, total_amount   numeric — decimal dollars
+
+  currency                           text default "cad"
+
+  expense_date                       date
+
+  receipt_url, receipt_type          text — image \| pdf (uploaded to receipts storage bucket)
+
+  ai_categorized                     boolean — was category auto-detected by scan-receipt edge fn
+
+  ai_extracted_data                  jsonb — raw AI extraction output
+
+  deleted_at                         timestamptz — soft delete (not hard deleted)
+  ---------------------------------- --------------------------------------------------------------------------------------------------------------------
+
+### accountant_exports
+
+  -------------------------- ------------------------------------------------------
+  **Column**                 **Notes**
+
+  date_from, date_to         date — report date range
+
+  includes                   text[] — what data is in the export
+
+  file_url                   text — signed URL to PDF in exports storage bucket
+
+  status                     pending \| generating \| ready \| failed
+  -------------------------- ------------------------------------------------------
+
+## 08 — Design System
+
+
+  These tokens are the law. No developer may use a colour, font size, spacing value, or border radius that is not in this section. All tokens must be in tailwind.config.ts (web) and theme.ts (mobile).
+
+### Colours
+
+### Primary
+
+  --------------- -----------------------------------------------------------------------------
+  **Token**       **Hex — Usage**
+
+  gold            #C9A84C — primary buttons, active states, key highlights, borders on dark
+
+  gold-light      #F5E6C8 — tint backgrounds, hover states
+
+  gold-dark       #A8873A — button pressed/hover state
+  --------------- -----------------------------------------------------------------------------
+
+### Backgrounds
+
+  --------------- -------------------------------------------------------------
+  **Token**       **Hex — Usage**
+
+  bg-base         #0A0A0A — screen/page background
+
+  bg-surface      #1A1A1A — cards, sheets, inputs, modals
+
+  bg-elevated     #242424 — pressed states, nested panels, hover on surface
+
+  border          #2E2E2E — all borders on dark backgrounds
+  --------------- -------------------------------------------------------------
+
+**Text**
+
+  ---------------- -------------------------------------------------------
+  **Token**        **Hex — Usage**
+
+  text-primary     #FFFFFF — main text
+
+  text-secondary   #AAAAAA — secondary text, labels
+
+  text-muted       #666666 — placeholder, metadata, disabled
+  ---------------- -------------------------------------------------------
+
+### Semantic
+
+  --------------- ------------------------------------------------------------------------
+  **Token**       **Hex — Usage**
+
+  success         #22C55E — available tables, confirmed reservations, positive actions
+
+  warning         #F59E0B — pending, at-risk, warnings
+
+  danger          #EF4444 — occupied, no-show, errors, destructive actions
+
+  info            #3B82F6 — informational, neutral notifications
+  --------------- ------------------------------------------------------------------------
+
+### Table Status Colours (floor plan only)
+
+  --------------- ---------------------------------------------------------
+  **Status**      **Colour**
+
+  empty           #22C55E (success) — default status, NOT "available"
+
+  reserved        #C9A84C (gold)
+
+  occupied        #EF4444 (danger)
+
+  cleaning        #6B7280
+
+  blocked         #374151
+  --------------- ---------------------------------------------------------
+
+### Typography
+
+iOS: SF Pro (system default). Android: Roboto (system default). Web: system-ui or Inter. Never hardcode font family names — use the platform default.
+
+  ---------------------- ---------------------------------------------------------
+  **Role**               **Weight — Size — Line Height**
+
+  H1                     700 — 28px — 36px
+
+  H2                     600 — 22px — 30px
+
+  H3                     600 — 18px — 26px
+
+  Body Large             400 — 16px — 24px
+
+  Body                   400 — 14px — 20px
+
+  Body Small             400 — 12px — 16px
+
+  Label                  500 — 11px — 16px — UPPERCASE + letter-spacing: 1
+
+  Monospace              Platform mono — 14px — confirmation codes, codes
+  ---------------------- ---------------------------------------------------------
+
+### Spacing (4px base unit)
+
+Valid spacing values only: 4 / 8 / 12 / 16 / 20 / 24 / 32 / 40 / 48px
+
+### Border Radius
+
+  ---------------------- --------------------------------------------------
+  **Token**              **Value — Usage**
+
+  sm                     6px — chips, badges, tags
+
+  md                     10px — inputs, small buttons
+
+  lg                     14px — cards, panels
+
+  xl                     20px — bottom sheets, modals, large containers
+
+  full                   9999px — pills, avatars, toggles
+  ---------------------- --------------------------------------------------
+
+### Component Specs
+
+### Primary Button (Gold)
+
+-   Background: #C9A84C \| Pressed: #A8873A \| Text: #0A0A0A
+
+-   Height: 52px \| Border radius: 14px \| Font: 600 16px
+
+-   Shadow: shadowColor #C9A84C, opacity 0.25, radius 12
+
+### Outlined Button
+
+-   Background: transparent \| Border: 1.5px #C9A84C \| Text: #C9A84C
+
+-   Height: 48px \| Border radius: 12px
+
+### Input Fields
+
+-   Background: #1A1A1A (bg-surface) \| Border: 1px #2E2E2E (border)
+
+-   Focus border: #C9A84C (gold) \| Height: 48px \| Border radius: 10px
+
+-   Text: #FFFFFF \| Placeholder: #666666 (text-muted) \| Padding: 16px horizontal
+
+### Cards
+
+-   Background: #1A1A1A (bg-surface) \| Border: 1px #2E2E2E
+
+-   Border radius: 14px \| Padding: 16px
+
+### Supabase Storage Buckets
+
+  ---------------------- ----------------------------------------------------------
+  **Bucket**             **Access — Usage**
+
+  restaurant-images      Public read — cover photos, logos, gallery
+
+  menu-item-images       Public read — food photos on menu and ordering screens
+
+  avatars                Public read — user profile photos
+
+  receipts               Private — expense receipts (owner-scoped signed URLs)
+
+  exports                Private — PDF accountant reports (7-day signed URLs)
+  ---------------------- ----------------------------------------------------------
+
+## 09 — AI Features
+
+
+  The Claude API is NEVER called directly from the client (web or mobile). All AI calls go through Supabase Edge Functions. Never use Claude for financial calculations — hardcoded math only.
+
+### Customer AI Chat
+
+Accessible from the mobile app (ai-chat screen) and the web discover page. Context type: customer_chat. The AI helps customers:
+
+-   Find restaurants near them based on cuisine, dietary needs, occasion, or vibe
+
+-   Budget planning — "I have $100 for a date night, what's nearby and what can I get?"
+
+-   Plan events, dates, and group outings
+
+-   Answer menu questions for a specific restaurant
+
+-   Get personalised recommendations based on their past orders and preferences
+
+Powered by: ai-chat Edge Function (SSE streaming). Conversation history stored in ai_conversations (context_type = customer_chat).
+
+### Owner Insights AI
+
+Accessible from the owner/manager dashboard. Context type: owner_insights. The AI answers questions about the restaurant's data:
+
+-   Revenue trends and anomalies
+
+-   Guest behaviour patterns
+
+-   Staff performance and scheduling questions
+
+-   Demand forecasting questions
+
+Powered by: ai-chat Edge Function. Conversation history stored in ai_conversations (context_type = owner_insights).
+
+### Menu Builder AI
+
+Analyses menu performance data to generate actionable suggestion cards on the menu management page. Context type: menu_builder. Examples:
+
+-   Flag items with \< 1% order rate that cost more than they generate
+
+-   Recommend new items based on what top customers order and their preferences
+
+-   Suggest price adjustments based on order volume and competitor data
+
+-   Recommend seasonal specials or event menus based on upcoming events and historical data
+
+Powered by: ai-menu-suggestions Edge Function. Results stored in ai_menu_suggestions table. Owner can accept or reject each suggestion.
+
+### Automated AI (Background CRONs)
+
+-   calculate-no-show-risk — nightly, scores every upcoming reservation
+
+-   run-auto-tagging — tags guests as VIP, at-risk, loyal, etc. based on behaviour
+
+-   compute-analytics — nightly aggregation of all daily metrics
+
+-   calculate-lifetime-value — recalculates guest LTV scores
+
+-   expire-loyalty-points — removes stale points
+
+-   calculate-demand-forecast — 14-day AI forecast for owners
+
+## 10 — Notifications
+
+Seatly supports four notification channels: push (mobile), in-app, email, and SMS. Every notification is stored in the notifications table and can trigger a push via Expo Push Notifications.
+
+  ----------------------- ------------------------------------------------
+  **Notification type**   **Trigger**
+
+  booking_confirmed       Reservation confirmed — to customer
+
+  booking_reminder_24h    CRON 24h before reserved_at — to customer
+
+  booking_reminder_2h     CRON 2h before reserved_at — to customer
+
+  booking_cancelled       Reservation cancelled — to customer + staff
+
+  preorder_ready          Pre-order confirmed by kitchen — to customer
+
+  shift_reminder          Day before scheduled shift — to staff member
+
+  no_show_flag            Guest flagged as no-show — to manager
+
+  new_review              Guest survey submitted — to owner
+
+  payment_received        Payment succeeded — to owner
+
+  ai_insight              New AI menu suggestion — to owner
+
+  waitlist_ready          Table ready for waitlist guest — to guest
+
+  event_reminder          Day before event — to ticket holder
+
+  loyalty_milestone       Guest reaches points milestone — to customer
+  ----------------------- ------------------------------------------------
+
+### Push Notification Setup
+
+-   Token stored in user_profiles.expo_push_token — updated on every app launch
+
+-   Push is sent via send-booking-reminders Edge Function (deploy this first)
+
+-   Notifications table has sent_push boolean — check before sending to avoid duplicates
+
+-   All notification content goes through i18n — French translations required
+
+## 11 — Payments & Billing
+
+### Stripe Connect
+
+Seatly uses Stripe Connect. Restaurants onboard via the /setup wizard (signup-restaurant-owner edge function creates their Stripe Connect account). Payments split automatically: customer pays → Seatly takes $1.00 platform fee → restaurant receives the rest.
+
+  ------------------------------ ------------------------------------------------------------------------------
+  **Field**                      **Where stored**
+
+  Restaurant Stripe account ID   restaurants.stripe_account_id
+
+  Onboarding complete flag       restaurants.stripe_onboarding_complete — must be true before payments work
+
+  Customer Stripe customer ID    user_profiles.stripe_customer_id
+
+  Customer payment method        user_profiles.stripe_payment_method_id
+
+  Guest payment method           guests.stripe_payment_method_id (per-restaurant)
+
+  Platform fee per transaction   $1.00 CAD — payments.platform_fee default 1.00
+
+  Restaurant payout              payments.restaurant_payout = amount - platform_fee
+  ------------------------------ ------------------------------------------------------------------------------
+
+### Payment Flows
+
+### Deposit on Booking
+
+If the restaurant has configured a deposit policy (restaurants.deposit_policy_json), a deposit is charged at Step 6 of the booking flow. Amount stored in reservations.deposit_amount. Stripe payment intent stored in reservations.deposit_stripe_payment_intent_id.
+
+### Pre-Order Payment
+
+Pre-order total charged at booking Step 6 along with any deposit. Creates an order record and a payment record with payment_type = preorder.
+
+### Bill Close (Dine-In)
+
+When service is complete, staff trigger the close-bill Edge Function. This calculates the final total (subtotal + tax + tip - discounts - gift cards - loyalty redemptions), charges the customer's saved payment method or prompts for payment, and marks the order paid_at.
+
+### Important Money Rules
+
+-   All prices in DB are numeric decimal dollars (e.g. 24.99) — NOT cents integers
+
+-   Always use formatCurrency(amount, "cad") — never format money manually
+
+-   Never use Claude/AI for financial calculations — hardcoded math only
+
+-   Tax rate: 13% (Ontario HST) stored in restaurants.tax_rate — use this, never hardcode
+
+## 12 — Developer Guide
+
+
+  Developers on this project use Cursor with AI assistance. All developers have zero prior professional software experience. This section must be followed precisely on every task.
+
+### Day 1 Onboarding
+
+-   1\. Read this entire document
+
+-   2\. Open the Figma Make file (black-and-gold-Themed-Web-App) — this is your visual reference for the web app
+
+-   3\. Clone the repo and run the dev environment
+
+-   4\. In Cursor: add both SEATLY-WEB-BIBLE.md and SEATLY-MOBILE-BIBLE.md (this file) to your context on every task
+
+-   5\. Never start building a screen without first checking: does this screen exist in Figma Make? If yes, match it exactly.
+
+### Every Task Checklist
+
+-   [ ] Is there a Figma Make reference for this screen? Match it exactly.
+
+-   [ ] Am I using the correct Tailwind colour tokens? No hardcoded hex values.
+
+-   [ ] Am I using a hook? No direct Supabase queries in components.
+
+-   [ ] Is money formatted with formatCurrency()?
+
+-   [ ] Are all strings going through i18n keys?
+
+-   [ ] Is TypeScript strict? No any types.
+
+-   [ ] Are all forms using react-hook-form + zod?
+
+### PR / Code Review Rules
+
+Every pull request must pass these checks before merging:
+
+-   No hardcoded colour values — Tailwind tokens only
+
+-   No any in TypeScript
+
+-   No direct Supabase queries in components (web) or screens (mobile)
+
+-   No direct Claude API calls from client code
+
+-   Money always formatted with formatCurrency()
+
+-   All display text through i18n keys
+
+-   No hardcoded tier names or subscription prices
+
+### Tailwind Config — Required Tokens (Web)
+
+These tokens MUST be in tailwind.config.ts before any UI development starts:
+
+colors: {
+>
+gold: '#C9A84C',
+>
+'gold-light': '#F5E6C8',
+>
+'gold-dark': '#A8873A',
+>
+'bg-base': '#0A0A0A',
+>
+'bg-surface': '#1A1A1A',
+>
+'bg-elevated': '#242424',
+>
+border: '#2E2E2E',
+>
+'text-primary': '#FFFFFF',
+>
+'text-secondary': '#AAAAAA',
+>
+'text-muted': '#666666',
+>
+success: '#22C55E',
+>
+warning: '#F59E0B',
+>
+danger: '#EF4444',
+>
+info: '#3B82F6',
+>
+}
+
+### Mobile Theme Constants
+
+Create /lib/theme.ts in the mobile app with the same tokens as NativeWind/StyleSheet values. All components import from this file — never hardcode colours in StyleSheet.
+
+### Logo & Brand Assets
+
+No Seatly logo or wordmark exists yet. Use a text-based "SEATLY" logotype in gold (#C9A84C) as the placeholder everywhere a logo would appear. Do not create a custom icon or symbol — text only until a real logo is provided.
+
+### Environment
+
+There is currently one Supabase project (exbjodmnpdiayfzrdyux) used for all development and testing. There is no separate staging environment. Exercise caution with any data operations — you are always working against the real project. Do not run destructive queries or delete seed data.
+
+
+> ⚠ No staging environment. All dev work is against the live Supabase project. Never run DELETE or DROP commands without explicit confirmation from the owner.
+
+All keys follow dot notation: screen.component.label
+
+-   booking.step1.title = "Choose a Date" / "Choisissez une date"
+
+-   dashboard.overview.totalCovers = "Total Covers" / "Couverts totaux"
+
+-   Never use a string as-is in JSX — always t("key")
+
+### Known DB Gotchas — Read This Before Querying
+
+-   Table is named reservations — NOT bookings
+
+-   Table status default is "empty" — NOT "available"
+
+-   reserved_at is a single timestamptz — NOT separate date and time columns
+
+-   shifts = service config (slot durations). staff_shifts = who is working when. Different tables.
+
+-   Restaurant hours are in hours_json JSONB — there is NO restaurant_hours table
+
+-   Use cover_photo_url for restaurant images — ignore cover_image_url (duplicate, will be removed)
+
+-   Money is stored as decimal dollars (24.99) — NOT cents (2499)
+
+-   user_restaurant_roles has no "customer" role — absence of a row = customer
+
+-   floor_plans.layout is JSONB with structure {walls: [], tables: [], decorations: []}
+
+-   orders.reservation_id is required (not nullable) — every order must have a reservation
+
+## 13 — Build Priority Order
+
+Build in this order. Do not jump ahead — each phase depends on the previous.
+
+### Phase 1 — Web App: Wire Dashboard to Supabase
+
+-   1\. Set up Supabase client, auth, and RLS in the Vite/React app
+
+-   2\. Add tailwind.config.ts with all design tokens
+
+-   3\. Wire auth — login, register, setup wizard (calls signup-restaurant-owner)
+
+-   4\. Wire Overview dashboard — real KPIs from restaurant_analytics
+
+-   5\. Wire Reservations — real data from reservations table with realtime
+
+-   6\. Wire Floor Plan — real tables data with realtime status updates
+
+-   7\. Wire Orders / KDS — real orders and order_items with realtime
+
+-   8\. Wire Menu management — real menu_categories and menu_items
+
+-   9\. Wire remaining dashboard pages (staff, CRM, analytics, expenses, events, export, settings)
+
+### Phase 2 — Deploy Missing Edge Functions
+
+-   1\. Deploy ai-chat (unblocks all AI features)
+
+-   2\. Deploy send-booking-reminders (unblocks automated notifications)
+
+-   3\. Deploy ai-menu-suggestions
+
+-   4\. Deploy generate-accountant-export
+
+-   5\. Deploy scan-receipt
+
+### Phase 3 — Web App: Customer-Facing Pages
+
+-   1\. Build /discover — map, recommended list, search, filters, AI chat
+
+-   2\. Build /[restaurantSlug] — restaurant info, menu browser, booking flow, ordering, events
+
+-   3\. Build /account — customer bookings, orders, loyalty points, profile
+
+-   4\. Build QR code walk-in ordering flow
+
+### Phase 4 — Mobile App
+
+-   1\. Set up Expo project, Supabase client, NativeWind, theme.ts
+
+-   2\. Build auth screens — login, register, forgot password, onboarding carousel
+
+-   3\. Build role routing — post-login check of user_restaurant_roles
+
+-   4\. Build customer tabs — discover (map), bookings, orders, AI chat, profile
+
+-   5\. Build 7-step booking flow
+
+-   6\. Build QR code dine-in ordering flow
+
+-   7\. Build loyalty screen
+
+-   8\. Build staff tabs — floor plan, reservations, orders/KDS, schedule, notifications
+
+-   9\. Build owner mobile dashboard
+
+-   10\. Set up push notifications — register token, handle incoming
+
+-   11\. Set up deep links — reservation confirmation → reservation detail
+
+### Phase 5 — Polish & Launch Prep
+
+-   French translations for all i18n keys
+
+-   Delivery opt-in flow (schema update required first — add delivery fields to orders)
+
+-   Subscription billing — Seatly plan management (tier pricing TBD)
+
+-   App Store + Google Play submission
+
+-   QA across all 7 staff roles on both platforms
+
+*End of Seatly Master Product Bible*
+
+Version: March 2026 · Drop into Cursor on every task

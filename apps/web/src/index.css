@@ -1,0 +1,132 @@
+@config "../tailwind.config.ts";
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    /* Must match tailwind.config.ts borderRadius (no theme() here — hangs Tailwind v4). */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-xl: 20px;
+    --radius-2xl: 20px;
+    --radius-3xl: 20px;
+    --radius-4xl: 20px;
+}
+
+:root {
+    --background: theme(colors.bg-base);
+    --foreground: theme(colors.text-primary);
+    --card: theme(colors.bg-surface);
+    --card-foreground: theme(colors.text-primary);
+    --popover: theme(colors.bg-elevated);
+    --popover-foreground: theme(colors.text-primary);
+    --primary: theme(colors.gold);
+    --primary-foreground: theme(colors.bg-base);
+    --secondary: theme(colors.bg-elevated);
+    --secondary-foreground: theme(colors.text-primary);
+    --muted: theme(colors.bg-elevated);
+    --muted-foreground: theme(colors.text-muted);
+    --accent: theme(colors.gold-light);
+    --accent-foreground: theme(colors.bg-base);
+    --destructive: theme(colors.danger);
+    --border: theme(colors.border);
+    --input: theme(colors.border);
+    --ring: theme(colors.gold);
+    --chart-1: theme(colors.gold);
+    --chart-2: theme(colors.success);
+    --chart-3: theme(colors.info);
+    --chart-4: theme(colors.warning);
+    --chart-5: theme(colors.text-muted);
+    --radius: theme(borderRadius.lg);
+    --sidebar: theme(colors.bg-surface);
+    --sidebar-foreground: theme(colors.text-primary);
+    --sidebar-primary: theme(colors.gold);
+    --sidebar-primary-foreground: theme(colors.bg-base);
+    --sidebar-accent: theme(colors.bg-elevated);
+    --sidebar-accent-foreground: theme(colors.text-primary);
+    --sidebar-border: theme(colors.border);
+    --sidebar-ring: theme(colors.gold);
+}
+
+.dark {
+    --background: theme(colors.bg-base);
+    --foreground: theme(colors.text-primary);
+    --card: theme(colors.bg-surface);
+    --card-foreground: theme(colors.text-primary);
+    --popover: theme(colors.bg-elevated);
+    --popover-foreground: theme(colors.text-primary);
+    --primary: theme(colors.gold);
+    --primary-foreground: theme(colors.bg-base);
+    --secondary: theme(colors.bg-elevated);
+    --secondary-foreground: theme(colors.text-primary);
+    --muted: theme(colors.bg-elevated);
+    --muted-foreground: theme(colors.text-muted);
+    --accent: theme(colors.gold-light);
+    --accent-foreground: theme(colors.bg-base);
+    --destructive: theme(colors.danger);
+    --border: theme(colors.border);
+    --input: theme(colors.border);
+    --ring: theme(colors.gold);
+    --chart-1: theme(colors.gold);
+    --chart-2: theme(colors.success);
+    --chart-3: theme(colors.info);
+    --chart-4: theme(colors.warning);
+    --chart-5: theme(colors.text-muted);
+    --sidebar: theme(colors.bg-surface);
+    --sidebar-foreground: theme(colors.text-primary);
+    --sidebar-primary: theme(colors.gold);
+    --sidebar-primary-foreground: theme(colors.bg-base);
+    --sidebar-accent: theme(colors.bg-elevated);
+    --sidebar-accent-foreground: theme(colors.text-primary);
+    --sidebar-border: theme(colors.border);
+    --sidebar-ring: theme(colors.gold);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}

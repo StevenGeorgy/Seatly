@@ -2,6 +2,10 @@
   "name": "seatly",
   "private": true,
   "workspaces": ["apps/*", "packages/*"],
+  "overrides": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5"
+  },
   "scripts": {
     "seed:users": "tsx scripts/seed-users.ts",
     "fix:profile": "tsx scripts/fix-profile.ts",
