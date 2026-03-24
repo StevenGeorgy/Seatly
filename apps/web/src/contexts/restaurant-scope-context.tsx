@@ -15,6 +15,7 @@ const STORAGE_KEY = "seatly.selectedRestaurantId";
 
 export type RestaurantScopeValue = {
   selectedRestaurantId: string | null;
+  selectedRestaurant: StaffRestaurantRow | null;
   setSelectedRestaurantId: (id: string) => void;
   restaurants: StaffRestaurantRow[];
   loading: boolean;
@@ -81,9 +82,15 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
     setSelectedState(id);
   }, []);
 
+  const selectedRestaurant = useMemo(
+    () => restaurants.find((r) => r.id === selectedRestaurantId) ?? null,
+    [restaurants, selectedRestaurantId],
+  );
+
   const value = useMemo(
     (): RestaurantScopeValue => ({
       selectedRestaurantId,
+      selectedRestaurant,
       setSelectedRestaurantId,
       restaurants,
       loading: loading || !initialized,
@@ -91,6 +98,7 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
     }),
     [
       selectedRestaurantId,
+      selectedRestaurant,
       setSelectedRestaurantId,
       restaurants,
       loading,

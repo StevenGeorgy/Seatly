@@ -31,8 +31,7 @@ export function isSupabaseConfigured(): boolean {
 
 /**
  * Browser-only Supabase client for the Vite SPA.
- * Uses `@supabase/ssr` `createBrowserClient` (PKCE, session storage compatible with SSR patterns).
- * Do not import this module from non-browser contexts.
+ * Sessions persist across page refreshes via localStorage (default behaviour).
  */
 export function getSupabaseBrowserClient() {
   if (typeof window === "undefined") {

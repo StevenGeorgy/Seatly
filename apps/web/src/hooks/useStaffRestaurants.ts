@@ -7,6 +7,8 @@ export type StaffRestaurantRow = {
   id: string;
   name: string | null;
   slug: string;
+  currency: string;
+  timezone: string;
 };
 
 /**
@@ -46,7 +48,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
       const client = getSupabaseBrowserClient();
       const { data, error: qErr } = await client
         .from("restaurants")
-        .select("id, name, slug")
+        .select("id, name, slug, currency, timezone")
         .in("id", ids);
 
       if (cancelled) return;
