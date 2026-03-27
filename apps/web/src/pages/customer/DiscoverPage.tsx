@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   Star,
@@ -11,14 +11,26 @@ import {
   SlidersHorizontal,
   MessageCircle,
   X,
-  Store,
   LogOut,
+  Plus,
+  User,
+  Settings,
+  ArrowLeftRight,
 } from "lucide-react";
 import { useUser } from "@/hooks/useUser";
 import { motion, AnimatePresence } from "framer-motion";
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
@@ -187,7 +199,8 @@ function RestaurantCard({ r, index }: { r: MockRestaurant; index: number }) {
 
 export default function DiscoverPage() {
   const { t } = useTranslation();
-  const { signOut } = useUser();
+  const navigate = useNavigate();
+  const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView } = useUser();
   const [search, setSearch] = useState("");
   const [activeCuisine, setActiveCuisine] = useState("All");
   const [chatOpen, setChatOpen] = useState(false);
@@ -213,35 +226,15 @@ export default function DiscoverPage() {
   const nearYou = MOCK_RESTAURANTS.filter((r) => !r.featured).sort((a, b) => a.distance_km - b.distance_km);
 
   const showFiltered = search.trim() !== "" || activeCuisine !== "All";
+  const initials = (profile?.full_name ?? profile?.email ?? "?")
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <div className="flex min-h-screen flex-col bg-bg-base text-text-primary">
-      {/* Restaurant owner banner */}
-      <div className="border-b border-gold/20 bg-gold/8">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2.5 sm:px-6">
-          <div className="flex items-center gap-2 text-xs text-gold">
-            <Store className="size-3.5 shrink-0" />
-            <span className="font-medium">Are you a restaurant owner or staff member?</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link
-              to="/setup"
-              className="rounded-lg bg-gold px-3 py-1.5 text-xs font-bold text-bg-base transition-opacity hover:opacity-90"
-            >
-              Set up your restaurant
-            </Link>
-            <button
-              type="button"
-              onClick={() => void signOut()}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-gold/40 hover:text-gold"
-            >
-              <LogOut className="size-3" />
-              Sign out
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-border bg-bg-base/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
@@ -252,7 +245,7 @@ export default function DiscoverPage() {
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
             <input
               type="text"
-              placeholder="Search restaurants, cuisine, or city..."
+              placeholder={t("dashboard.shell.discoverSearchPlaceholder")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-4 text-sm text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-gold/40"
@@ -275,6 +268,60 @@ export default function DiscoverPage() {
           >
             <MessageCircle className="size-4" />
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
+                aria-label={t("routes.account.title")}
+              >
+                <Avatar>
+                  <AvatarImage src={profile?.avatar_url ?? undefined} />
+                  <AvatarFallback className="bg-gold/10 text-gold">{initials}</AvatarFallback>
+                </Avatar>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56 min-w-56">
+              <DropdownMenuLabel className="truncate">
+                {profile?.full_name ?? profile?.email ?? t("routes.account.title")}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => void navigate("/account")}>
+                <User className="size-4" />
+                {t("routes.account.title")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void navigate("/setup")}>
+                <Plus className="size-4" />
+                {t("dashboard.shell.setupRestaurant")}
+              </DropdownMenuItem>
+              {canUseCustomerView && isCustomerView && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    switchToStaffView();
+                    void navigate("/dashboard");
+                  }}
+                >
+                  <ArrowLeftRight className="size-4" />
+                  {t("dashboard.shell.switchToStaffView")}
+                </DropdownMenuItem>
+              )}
+              {canUseCustomerView && !isCustomerView && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    void navigate("/dashboard");
+                  }}
+                >
+                  <Settings className="size-4" />
+                  {t("routes.dashboard.settings.title")}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
+                <LogOut className="size-4" />
+                {t("dashboard.shell.signOut")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 

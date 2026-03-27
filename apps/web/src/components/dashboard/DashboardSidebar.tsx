@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
@@ -20,6 +20,7 @@ import {
   ChevronDown,
   Menu,
   X,
+  User,
 } from "lucide-react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
@@ -51,7 +52,8 @@ const ICONS: Record<string, typeof LayoutDashboard> = {
 
 export function DashboardSidebar() {
   const { t } = useTranslation();
-  const { restaurantRoles } = useUser();
+  const navigate = useNavigate();
+  const { restaurantRoles, canUseCustomerView, switchToCustomerView } = useUser();
   const { selectedRestaurantId, restaurants, setSelectedRestaurantId } =
     useRestaurantScope();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -149,6 +151,20 @@ export function DashboardSidebar() {
       {/* Settings pinned at bottom */}
       {settingsItem && (
         <div className="border-t border-border px-3 py-2">
+          {canUseCustomerView && (
+            <button
+              type="button"
+              onClick={() => {
+                switchToCustomerView();
+                void navigate("/discover");
+                setMobileOpen(false);
+              }}
+              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-all duration-150 hover:bg-white/[0.03] hover:text-text-secondary"
+            >
+              <User className="size-[18px] shrink-0 text-text-muted transition-colors duration-150 group-hover:text-text-secondary" />
+              <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
+            </button>
+          )}
           <NavLink
             to={settingsItem.path}
             onClick={() => setMobileOpen(false)}

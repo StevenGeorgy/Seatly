@@ -100,7 +100,9 @@ export default function OverviewPage() {
           <div className="flex flex-col gap-2">
             {upcomingReservations.map((r, i) => {
               const guestName = r.guests?.full_name ?? r.guest_full_name ?? "\u2014";
-              const time = format(new Date(r.reserved_at), "h:mm a");
+              const timeValue = new Date(r.reserved_at);
+              const timeMain = format(timeValue, "h:mm");
+              const timePeriod = format(timeValue, "a").toUpperCase();
 
               return (
                 <motion.div
@@ -110,8 +112,9 @@ export default function OverviewPage() {
                   transition={{ duration: 0.25, delay: i * 0.04 }}
                   className="group flex items-center gap-4 rounded-lg border border-border bg-bg-elevated/50 px-4 py-3 transition-colors hover:border-gold/30"
                 >
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-gold/10 text-xs font-semibold text-gold">
-                    {time}
+                  <div className="flex size-10 shrink-0 flex-col items-center justify-center rounded-lg bg-gold/10 text-[10px] font-semibold leading-none text-gold">
+                    <span>{timeMain}</span>
+                    <span className="mt-0.5">{timePeriod}</span>
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-sm font-medium text-text-primary">

@@ -13,6 +13,9 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import type { UserProfile, UserRestaurantRole } from "@/types/auth";
 
+const VIEW_MODE_STORAGE_KEY = "seatly:view-mode";
+type ViewMode = "staff" | "customer";
+
 export type AuthContextValue = {
   session: Session | null;
   user: User | null;
@@ -23,7 +26,13 @@ export type AuthContextValue = {
   error: Error | null;
   /** True if any `user_restaurant_roles` row exists (staff experience). */
   isStaff: boolean;
+  /** True when an owner intentionally enters personal customer experience. */
+  isCustomerView: boolean;
+  /** Only owner accounts can switch to personal customer view. */
+  canUseCustomerView: boolean;
   signOut: () => Promise<void>;
+  switchToCustomerView: () => void;
+  switchToStaffView: () => void;
   /** Re-fetch profile + roles after mutations (e.g. onboarding). */
   refreshUser: () => Promise<void>;
   /** Primary row: `is_primary`, else first role. */
@@ -44,6 +53,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [restaurantRoles, setRestaurantRoles] = useState<UserRestaurantRole[]>([]);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window === "undefined") return "staff";
+    return window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) === "customer"
+      ? "customer"
+      : "staff";
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -63,6 +78,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (!nextSession?.user) {
       setProfile(null);
       setRestaurantRoles([]);
+      setViewMode("staff");
       setError(null);
       setLoading(false);
       return;
@@ -74,6 +90,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (!isSupabaseConfigured()) {
       setProfile(null);
       setRestaurantRoles([]);
+      setViewMode("staff");
       setError(new Error("Supabase env vars are not set."));
       setLoading(false);
       return;
@@ -87,6 +104,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (!result.ok) {
       setProfile(null);
       setRestaurantRoles([]);
+      setViewMode("staff");
       setError(result.error);
       setLoading(false);
       return;
@@ -143,6 +161,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     await applySession(null);
   }, [applySession]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
+
   const refreshUser = useCallback(async () => {
     if (!isSupabaseConfigured()) {
       return;
@@ -172,6 +195,33 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [restaurantRoles],
   );
 
+  const canUseCustomerView = useMemo(
+    () => restaurantRoles.some((r) => r.role === "owner"),
+    [restaurantRoles],
+  );
+
+  useEffect(() => {
+    if (restaurantRoles.length === 0 && viewMode !== "staff") {
+      setViewMode("staff");
+      return;
+    }
+    if (!canUseCustomerView && viewMode === "customer") {
+      setViewMode("staff");
+    }
+  }, [restaurantRoles.length, canUseCustomerView, viewMode]);
+
+  const switchToCustomerView = useCallback(() => {
+    if (!canUseCustomerView) return;
+    setViewMode("customer");
+  }, [canUseCustomerView]);
+
+  const switchToStaffView = useCallback(() => {
+    setViewMode("staff");
+  }, []);
+
+  const isCustomerView = canUseCustomerView && viewMode === "customer";
+  const isStaff = restaurantRoles.length > 0 && !isCustomerView;
+
   const value = useMemo(
     (): AuthContextValue => ({
       session,
@@ -180,8 +230,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
       restaurantRoles,
       loading,
       error,
-      isStaff: restaurantRoles.length > 0,
+      isStaff,
+      isCustomerView,
+      canUseCustomerView,
       signOut,
+      switchToCustomerView,
+      switchToStaffView,
       refreshUser,
       primaryRestaurantRole,
       rolesAtRestaurant,
@@ -194,7 +248,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
       restaurantRoles,
       loading,
       error,
+      isStaff,
+      isCustomerView,
+      canUseCustomerView,
       signOut,
+      switchToCustomerView,
+      switchToStaffView,
       refreshUser,
       primaryRestaurantRole,
       rolesAtRestaurant,

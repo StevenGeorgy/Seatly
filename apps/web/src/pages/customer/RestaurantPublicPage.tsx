@@ -55,7 +55,8 @@ type CartItem = MenuItem & { qty: number; note?: string };
 type DineInDetails = {
   date: string;
   time: string;
-  party_size: number;
+  party_size: number | "";
+  seating_preference: string;
   name: string;
   email: string;
   phone: string;
@@ -171,6 +172,16 @@ const CATEGORIES = ["All", "Starters", "Mains", "Desserts", "Drinks"];
 const TIMES = ["5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM","7:30 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM"];
 const PICKUP_TIMES = ["12:00 PM","12:30 PM","1:00 PM","1:30 PM","2:00 PM","5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM"];
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
+const SEATING_PREFERENCES = [
+  "",
+  "By the window",
+  "Middle of dining room",
+  "Booth seating",
+  "Lounge seating",
+  "Patio",
+  "Bar seating",
+  "Quiet corner",
+];
 const CUISINE_GRADIENT: Record<string, string> = {
   French:   "from-indigo-900 to-blue-900",
   Japanese: "from-rose-900 to-pink-900",
@@ -234,6 +245,7 @@ export default function RestaurantPublicPage() {
 
   const [dineIn, setDineIn] = useState<DineInDetails>({
     date: "", time: "7:00 PM", party_size: 2,
+    seating_preference: "",
     name: "", email: "", phone: "", allergies: "", occasion: "",
   });
   const [delivery, setDelivery] = useState<DeliveryDetails>({
@@ -246,6 +258,8 @@ export default function RestaurantPublicPage() {
   const [cardNumber, setCardNumber] = useState("");
   const [cardExpiry, setCardExpiry] = useState("");
   const [cardCvc, setCardCvc] = useState("");
+  const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
+  const [customTipAmount, setCustomTipAmount] = useState("");
 
   const currency = restaurant?.currency ?? "cad";
   const gradient = CUISINE_GRADIENT[restaurant?.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-900";
@@ -308,6 +322,17 @@ export default function RestaurantPublicPage() {
   const taxRate     = restaurant?.tax_rate ?? 0.13;
   const tax         = cartTotal * taxRate;
   const total       = cartTotal + tax;
+  const deliveryFee = orderType === "delivery" ? 4.99 : 0;
+  const parsedCustomTip = Number.parseFloat(customTipAmount);
+  const tipAmount =
+    tipOption === "after"
+      ? 0
+      : tipOption === "custom"
+      ? Number.isFinite(parsedCustomTip) && parsedCustomTip > 0
+        ? parsedCustomTip
+        : 0
+      : cartTotal * (Number.parseInt(tipOption, 10) / 100);
+  const totalNow = total + deliveryFee + tipAmount;
 
   function addToCart(item: MenuItem) {
     setCart((prev) => {
@@ -329,7 +354,15 @@ export default function RestaurantPublicPage() {
   }
 
   const canProceedDetails = () => {
-    if (orderType === "dine_in")  return dineIn.date && dineIn.name && dineIn.email;
+    if (orderType === "dine_in") {
+      return (
+        dineIn.date &&
+        dineIn.name &&
+        dineIn.email &&
+        typeof dineIn.party_size === "number" &&
+        dineIn.party_size >= 1
+      );
+    }
     if (orderType === "pickup")   return pickup.name && pickup.email && pickup.phone;
     if (orderType === "delivery") return delivery.name && delivery.email && delivery.phone && delivery.address;
     return false;
@@ -488,8 +521,15 @@ export default function RestaurantPublicPage() {
                             max={50}
                             value={dineIn.party_size}
                             onChange={(e) => {
-                              const v = parseInt(e.target.value, 10);
-                              if (!isNaN(v) && v >= 1) setDineIn((d) => ({ ...d, party_size: v }));
+                              const raw = e.target.value;
+                              if (raw === "") {
+                                setDineIn((d) => ({ ...d, party_size: "" }));
+                                return;
+                              }
+                              const v = parseInt(raw, 10);
+                              if (!isNaN(v) && v >= 1 && v <= 50) {
+                                setDineIn((d) => ({ ...d, party_size: v }));
+                              }
                             }}
                             className="h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                           />
@@ -516,6 +556,27 @@ export default function RestaurantPublicPage() {
                     </div>
 
                     <div className="h-px bg-border" />
+
+                    {/* Seating preference */}
+                    <div>
+                      <Label className="mb-1.5 block text-xs text-text-muted">Table preference (optional)</Label>
+                      <div className="relative">
+                        <select
+                          value={dineIn.seating_preference}
+                          onChange={(e) =>
+                            setDineIn((d) => ({ ...d, seating_preference: e.target.value }))
+                          }
+                          className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-8 text-sm text-text-primary outline-none focus:border-gold/40"
+                        >
+                          {SEATING_PREFERENCES.map((pref) => (
+                            <option key={pref || "none"} value={pref}>
+                              {pref || "No preference"}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
+                      </div>
+                    </div>
 
                     {/* Occasion */}
                     <div>
@@ -795,16 +856,24 @@ export default function RestaurantPublicPage() {
                   {orderType === "delivery" && (
                     <div className="flex justify-between text-sm">
                       <span className="text-text-secondary">Delivery fee</span>
-                      <span className="text-text-primary">{formatCurrency(4.99, currency)}</span>
+                      <span className="text-text-primary">{formatCurrency(deliveryFee, currency)}</span>
                     </div>
                   )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-text-secondary">
+                      Tip {tipOption === "after" ? "(after experience)" : ""}
+                    </span>
+                    <span className="text-text-primary">
+                      {tipOption === "after" ? "Pay later" : formatCurrency(tipAmount, currency)}
+                    </span>
+                  </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-text-secondary">Tax ({(taxRate * 100).toFixed(0)}%)</span>
                     <span className="text-text-primary">{formatCurrency(tax, currency)}</span>
                   </div>
                   <div className="flex justify-between border-t border-border pt-2 text-base font-bold">
-                    <span className="text-text-primary">Total</span>
-                    <span className="text-gold">{formatCurrency(total + (orderType === "delivery" ? 4.99 : 0), currency)}</span>
+                    <span className="text-text-primary">Total due now</span>
+                    <span className="text-gold">{formatCurrency(totalNow, currency)}</span>
                   </div>
                 </div>
               </div>
@@ -816,7 +885,13 @@ export default function RestaurantPublicPage() {
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div><p className="text-text-muted text-xs">Name</p><p className="font-medium text-text-primary">{dineIn.name}</p></div>
                     <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {dineIn.time}</p></div>
-                    <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size} guests</p></div>
+                    <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size || 1} guests</p></div>
+                    {dineIn.seating_preference && (
+                      <div>
+                        <p className="text-text-muted text-xs">Table preference</p>
+                        <p className="font-medium text-text-primary">{dineIn.seating_preference}</p>
+                      </div>
+                    )}
                     {dineIn.allergies && <div className="col-span-2"><p className="text-text-muted text-xs">Dietary notes</p><p className="font-medium text-text-primary">{dineIn.allergies}</p></div>}
                     {dineIn.occasion && <div><p className="text-text-muted text-xs">Occasion</p><p className="font-medium text-text-primary">{dineIn.occasion}</p></div>}
                   </div>
@@ -825,6 +900,51 @@ export default function RestaurantPublicPage() {
 
               {/* Payment */}
               <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
+                <div className="mb-4 rounded-xl border border-border bg-bg-elevated p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-text-muted">
+                    Tip preference
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "15", label: "15%" },
+                      { id: "18", label: "18%" },
+                      { id: "20", label: "20%" },
+                      { id: "custom", label: "Custom" },
+                      { id: "after", label: "Tip after experience" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          setTipOption(opt.id as "15" | "18" | "20" | "custom" | "after")
+                        }
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          tipOption === opt.id
+                            ? "border-gold bg-gold/10 text-gold"
+                            : "border-border text-text-secondary hover:border-gold/30 hover:text-gold"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {tipOption === "custom" && (
+                    <div className="mt-3">
+                      <Label htmlFor="custom-tip" className="mb-1.5 block text-xs text-text-muted">
+                        Custom tip amount
+                      </Label>
+                      <Input
+                        id="custom-tip"
+                        inputMode="decimal"
+                        value={customTipAmount}
+                        onChange={(e) =>
+                          setCustomTipAmount(e.target.value.replace(/[^\d.]/g, "").slice(0, 8))
+                        }
+                        placeholder="0.00"
+                      />
+                    </div>
+                  )}
+                </div>
                 <div className="mb-4 flex items-center gap-2">
                   <CreditCard className="size-4 text-gold" />
                   <p className="text-xs font-semibold uppercase tracking-widest text-text-muted">Payment</p>
@@ -863,7 +983,10 @@ export default function RestaurantPublicPage() {
                 Place Order
               </Button>
               <p className="mt-2 text-center text-[11px] text-text-muted">
-                By placing your order you agree to our terms. Your card won't be charged until checkout.
+                By placing your order you agree to our terms.{" "}
+                {tipOption === "after"
+                  ? "Tip will be collected after your experience."
+                  : "Selected tip is included in today's checkout."}
               </p>
             </motion.div>
           )}
@@ -892,7 +1015,7 @@ export default function RestaurantPublicPage() {
                 </h2>
                 <p className="mt-2 text-sm text-text-secondary">
                   {orderType === "dine_in"
-                    ? `Your table at ${restaurant.name} is reserved for ${dineIn.party_size} on ${dineIn.date} at ${dineIn.time}.`
+                    ? `Your table at ${restaurant.name} is reserved for ${dineIn.party_size || 1} on ${dineIn.date} at ${dineIn.time}.`
                     : orderType === "pickup"
                     ? `Your order will be ready for pickup at ${pickup.time}.`
                     : `Your order is being prepared and will arrive shortly.`}
@@ -908,7 +1031,15 @@ export default function RestaurantPublicPage() {
               </div>
 
               <div className="flex w-full flex-col gap-2">
-                <Button onClick={() => { setStep("type"); setCart([]); setOrderType(null); }}>
+                <Button
+                  onClick={() => {
+                    setStep("type");
+                    setCart([]);
+                    setOrderType(null);
+                    setTipOption("18");
+                    setCustomTipAmount("");
+                  }}
+                >
                   Order again
                 </Button>
                 <Button variant="outline" asChild>

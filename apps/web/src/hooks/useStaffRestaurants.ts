@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { UserRestaurantRole } from "@/types/auth";
@@ -23,6 +23,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
   const [restaurants, setRestaurants] = useState<StaffRestaurantRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const ids = idKey ? idKey.split(",") : [];
@@ -67,7 +68,11 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
     return () => {
       cancelled = true;
     };
-  }, [idKey]);
+  }, [idKey, reloadKey]);
 
-  return { restaurants, loading, error };
+  const refreshRestaurants = useCallback(() => {
+    setReloadKey((prev) => prev + 1);
+  }, []);
+
+  return { restaurants, loading, error, refreshRestaurants };
 }

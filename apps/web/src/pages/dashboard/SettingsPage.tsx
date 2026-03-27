@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Settings } from "lucide-react";
+import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 const CURRENCY_OPTIONS = [
   { value: "cad", label: "CAD — Canadian Dollar" },
@@ -24,8 +25,42 @@ const CURRENCY_OPTIONS = [
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const { selectedRestaurant } = useRestaurantScope();
+  const { selectedRestaurant, refreshRestaurants } = useRestaurantScope();
   const [activeTab, setActiveTab] = useState("restaurant");
+  const [restaurantName, setRestaurantName] = useState(selectedRestaurant?.name ?? "");
+  const [savingRestaurant, setSavingRestaurant] = useState(false);
+
+  useEffect(() => {
+    setRestaurantName(selectedRestaurant?.name ?? "");
+  }, [selectedRestaurant?.id, selectedRestaurant?.name]);
+
+  const saveRestaurantSettings = async () => {
+    if (!selectedRestaurant) return;
+    if (!isSupabaseConfigured()) {
+      toast.error(t("auth.errors.supabaseNotConfigured"));
+      return;
+    }
+
+    const nextName = restaurantName.trim();
+    if (!nextName) return;
+
+    setSavingRestaurant(true);
+    const client = getSupabaseBrowserClient();
+    const { error } = await client
+      .from("restaurants")
+      .update({ name: nextName })
+      .eq("id", selectedRestaurant.id);
+
+    setSavingRestaurant(false);
+
+    if (error) {
+      toast.error(t("dashboard.settings.saveFailed"));
+      return;
+    }
+
+    refreshRestaurants();
+    toast.success(t("dashboard.settings.saved"));
+  };
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
@@ -46,7 +81,10 @@ export default function SettingsPage() {
               <div className="grid gap-5 sm:grid-cols-2">
                 <div className="flex flex-col gap-2">
                   <Label>{t("dashboard.settings.name")}</Label>
-                  <Input defaultValue={selectedRestaurant?.name ?? ""} />
+                  <Input
+                    value={restaurantName}
+                    onChange={(e) => setRestaurantName(e.target.value)}
+                  />
                 </div>
                 <div className="flex flex-col gap-2">
                   <Label>{t("dashboard.settings.cuisine")}</Label>
@@ -78,7 +116,13 @@ export default function SettingsPage() {
                   </Select>
                 </div>
               </div>
-              <Button className="self-end">{t("common.actions.save")}</Button>
+              <Button
+                className="self-end"
+                disabled={savingRestaurant || !restaurantName.trim() || !selectedRestaurant}
+                onClick={() => void saveRestaurantSettings()}
+              >
+                {savingRestaurant ? t("routes.loading") : t("common.actions.save")}
+              </Button>
             </div>
           </SectionCard>
         </TabsContent>

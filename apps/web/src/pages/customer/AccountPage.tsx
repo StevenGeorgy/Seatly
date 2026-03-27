@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { CalendarDays, ShoppingBag, Gift, User, ArrowLeft } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -11,7 +11,8 @@ import { useUser } from "@/hooks/useUser";
 
 export default function AccountPage() {
   const { t } = useTranslation();
-  const { profile, signOut } = useUser();
+  const navigate = useNavigate();
+  const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView } = useUser();
 
   const initials = (profile?.full_name ?? profile?.email ?? "?")
     .split(" ")
@@ -31,6 +32,18 @@ export default function AccountPage() {
             </Link>
           </Button>
           <h1 className="flex-1 text-base font-semibold">{t("routes.account.title")}</h1>
+          {canUseCustomerView && isCustomerView && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                switchToStaffView();
+                void navigate("/dashboard");
+              }}
+            >
+              {t("dashboard.shell.switchToStaffView")}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>
             {t("dashboard.shell.signOut")}
           </Button>

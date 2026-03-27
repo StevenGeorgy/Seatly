@@ -19,7 +19,7 @@ function MarketingNavLinks({ onClick }: { onClick?: () => void }) {
   const { t } = useTranslation();
 
   const links = [
-    { to: "/features", label: "Product" },
+    { to: "/", label: "Product" },
     { to: "/features", label: t("routes.features.title") },
     { to: "/pricing", label: t("routes.pricing.title") },
     { to: "/about", label: t("routes.about.title") },

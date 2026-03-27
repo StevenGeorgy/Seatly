@@ -17,6 +17,7 @@ export type RestaurantScopeValue = {
   selectedRestaurantId: string | null;
   selectedRestaurant: StaffRestaurantRow | null;
   setSelectedRestaurantId: (id: string) => void;
+  refreshRestaurants: () => void;
   restaurants: StaffRestaurantRow[];
   loading: boolean;
   error: Error | null;
@@ -30,7 +31,7 @@ type RestaurantScopeProviderProps = {
 
 export function RestaurantScopeProvider({ children }: RestaurantScopeProviderProps) {
   const { restaurantRoles, primaryRestaurantRole } = useUser();
-  const { restaurants, loading, error } = useStaffRestaurants(restaurantRoles);
+  const { restaurants, loading, error, refreshRestaurants } = useStaffRestaurants(restaurantRoles);
   const [selectedRestaurantId, setSelectedState] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
 
@@ -92,6 +93,7 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
       selectedRestaurantId,
       selectedRestaurant,
       setSelectedRestaurantId,
+      refreshRestaurants,
       restaurants,
       loading: loading || !initialized,
       error,
@@ -100,6 +102,7 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
       selectedRestaurantId,
       selectedRestaurant,
       setSelectedRestaurantId,
+      refreshRestaurants,
       restaurants,
       loading,
       initialized,
