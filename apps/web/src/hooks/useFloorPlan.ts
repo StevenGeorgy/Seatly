@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { MOCK_TABLES, MOCK_SECTIONS } from "@/lib/mock-data";
+import { MOCK_SECTIONS } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+
+/** Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows. */
+export function isDatabaseUuid(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+}
 
 export type TableRow = {
   id: string;
@@ -96,7 +101,8 @@ export function useFloorPlan() {
 
     const rawTables = (tablesRes.data ?? []) as TableRow[];
     const rawSections = (sectionsRes.data ?? []) as SectionRow[];
-    setTables(rawTables.length > 0 ? rawTables : MOCK_TABLES);
+    // Never substitute MOCK_TABLES when Supabase returns zero rows — that undoes saves and confuses drafts.
+    setTables(rawTables);
     setFloorPlans((plansRes.data ?? []) as FloorPlanRow[]);
     setSections(rawSections.length > 0 ? rawSections : MOCK_SECTIONS);
     setLoading(false);
@@ -161,11 +167,16 @@ export function useFloorPlan() {
       capacity: number;
       x: number;
       y: number;
+      tableNumber?: string | null;
+      minParty?: number | null;
+      status?: string;
+      notes?: string | null;
     }): Promise<TableRow | null> => {
       if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
       const client = getSupabaseBrowserClient();
       const sectionName = sections.find((s) => s.id === input.sectionId)?.name ?? null;
-      const tableNumber = input.label.trim() || `T${Date.now().toString().slice(-4)}`;
+      const tableNumber =
+        (input.tableNumber?.trim() || input.label.trim() || `T${Date.now().toString().slice(-4)}`);
 
       const res = await client
         .from("tables")
@@ -174,13 +185,14 @@ export function useFloorPlan() {
           table_number: tableNumber,
           label: input.label.trim() || null,
           capacity: Math.max(1, input.capacity),
-          min_party: 1,
+          min_party: input.minParty ?? 1,
           section_id: input.sectionId,
           section: sectionName,
           position_x: input.x,
           position_y: input.y,
           shape: input.shape,
-          status: "empty",
+          status: input.status ?? "empty",
+          notes: input.notes ?? null,
           is_active: true,
         })
         .select("*")
@@ -195,6 +207,11 @@ export function useFloorPlan() {
   );
 
   const updateTable = useCallback(async (tableId: string, patch: Partial<TableRow>) => {
+    if (!isDatabaseUuid(tableId)) {
+      setTables((prev) => prev.map((t) => (t.id === tableId ? { ...t, ...patch } : t)));
+      setError(null);
+      return true;
+    }
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
     const res = await client.from("tables").update(patch).eq("id", tableId);
@@ -205,7 +222,13 @@ export function useFloorPlan() {
     return true;
   }, []);
 
-  const deleteTable = useCallback(async (tableId: string) => {
+  const deleteTable = useCallback(async (tableId: string, options?: { refetchAfter?: boolean }) => {
+    const refetchAfter = options?.refetchAfter ?? true;
+    if (!isDatabaseUuid(tableId)) {
+      setTables((prev) => prev.filter((t) => t.id !== tableId));
+      setError(null);
+      return true;
+    }
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
     const res = await client.from("tables").update({ is_active: false }).eq("id", tableId);
@@ -213,7 +236,7 @@ export function useFloorPlan() {
       setError(new Error(res.error.message));
       return false;
     }
-    await fetchAll();
+    if (refetchAfter) await fetchAll();
     return true;
   }, [fetchAll]);
 
