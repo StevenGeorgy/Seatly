@@ -1,4 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useId, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { format, isValid, parse, startOfToday } from "date-fns";
 import { useParams, Link } from "react-router-dom";
 import {
   ArrowLeft,
@@ -21,12 +23,15 @@ import {
   CreditCard,
   Lock,
   AlertTriangle,
+  Split,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
@@ -78,6 +83,12 @@ type PickupDetails = {
   email: string;
   phone: string;
   time: string;
+};
+
+type SplitCardRow = {
+  number: string;
+  expiry: string;
+  cvc: string;
 };
 
 // ─── Menu data ───────────────────────────────────────────────────────────────
@@ -193,15 +204,40 @@ const CUISINE_GRADIENT: Record<string, string> = {
 };
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Demo checkout: enough digits for a test PAN, expiry, and CVC. */
+function isCardFilled(num: string, exp: string, cvc: string): boolean {
+  const digits = num.replace(/\D/g, "");
+  return digits.length >= 15 && exp.trim().length >= 4 && cvc.replace(/\D/g, "").length >= 3;
+}
+
+function formatCardPanInput(value: string): string {
+  return value
+    .replace(/\D/g, "")
+    .slice(0, 16)
+    .replace(/(.{4})/g, "$1 ")
+    .trim();
+}
+
 // ─── Step indicator ───────────────────────────────────────────────────────────
-const STEPS: { key: Step; label: string }[] = [
-  { key: "type",     label: "Service" },
-  { key: "details",  label: "Details" },
-  { key: "menu",     label: "Menu" },
-  { key: "checkout", label: "Payment" },
+const STEPS: { key: Step; labelKey: string }[] = [
+  { key: "type", labelKey: "customerPublic.booking.stepService" },
+  { key: "details", labelKey: "customerPublic.booking.stepDetails" },
+  { key: "menu", labelKey: "customerPublic.booking.stepMenu" },
+  { key: "checkout", labelKey: "customerPublic.booking.stepPayment" },
 ];
 
-function StepBar({ current }: { current: Step }) {
+function StepBar({
+  current,
+  onNavigate,
+}: {
+  current: Step;
+  onNavigate?: (step: Step) => void;
+}) {
+  const { t } = useTranslation();
   const idx = STEPS.findIndex((s) => s.key === current);
   if (current === "confirmed") return null;
   return (
@@ -209,22 +245,54 @@ function StepBar({ current }: { current: Step }) {
       {STEPS.map((s, i) => {
         const done = i < idx;
         const active = i === idx;
+        const clickable = Boolean(done && onNavigate);
+        const label = t(s.labelKey);
+        const circle = (
+          <div
+            className={`flex size-7 items-center justify-center rounded-full border-2 text-xs font-bold transition-all ${
+              done
+                ? "border-gold bg-gold text-bg-base"
+                : active
+                  ? "border-gold bg-gold/15 text-gold"
+                  : "border-border bg-bg-elevated text-text-muted"
+            }`}
+          >
+            {done ? <Check className="size-3.5" /> : i + 1}
+          </div>
+        );
+        const caption = (
+          <span
+            className={`text-[10px] font-medium ${
+              active ? "text-gold" : done ? "text-text-secondary" : "text-text-muted"
+            }`}
+          >
+            {label}
+          </span>
+        );
         return (
           <div key={s.key} className="flex flex-1 items-center">
             <div className="flex flex-col items-center gap-1">
-              <div className={`flex size-7 items-center justify-center rounded-full border-2 text-xs font-bold transition-all ${
-                done   ? "border-gold bg-gold text-bg-base" :
-                active ? "border-gold bg-gold/15 text-gold" :
-                         "border-border bg-bg-elevated text-text-muted"
-              }`}>
-                {done ? <Check className="size-3.5" /> : i + 1}
-              </div>
-              <span className={`text-[10px] font-medium ${active ? "text-gold" : done ? "text-text-secondary" : "text-text-muted"}`}>
-                {s.label}
-              </span>
+              {clickable ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigate?.(s.key)}
+                  aria-label={t("customerPublic.booking.goToStep", { step: label })}
+                  className="flex flex-col items-center gap-1 rounded-lg p-0.5 outline-none transition-colors hover:bg-gold/10 focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
+                >
+                  {circle}
+                  {caption}
+                </button>
+              ) : (
+                <>
+                  {circle}
+                  {caption}
+                </>
+              )}
             </div>
             {i < STEPS.length - 1 && (
-              <div className={`mb-4 h-px flex-1 mx-1 transition-colors ${i < idx ? "bg-gold" : "bg-border"}`} />
+              <div
+                className={`mb-4 h-px flex-1 mx-1 transition-colors ${i < idx ? "bg-gold" : "bg-border"}`}
+              />
             )}
           </div>
         );
@@ -235,6 +303,7 @@ function StepBar({ current }: { current: Step }) {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function RestaurantPublicPage() {
+  const { t } = useTranslation();
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
 
@@ -258,11 +327,48 @@ export default function RestaurantPublicPage() {
   const [cardNumber, setCardNumber] = useState("");
   const [cardExpiry, setCardExpiry] = useState("");
   const [cardCvc, setCardCvc] = useState("");
+  const [paymentSplitMode, setPaymentSplitMode] = useState<"single" | "split">("single");
+  /** Raw input so the field can be cleared while typing; clamped on blur. Parsed as `splitPartyCount`. */
+  const [splitPartyCountInput, setSplitPartyCountInput] = useState("2");
+  const splitPartyCountParse = useMemo(() => {
+    const raw = splitPartyCountInput.trim();
+    if (raw === "") return { kind: "empty" as const };
+    const n = Number.parseInt(splitPartyCountInput, 10);
+    if (Number.isNaN(n)) return { kind: "invalid" as const };
+    if (n < 2 || n > 10) return { kind: "out_of_range" as const };
+    return { kind: "ok" as const, value: n };
+  }, [splitPartyCountInput]);
+  const splitPartyCount =
+    splitPartyCountParse.kind === "ok" ? splitPartyCountParse.value : NaN;
+  const [splitCardRows, setSplitCardRows] = useState<SplitCardRow[]>(() =>
+    Array.from({ length: 2 }, () => ({ number: "", expiry: "", cvc: "" })),
+  );
+
+  useEffect(() => {
+    if (paymentSplitMode !== "split") return;
+    if (!Number.isFinite(splitPartyCount) || splitPartyCount < 2 || splitPartyCount > 10) return;
+    setSplitCardRows((prev) => {
+      if (prev.length === splitPartyCount) return prev;
+      const next = prev.slice(0, splitPartyCount);
+      while (next.length < splitPartyCount) {
+        next.push({ number: "", expiry: "", cvc: "" });
+      }
+      return next;
+    });
+  }, [paymentSplitMode, splitPartyCount]);
   const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
   const [customTipAmount, setCustomTipAmount] = useState("");
 
   const currency = restaurant?.currency ?? "cad";
   const gradient = CUISINE_GRADIENT[restaurant?.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-900";
+
+  const dineInDateTriggerId = useId();
+  const [dineInDatePopoverOpen, setDineInDatePopoverOpen] = useState(false);
+  const dineInCalendarDay = useMemo(() => {
+    if (!dineIn.date) return undefined;
+    const d = parse(dineIn.date, "yyyy-MM-dd", new Date());
+    return isValid(d) ? d : undefined;
+  }, [dineIn.date]);
 
   const filteredMenu = useMemo(
     () => activeCategory === "All" ? MENU : MENU.filter((m) => m.category === activeCategory),
@@ -333,6 +439,21 @@ export default function RestaurantPublicPage() {
         : 0
       : cartTotal * (Number.parseInt(tipOption, 10) / 100);
   const totalNow = total + deliveryFee + tipAmount;
+
+  const splitEachShare = useMemo(() => {
+    if (paymentSplitMode !== "split") return NaN;
+    const n = splitPartyCount;
+    if (!Number.isFinite(n) || n < 2 || n > 10) return NaN;
+    return roundMoney(totalNow / n);
+  }, [paymentSplitMode, splitPartyCount, totalNow]);
+
+  const splitCheckoutValid = useMemo(() => {
+    if (paymentSplitMode !== "split") return true;
+    if (!Number.isFinite(splitPartyCount) || splitPartyCount < 2 || splitPartyCount > 10) return false;
+    if (!Number.isFinite(splitEachShare) || splitEachShare <= 0) return false;
+    if (splitCardRows.length !== splitPartyCount) return false;
+    return splitCardRows.every((row) => isCardFilled(row.number, row.expiry, row.cvc));
+  }, [paymentSplitMode, splitPartyCount, splitEachShare, splitCardRows]);
 
   function addToCart(item: MenuItem) {
     setCart((prev) => {
@@ -429,7 +550,7 @@ export default function RestaurantPublicPage() {
 
         {/* ── Step bar ─────────────────────────────────────────────────────────── */}
         <div className="mb-6">
-          <StepBar current={step} />
+          <StepBar current={step} onNavigate={setStep} />
         </div>
 
         {/* ── Step content ─────────────────────────────────────────────────────── */}
@@ -467,7 +588,14 @@ export default function RestaurantPublicPage() {
 
           {/* ═══════════════════════════════════ STEP 2: DETAILS ═══════════════ */}
           {step === "details" && (
-            <motion.div key="details" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
+            <motion.div
+              key="details"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -24 }}
+              transition={{ duration: 0.25 }}
+              className="pointer-events-auto"
+            >
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-lg font-bold text-white">
                   {orderType === "dine_in" ? "Book your table" : orderType === "pickup" ? "Pickup details" : "Delivery details"}
@@ -484,17 +612,71 @@ export default function RestaurantPublicPage() {
                     {/* Date + Time + Party */}
                     <div className="grid grid-cols-3 gap-3">
                       <div>
-                        <Label className="mb-1.5 block text-xs text-text-muted">Date <span className="text-danger">*</span></Label>
-                        <div className="relative">
-                          <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
-                          <input
-                            type="date"
-                            required
-                            value={dineIn.date}
-                            onChange={(e) => setDineIn((d) => ({ ...d, date: e.target.value }))}
-                            className="h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40 [color-scheme:dark]"
-                          />
-                        </div>
+                        <Label htmlFor={dineInDateTriggerId} className="mb-1.5 block text-xs text-text-muted">
+                          Date <span className="text-danger">*</span>
+                        </Label>
+                        <Popover open={dineInDatePopoverOpen} onOpenChange={setDineInDatePopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <button
+                              id={dineInDateTriggerId}
+                              type="button"
+                              className="relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
+                            >
+                              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+                              <span
+                                className={`truncate text-xs leading-none ${
+                                  dineIn.date ? "text-text-primary" : "text-text-muted"
+                                }`}
+                              >
+                                {dineIn.date
+                                  ? new Date(`${dineIn.date}T12:00:00`).toLocaleDateString(undefined, {
+                                      weekday: "short",
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    })
+                                  : t("customerPublic.booking.selectDate")}
+                              </span>
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="start"
+                            className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
+                          >
+                            <Calendar
+                              mode="single"
+                              required={false}
+                              selected={dineInCalendarDay}
+                              onSelect={(d) => {
+                                setDineIn((prev) => ({
+                                  ...prev,
+                                  date: d ? format(d, "yyyy-MM-dd") : "",
+                                }));
+                                if (d) {
+                                  setDineInDatePopoverOpen(false);
+                                }
+                              }}
+                              disabled={{ before: startOfToday() }}
+                              className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                            />
+                            {dineIn.date ? (
+                              <div className="border-t border-border p-2">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="w-full text-text-secondary hover:bg-bg-surface hover:text-text-primary"
+                                  onClick={() => {
+                                    setDineIn((d) => ({ ...d, date: "" }));
+                                    setDineInDatePopoverOpen(false);
+                                  }}
+                                >
+                                  {t("customerPublic.booking.clearDate")}
+                                </Button>
+                              </div>
+                            ) : null}
+                          </PopoverContent>
+                        </Popover>
                       </div>
                       <div>
                         <Label className="mb-1.5 block text-xs text-text-muted">Time</Label>
@@ -945,6 +1127,90 @@ export default function RestaurantPublicPage() {
                     </div>
                   )}
                 </div>
+                <div className="mb-4 rounded-xl border border-border bg-bg-elevated p-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Split className="size-4 text-gold" />
+                    <p className="text-xs font-semibold uppercase tracking-widest text-text-muted">
+                      {t("customerPublic.checkout.splitTenderTitle")}
+                    </p>
+                  </div>
+                  <p className="mb-3 text-[11px] leading-relaxed text-text-muted">
+                    {t("customerPublic.checkout.splitTenderHint")}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentSplitMode("single")}
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        paymentSplitMode === "single"
+                          ? "border-gold bg-gold/10 text-gold"
+                          : "border-border text-text-secondary hover:border-gold/30 hover:text-gold"
+                      }`}
+                    >
+                      {t("customerPublic.checkout.paymentSingle")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentSplitMode("split")}
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        paymentSplitMode === "split"
+                          ? "border-gold bg-gold/10 text-gold"
+                          : "border-border text-text-secondary hover:border-gold/30 hover:text-gold"
+                      }`}
+                    >
+                      {t("customerPublic.checkout.paymentSplitTender")}
+                    </button>
+                  </div>
+                  {paymentSplitMode === "split" && (
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <Label htmlFor="split-party-count" className="mb-1.5 block text-xs text-text-muted">
+                          {t("customerPublic.checkout.splitAmongPeopleLabel")}
+                        </Label>
+                        <Input
+                          id="split-party-count"
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          value={splitPartyCountInput}
+                          onChange={(e) => {
+                            const digits = e.target.value.replace(/\D/g, "").slice(0, 2);
+                            setSplitPartyCountInput(digits);
+                          }}
+                          onBlur={() => {
+                            const n = Number.parseInt(splitPartyCountInput, 10);
+                            if (splitPartyCountInput.trim() === "" || Number.isNaN(n)) {
+                              setSplitPartyCountInput("2");
+                              return;
+                            }
+                            setSplitPartyCountInput(String(Math.min(10, Math.max(2, n))));
+                          }}
+                          className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        />
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-text-secondary">{t("customerPublic.checkout.splitEachShareLabel")}</span>
+                        <span className="font-medium text-text-primary">
+                          {Number.isFinite(splitEachShare) && splitEachShare > 0
+                            ? formatCurrency(splitEachShare, currency)
+                            : "—"}
+                        </span>
+                      </div>
+                      {!splitCheckoutValid && splitPartyCountParse.kind !== "ok" && (
+                        <p className="border-t border-border pt-3 text-xs leading-relaxed text-danger">
+                          {t("customerPublic.checkout.splitPartyCountRangeHint")}
+                        </p>
+                      )}
+                      {!splitCheckoutValid && splitPartyCountParse.kind === "ok" && (
+                        <p className="border-t border-border pt-3 text-xs leading-relaxed text-danger">
+                          {t("customerPublic.checkout.splitInvalidHintCompleteCards", {
+                            count: splitPartyCount,
+                          })}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div className="mb-4 flex items-center gap-2">
                   <CreditCard className="size-4 text-gold" />
                   <p className="text-xs font-semibold uppercase tracking-widest text-text-muted">Payment</p>
@@ -952,31 +1218,136 @@ export default function RestaurantPublicPage() {
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
                 <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="card-num" className="mb-1.5 block text-xs text-text-muted">Card number</Label>
-                    <Input
-                      id="card-num"
-                      value={cardNumber}
-                      onChange={(e) => setCardNumber(e.target.value.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim())}
-                      placeholder="4242 4242 4242 4242"
-                      maxLength={19}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <Label htmlFor="card-exp" className="mb-1.5 block text-xs text-text-muted">Expiry</Label>
-                      <Input id="card-exp" value={cardExpiry} onChange={(e) => setCardExpiry(e.target.value)} placeholder="MM / YY" maxLength={7} />
+                  {paymentSplitMode === "single" ? (
+                    <>
+                      <div>
+                        <Label htmlFor="card-num" className="mb-1.5 block text-xs text-text-muted">
+                          {t("customerPublic.checkout.cardNumber")}
+                        </Label>
+                        <Input
+                          id="card-num"
+                          value={cardNumber}
+                          onChange={(e) => setCardNumber(formatCardPanInput(e.target.value))}
+                          placeholder="4242 4242 4242 4242"
+                          maxLength={19}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label htmlFor="card-exp" className="mb-1.5 block text-xs text-text-muted">
+                            {t("customerPublic.checkout.cardExpiry")}
+                          </Label>
+                          <Input
+                            id="card-exp"
+                            value={cardExpiry}
+                            onChange={(e) => setCardExpiry(e.target.value)}
+                            placeholder="MM / YY"
+                            maxLength={7}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="card-cvc" className="mb-1.5 block text-xs text-text-muted">
+                            {t("customerPublic.checkout.cardCvc")}
+                          </Label>
+                          <Input
+                            id="card-cvc"
+                            value={cardCvc}
+                            onChange={(e) =>
+                              setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4))
+                            }
+                            placeholder="•••"
+                            maxLength={4}
+                          />
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col gap-6 sm:gap-8">
+                      {splitCardRows.map((row, i) => (
+                        <div
+                          key={i}
+                          className="space-y-4 rounded-xl border border-border bg-bg-surface p-4 sm:p-5"
+                        >
+                          <p className="text-[11px] font-semibold uppercase tracking-widest text-text-muted sm:text-xs">
+                            {t("customerPublic.checkout.cardNumberedLabel", { n: i + 1 })}
+                          </p>
+                          <div className="space-y-4">
+                            <div>
+                              <Label
+                                htmlFor={`split-card-${i}-num`}
+                                className="mb-2 block text-xs text-text-muted"
+                              >
+                                {t("customerPublic.checkout.cardNumber")}
+                              </Label>
+                              <Input
+                                id={`split-card-${i}-num`}
+                                value={row.number}
+                                onChange={(e) => {
+                                  const number = formatCardPanInput(e.target.value);
+                                  setSplitCardRows((rows) =>
+                                    rows.map((r, j) => (j === i ? { ...r, number } : r)),
+                                  );
+                                }}
+                                placeholder="4242 4242 4242 4242"
+                                maxLength={19}
+                                className="h-11"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                              <div>
+                                <Label
+                                  htmlFor={`split-card-${i}-exp`}
+                                  className="mb-2 block text-xs text-text-muted"
+                                >
+                                  {t("customerPublic.checkout.cardExpiry")}
+                                </Label>
+                                <Input
+                                  id={`split-card-${i}-exp`}
+                                  value={row.expiry}
+                                  onChange={(e) => {
+                                    const expiry = e.target.value;
+                                    setSplitCardRows((rows) =>
+                                      rows.map((r, j) => (j === i ? { ...r, expiry } : r)),
+                                    );
+                                  }}
+                                  placeholder="MM / YY"
+                                  maxLength={7}
+                                  className="h-11"
+                                />
+                              </div>
+                              <div>
+                                <Label
+                                  htmlFor={`split-card-${i}-cvc`}
+                                  className="mb-2 block text-xs text-text-muted"
+                                >
+                                  {t("customerPublic.checkout.cardCvc")}
+                                </Label>
+                                <Input
+                                  id={`split-card-${i}-cvc`}
+                                  value={row.cvc}
+                                  onChange={(e) => {
+                                    const cvc = e.target.value.replace(/\D/g, "").slice(0, 4);
+                                    setSplitCardRows((rows) =>
+                                      rows.map((r, j) => (j === i ? { ...r, cvc } : r)),
+                                    );
+                                  }}
+                                  placeholder="•••"
+                                  maxLength={4}
+                                  className="h-11"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div>
-                      <Label htmlFor="card-cvc" className="mb-1.5 block text-xs text-text-muted">CVC</Label>
-                      <Input id="card-cvc" value={cardCvc} onChange={(e) => setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="•••" maxLength={4} />
-                    </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
               <Button
                 className="mt-5 h-12 w-full text-base font-semibold"
+                disabled={paymentSplitMode === "split" && !splitCheckoutValid}
                 onClick={() => setStep("confirmed")}
               >
                 <Lock className="size-4 mr-2" />
@@ -1038,6 +1409,11 @@ export default function RestaurantPublicPage() {
                     setOrderType(null);
                     setTipOption("18");
                     setCustomTipAmount("");
+                    setPaymentSplitMode("single");
+                    setSplitFirstAmount("");
+                    setCard2Number("");
+                    setCard2Expiry("");
+                    setCard2Cvc("");
                   }}
                 >
                   Order again

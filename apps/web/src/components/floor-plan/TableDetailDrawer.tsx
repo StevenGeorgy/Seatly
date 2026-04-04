@@ -11,6 +11,8 @@ import {
 import type { SectionRow, TableRow } from "@/hooks/useFloorPlan";
 import { getStatusColor } from "@/lib/canvas-colors";
 
+import { tableFloorPlanTitle } from "./table-title";
+
 type TableDetailDrawerProps = {
   table: TableRow | null;
   sections: SectionRow[];
@@ -49,8 +51,9 @@ export function TableDetailDrawer({
       <SheetContent side="right" className="flex w-80 flex-col gap-0 p-0">
         <SheetHeader className="border-b border-border px-5 py-4">
           <SheetTitle className="text-base font-semibold">
-            {t("dashboard.floorPlan.tableNumber")}{" "}
-            {table?.table_number ?? table?.label ?? "–"}
+            {table ? tableFloorPlanTitle(t, table) : t("dashboard.floorPlan.tableTitleFormat", {
+              number: t("dashboard.floorPlan.tableIdPlaceholder"),
+            })}
           </SheetTitle>
         </SheetHeader>
 

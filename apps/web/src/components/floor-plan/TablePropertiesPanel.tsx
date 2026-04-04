@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -42,6 +42,32 @@ type TablePropertiesPanelProps = {
   onDelete: (id: string) => void;
 };
 
+function toFormValues(table: TableRow): FormValues {
+  return {
+    table_number: table.table_number ?? "",
+    label: table.label ?? "",
+    shape: (table.shape as "rectangle" | "circle" | "square") ?? "rectangle",
+    capacity: table.capacity ?? 4,
+    min_party: table.min_party ?? 1,
+    section_id: table.section_id ?? "",
+    status: (table.status as FormValues["status"]) ?? "empty",
+    notes: table.notes ?? "",
+  };
+}
+
+function formValuesEqual(a: FormValues, b: FormValues): boolean {
+  return (
+    a.table_number === b.table_number &&
+    a.label === b.label &&
+    a.shape === b.shape &&
+    a.capacity === b.capacity &&
+    a.min_party === b.min_party &&
+    a.section_id === b.section_id &&
+    a.status === b.status &&
+    a.notes === b.notes
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function TablePropertiesPanel({
@@ -54,37 +80,42 @@ export function TablePropertiesPanel({
 
   const { register, watch, setValue, reset, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: {
-      table_number: table.table_number ?? "",
-      label: table.label ?? "",
-      shape: (table.shape as "rectangle" | "circle" | "square") ?? "rectangle",
-      capacity: table.capacity ?? 4,
-      min_party: table.min_party ?? 1,
-      section_id: table.section_id ?? "",
-      status: (table.status as FormValues["status"]) ?? "empty",
-      notes: table.notes ?? "",
-    },
+    defaultValues: toFormValues(table),
   });
 
-  // Reset form when table changes
-  useEffect(() => {
-    reset({
-      table_number: table.table_number ?? "",
-      label: table.label ?? "",
-      shape: (table.shape as "rectangle" | "circle" | "square") ?? "rectangle",
-      capacity: table.capacity ?? 4,
-      min_party: table.min_party ?? 1,
-      section_id: table.section_id ?? "",
-      status: (table.status as FormValues["status"]) ?? "empty",
-      notes: table.notes ?? "",
-    });
-  }, [table.id, reset, table.table_number, table.label, table.shape, table.capacity, table.min_party, table.section_id, table.status, table.notes]);
+  // Track the last table id we synced from so reset only fires on actual table switch.
+  const syncedTableIdRef = useRef(table.id);
+  // Guard to skip the watch→onPatch cycle during programmatic resets.
+  const isResettingRef = useRef(false);
+  // Track last values we patched to avoid redundant patches.
+  const lastPatchedRef = useRef<FormValues>(toFormValues(table));
 
-  // Preview-live: patch on any field change
+  useEffect(() => {
+    if (syncedTableIdRef.current !== table.id) {
+      syncedTableIdRef.current = table.id;
+      const next = toFormValues(table);
+      isResettingRef.current = true;
+      reset(next);
+      lastPatchedRef.current = next;
+      // Release the guard after React flushes the form state update.
+      requestAnimationFrame(() => {
+        isResettingRef.current = false;
+      });
+    }
+  }, [table.id, reset, table]);
+
+  // Patch parent on user-initiated field changes only.
   const values = watch();
   useEffect(() => {
+    if (isResettingRef.current) return;
+    if (formValuesEqual(values, lastPatchedRef.current)) return;
+    lastPatchedRef.current = { ...values };
+    const trimmedNumber = values.table_number.trim();
+    // DB column `table_number` is NOT NULL — never send null or empty.
+    const tableNumber =
+      trimmedNumber.length > 0 ? trimmedNumber : (table.table_number?.trim() || "T");
     onPatch(table.id, {
-      table_number: values.table_number || null,
+      table_number: tableNumber,
       label: values.label || null,
       shape: values.shape,
       capacity: values.capacity,

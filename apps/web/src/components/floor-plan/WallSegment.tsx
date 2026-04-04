@@ -14,10 +14,20 @@ type WallSegmentProps = {
   /** Show draggable endpoint handles (edit mode). */
   showHandles?: boolean;
   onDragEnd?: (id: string, dx: number, dy: number) => void;
-  onClick?: () => void;
+  /** Select / delete-tool hit target (line body). */
+  onWallSelect?: (id: string) => void;
   /** Called when an endpoint handle is dragged. endpoint: "start" | "end". */
   onEndpointDragMove?: (id: string, endpoint: "start" | "end", x: number, y: number) => void;
   onEndpointDragEnd?: (id: string, endpoint: "start" | "end", x: number, y: number) => void;
+  /** When false, handles do not drag (extend-wall uses pointerdown to start a new segment). */
+  endpointHandlesDraggable?: boolean;
+  /** extend-wall: mousedown on a handle — start a new wall from this endpoint (world coords). */
+  onEndpointPointerDown?: (
+    id: string,
+    endpoint: "start" | "end",
+    worldX: number,
+    worldY: number,
+  ) => void;
 };
 
 const HANDLE_RADIUS = 6;
@@ -34,10 +44,14 @@ export function WallSegment({
   draggable = false,
   showHandles = false,
   onDragEnd,
-  onClick,
+  onWallSelect,
   onEndpointDragMove,
   onEndpointDragEnd,
+  endpointHandlesDraggable = true,
+  onEndpointPointerDown,
 }: WallSegmentProps) {
+  const handleDraggable = showHandles && endpointHandlesDraggable;
+
   return (
     <Group>
       {/* Main wall line */}
@@ -49,8 +63,14 @@ export function WallSegment({
         lineJoin="round"
         opacity={opacity}
         draggable={draggable}
-        onClick={onClick}
-        onTap={onClick}
+        onClick={(e) => {
+          e.cancelBubble = true;
+          onWallSelect?.(id);
+        }}
+        onTap={(e) => {
+          e.cancelBubble = true;
+          onWallSelect?.(id);
+        }}
         onDragEnd={(e) => {
           const pos = e.target.position();
           e.target.position({ x: 0, y: 0 });
@@ -70,12 +90,28 @@ export function WallSegment({
             fill={selected ? CANVAS_COLORS.gold : CANVAS_COLORS.bgElevated}
             stroke={selected ? CANVAS_COLORS.goldLight : CANVAS_COLORS.textMuted}
             strokeWidth={1.5}
-            draggable
+            draggable={handleDraggable}
             hitFunc={(context, shape) => {
               context.beginPath();
               context.arc(0, 0, HANDLE_HIT_RADIUS, 0, Math.PI * 2, false);
               context.closePath();
               context.fillStrokeShape(shape);
+            }}
+            onMouseDown={(e) => {
+              if (!onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              e.evt.stopPropagation();
+              onEndpointPointerDown(id, "start", x1, y1);
+            }}
+            onClick={(e) => {
+              if (onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              onWallSelect?.(id);
+            }}
+            onTap={(e) => {
+              if (onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              onWallSelect?.(id);
             }}
             onDragMove={(e) => {
               onEndpointDragMove?.(id, "start", e.target.x(), e.target.y());
@@ -102,12 +138,28 @@ export function WallSegment({
             fill={selected ? CANVAS_COLORS.gold : CANVAS_COLORS.bgElevated}
             stroke={selected ? CANVAS_COLORS.goldLight : CANVAS_COLORS.textMuted}
             strokeWidth={1.5}
-            draggable
+            draggable={handleDraggable}
             hitFunc={(context, shape) => {
               context.beginPath();
               context.arc(0, 0, HANDLE_HIT_RADIUS, 0, Math.PI * 2, false);
               context.closePath();
               context.fillStrokeShape(shape);
+            }}
+            onMouseDown={(e) => {
+              if (!onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              e.evt.stopPropagation();
+              onEndpointPointerDown(id, "end", x2, y2);
+            }}
+            onClick={(e) => {
+              if (onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              onWallSelect?.(id);
+            }}
+            onTap={(e) => {
+              if (onEndpointPointerDown) return;
+              e.cancelBubble = true;
+              onWallSelect?.(id);
             }}
             onDragMove={(e) => {
               onEndpointDragMove?.(id, "end", e.target.x(), e.target.y());

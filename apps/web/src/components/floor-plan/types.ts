@@ -12,20 +12,26 @@ export type ToolMode =
   | "add-circle-table"
   | "add-square-table"
   | "add-wall"
+  /** Start a new wall segment from an existing endpoint (click handle, then drag). */
+  | "extend-wall"
   | "add-decoration"
   | "add-section-label"
   | "delete";
 
 // ─── Snap ────────────────────────────────────────────────────────────────────
 
-/** Floor-plan canvas snap step (matches grid); use when placing tables from pointer. */
+/** Snap step for tables, walls, and drag-end (coarser = snappier movement). */
 export const FLOOR_PLAN_GRID_STEP = 20;
 
-export type SnapLine = {
-  id: string;
-  points: [number, number, number, number];
-  orientation: "horizontal" | "vertical";
-};
+/**
+ * Dot grid spacing (world px) — can be finer than {@link FLOOR_PLAN_GRID_STEP} so the mesh
+ * looks visibly tighter without making drag/placement feel sluggish.
+ */
+export const FLOOR_PLAN_GRID_VISUAL_STEP = 10;
+
+/** Default world size (px) when floor plan has no canvas_width/height — compact room, not an infinite plane. */
+export const FLOOR_PLAN_DEFAULT_WORLD_WIDTH = 720;
+export const FLOOR_PLAN_DEFAULT_WORLD_HEIGHT = 480;
 
 // ─── Wall drawing state ───────────────────────────────────────────────────────
 

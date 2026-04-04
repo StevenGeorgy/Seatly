@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { MOCK_SECTIONS } from "@/lib/mock-data";
+import { nextSequentialTableNumber } from "@/lib/table-number";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 /** Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows. */
@@ -69,7 +70,8 @@ export type SectionRow = {
   is_active: boolean;
 };
 
-export function useFloorPlan() {
+export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
+  const pauseRealtime = options?.pauseRealtime ?? false;
   const { selectedRestaurantId } = useRestaurantScope();
   const [tables, setTables] = useState<TableRow[]>([]);
   const [floorPlans, setFloorPlans] = useState<FloorPlanRow[]>([]);
@@ -114,12 +116,15 @@ export function useFloorPlan() {
       if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
       const client = getSupabaseBrowserClient();
 
+      const nextSortOrder =
+        sections.reduce((max, s) => Math.max(max, s.sort_order), -1) + 1;
+
       const sectionRes = await client
         .from("restaurant_sections")
         .insert({
           restaurant_id: selectedRestaurantId,
           name,
-          sort_order: sections.length,
+          sort_order: nextSortOrder,
           is_active: true,
         })
         .select("id")
@@ -136,8 +141,8 @@ export function useFloorPlan() {
           restaurant_id: selectedRestaurantId,
           section_id: sectionId,
           name,
-          canvas_width: 1000,
-          canvas_height: 700,
+          canvas_width: 720,
+          canvas_height: 480,
           layout: {
             walls: [],
             doors: [],
@@ -157,7 +162,7 @@ export function useFloorPlan() {
       await fetchAll();
       return { sectionId, floorPlanId: floorPlanRes.data.id as string };
     },
-    [fetchAll, sections.length, selectedRestaurantId],
+    [fetchAll, sections, selectedRestaurantId],
   );
 
   const createTable = useCallback(
@@ -177,7 +182,7 @@ export function useFloorPlan() {
       const client = getSupabaseBrowserClient();
       const sectionName = sections.find((s) => s.id === input.sectionId)?.name ?? null;
       const tableNumber =
-        (input.tableNumber?.trim() || input.label.trim() || `T${Date.now().toString().slice(-4)}`);
+        input.tableNumber?.trim() || nextSequentialTableNumber(tables);
 
       const res = await client
         .from("tables")
@@ -204,18 +209,29 @@ export function useFloorPlan() {
       }
       return res.data as TableRow;
     },
-    [sections, selectedRestaurantId],
+    [sections, selectedRestaurantId, tables],
   );
 
   const updateTable = useCallback(async (tableId: string, patch: Partial<TableRow>) => {
+    const sanitized: Partial<TableRow> = { ...patch };
+    if ("table_number" in sanitized) {
+      const tn = sanitized.table_number;
+      if (tn == null || (typeof tn === "string" && tn.trim() === "")) {
+        delete sanitized.table_number;
+      } else if (typeof tn === "string") {
+        sanitized.table_number = tn.trim();
+      }
+    }
+
     if (!isDatabaseUuid(tableId)) {
-      setTables((prev) => prev.map((t) => (t.id === tableId ? { ...t, ...patch } : t)));
+      setTables((prev) => prev.map((t) => (t.id === tableId ? { ...t, ...sanitized } : t)));
       setError(null);
       return true;
     }
     if (!isSupabaseConfigured()) return false;
+    if (Object.keys(sanitized).length === 0) return true;
     const client = getSupabaseBrowserClient();
-    const res = await client.from("tables").update(patch).eq("id", tableId);
+    const res = await client.from("tables").update(sanitized).eq("id", tableId);
     if (res.error) {
       setError(new Error(res.error.message));
       return false;
@@ -255,7 +271,7 @@ export function useFloorPlan() {
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
   useEffect(() => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
+    if (!selectedRestaurantId || !isSupabaseConfigured() || pauseRealtime) return;
 
     const client = getSupabaseBrowserClient();
     const channel = client
@@ -268,7 +284,7 @@ export function useFloorPlan() {
       .subscribe();
 
     return () => { void client.removeChannel(channel); };
-  }, [selectedRestaurantId, fetchAll]);
+  }, [selectedRestaurantId, fetchAll, pauseRealtime]);
 
   return {
     tables,

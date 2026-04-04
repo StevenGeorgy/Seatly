@@ -86,6 +86,8 @@ const common = {
       clearTable: "Lib\u00e9rer la table",
       blockTable: "Bloquer la table",
       tableNumber: "Table",
+      tableTitleFormat: "Table ({{number}})",
+      tableIdPlaceholder: "\u2013",
       tableName: "Nom de la table",
       capacity: "Capacit\u00e9",
       shape: "Forme",
@@ -99,6 +101,17 @@ const common = {
       saveLayout: "Enregistrer le plan",
       floorNamePlaceholder: "Nouvel \u00e9tage",
       addFloor: "Ajouter un \u00e9tage",
+      addFloorDialogTitle: "Ajouter un \u00e9tage ou une section",
+      addFloorDialogDesc:
+        "Cr\u00e9e une nouvelle zone avec son propre plan de salle. Vous pourrez y placer tables et murs apr\u00e8s avoir s\u00e9lectionn\u00e9 cet onglet.",
+      floorNameLabel: "Nom",
+      floorNameRequired: "Entrez un nom pour cet \u00e9tage ou cette section.",
+      floorNameTooLong: "Le nom est trop long.",
+      floorAdded: "\u00c9tage ajout\u00e9",
+      floorAddedWhileEditing:
+        "\u00c9tage ajout\u00e9. Terminez l\u2019\u00e9dition (Termin\u00e9), puis ouvrez le nouvel onglet pour ce plan.",
+      addFloorFailed: "Impossible d\u2019ajouter l\u2019\u00e9tage. R\u00e9essayez.",
+      addFloorAriaLabel: "Ajouter un \u00e9tage ou une section",
       tableLabel: "Nom",
       addObject: "Ajouter objet",
       toolSelect: "S\u00e9lection",
@@ -129,7 +142,7 @@ const common = {
       addFixture: "Ajouter mobilier",
       rotateHint: "Astuce : maintenez Shift et faites glisser la table pour la rotation.",
       marqueeSelectHint:
-        "Propriétaires : maintenez Shift, puis faites glisser sur le sol pour sélectionner plusieurs tables. Suppr. retire la sélection.",
+        "Maintenez Shift et faites glisser sur le sol pour sélectionner tables et murs. Suppr. retire la sélection.",
       undo: "Annuler",
       redo: "R\u00e9tablir",
       statusAutosaving: "Enregistrement auto...",
@@ -142,8 +155,6 @@ const common = {
       statusOccupied: "Occupé",
       statusCleaning: "Nettoyage",
       statusBlocked: "Bloqué",
-      // Onglets
-      allSections: "Tout",
       // Vide / édition
       noTablesYet: "Aucune table",
       addFirstTable: "Ajouter la première table",
@@ -173,6 +184,7 @@ const common = {
       toolCircle: "Table ronde",
       toolSquare: "Table carrée",
       toolWall: "Mur",
+      toolWallExtend: "Prolonger le mur",
       toolDecoration: "Décoration",
       toolSectionLabel: "Étiquette de section",
       toolDelete: "Supprimer",
@@ -474,6 +486,35 @@ const common = {
       updatePasswordFailed: "Impossible de mettre \u00e0 jour le mot de passe.",
       supabaseNotConfigured:
         "L\u2019authentification n\u2019est pas disponible. Configurez Supabase dans votre environnement (voir la banni\u00e8re de d\u00e9veloppement).",
+    },
+  },
+  customerPublic: {
+    booking: {
+      selectDate: "Choisir la date",
+      clearDate: "Effacer la date",
+      stepService: "Service",
+      stepDetails: "D\u00e9tails",
+      stepMenu: "Menu",
+      stepPayment: "Paiement",
+      goToStep: "Aller \u00e0 {{step}}",
+    },
+    checkout: {
+      splitTenderTitle: "Paiement partag\u00e9",
+      splitTenderHint:
+        "Une carte par personne qui paie. Le total est divis\u00e9 \u00e9galement entre le groupe \u2014 saisissez chaque carte.",
+      paymentSingle: "Paiement unique",
+      paymentSplitTender: "Paiement partag\u00e9",
+      splitAmongPeopleLabel: "Combien de personnes partagent l\u2019addition ?",
+      splitEachShareLabel: "Part par personne",
+      firstPaymentAmount: "Premi\u00e8re carte",
+      secondPaymentAmount: "Deuxi\u00e8me carte",
+      cardNumber: "Num\u00e9ro de carte",
+      cardExpiry: "Expiration",
+      cardCvc: "CVC",
+      cardNumberedLabel: "Carte {{n}}",
+      splitPartyCountRangeHint:
+        "Indiquez combien de personnes paient : un nombre entre 2 et 10.",
+      splitInvalidHintCompleteCards: "Compl\u00e9tez toutes les {{count}} cartes.",
     },
   },
   common: {

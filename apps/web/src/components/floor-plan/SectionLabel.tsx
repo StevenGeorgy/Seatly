@@ -19,6 +19,8 @@ export function SectionLabel({ text, x, y }: SectionLabelProps) {
       fill={CANVAS_COLORS.textMuted}
       opacity={0.4}
       letterSpacing={3}
+      align="center"
+      verticalAlign="middle"
       listening={false}
     />
   );

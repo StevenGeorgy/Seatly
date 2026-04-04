@@ -85,9 +85,7 @@ export function AppRoutes() {
           path="/discover"
           element={
             <RequireAuth>
-              <RequireCustomer>
-                <DiscoverPage />
-              </RequireCustomer>
+              <DiscoverPage />
             </RequireAuth>
           }
         />

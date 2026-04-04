@@ -12,21 +12,26 @@ import { CANVAS_COLORS } from "@/lib/canvas-colors";
 
 import { DecorationItem } from "./DecorationItem";
 import { SectionLabel } from "./SectionLabel";
-import { SnapGuides } from "./SnapGuides";
 import { getTableWorldBounds, TableShape, worldRectsIntersect } from "./TableShape";
-import type { FloorPlanMode, HoveredTableInfo, SnapLine, ToolMode, WallDraft } from "./types";
-import { FLOOR_PLAN_GRID_STEP } from "./types";
+import type { FloorPlanMode, HoveredTableInfo, ToolMode, WallDraft } from "./types";
+import {
+  FLOOR_PLAN_DEFAULT_WORLD_HEIGHT,
+  FLOOR_PLAN_DEFAULT_WORLD_WIDTH,
+  FLOOR_PLAN_GRID_STEP,
+  FLOOR_PLAN_GRID_VISUAL_STEP,
+} from "./types";
 import { WallSegment } from "./WallSegment";
 
 // ─── Dot-grid helper ─────────────────────────────────────────────────────────
 
-const GRID_STEP = FLOOR_PLAN_GRID_STEP;
-const DOT_RADIUS = 0.7;
+const SNAP_STEP = FLOOR_PLAN_GRID_STEP;
+const GRID_VISUAL_STEP = FLOOR_PLAN_GRID_VISUAL_STEP;
+const DOT_RADIUS = 0.35;
 
 function buildGridDots(width: number, height: number) {
   const dots: { x: number; y: number }[] = [];
-  for (let x = 0; x <= width; x += GRID_STEP) {
-    for (let y = 0; y <= height; y += GRID_STEP) {
+  for (let x = 0; x <= width; x += GRID_VISUAL_STEP) {
+    for (let y = 0; y <= height; y += GRID_VISUAL_STEP) {
       dots.push({ x, y });
     }
   }
@@ -36,29 +41,7 @@ function buildGridDots(width: number, height: number) {
 // ─── Snap helpers ─────────────────────────────────────────────────────────────
 
 function snapToGrid(v: number): number {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
-}
-
-function computeSnapGuides(
-  movedId: string,
-  newX: number,
-  newY: number,
-  allTables: TableRow[],
-): SnapLine[] {
-  const guides: SnapLine[] = [];
-  const THRESHOLD = 6;
-  allTables.forEach((t) => {
-    if (t.id === movedId) return;
-    const tx = t.position_x ?? 0;
-    const ty = t.position_y ?? 0;
-    if (Math.abs(newY - ty) < THRESHOLD) {
-      guides.push({ id: `h-${t.id}`, points: [0, newY, 2000, newY], orientation: "horizontal" });
-    }
-    if (Math.abs(newX - tx) < THRESHOLD) {
-      guides.push({ id: `v-${t.id}`, points: [newX, 0, newX, 2000], orientation: "vertical" });
-    }
-  });
-  return guides.slice(0, 4);
+  return Math.round(v / SNAP_STEP) * SNAP_STEP;
 }
 
 function snapWallAngle(x1: number, y1: number, x2: number, y2: number) {
@@ -124,6 +107,27 @@ function findNearestEndpoint(
 
 const MARQUEE_MIN_DRAG_PX = 8;
 
+/** Mouse wheel notches are often ~100px per tick; trackpad scroll uses smaller pixel deltas. */
+const WHEEL_ZOOM_PIXEL_DELTA_THRESHOLD = 100;
+
+/**
+ * Zoom only for: trackpad pinch (ctrl/meta + wheel), line/page scroll, or chunky vertical
+ * deltas (typical USB mouse wheel). Smooth pixel deltas without modifiers → pan (2-finger trackpad).
+ */
+function wheelShouldZoom(ev: WheelEvent): boolean {
+  if (ev.ctrlKey || ev.metaKey) return true;
+  if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE) return true;
+  if (ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) return true;
+  if (
+    ev.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
+    Math.abs(ev.deltaY) >= WHEEL_ZOOM_PIXEL_DELTA_THRESHOLD &&
+    Math.abs(ev.deltaX) < Math.abs(ev.deltaY) * 0.5
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function pointerToStageCoords(stage: Konva.Stage, clientX: number, clientY: number) {
   const rect = stage.container().getBoundingClientRect();
   const scale = stage.scaleX();
@@ -142,19 +146,62 @@ function isCanvasBackgroundTarget(node: Konva.Node): boolean {
   return st !== undefined && node === st;
 }
 
-// ─── Section centroid ────────────────────────────────────────────────────────
+// ─── Section title placement (fixed canvas center — does not follow table drags) ──
 
-function sectionCentroid(tables: TableRow[], sectionId: string): { x: number; y: number } | null {
-  const matching = tables.filter((t) => t.section_id === sectionId && t.position_x && t.position_y);
-  if (matching.length === 0) return null;
-  const cx = matching.reduce((s, t) => s + (t.position_x ?? 0), 0) / matching.length;
-  const cy = matching.reduce((s, t) => s + (t.position_y ?? 0), 0) / matching.length;
-  return { x: cx - 40, y: cy - 50 };
+function tableDragBoundsForWorld(
+  table: TableRow,
+  transform: { scaleX?: number; scaleY?: number } | null | undefined,
+  worldW: number,
+  worldH: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const b = getTableWorldBounds(table, transform);
+  const halfW = (b.right - b.left) / 2;
+  const halfH = (b.bottom - b.top) / 2;
+  return {
+    minX: halfW,
+    maxX: Math.max(halfW, worldW - halfW),
+    minY: halfH,
+    maxY: Math.max(halfH, worldH - halfH),
+  };
+}
+
+function clampPointToWorld(x: number, y: number, worldW: number, worldH: number) {
+  return {
+    x: Math.max(0, Math.min(worldW, x)),
+    y: Math.max(0, Math.min(worldH, y)),
+  };
+}
+
+function clampTableCenterAfterSnap(
+  cx: number,
+  cy: number,
+  table: TableRow,
+  transform: { scaleX?: number; scaleY?: number } | null | undefined,
+  worldW: number,
+  worldH: number,
+) {
+  const b = getTableWorldBounds({ ...table, position_x: cx, position_y: cy }, transform);
+  const halfW = (b.right - b.left) / 2;
+  const halfH = (b.bottom - b.top) / 2;
+  return {
+    x: Math.max(halfW, Math.min(worldW - halfW, cx)),
+    y: Math.max(halfH, Math.min(worldH - halfH, cy)),
+  };
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 type Wall = { id: string; x1: number; y1: number; x2: number; y2: number };
+
+function getWallWorldBounds(w: Wall): { left: number; top: number; right: number; bottom: number } {
+  const pad = 8;
+  return {
+    left: Math.min(w.x1, w.x2) - pad,
+    right: Math.max(w.x1, w.x2) + pad,
+    top: Math.min(w.y1, w.y2) - pad,
+    bottom: Math.max(w.y1, w.y2) + pad,
+  };
+}
 
 type FloorPlanCanvasProps = {
   tables: TableRow[];
@@ -165,6 +212,8 @@ type FloorPlanCanvasProps = {
   mode: FloorPlanMode;
   selectedTableIds: string[];
   selectedDecorationId: string | null;
+  /** Edit mode: which walls are selected (outline + delete). */
+  selectedWallIds?: string[];
   activeTool: ToolMode;
   stageScale: number;
   stagePos: { x: number; y: number };
@@ -178,6 +227,8 @@ type FloorPlanCanvasProps = {
   onWallDrawn: (wall: Wall) => void;
   /** Called when a wall endpoint is dragged to a new position (with snapping applied). */
   onWallEndpointUpdate?: (wallId: string, endpoint: "start" | "end", x: number, y: number) => void;
+  /** Edit mode: wall line/handle clicked (select / delete tool) — not used during add-wall / extend-wall. */
+  onWallClick?: (wallId: string) => void;
   /** Edit mode only — omit in live mode so decorations do not capture selection */
   onDecorationClick?: (id: string) => void;
   onDecorationDragEnd: (id: string, x: number, y: number) => void;
@@ -188,9 +239,12 @@ type FloorPlanCanvasProps = {
   /** Owners only: Konva Transformer on selected table (edge = one axis, corner = both). */
   resizeEnabled?: boolean;
   onTableTransformEnd?: (tableId: string, scaleX: number, scaleY: number) => void;
-  /** Owners: Shift+drag on empty canvas to box-select tables. */
+  /** Shift+drag on empty canvas to box-select tables and walls. */
   marqueeSelectEnabled?: boolean;
-  onMarqueeSelect?: (ids: string[]) => void;
+  onMarqueeSelect?: (selection: { tableIds: string[]; wallIds: string[] }) => void;
+  /** World size (px) from floor_plans.canvas_width / canvas_height — bounds grid and editing. */
+  worldWidth?: number;
+  worldHeight?: number;
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -204,6 +258,7 @@ export function FloorPlanCanvas({
   mode,
   selectedTableIds,
   selectedDecorationId,
+  selectedWallIds = [],
   activeTool,
   stageScale,
   stagePos,
@@ -215,6 +270,7 @@ export function FloorPlanCanvas({
   onTableDragEnd,
   onWallDrawn,
   onWallEndpointUpdate,
+  onWallClick: onWallClickProp,
   onDecorationClick: onDecorationClickProp,
   onDecorationDragEnd,
   onStageScaleChange,
@@ -224,11 +280,15 @@ export function FloorPlanCanvas({
   onTableTransformEnd,
   marqueeSelectEnabled = false,
   onMarqueeSelect,
+  worldWidth: worldWidthProp,
+  worldHeight: worldHeightProp,
 }: FloorPlanCanvasProps) {
+  const worldW = Math.max(320, worldWidthProp ?? FLOOR_PLAN_DEFAULT_WORLD_WIDTH);
+  const worldH = Math.max(240, worldHeightProp ?? FLOOR_PLAN_DEFAULT_WORLD_HEIGHT);
+
   const stageRef = useRef<Konva.Stage | null>(null);
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedTableInnerRef = useRef<Konva.Group | null>(null);
-  const [snapGuides, setSnapGuides] = useState<SnapLine[]>([]);
   const [wallDraft, setWallDraft] = useState<WallDraft>({
     active: false,
     startX: 0,
@@ -255,7 +315,14 @@ export function FloorPlanCanvas({
   const [wallSnapTarget, setWallSnapTarget] = useState<{ x: number; y: number } | null>(null);
 
   const isEditing = mode === "edit";
-  const isWallTool = activeTool === "add-wall";
+  const isAddWallTool = activeTool === "add-wall";
+  const isExtendWallTool = activeTool === "extend-wall";
+  const isWallDrawingTool = isAddWallTool || isExtendWallTool;
+
+  function emitWallSelectClick(wallId: string) {
+    if (!isEditing || isWallDrawingTool) return;
+    onWallClickProp?.(wallId);
+  }
 
   const singleSelectedTableId =
     selectedTableIds.length === 1 ? (selectedTableIds[0] ?? null) : null;
@@ -301,12 +368,15 @@ export function FloorPlanCanvas({
           right: Math.max(m.x1, m.x2),
           bottom: Math.max(m.y1, m.y2),
         };
-        const ids = tables
+        const tableIds = tables
           .filter((t) =>
             worldRectsIntersect(box, getTableWorldBounds(t, tableTransforms[t.id] ?? null)),
           )
           .map((t) => t.id);
-        onMarqueeSelect?.(ids);
+        const wallIds = walls
+          .filter((w) => worldRectsIntersect(box, getWallWorldBounds(w)))
+          .map((w) => w.id);
+        onMarqueeSelect?.({ tableIds, wallIds });
         justFinishedMarqueeRef.current = true;
       }
       const cleared = { active: false, x1: 0, y1: 0, x2: 0, y2: 0 };
@@ -319,12 +389,14 @@ export function FloorPlanCanvas({
     const { startX, startY, endX, endY } = w;
     const dist = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
     if (dist > 10) {
+      const s = clampPointToWorld(startX, startY, worldW, worldH);
+      const e = clampPointToWorld(endX, endY, worldW, worldH);
       onWallDrawn({
         id: `wall-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        x1: startX,
-        y1: startY,
-        x2: endX,
-        y2: endY,
+        x1: snapToGrid(s.x),
+        y1: snapToGrid(s.y),
+        x2: snapToGrid(e.x),
+        y2: snapToGrid(e.y),
       });
     }
     const wallCleared = { active: false, startX: 0, startY: 0, endX: 0, endY: 0 };
@@ -369,28 +441,29 @@ export function FloorPlanCanvas({
     onTableTransformEnd(tid, clamp(sx), clamp(sy));
   }
 
-  // Dot grid (memoised — only recomputes when container size changes)
-  const gridDots = useMemo(
-    () => buildGridDots(Math.max(containerWidth, 1400), Math.max(containerHeight, 1000)),
-    [containerWidth, containerHeight],
-  );
+  // Dot grid — bounded to floor plan world size (not an infinite plane)
+  const gridDots = useMemo(() => buildGridDots(worldW, worldH), [worldW, worldH]);
 
-  // Table opacity based on section filter
-  function tableOpacity(table: TableRow): number {
-    if (!selectedSection || selectedSection === "all") return 1;
-    return table.section_id === selectedSection ? 1 : 0.18;
-  }
-
-  // Zoom via scroll wheel
+  // Pinch / mouse wheel → zoom; 2-finger trackpad scroll (smooth pixels) → pan
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
-    e.evt.preventDefault();
+    const ev = e.evt;
+    ev.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
+
+    if (!wheelShouldZoom(ev)) {
+      onStagePosChange({
+        x: stage.x() - ev.deltaX,
+        y: stage.y() - ev.deltaY,
+      });
+      return;
+    }
+
     const scaleBy = 1.06;
     const oldScale = stage.scaleX();
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
-    const newScale = e.evt.deltaY < 0
+    const newScale = ev.deltaY < 0
       ? Math.min(3, oldScale * scaleBy)
       : Math.max(0.3, oldScale / scaleBy);
     const mousePointTo = {
@@ -409,7 +482,8 @@ export function FloorPlanCanvas({
   // Table/wall/decoration dragend bubbles here; e.target would be the child,
   // and using its x/y would corrupt viewport position (grid "teleports").
   function handleStageDragStart(e: Konva.KonvaEventObject<DragEvent>) {
-    if (!marqueeSelectEnabled || !isEditing || activeTool !== "select") return;
+    // Marquee uses stage drag when the stage is draggable (not add-/extend-wall).
+    if (!marqueeSelectEnabled || !isEditing || isWallDrawingTool) return;
     const st = stageRef.current;
     if (!st) return;
     const evt = e.evt;
@@ -444,25 +518,34 @@ export function FloorPlanCanvas({
     onCanvasClick(pos.x, pos.y);
   }
 
-  // Wall drawing + owner marquee (Shift+drag on empty stage)
+  // Wall drawing + Shift+marquee on empty stage (any edit tool except shift+add-wall, which reserves marquee)
   function handleMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (isEditing && isWallTool) {
-      const stage = stageRef.current;
-      if (!stage) return;
-      const pos = stage.getRelativePointerPosition();
-      if (!pos) return;
-      // Snap start point to nearby wall endpoint
-      const endpoints = collectWallEndpoints(walls);
-      const nearest = findNearestEndpoint(pos.x, pos.y, endpoints);
-      const sx = nearest ? nearest.x : pos.x;
-      const sy = nearest ? nearest.y : pos.y;
-      setWallDraft({ active: true, startX: sx, startY: sy, endX: sx, endY: sy });
-      return;
+    if (isEditing && isAddWallTool) {
+      // add-wall: only start from the floor background (extend-wall uses handle pointerdown).
+      if (!isCanvasBackgroundTarget(e.target)) return;
+      // Shift+drag = box select; plain click-drag = new wall segment
+      if (marqueeSelectEnabled && e.evt.shiftKey) {
+        // fall through to marquee handler below
+      } else {
+        const stage = stageRef.current;
+        if (!stage) return;
+        const pos = stage.getRelativePointerPosition();
+        if (!pos) return;
+        // Snap start point to nearby wall endpoint
+        const endpoints = collectWallEndpoints(walls);
+        const nearest = findNearestEndpoint(pos.x, pos.y, endpoints);
+        const rawX = nearest ? nearest.x : pos.x;
+        const rawY = nearest ? nearest.y : pos.y;
+        const c = clampPointToWorld(rawX, rawY, worldW, worldH);
+        const sx = snapToGrid(c.x);
+        const sy = snapToGrid(c.y);
+        setWallDraft({ active: true, startX: sx, startY: sy, endX: sx, endY: sy });
+        return;
+      }
     }
     if (
       isEditing &&
       marqueeSelectEnabled &&
-      activeTool === "select" &&
       e.evt.shiftKey &&
       isCanvasBackgroundTarget(e.target)
     ) {
@@ -496,47 +579,60 @@ export function FloorPlanCanvas({
     const endpoints = collectWallEndpoints(walls);
     const nearest = findNearestEndpoint(snapped.x2, snapped.y2, endpoints);
     if (nearest) {
-      setWallDraft((d) => ({ ...d, endX: nearest.x, endY: nearest.y }));
-      setWallSnapTarget({ x: nearest.x, y: nearest.y });
+      const c = clampPointToWorld(nearest.x, nearest.y, worldW, worldH);
+      setWallDraft((d) => ({ ...d, endX: c.x, endY: c.y }));
+      setWallSnapTarget({ x: c.x, y: c.y });
     } else {
-      setWallDraft((d) => ({ ...d, endX: snapped.x2, endY: snapped.y2 }));
+      const c = clampPointToWorld(snapped.x2, snapped.y2, worldW, worldH);
+      setWallDraft((d) => ({ ...d, endX: c.x, endY: c.y }));
       setWallSnapTarget(null);
     }
     e.evt.preventDefault();
   }
 
-  // Table drag (snap to 20px grid + snap guides)
-  const handleTableDragMove = useCallback(
-    (tableId: string, rawX: number, rawY: number) => {
-      const snappedX = snapToGrid(rawX);
-      const snappedY = snapToGrid(rawY);
-      const guides = computeSnapGuides(tableId, snappedX, snappedY, tables);
-      setSnapGuides(guides);
-      return { x: snappedX, y: snappedY };
-    },
-    [tables],
-  );
-
   const handleTableDragEnd = useCallback(
     (tableId: string, rawX: number, rawY: number) => {
-      setSnapGuides([]);
-      onTableDragEnd(tableId, snapToGrid(rawX), snapToGrid(rawY));
+      const t = tables.find((r) => r.id === tableId);
+      let x = snapToGrid(rawX);
+      let y = snapToGrid(rawY);
+      if (t) {
+        const c = clampTableCenterAfterSnap(x, y, t, tableTransforms[t.id] ?? null, worldW, worldH);
+        x = snapToGrid(c.x);
+        y = snapToGrid(c.y);
+      }
+      onTableDragEnd(tableId, x, y);
     },
-    [onTableDragEnd],
+    [onTableDragEnd, tables, tableTransforms, worldW, worldH],
   );
 
-  // Section labels — one per active section that has tables
+  const handleDecorationDragEndClamped = useCallback(
+    (id: string, x: number, y: number) => {
+      const d = decorations.find((de) => de.id === id);
+      if (!d) {
+        onDecorationDragEnd(id, x, y);
+        return;
+      }
+      const hw = d.width / 2;
+      const hh = d.height / 2;
+      const nx = Math.max(hw, Math.min(worldW - hw, x));
+      const ny = Math.max(hh, Math.min(worldH - hh, y));
+      onDecorationDragEnd(id, nx, ny);
+    },
+    [decorations, onDecorationDragEnd, worldW, worldH],
+  );
+
+  // Section watermark — current floor name only
   const sectionLabels = useMemo(() => {
-    return sections
-      .filter((s) => s.is_active)
-      .map((s) => ({ section: s, centroid: sectionCentroid(tables, s.id) }))
-      .filter((item): item is { section: SectionRow; centroid: { x: number; y: number } } => item.centroid !== null);
-  }, [sections, tables]);
+    if (!selectedSection) return [];
+    const s = sections.find((x) => x.id === selectedSection);
+    if (!s?.is_active) return [];
+    return [{ section: s, position: { x: worldW / 2, y: worldH / 2 } }];
+  }, [sections, worldW, worldH, selectedSection]);
 
   const stagePanBlocked =
-    marqueeSelectEnabled && isEditing && activeTool === "select" && shiftHeld;
+    marqueeSelectEnabled && isEditing && !isWallDrawingTool && shiftHeld;
   const cursorStyle =
-    isWallTool ? "crosshair" : stagePanBlocked ? "crosshair" : isEditing ? "default" : "grab";
+    isWallDrawingTool ? "crosshair" : stagePanBlocked ? "crosshair" : "grab";
 
   return (
     <div className="relative h-full w-full overflow-hidden" style={{ cursor: cursorStyle }}>
@@ -548,7 +644,7 @@ export function FloorPlanCanvas({
         scaleY={stageScale}
         x={stagePos.x}
         y={stagePos.y}
-        draggable={!isWallTool && !stagePanBlocked}
+        draggable={!isWallDrawingTool && !stagePanBlocked}
         onWheel={handleWheel}
         onDragStart={handleStageDragStart}
         onDragEnd={handleStageDragEnd}
@@ -559,15 +655,25 @@ export function FloorPlanCanvas({
         onTouchEnd={() => mouseUpHandlerRef.current()}
       >
         <Layer>
-          {/* Canvas background */}
+          {/* Floor plan bounds: finite room (clickable), not an infinite grid */}
           <Rect
             name={CANVAS_BG_HIT_NAME}
-            x={-stagePos.x / stageScale}
-            y={-stagePos.y / stageScale}
-            width={containerWidth / stageScale + 400}
-            height={containerHeight / stageScale + 400}
+            x={0}
+            y={0}
+            width={worldW}
+            height={worldH}
             fill={CANVAS_COLORS.bgBase}
             listening
+          />
+          <Rect
+            x={0}
+            y={0}
+            width={worldW}
+            height={worldH}
+            stroke={CANVAS_COLORS.border}
+            strokeWidth={2}
+            fill="transparent"
+            listening={false}
           />
 
           {/* Dot grid */}
@@ -583,12 +689,12 @@ export function FloorPlanCanvas({
           ))}
 
           {/* Section background labels */}
-          {sectionLabels.map(({ section, centroid }) => (
+          {sectionLabels.map(({ section, position }) => (
             <SectionLabel
               key={section.id}
               text={section.name}
-              x={centroid.x}
-              y={centroid.y}
+              x={position.x}
+              y={position.y}
             />
           ))}
 
@@ -601,8 +707,27 @@ export function FloorPlanCanvas({
               y1={w.y1}
               x2={w.x2}
               y2={w.y2}
+              selected={selectedWallIds.includes(w.id)}
               draggable={isEditing}
               showHandles={isEditing}
+              endpointHandlesDraggable={!isExtendWallTool}
+              onWallSelect={onWallClickProp && !isWallDrawingTool ? emitWallSelectClick : undefined}
+              onEndpointPointerDown={
+                isEditing && isExtendWallTool
+                  ? (_wallId, _ep, wx, wy) => {
+                      const c = clampPointToWorld(wx, wy, worldW, worldH);
+                      const sx = snapToGrid(c.x);
+                      const sy = snapToGrid(c.y);
+                      setWallDraft({
+                        active: true,
+                        startX: sx,
+                        startY: sy,
+                        endX: sx,
+                        endY: sy,
+                      });
+                    }
+                  : undefined
+              }
               onEndpointDragMove={(wallId, endpoint, x, y) => {
                 // Show snap indicator if near another endpoint
                 const eps = collectWallEndpoints(walls, wallId, endpoint);
@@ -610,13 +735,13 @@ export function FloorPlanCanvas({
                 setWallSnapTarget(nearest ? { x: nearest.x, y: nearest.y } : null);
               }}
               onEndpointDragEnd={(wallId, endpoint, x, y) => {
-                // Snap to nearby endpoint if close enough
                 const eps = collectWallEndpoints(walls, wallId, endpoint);
                 const nearest = findNearestEndpoint(x, y, eps);
-                const finalX = nearest ? nearest.x : snapToGrid(x);
-                const finalY = nearest ? nearest.y : snapToGrid(y);
+                const rawX = nearest ? nearest.x : snapToGrid(x);
+                const rawY = nearest ? nearest.y : snapToGrid(y);
+                const c = clampPointToWorld(rawX, rawY, worldW, worldH);
                 setWallSnapTarget(null);
-                onWallEndpointUpdate?.(wallId, endpoint, finalX, finalY);
+                onWallEndpointUpdate?.(wallId, endpoint, snapToGrid(c.x), snapToGrid(c.y));
               }}
             />
           ))}
@@ -655,7 +780,7 @@ export function FloorPlanCanvas({
               selected={d.id === selectedDecorationId}
               draggable={isEditing}
               onClick={onDecorationClickProp ? () => onDecorationClickProp(d.id) : undefined}
-              onDragEnd={onDecorationDragEnd}
+              onDragEnd={handleDecorationDragEndClamped}
             />
           ))}
 
@@ -674,8 +799,9 @@ export function FloorPlanCanvas({
                   ? selectedTableInnerRef
                   : undefined
               }
-              opacity={tableOpacity(t)}
+              opacity={1}
               draggable={isEditing}
+              dragBounds={isEditing ? tableDragBoundsForWorld(t, tableTransforms[t.id] ?? null, worldW, worldH) : null}
               onClick={(ev) => onTableClick(t.id, ev)}
               onMouseEnter={(sx, sy) => onTableHover({ table: t, screenX: sx, screenY: sy })}
               onMouseLeave={() => onTableHover(null)}
@@ -724,9 +850,6 @@ export function FloorPlanCanvas({
             }}
             onTransformEnd={resizeEnabled ? handleTransformerEnd : undefined}
           />
-
-          {/* Snap guides */}
-          {isEditing && <SnapGuides guides={snapGuides} />}
         </Layer>
       </Stage>
     </div>

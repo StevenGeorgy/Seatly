@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { getStatusColor } from "@/lib/canvas-colors";
 
 import type { HoveredTableInfo } from "./types";
+import { tableFloorPlanTitle } from "./table-title";
 
 type TableTooltipProps = {
   info: HoveredTableInfo | null;
@@ -41,8 +42,7 @@ export function TableTooltip({ info }: TableTooltipProps) {
               style={{ backgroundColor: getStatusColor(info.table.status) }}
             />
             <span className="text-sm font-semibold text-text-primary">
-              {t("dashboard.floorPlan.tableNumber")}{" "}
-              {info.table.table_number ?? info.table.label ?? "–"}
+              {tableFloorPlanTitle(t, info.table)}
             </span>
           </div>
           <div className="mt-1 flex items-center gap-3 text-xs text-text-secondary">

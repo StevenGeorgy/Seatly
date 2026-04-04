@@ -86,6 +86,10 @@ const common = {
       clearTable: "Clear Table",
       blockTable: "Block Table",
       tableNumber: "Table",
+      /** Canvas / drawer title: "Table(12)" — {{number}} is table number or label */
+      tableTitleFormat: "Table({{number}})",
+      /** Shown inside Table(...) when no number/label yet */
+      tableIdPlaceholder: "–",
       tableName: "Table Name",
       capacity: "Capacity",
       shape: "Shape",
@@ -99,6 +103,17 @@ const common = {
       saveLayout: "Save Layout",
       floorNamePlaceholder: "New floor",
       addFloor: "Add Floor",
+      addFloorDialogTitle: "Add floor or section",
+      addFloorDialogDesc:
+        "Creates a new area with its own floor plan layout. You can place tables and walls on it after switching to this tab.",
+      floorNameLabel: "Name",
+      floorNameRequired: "Enter a name for this floor or section.",
+      floorNameTooLong: "Name is too long.",
+      floorAdded: "Floor added",
+      floorAddedWhileEditing:
+        "Floor added. Finish editing (Done), then open the new tab to work on that layout.",
+      addFloorFailed: "Could not add the floor. Try again.",
+      addFloorAriaLabel: "Add another floor or section",
       tableLabel: "Label",
       addObject: "Add Object",
       toolSelect: "Select",
@@ -129,7 +144,7 @@ const common = {
       addFixture: "Add Fixture",
       rotateHint: "Tip: hold Shift and drag directly on the table to rotate.",
       marqueeSelectHint:
-        "Owners: hold Shift, then drag on empty floor to box-select tables. Delete removes all selected.",
+        "Hold Shift and drag on empty floor to box-select tables and walls. Delete removes selected items.",
       undo: "Undo",
       redo: "Redo",
       statusAutosaving: "Autosaving...",
@@ -142,8 +157,6 @@ const common = {
       statusOccupied: "Occupied",
       statusCleaning: "Cleaning",
       statusBlocked: "Blocked",
-      // Section tabs
-      allSections: "All",
       // Empty / edit
       noTablesYet: "No tables yet",
       addFirstTable: "Add First Table",
@@ -173,6 +186,7 @@ const common = {
       toolCircle: "Add Circle Table",
       toolSquare: "Add Square Table",
       toolWall: "Add Wall",
+      toolWallExtend: "Extend Wall",
       toolDecoration: "Add Decoration",
       toolSectionLabel: "Add Section Label",
       toolDelete: "Delete",
@@ -474,6 +488,35 @@ const common = {
       updatePasswordFailed: "Could not update password.",
       supabaseNotConfigured:
         "Authentication is not available. Configure Supabase in your environment (see dev banner).",
+    },
+  },
+  customerPublic: {
+    booking: {
+      selectDate: "Select date",
+      clearDate: "Clear date",
+      stepService: "Service",
+      stepDetails: "Details",
+      stepMenu: "Menu",
+      stepPayment: "Payment",
+      goToStep: "Go to {{step}}",
+    },
+    checkout: {
+      splitTenderTitle: "Split tender",
+      splitTenderHint:
+        "One card per person paying. The total is split evenly across the group — enter card details for each person.",
+      paymentSingle: "Single payment",
+      paymentSplitTender: "Split tender",
+      splitAmongPeopleLabel: "How many people are splitting the bill?",
+      splitEachShareLabel: "Each person's share",
+      firstPaymentAmount: "First card",
+      secondPaymentAmount: "Second card",
+      cardNumber: "Card number",
+      cardExpiry: "Expiry",
+      cardCvc: "CVC",
+      cardNumberedLabel: "Card {{n}}",
+      splitPartyCountRangeHint:
+        "Set how many people are paying to a number between 2 and 10.",
+      splitInvalidHintCompleteCards: "Complete all {{count}} cards.",
     },
   },
   common: {

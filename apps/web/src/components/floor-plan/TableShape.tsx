@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type Konva from "konva";
+import { useTranslation } from "react-i18next";
 import { Circle, Group, Rect, Text } from "react-konva";
 
 import type { TableRow } from "@/hooks/useFloorPlan";
+import { tableFloorPlanTitle } from "./table-title";
 import { CANVAS_COLORS, getStatusColor } from "@/lib/canvas-colors";
 
 import { ChairIndicator } from "./ChairIndicator";
@@ -91,14 +93,13 @@ function rectChairs(width: number, height: number, capacity: number): ChairPos[]
     const x = -hw + ((i + 1) * width) / (bottomCount + 1);
     chairs.push({ x, y: hh + gap, angle: 0 });
   }
-  if (cap >= 4) {
-    chairs.push({ x: -hw - gap, y: 0, angle: 90 });
-    chairs.push({ x: hw + gap, y: 0, angle: 270 });
-  }
   return chairs;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
+
+/** Optional drag limits (world px, table center) so tables stay inside the floor plan bounds. */
+export type TableDragBounds = { minX: number; maxX: number; minY: number; maxY: number };
 
 type TableShapeProps = {
   table: TableRow;
@@ -110,6 +111,8 @@ type TableShapeProps = {
   innerGroupRef?: React.Ref<Konva.Group>;
   opacity?: number;
   draggable?: boolean;
+  /** When set with draggable, Konva keeps the table center inside these bounds while dragging. */
+  dragBounds?: TableDragBounds | null;
   onClick: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onMouseEnter: (screenX: number, screenY: number) => void;
   onMouseLeave: () => void;
@@ -126,18 +129,20 @@ export function TableShape({
   innerGroupRef,
   opacity = 1,
   draggable = false,
+  dragBounds = null,
   onClick,
   onMouseEnter,
   onMouseLeave,
   onDragEnd,
 }: TableShapeProps) {
+  const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
 
   const color = getStatusColor(table.status);
   const size = getTableSize(table);
   const sx = tableTransform?.scaleX ?? 1;
   const sy = tableTransform?.scaleY ?? 1;
-  const label = table.table_number ?? table.label ?? "";
+  const titleText = tableFloorPlanTitle(t, table);
   const capText = `${table.capacity ?? 0}`;
 
   const chairs =
@@ -165,12 +170,21 @@ export function TableShape({
   const fillOpacity = 1;
   const tintOpacity = 0.12;
 
+  const dragBoundFunc =
+    draggable && dragBounds
+      ? (pos: { x: number; y: number }) => ({
+          x: Math.max(dragBounds.minX, Math.min(dragBounds.maxX, pos.x)),
+          y: Math.max(dragBounds.minY, Math.min(dragBounds.maxY, pos.y)),
+        })
+      : undefined;
+
   return (
     <Group
       x={x}
       y={y}
       opacity={opacity}
       draggable={draggable}
+      dragBoundFunc={dragBoundFunc}
       onClick={(ev) => onClick(ev)}
       onTap={(ev) => onClick(ev)}
       onMouseEnter={handleMouseEnter}
@@ -267,12 +281,12 @@ export function TableShape({
           </>
         )}
 
-        {/* Table label (number or name) */}
+        {/* Table title: Table(x) */}
         <Text
-          text={label}
-          x={-40}
-          y={label ? -13 : -6}
-          width={80}
+          text={titleText}
+          x={-70}
+          y={-13}
+          width={140}
           align="center"
           fontSize={12}
           fontStyle="bold"
@@ -281,32 +295,17 @@ export function TableShape({
           listening={false}
         />
         {/* Capacity indicator */}
-        {label ? (
-          <Text
-            text={capText}
-            x={-30}
-            y={2}
-            width={60}
-            align="center"
-            fontSize={10}
-            fontFamily="Inter, system-ui, sans-serif"
-            fill={CANVAS_COLORS.textMuted}
-            listening={false}
-          />
-        ) : (
-          <Text
-            text={capText}
-            x={-30}
-            y={-6}
-            width={60}
-            align="center"
-            fontSize={12}
-            fontStyle="bold"
-            fontFamily="Inter, system-ui, sans-serif"
-            fill={CANVAS_COLORS.textSecondary}
-            listening={false}
-          />
-        )}
+        <Text
+          text={capText}
+          x={-30}
+          y={2}
+          width={60}
+          align="center"
+          fontSize={10}
+          fontFamily="Inter, system-ui, sans-serif"
+          fill={CANVAS_COLORS.textMuted}
+          listening={false}
+        />
       </Group>
     </Group>
   );

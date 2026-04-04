@@ -184,11 +184,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return primary ?? restaurantRoles[0] ?? null;
   }, [restaurantRoles]);
 
-  const rolesAtRestaurant = useCallback(
-    (restaurantId: string) =>
-      restaurantRoles.filter((r) => r.restaurant_id === restaurantId),
-    [restaurantRoles],
-  );
+  const rolesAtRestaurant = useCallback((restaurantId: string) => {
+    const id = restaurantId.trim();
+    if (!id) return [];
+    const norm = (u: string) => u.replace(/-/g, "").toLowerCase();
+    const target = norm(id);
+    return restaurantRoles.filter((r) => norm(r.restaurant_id) === target);
+  }, [restaurantRoles]);
 
   const hasStaffRole = useCallback(
     (role: UserRestaurantRole["role"]) => restaurantRoles.some((r) => r.role === role),

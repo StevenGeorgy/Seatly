@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type Konva from "konva";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, Plus } from "lucide-react";
 
+import { AddFloorDialog } from "@/components/floor-plan/AddFloorDialog";
 import { FloorPlanCanvas } from "@/components/floor-plan/FloorPlanCanvas";
 import { FloorPlanEmptyState } from "@/components/floor-plan/FloorPlanEmptyState";
 import { FloorPlanToolbar } from "@/components/floor-plan/FloorPlanToolbar";
@@ -18,7 +19,13 @@ import type {
   HoveredTableInfo,
   ToolMode,
 } from "@/components/floor-plan/types";
-import { FLOOR_PLAN_GRID_STEP } from "@/components/floor-plan/types";
+import {
+  FLOOR_PLAN_DEFAULT_WORLD_HEIGHT,
+  FLOOR_PLAN_DEFAULT_WORLD_WIDTH,
+  FLOOR_PLAN_GRID_STEP,
+} from "@/components/floor-plan/types";
+import { ensureTableNumbersForSave, nextSequentialTableNumber } from "@/lib/table-number";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import { useFloorPlan, isDatabaseUuid } from "@/hooks/useFloorPlan";
 import type { FloorPlanLayout, SectionRow, TableRow } from "@/hooks/useFloorPlan";
@@ -78,6 +85,27 @@ function emptyLayout(): FloorPlanLayout {
   return { walls: [], doors: [], windows: [], tableTransforms: {}, decorations: [] };
 }
 
+function parseLayoutFromFloorPlanRow(
+  row: { layout: unknown } | null | undefined,
+): FloorPlanLayout {
+  const rawLayout = row?.layout as unknown;
+  if (rawLayout == null) {
+    return emptyLayout();
+  }
+  if (typeof rawLayout === "string") {
+    try {
+      const parsed = JSON.parse(rawLayout) as FloorPlanLayout;
+      return parsed && typeof parsed === "object" ? parsed : emptyLayout();
+    } catch {
+      return emptyLayout();
+    }
+  }
+  if (typeof rawLayout === "object") {
+    return JSON.parse(JSON.stringify(rawLayout)) as FloorPlanLayout;
+  }
+  return emptyLayout();
+}
+
 const LOCAL_TABLE_ID_PREFIX = "local-" as const;
 
 function buildLocalDraftTable(
@@ -86,13 +114,18 @@ function buildLocalDraftTable(
   y: number,
   restaurantId: string,
   sectionList: SectionRow[],
+  existingTables: TableRow[],
+  preferredSectionId: string | null,
 ): TableRow {
-  const sectionId = sectionList[0]?.id ?? "";
+  const sectionId =
+    preferredSectionId && sectionList.some((s) => s.id === preferredSectionId)
+      ? preferredSectionId
+      : sectionList[0]?.id ?? "";
   const sectionName = sectionList.find((s) => s.id === sectionId)?.name ?? null;
   return {
     id: `${LOCAL_TABLE_ID_PREFIX}${globalThis.crypto.randomUUID()}`,
     restaurant_id: restaurantId,
-    table_number: null,
+    table_number: nextSequentialTableNumber(existingTables),
     label: null,
     capacity: 4,
     min_party: 1,
@@ -159,6 +192,10 @@ export default function FloorPlanPage() {
   const { t } = useTranslation();
   const { rolesAtRestaurant } = useUser();
   const { selectedRestaurantId } = useRestaurantScope();
+
+  // ── Page mode (declared before useFloorPlan so pauseRealtime can read it) ──
+  const [mode, setMode] = useState<FloorPlanMode>("live");
+
   const {
     tables: dbTables,
     sections,
@@ -170,7 +207,8 @@ export default function FloorPlanPage() {
     deleteTable,
     updateLayout,
     refetch,
-  } = useFloorPlan();
+    createSectionAndFloor,
+  } = useFloorPlan({ pauseRealtime: mode === "edit" });
 
   // ── Derived permissions (scoped to selected restaurant; matches dashboard floor-plan route) ──
   const rolesHere = selectedRestaurantId
@@ -184,13 +222,13 @@ export default function FloorPlanPage() {
       r.role === "server",
   );
   const canResizeTables = rolesHere.some((r) => r.role === "owner");
-
-  // ── Page mode ──────────────────────────────────────────────────────────────
-  const [mode, setMode] = useState<FloorPlanMode>("live");
   const [activeTool, setActiveTool] = useState<ToolMode>("select");
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
   const [selectedDecorationId, setSelectedDecorationId] = useState<string | null>(null);
-  const [selectedSection, setSelectedSection] = useState<string>("all");
+  const [selectedWallIds, setSelectedWallIds] = useState<string[]>([]);
+  const [selectedSection, setSelectedSection] = useState<string>("");
+  const [addFloorOpen, setAddFloorOpen] = useState(false);
+  const [addFloorPending, setAddFloorPending] = useState(false);
   const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
 
   // ── Zoom / pan ─────────────────────────────────────────────────────────────
@@ -214,10 +252,33 @@ export default function FloorPlanPage() {
     return () => ro.disconnect();
   }, []);
 
-  // ── Undo / redo ────────────────────────────────────────────────────────────
-  const activeFloorPlan = floorPlans[0] ?? null;
-  const initialLayout: FloorPlanLayout =
-    (activeFloorPlan?.layout as FloorPlanLayout | null) ?? emptyLayout();
+  // Keep a valid floor tab selected whenever sections load or change
+  useEffect(() => {
+    const active = sections.filter((s) => s.is_active);
+    if (active.length === 0) return;
+    setSelectedSection((prev) => {
+      if (prev && active.some((s) => s.id === prev)) return prev;
+      return active[0].id;
+    });
+  }, [sections]);
+
+  // ── Undo / redo — active layout row follows selected section tab (never fall back to another floor) ──
+  const activeFloorPlan = useMemo(() => {
+    if (floorPlans.length === 0 || !selectedSection) return null;
+    return floorPlans.find((fp) => fp.section_id === selectedSection) ?? null;
+  }, [floorPlans, selectedSection]);
+
+  /** Matches FloorPlanCanvas world size (floor_plans.canvas_* or compact defaults). */
+  const worldBounds = useMemo(() => {
+    const w = Math.max(320, activeFloorPlan?.canvas_width ?? FLOOR_PLAN_DEFAULT_WORLD_WIDTH);
+    const h = Math.max(240, activeFloorPlan?.canvas_height ?? FLOOR_PLAN_DEFAULT_WORLD_HEIGHT);
+    return { w, h };
+  }, [activeFloorPlan?.canvas_width, activeFloorPlan?.canvas_height]);
+
+  const initialLayout = useMemo(
+    () => parseLayoutFromFloorPlanRow(activeFloorPlan),
+    [activeFloorPlan],
+  );
 
   const [historyState, dispatch] = useReducer(historyReducer, {
     past: [],
@@ -225,25 +286,42 @@ export default function FloorPlanPage() {
     future: [],
   });
 
-  // Sync history present when DB data loads or changes (live mode)
+  // Sync history present when DB data loads, section tab changes, or layout row changes (live mode)
   useEffect(() => {
     if (mode === "live") {
       dispatch({ type: "RESET", entry: { tables: dbTables, layout: initialLayout } });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dbTables, mode]);
+  }, [dbTables, mode, initialLayout]);
 
   const tablesDraft = historyState.present.tables;
   const layoutDraft = historyState.present.layout;
 
-  // Hover tooltip keeps a snapshot of the table; if that row is deleted (or undone off the canvas),
-  // Konva may not fire mouseLeave — clear so the popover does not float over empty grid.
+  /** Viewport: one floor at a time (state still holds all tables for save). */
+  const tablesForCanvas = useMemo(() => {
+    if (!selectedSection) return [];
+    return tablesDraft.filter((t) => t.section_id === selectedSection);
+  }, [tablesDraft, selectedSection]);
+
+  // Drop selection / hover when they reference tables hidden on another floor.
+  useEffect(() => {
+    setSelectedTableIds((prev) =>
+      prev.filter((id) => {
+        const row = tablesDraft.find((t) => t.id === id);
+        if (!row) return false;
+        return row.section_id === selectedSection;
+      }),
+    );
+  }, [selectedSection, tablesDraft]);
+
+  // Hover tooltip: clear if table removed, or if that table belongs to another floor tab.
   useEffect(() => {
     setHoveredTable((prev) => {
       if (!prev) return null;
-      return tablesDraft.some((t) => t.id === prev.table.id) ? prev : null;
+      if (!tablesDraft.some((t) => t.id === prev.table.id)) return null;
+      if (!selectedSection) return null;
+      return prev.table.section_id === selectedSection ? prev : null;
     });
-  }, [tablesDraft]);
+  }, [tablesDraft, selectedSection]);
 
   function pushHistory(tables: TableRow[], layout: FloorPlanLayout) {
     dispatch({ type: "PUSH", entry: { tables, layout } });
@@ -276,10 +354,70 @@ export default function FloorPlanPage() {
       ? tablesDraft.find((t) => t.id === selectedTableIds[0]) ?? null
       : null;
 
+  /** Fit world 0…W × 0…H into the Stage so the room border stays visible (e.g. when the properties panel opens). */
+  const fitWorldToViewport = useCallback(() => {
+    const w = worldBounds.w;
+    const h = worldBounds.h;
+    const cw = containerSize.w;
+    const ch = containerSize.h;
+    if (cw < 1 || ch < 1 || w < 1 || h < 1) return;
+    const padding = 0.96;
+    const raw = Math.min((cw * padding) / w, (ch * padding) / h);
+    const scale = Math.min(3, Math.max(0.3, raw));
+    const px = cw / 2 - (w / 2) * scale;
+    const py = ch / 2 - (h / 2) * scale;
+    setStageScale(scale);
+    setStagePos({ x: px, y: py });
+  }, [worldBounds.w, worldBounds.h, containerSize.w, containerSize.h]);
+
+  const selectedKey =
+    selectedTableIds.length === 1 ? (selectedTableIds[0] ?? "") : "";
+
+  const prevModeForFitRef = useRef<FloorPlanMode>(mode);
+  useEffect(() => {
+    if (!selectedKey) return;
+    if (containerSize.w < 20) return;
+    fitWorldToViewport();
+  }, [selectedKey, containerSize.w, containerSize.h, fitWorldToViewport]);
+
+  useEffect(() => {
+    if (containerSize.w < 20) return;
+    fitWorldToViewport();
+  }, [selectedSection, worldBounds.w, worldBounds.h, containerSize.w, containerSize.h, fitWorldToViewport]);
+
+  useEffect(() => {
+    const wasEdit = prevModeForFitRef.current === "edit";
+    const nowEdit = mode === "edit";
+    if (!wasEdit && nowEdit) {
+      const t = window.setTimeout(() => fitWorldToViewport(), 0);
+      const t2 = window.setTimeout(() => fitWorldToViewport(), 150);
+      prevModeForFitRef.current = mode;
+      return () => {
+        clearTimeout(t);
+        clearTimeout(t2);
+      };
+    }
+    prevModeForFitRef.current = mode;
+  }, [mode, fitWorldToViewport]);
+
+  // Restore edit mode after navigating away / refresh while sessionStorage still marks edit (not on tab blur alone).
+  useEffect(() => {
+    if (!selectedRestaurantId || loading) return;
+    if (mode !== "live") return;
+    let shouldRestore = false;
+    try {
+      shouldRestore = sessionStorage.getItem(`seatly:floor-plan-edit-${selectedRestaurantId}`) === "1";
+    } catch {
+      return;
+    }
+    if (!shouldRestore) return;
+    enterEditMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot when layout data is ready
+  }, [loading, selectedRestaurantId, mode]);
+
   // ── Mode switching ─────────────────────────────────────────────────────────
   function enterEditMode() {
-    const layoutSnapshot =
-      (activeFloorPlan?.layout as FloorPlanLayout | null) ?? emptyLayout();
+    const layoutSnapshot = parseLayoutFromFloorPlanRow(activeFloorPlan);
     editBaselineRef.current = {
       tables: dbTables.map((row) => ({ ...row })),
       layout: JSON.parse(JSON.stringify(layoutSnapshot)) as FloorPlanLayout,
@@ -287,14 +425,29 @@ export default function FloorPlanPage() {
     dispatch({ type: "RESET", entry: { tables: dbTables, layout: layoutSnapshot } });
     hasEditedRef.current = false;
     idMapRef.current.clear();
-    setSaveStatus("idle");
+    notifySaveStatus("idle");
     setMode("edit");
     setActiveTool("select");
     setSelectedTableIds([]);
     setSelectedDecorationId(null);
+    setSelectedWallIds([]);
+    try {
+      if (selectedRestaurantId) {
+        sessionStorage.setItem(`seatly:floor-plan-edit-${selectedRestaurantId}`, "1");
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   async function exitEditMode() {
+    try {
+      if (selectedRestaurantId) {
+        sessionStorage.removeItem(`seatly:floor-plan-edit-${selectedRestaurantId}`);
+      }
+    } catch {
+      /* ignore */
+    }
     // Flush any pending autosave
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
@@ -308,8 +461,29 @@ export default function FloorPlanPage() {
     setActiveTool("select");
     setSelectedTableIds([]);
     setSelectedDecorationId(null);
+    setSelectedWallIds([]);
     // Refetch once on exit so live mode has fresh DB data
     await refetch();
+  }
+
+  async function handleAddFloor(name: string) {
+    setAddFloorPending(true);
+    try {
+      const result = await createSectionAndFloor(name);
+      if (!result) {
+        toast.error(t("dashboard.floorPlan.addFloorFailed"));
+        return;
+      }
+      if (mode === "live") {
+        toast.success(t("dashboard.floorPlan.floorAdded"));
+        setSelectedSection(result.sectionId);
+      } else {
+        toast.success(t("dashboard.floorPlan.floorAddedWhileEditing"));
+      }
+      setAddFloorOpen(false);
+    } finally {
+      setAddFloorPending(false);
+    }
   }
 
   // ── Autosave ──────────────────────────────────────────────────────────────────
@@ -355,7 +529,9 @@ export default function FloorPlanPage() {
         return realId ? { ...t, id: realId } : t;
       });
 
-      const draftIds = new Set(resolvedTables.map((t) => t.id));
+      const tablesToPersist = ensureTableNumbersForSave(resolvedTables, baseline.tables);
+
+      const draftIds = new Set(tablesToPersist.map((t) => t.id));
       const baselineIds = new Set(baseline.tables.map((t) => t.id));
 
       for (const tbl of baseline.tables) {
@@ -364,7 +540,7 @@ export default function FloorPlanPage() {
         }
       }
 
-      for (const tbl of resolvedTables) {
+      for (const tbl of tablesToPersist) {
         if (tbl.id.startsWith(LOCAL_TABLE_ID_PREFIX)) {
           const created = await createTable({
             sectionId: tbl.section_id ?? curSections[0]?.id ?? "",
@@ -407,7 +583,7 @@ export default function FloorPlanPage() {
       }
 
       editBaselineRef.current = {
-        tables: resolvedTables.map((row) => {
+        tables: tablesToPersist.map((row) => {
           const realId = row.id.startsWith(LOCAL_TABLE_ID_PREFIX)
             ? (idMap.get(row.id) ?? row.id)
             : row.id;
@@ -492,9 +668,23 @@ export default function FloorPlanPage() {
     [tablesDraft, layoutDraft],
   );
 
+  const removeWallsFromDraft = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      const updatedWalls = layoutDraft.walls.filter((w) => !idSet.has(w.id));
+      dispatch({
+        type: "PUSH",
+        entry: { tables: tablesDraft, layout: { ...layoutDraft, walls: updatedWalls } },
+      });
+      setSelectedWallIds((prev) => prev.filter((wid) => !idSet.has(wid)));
+    },
+    [tablesDraft, layoutDraft],
+  );
+
   useEffect(() => {
     if (mode !== "edit" || !canEdit) return;
-    if (selectedTableIds.length === 0 && !selectedDecorationId) return;
+    if (selectedTableIds.length === 0 && !selectedDecorationId && selectedWallIds.length === 0) return;
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.isComposing) return;
@@ -511,6 +701,11 @@ export default function FloorPlanPage() {
         removeDecoration(selectedDecorationId);
         return;
       }
+      if (selectedWallIds.length > 0) {
+        e.preventDefault();
+        removeWallsFromDraft(selectedWallIds);
+        return;
+      }
       if (selectedTableIds.length > 0) {
         e.preventDefault();
         deleteTablesFromDraft(selectedTableIds);
@@ -524,8 +719,10 @@ export default function FloorPlanPage() {
     canEdit,
     selectedTableIds,
     selectedDecorationId,
+    selectedWallIds,
     deleteTablesFromDraft,
     removeDecoration,
+    removeWallsFromDraft,
   ]);
 
   function handleDecorationClick(id: string) {
@@ -534,11 +731,23 @@ export default function FloorPlanPage() {
       return;
     }
     setSelectedTableIds([]);
+    setSelectedWallIds([]);
     setSelectedDecorationId((prev) => (prev === id ? null : id));
+  }
+
+  function handleWallClick(wallId: string) {
+    setSelectedTableIds([]);
+    setSelectedDecorationId(null);
+    if (activeTool === "delete") {
+      removeWallsFromDraft([wallId]);
+      return;
+    }
+    setSelectedWallIds((prev) => (prev.length === 1 && prev[0] === wallId ? [] : [wallId]));
   }
 
   function handleTableClick(id: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     setSelectedDecorationId(null);
+    setSelectedWallIds([]);
     if (activeTool === "delete") {
       handleDeleteTable(id);
       return;
@@ -563,10 +772,12 @@ export default function FloorPlanPage() {
       mode !== "edit" ||
       activeTool === "select" ||
       activeTool === "add-wall" ||
+      activeTool === "extend-wall" ||
       activeTool === "delete"
     ) {
       setSelectedTableIds([]);
       setSelectedDecorationId(null);
+      setSelectedWallIds([]);
       return;
     }
     const shapeMap: Record<string, string> = {
@@ -579,13 +790,17 @@ export default function FloorPlanPage() {
 
     const gx = Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP;
     const gy = Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP;
+    const px = Math.max(0, Math.min(worldBounds.w, gx));
+    const py = Math.max(0, Math.min(worldBounds.h, gy));
 
     const newTable = buildLocalDraftTable(
       shape,
-      gx,
-      gy,
+      px,
+      py,
       selectedRestaurantId,
       sections,
+      tablesDraft,
+      selectedSection || null,
     );
     pushHistory([...tablesDraft, newTable], layoutDraft);
   }
@@ -661,8 +876,7 @@ export default function FloorPlanPage() {
   }
 
   function resetZoom() {
-    setStageScale(1);
-    setStagePos({ x: 0, y: 0 });
+    fitWorldToViewport();
   }
 
   // ── Loading / error ────────────────────────────────────────────────────────
@@ -693,9 +907,9 @@ export default function FloorPlanPage() {
   const isEmpty = dbTables.length === 0;
 
   return (
-    <div className="flex h-full flex-col">
-      {/* ── Top bar (min-w-0 + shrink-0 so section tabs never overlap action buttons) ── */}
-      <div className="relative z-20 flex min-w-0 items-center gap-3 border-b border-border bg-bg-base px-4 py-2.5">
+    <div className="flex min-h-0 h-full min-w-0 flex-col">
+      {/* ── Top bar: sticky + high z-index so Konva canvas (sibling below) never steals clicks ── */}
+      <div className="sticky top-0 z-50 flex min-w-0 items-center gap-3 border-b border-border bg-bg-base px-4 py-2.5 shadow-sm shadow-black/20">
         <h1 className="shrink-0 text-sm font-semibold text-text-primary">
           {t("dashboard.floorPlan.title")}
         </h1>
@@ -706,18 +920,45 @@ export default function FloorPlanPage() {
           </span>
         )}
 
-        {/* Section tabs — must shrink (min-w-0) so the Edit column keeps a real hit target */}
-        <div className="min-w-0 flex-1 overflow-hidden">
-          <SectionTabs
-            sections={sections.filter((s) => s.is_active)}
-            selected={selectedSection}
-            onChange={setSelectedSection}
-          />
+        {/* Section tabs + add floor — must shrink (min-w-0) so the Edit column keeps a real hit target */}
+        <div className="min-w-0 flex flex-1 items-center gap-2 overflow-hidden">
+          <div className="min-w-0 flex-1">
+            <SectionTabs
+              sections={sections.filter((s) => s.is_active)}
+              selected={selectedSection}
+              onChange={setSelectedSection}
+              disabled={mode === "edit"}
+            />
+          </div>
+          {canEdit &&
+            isSupabaseConfigured() &&
+            selectedRestaurantId != null && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1"
+                onClick={() => setAddFloorOpen(true)}
+                aria-label={t("dashboard.floorPlan.addFloorAriaLabel")}
+              >
+                <Plus className="size-4 shrink-0" />
+                <span className="hidden sm:inline">{t("dashboard.floorPlan.addFloor")}</span>
+              </Button>
+            )}
         </div>
 
-        <div className="relative z-30 flex shrink-0 items-center gap-2">
+        <div className="relative z-[60] flex shrink-0 items-center gap-2 pointer-events-auto">
           {canEdit && mode === "live" && (
-            <Button type="button" variant="outline" size="sm" onClick={enterEditMode}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                enterEditMode();
+              }}
+            >
               {t("common.actions.edit")}
             </Button>
           )}
@@ -732,8 +973,8 @@ export default function FloorPlanPage() {
         </div>
       </div>
 
-      {/* ── Canvas area ─────────────────────────────────────────────────── */}
-      <div className="relative flex flex-1 overflow-hidden">
+      {/* ── Canvas area (z-0 so it stays under the sticky control bar) ─────── */}
+      <div className="relative z-0 flex min-h-0 flex-1 overflow-hidden">
         {/* Left toolbar (edit mode only) */}
         {mode === "edit" && (
           <div className="flex shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-surface px-3 py-3">
@@ -747,7 +988,7 @@ export default function FloorPlanPage() {
             <FloorPlanEmptyState canEdit={canEdit} onEnterEdit={enterEditMode} />
           ) : (
             <FloorPlanCanvas
-              tables={tablesDraft}
+              tables={tablesForCanvas}
               walls={layoutDraft.walls}
               decorations={layoutDraft.decorations}
               sections={sections}
@@ -758,6 +999,8 @@ export default function FloorPlanPage() {
               activeTool={activeTool}
               stageScale={stageScale}
               stagePos={stagePos}
+              worldWidth={activeFloorPlan?.canvas_width}
+              worldHeight={activeFloorPlan?.canvas_height}
               containerWidth={containerSize.w}
               containerHeight={containerSize.h}
               onTableClick={handleTableClick}
@@ -773,11 +1016,14 @@ export default function FloorPlanPage() {
               tableTransforms={layoutDraft.tableTransforms}
               resizeEnabled={canResizeTables}
               onTableTransformEnd={handleTableTransformEnd}
-              marqueeSelectEnabled={canResizeTables}
-              onMarqueeSelect={(ids) => {
-                setSelectedTableIds(ids);
+              marqueeSelectEnabled={canEdit}
+              onMarqueeSelect={({ tableIds, wallIds }) => {
+                setSelectedTableIds(tableIds);
+                setSelectedWallIds(wallIds);
                 setSelectedDecorationId(null);
               }}
+              selectedWallIds={selectedWallIds}
+              onWallClick={mode === "edit" && canEdit ? handleWallClick : undefined}
             />
           )}
 
@@ -822,7 +1068,7 @@ export default function FloorPlanPage() {
                   {t("dashboard.floorPlan.redo")}
                 </Button>
               </div>
-              {canResizeTables && (
+              {canEdit && (
                 <p className="max-w-[14rem] text-right text-xs text-text-muted">
                   {t("dashboard.floorPlan.marqueeSelectHint")}
                 </p>
@@ -854,6 +1100,13 @@ export default function FloorPlanPage() {
 
       {/* Tooltip */}
       <TableTooltip info={hoveredTable} />
+
+      <AddFloorDialog
+        open={addFloorOpen}
+        onOpenChange={setAddFloorOpen}
+        onConfirm={handleAddFloor}
+        isPending={addFloorPending}
+      />
     </div>
   );
 }
