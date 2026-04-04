@@ -694,20 +694,20 @@ export default function FloorPlanPage() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5">
-        <h1 className="text-sm font-semibold text-text-primary">
+      {/* ── Top bar (min-w-0 + shrink-0 so section tabs never overlap action buttons) ── */}
+      <div className="relative z-20 flex min-w-0 items-center gap-3 border-b border-border bg-bg-base px-4 py-2.5">
+        <h1 className="shrink-0 text-sm font-semibold text-text-primary">
           {t("dashboard.floorPlan.title")}
         </h1>
 
         {mode === "edit" && (
-          <span className="rounded-md bg-gold/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gold">
+          <span className="shrink-0 rounded-md bg-gold/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gold">
             Editing
           </span>
         )}
 
-        {/* Section tabs */}
-        <div className="flex-1 overflow-hidden">
+        {/* Section tabs — must shrink (min-w-0) so the Edit column keeps a real hit target */}
+        <div className="min-w-0 flex-1 overflow-hidden">
           <SectionTabs
             sections={sections.filter((s) => s.is_active)}
             selected={selectedSection}
@@ -715,16 +715,16 @@ export default function FloorPlanPage() {
           />
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="relative z-30 flex shrink-0 items-center gap-2">
           {canEdit && mode === "live" && (
-            <Button variant="outline" size="sm" onClick={enterEditMode}>
+            <Button type="button" variant="outline" size="sm" onClick={enterEditMode}>
               {t("common.actions.edit")}
             </Button>
           )}
           {mode === "edit" && (
             <>
               <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
-              <Button size="sm" onClick={() => void exitEditMode()}>
+              <Button type="button" size="sm" onClick={() => void exitEditMode()}>
                 Done
               </Button>
             </>
