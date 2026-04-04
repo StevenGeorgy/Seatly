@@ -100,10 +100,10 @@ export function TablePropertiesPanel({
   const minParty = watch("min_party");
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col gap-0 overflow-y-auto rounded-xl border border-border bg-bg-surface">
+    <div className="flex h-full w-72 shrink-0 flex-col gap-0 overflow-y-auto border-l border-border bg-bg-surface">
       {/* Header */}
       <div className="border-b border-border px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
           {t("dashboard.floorPlan.tableProperties")}
         </p>
       </div>

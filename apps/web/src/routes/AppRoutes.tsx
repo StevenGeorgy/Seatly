@@ -11,7 +11,6 @@ import { RouteFallback } from "@/components/routing/RouteFallback";
 import AboutPage from "@/pages/marketing/AboutPage";
 import FeaturesPage from "@/pages/marketing/FeaturesPage";
 import HomePage from "@/pages/marketing/HomePage";
-import PricingPage from "@/pages/marketing/PricingPage";
 import AccountPage from "@/pages/customer/AccountPage";
 import DiscoverPage from "@/pages/customer/DiscoverPage";
 import RestaurantPublicPage from "@/pages/customer/RestaurantPublicPage";
@@ -45,7 +44,6 @@ export function AppRoutes() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/features" element={<FeaturesPage />} />
-        <Route path="/pricing" element={<PricingPage />} />
         <Route path="/about" element={<AboutPage />} />
 
         <Route

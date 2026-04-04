@@ -4,9 +4,9 @@
  * All values mirror tailwind.config.ts exactly.
  */
 export const CANVAS_COLORS = {
-  bgBase: "#0A0A0A",
-  bgSurface: "#1A1A1A",
-  bgElevated: "#242424",
+  bgBase: "#0C0C0C",
+  bgSurface: "#181818",
+  bgElevated: "#222222",
   border: "#2E2E2E",
   textPrimary: "#FFFFFF",
   textSecondary: "#AAAAAA",
@@ -22,6 +22,8 @@ export const CANVAS_COLORS = {
   info: "#3B82F6",
   cleaning: "#6B7280",
   blocked: "#374151",
+  /** Subtle dot grid colour */
+  gridDot: "#1E1E1E",
 } as const;
 
 export type TableStatus = "empty" | "reserved" | "occupied" | "cleaning" | "blocked";

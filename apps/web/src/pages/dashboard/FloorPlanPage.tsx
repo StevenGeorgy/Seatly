@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type Konva from "konva";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { Check, Loader2 } from "lucide-react";
 
 import { FloorPlanCanvas } from "@/components/floor-plan/FloorPlanCanvas";
 import { FloorPlanEmptyState } from "@/components/floor-plan/FloorPlanEmptyState";
@@ -101,6 +102,7 @@ function buildLocalDraftTable(
     position_y: y,
     shape,
     status: "empty",
+    seated_count: 0,
     combined_with: null,
     qr_code_url: null,
     notes: null,
@@ -109,11 +111,53 @@ function buildLocalDraftTable(
   };
 }
 
+// ─── Autosave indicator (self-contained — never re-renders the parent) ────────
+
+type SaveStatus = "idle" | "saving" | "saved" | "error";
+
+function AutosaveIndicator({
+  statusRef,
+  listenersRef,
+}: {
+  statusRef: React.RefObject<SaveStatus>;
+  listenersRef: React.RefObject<Set<() => void>>;
+}) {
+  const [status, setStatus] = useState<SaveStatus>("idle");
+
+  useEffect(() => {
+    const update = () => setStatus(statusRef.current);
+    listenersRef.current.add(update);
+    return () => { listenersRef.current.delete(update); };
+  }, [statusRef, listenersRef]);
+
+  if (status === "idle") return null;
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-text-muted">
+      {status === "saving" && (
+        <>
+          <Loader2 className="size-3 animate-spin text-gold" />
+          <span className="text-text-secondary">Saving…</span>
+        </>
+      )}
+      {status === "saved" && (
+        <>
+          <Check className="size-3 text-success" />
+          <span className="text-success">Saved</span>
+        </>
+      )}
+      {status === "error" && (
+        <span className="text-danger">Save failed</span>
+      )}
+    </span>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function FloorPlanPage() {
   const { t } = useTranslation();
-  const { hasStaffRole } = useUser();
+  const { rolesAtRestaurant } = useUser();
   const { selectedRestaurantId } = useRestaurantScope();
   const {
     tables: dbTables,
@@ -128,10 +172,18 @@ export default function FloorPlanPage() {
     refetch,
   } = useFloorPlan();
 
-  // ── Derived permissions ────────────────────────────────────────────────────
-  const canEdit =
-    hasStaffRole("owner") || hasStaffRole("manager") || hasStaffRole("host");
-  const canResizeTables = hasStaffRole("owner");
+  // ── Derived permissions (scoped to selected restaurant; matches dashboard floor-plan route) ──
+  const rolesHere = selectedRestaurantId
+    ? rolesAtRestaurant(selectedRestaurantId)
+    : [];
+  const canEdit = rolesHere.some(
+    (r) =>
+      r.role === "owner" ||
+      r.role === "manager" ||
+      r.role === "host" ||
+      r.role === "server",
+  );
+  const canResizeTables = rolesHere.some((r) => r.role === "owner");
 
   // ── Page mode ──────────────────────────────────────────────────────────────
   const [mode, setMode] = useState<FloorPlanMode>("live");
@@ -140,7 +192,6 @@ export default function FloorPlanPage() {
   const [selectedDecorationId, setSelectedDecorationId] = useState<string | null>(null);
   const [selectedSection, setSelectedSection] = useState<string>("all");
   const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
 
   // ── Zoom / pan ─────────────────────────────────────────────────────────────
   const [stageScale, setStageScale] = useState(1);
@@ -196,6 +247,7 @@ export default function FloorPlanPage() {
 
   function pushHistory(tables: TableRow[], layout: FloorPlanLayout) {
     dispatch({ type: "PUSH", entry: { tables, layout } });
+    setEditSeq((n) => n + 1);
   }
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
@@ -206,10 +258,12 @@ export default function FloorPlanPage() {
       if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         dispatch({ type: "UNDO" });
+        setEditSeq((n) => n + 1);
       }
       if ((e.key === "Z" || (e.key === "z" && e.shiftKey))) {
         e.preventDefault();
         dispatch({ type: "REDO" });
+        setEditSeq((n) => n + 1);
       }
     }
     window.addEventListener("keydown", handleKey);
@@ -231,88 +285,180 @@ export default function FloorPlanPage() {
       layout: JSON.parse(JSON.stringify(layoutSnapshot)) as FloorPlanLayout,
     };
     dispatch({ type: "RESET", entry: { tables: dbTables, layout: layoutSnapshot } });
+    hasEditedRef.current = false;
+    idMapRef.current.clear();
+    setSaveStatus("idle");
     setMode("edit");
     setActiveTool("select");
     setSelectedTableIds([]);
     setSelectedDecorationId(null);
   }
 
-  function cancelEditMode() {
+  async function exitEditMode() {
+    // Flush any pending autosave
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      await persistDraftRef.current();
+    }
     editBaselineRef.current = null;
+    hasEditedRef.current = false;
+    idMapRef.current.clear();
+    setEditSeq(0);
     setMode("live");
     setActiveTool("select");
     setSelectedTableIds([]);
     setSelectedDecorationId(null);
-    dispatch({ type: "RESET", entry: { tables: dbTables, layout: initialLayout } });
+    // Refetch once on exit so live mode has fresh DB data
+    await refetch();
   }
 
-  // ── Save — persist only on explicit Save; diff against edit baseline ──────────
-  async function saveAll() {
-    setIsSaving(true);
+  // ── Autosave ──────────────────────────────────────────────────────────────────
+
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasEditedRef = useRef(false);
+  const draftRef = useRef({ tables: tablesDraft, layout: layoutDraft });
+  draftRef.current = { tables: tablesDraft, layout: layoutDraft };
+
+  const idMapRef = useRef<Map<string, string>>(new Map());
+  const isSavingRef = useRef(false);
+
+  // Mutable refs for values the save closure reads — no dependency churn.
+  const sectionsRef = useRef(sections);
+  sectionsRef.current = sections;
+  const activeFloorPlanRef = useRef(activeFloorPlan);
+  activeFloorPlanRef.current = activeFloorPlan;
+
+  /** Notify the status indicator without re-rendering the page. */
+  const saveStatusRef = useRef<SaveStatus>("idle");
+  const saveStatusListenersRef = useRef<Set<() => void>>(new Set());
+  function notifySaveStatus(status: SaveStatus) {
+    saveStatusRef.current = status;
+    saveStatusListenersRef.current.forEach((fn) => fn());
+  }
+
+  /** Persist current draft to DB. Zero state updates in this component. */
+  async function persistDraft() {
+    if (isSavingRef.current) return;
+    const draft = draftRef.current;
+    const baseline = editBaselineRef.current;
+    if (!baseline) return;
+
+    isSavingRef.current = true;
+    notifySaveStatus("saving");
     try {
-      const baseline = editBaselineRef.current ?? {
-        tables: dbTables,
-        layout: initialLayout,
-      };
-      const draftIds = new Set(tablesDraft.map((t) => t.id));
+      const idMap = idMapRef.current;
+      const curSections = sectionsRef.current;
+      const curFloorPlan = activeFloorPlanRef.current;
+
+      const resolvedTables = draft.tables.map((t) => {
+        const realId = idMap.get(t.id);
+        return realId ? { ...t, id: realId } : t;
+      });
+
+      const draftIds = new Set(resolvedTables.map((t) => t.id));
       const baselineIds = new Set(baseline.tables.map((t) => t.id));
 
-      for (const t of baseline.tables) {
-        if (!draftIds.has(t.id) && isDatabaseUuid(t.id)) {
-          const ok = await deleteTable(t.id, { refetchAfter: false });
-          if (!ok) throw new Error("delete failed");
+      for (const tbl of baseline.tables) {
+        if (!draftIds.has(tbl.id) && isDatabaseUuid(tbl.id)) {
+          await deleteTable(tbl.id, { refetchAfter: false });
         }
       }
 
-      for (const t of tablesDraft) {
-        if (t.id.startsWith(LOCAL_TABLE_ID_PREFIX)) {
+      for (const tbl of resolvedTables) {
+        if (tbl.id.startsWith(LOCAL_TABLE_ID_PREFIX)) {
           const created = await createTable({
-            sectionId: t.section_id ?? sections[0]?.id ?? "",
-            label: t.label ?? "",
-            tableNumber: t.table_number,
-            shape: t.shape,
-            capacity: t.capacity,
-            x: t.position_x ?? 0,
-            y: t.position_y ?? 0,
-            minParty: t.min_party,
-            status: t.status,
-            notes: t.notes,
+            sectionId: tbl.section_id ?? curSections[0]?.id ?? "",
+            label: tbl.label ?? "",
+            tableNumber: tbl.table_number,
+            shape: tbl.shape,
+            capacity: tbl.capacity,
+            x: tbl.position_x ?? 0,
+            y: tbl.position_y ?? 0,
+            minParty: tbl.min_party,
+            status: tbl.status,
+            notes: tbl.notes,
           });
           if (!created) throw new Error("create failed");
+          const originalLocalId = draft.tables.find(
+            (d) => (idMap.get(d.id) ?? d.id) === tbl.id,
+          )?.id ?? tbl.id;
+          idMap.set(originalLocalId, created.id);
           continue;
         }
-        if (isDatabaseUuid(t.id) && baselineIds.has(t.id)) {
-          const ok = await updateTable(t.id, {
-            position_x: t.position_x,
-            position_y: t.position_y,
-            shape: t.shape,
-            capacity: t.capacity,
-            min_party: t.min_party,
-            label: t.label,
-            table_number: t.table_number,
-            section_id: t.section_id,
-            notes: t.notes,
-            status: t.status,
+        if (isDatabaseUuid(tbl.id) && baselineIds.has(tbl.id)) {
+          await updateTable(tbl.id, {
+            position_x: tbl.position_x,
+            position_y: tbl.position_y,
+            shape: tbl.shape,
+            capacity: tbl.capacity,
+            min_party: tbl.min_party,
+            label: tbl.label,
+            table_number: tbl.table_number,
+            section_id: tbl.section_id,
+            notes: tbl.notes,
+            status: tbl.status,
+            seated_count: tbl.seated_count,
           });
-          if (!ok) throw new Error("update failed");
         }
       }
 
-      if (activeFloorPlan) {
-        const ok = await updateLayout(activeFloorPlan.id, layoutDraft);
-        if (!ok) throw new Error("layout failed");
+      if (curFloorPlan) {
+        await updateLayout(curFloorPlan.id, draft.layout);
       }
 
-      await refetch();
-      editBaselineRef.current = null;
-      toast.success(t("dashboard.floorPlan.tableSaved"));
-      setMode("live");
+      editBaselineRef.current = {
+        tables: resolvedTables.map((row) => {
+          const realId = row.id.startsWith(LOCAL_TABLE_ID_PREFIX)
+            ? (idMap.get(row.id) ?? row.id)
+            : row.id;
+          return { ...row, id: realId };
+        }),
+        layout: JSON.parse(JSON.stringify(draft.layout)) as FloorPlanLayout,
+      };
+
+      notifySaveStatus("saved");
+      setTimeout(() => notifySaveStatus("idle"), 2000);
     } catch {
+      notifySaveStatus("error");
       toast.error(t("dashboard.floorPlan.saveFailed"));
     } finally {
-      setIsSaving(false);
+      isSavingRef.current = false;
     }
   }
+
+  const persistDraftRef = useRef(persistDraft);
+  persistDraftRef.current = persistDraft;
+
+  const [editSeq, setEditSeq] = useState(0);
+
+  // Debounced autosave: triggers 1s after the last edit
+  useEffect(() => {
+    if (mode !== "edit" || editSeq === 0) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void persistDraftRef.current();
+    }, 1000);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [editSeq, mode]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (mode === "edit" && saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        void persistDraftRef.current();
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [mode]);
 
   // ── Table interactions ─────────────────────────────────────────────────────
 
@@ -469,8 +615,10 @@ export default function FloorPlanPage() {
     pushHistory(tablesDraft, { ...layoutDraft, tableTransforms });
   }
 
-  async function handleLiveStatusChange(tableId: string, status: string) {
-    await updateTable(tableId, { status });
+  async function handleLiveStatusChange(tableId: string, status: string, seatedCount?: number) {
+    const patch: Partial<TableRow> = { status };
+    if (seatedCount !== undefined) patch.seated_count = seatedCount;
+    await updateTable(tableId, patch);
     await refetch();
   }
 
@@ -481,6 +629,16 @@ export default function FloorPlanPage() {
   function handleWallDrawn(wall: Wall) {
     const updatedLayout = { ...layoutDraft, walls: [...layoutDraft.walls, wall] };
     pushHistory(tablesDraft, updatedLayout);
+  }
+
+  function handleWallEndpointUpdate(wallId: string, endpoint: "start" | "end", x: number, y: number) {
+    const updatedWalls = layoutDraft.walls.map((w) => {
+      if (w.id !== wallId) return w;
+      return endpoint === "start"
+        ? { ...w, x1: x, y1: y }
+        : { ...w, x2: x, y2: y };
+    });
+    pushHistory(tablesDraft, { ...layoutDraft, walls: updatedWalls });
   }
 
   function handleDecorationDragEnd(id: string, x: number, y: number) {
@@ -537,10 +695,16 @@ export default function FloorPlanPage() {
   return (
     <div className="flex h-full flex-col">
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5">
         <h1 className="text-sm font-semibold text-text-primary">
           {t("dashboard.floorPlan.title")}
         </h1>
+
+        {mode === "edit" && (
+          <span className="rounded-md bg-gold/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gold">
+            Editing
+          </span>
+        )}
 
         {/* Section tabs */}
         <div className="flex-1 overflow-hidden">
@@ -552,7 +716,6 @@ export default function FloorPlanPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          {/* Edit / save / cancel */}
           {canEdit && mode === "live" && (
             <Button variant="outline" size="sm" onClick={enterEditMode}>
               {t("common.actions.edit")}
@@ -560,11 +723,9 @@ export default function FloorPlanPage() {
           )}
           {mode === "edit" && (
             <>
-              <Button variant="ghost" size="sm" onClick={cancelEditMode}>
-                {t("dashboard.floorPlan.cancelEdit")}
-              </Button>
-              <Button size="sm" disabled={isSaving} onClick={() => void saveAll()}>
-                {isSaving ? t("dashboard.floorPlan.statusSaving") : t("common.actions.save")}
+              <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
+              <Button size="sm" onClick={() => void exitEditMode()}>
+                Done
               </Button>
             </>
           )}
@@ -575,7 +736,7 @@ export default function FloorPlanPage() {
       <div className="relative flex flex-1 overflow-hidden">
         {/* Left toolbar (edit mode only) */}
         {mode === "edit" && (
-          <div className="flex shrink-0 flex-col items-center gap-2 border-r border-border bg-bg-surface px-2 py-3">
+          <div className="flex shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-surface px-3 py-3">
             <FloorPlanToolbar activeTool={activeTool} onToolChange={setActiveTool} />
           </div>
         )}
@@ -604,6 +765,7 @@ export default function FloorPlanPage() {
               onCanvasClick={(x, y) => void handleCanvasClick(x, y)}
               onTableDragEnd={handleTableDragEnd}
               onWallDrawn={handleWallDrawn}
+              onWallEndpointUpdate={handleWallEndpointUpdate}
               onDecorationClick={mode === "edit" && canEdit ? handleDecorationClick : undefined}
               onDecorationDragEnd={handleDecorationDragEnd}
               onStageScaleChange={setStageScale}
@@ -646,7 +808,7 @@ export default function FloorPlanPage() {
                   variant="outline"
                   size="sm"
                   disabled={historyState.past.length === 0}
-                  onClick={() => dispatch({ type: "UNDO" })}
+                  onClick={() => { dispatch({ type: "UNDO" }); setEditSeq((n) => n + 1); }}
                 >
                   {t("dashboard.floorPlan.undo")}
                 </Button>
@@ -655,7 +817,7 @@ export default function FloorPlanPage() {
                   variant="outline"
                   size="sm"
                   disabled={historyState.future.length === 0}
-                  onClick={() => dispatch({ type: "REDO" })}
+                  onClick={() => { dispatch({ type: "REDO" }); setEditSeq((n) => n + 1); }}
                 >
                   {t("dashboard.floorPlan.redo")}
                 </Button>
@@ -686,7 +848,7 @@ export default function FloorPlanPage() {
           table={selectedTable}
           sections={sections}
           onClose={() => setSelectedTableIds([])}
-          onUpdateStatus={(id, status) => void handleLiveStatusChange(id, status)}
+          onUpdateStatus={(id, status, seatedCount) => void handleLiveStatusChange(id, status, seatedCount)}
         />
       )}
 

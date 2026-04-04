@@ -23,6 +23,7 @@ export type TableRow = {
   shape: string;
   status: string;
   combined_with: string[] | null;
+  seated_count: number;
   qr_code_url: string | null;
   notes: string | null;
   is_active: boolean;

@@ -14,15 +14,15 @@ export type TableShapeSize = { width: number; height: number; radius: number };
 export function getTableSize(table: TableRow): TableShapeSize {
   const cap = Math.max(1, table.capacity ?? 2);
   if (table.shape === "circle") {
-    const r = 28 + cap * 3;
+    const r = 26 + cap * 3;
     return { width: r * 2, height: r * 2, radius: r };
   }
   if (table.shape === "square") {
-    const s = 48 + cap * 5;
+    const s = 44 + cap * 5;
     return { width: s, height: s, radius: 0 };
   }
   // rectangle
-  return { width: 64 + cap * 14, height: 44, radius: 0 };
+  return { width: 60 + cap * 14, height: 42, radius: 0 };
 }
 
 export type TableShapeTransform = {
@@ -63,7 +63,7 @@ type ChairPos = { x: number; y: number; angle: number };
 
 function circleChairs(radius: number, capacity: number): ChairPos[] {
   const count = Math.max(2, Math.min(capacity, 12));
-  const offset = radius + 14;
+  const offset = radius + 10;
   return Array.from({ length: count }, (_, i) => {
     const theta = (Math.PI * 2 * i) / count - Math.PI / 2;
     return {
@@ -81,7 +81,7 @@ function rectChairs(width: number, height: number, capacity: number): ChairPos[]
   const bottomCount = cap - topCount;
   const hw = width / 2;
   const hh = height / 2;
-  const gap = 14;
+  const gap = 10;
 
   for (let i = 0; i < topCount; i++) {
     const x = -hw + ((i + 1) * width) / (topCount + 1);
@@ -106,9 +106,7 @@ type TableShapeProps = {
   y: number;
   isSelected: boolean;
   isEditing: boolean;
-  /** Persisted scale from floor plan layout (owners resize via Transformer). */
   tableTransform?: TableShapeTransform | null;
-  /** Ref to the inner scaled group — Transformer attaches here. */
   innerGroupRef?: React.Ref<Konva.Group>;
   opacity?: number;
   draggable?: boolean;
@@ -139,13 +137,17 @@ export function TableShape({
   const size = getTableSize(table);
   const sx = tableTransform?.scaleX ?? 1;
   const sy = tableTransform?.scaleY ?? 1;
-  const label = table.table_number ?? table.label ?? "–";
-  const capText = `×${table.capacity ?? 0}`;
+  const label = table.table_number ?? table.label ?? "";
+  const capText = `${table.capacity ?? 0}`;
 
   const chairs =
     table.shape === "circle"
       ? circleChairs(size.radius, table.capacity)
       : rectChairs(size.width, size.height, table.capacity);
+
+  // Determine how many chairs are "filled" (occupied) vs empty
+  const seatedCount = table.seated_count ?? 0;
+  const isOccupied = table.status === "occupied";
 
   function handleMouseEnter(e: { evt: MouseEvent }) {
     setHovered(true);
@@ -156,6 +158,12 @@ export function TableShape({
     setHovered(false);
     onMouseLeave();
   }
+
+  const borderWidth = hovered || isSelected ? 2.5 : 1.5;
+  const borderColor = isSelected && isEditing ? CANVAS_COLORS.gold : color;
+  const fillColor = CANVAS_COLORS.bgElevated;
+  const fillOpacity = 1;
+  const tintOpacity = 0.12;
 
   return (
     <Group
@@ -173,106 +181,132 @@ export function TableShape({
       }}
     >
       <Group ref={innerGroupRef} scaleX={sx} scaleY={sy} rotation={tableTransform?.rotation ?? 0}>
+        {/* Chairs */}
         {chairs.map((c, i) => (
-          <ChairIndicator key={`chair-${i}`} x={c.x} y={c.y} angle={c.angle} color={color} />
+          <ChairIndicator
+            key={`chair-${i}`}
+            x={c.x}
+            y={c.y}
+            angle={c.angle}
+            color={color}
+            filled={isOccupied ? i < seatedCount : table.status === "empty" || table.status === "reserved"}
+          />
         ))}
 
         {table.shape === "circle" ? (
           <>
-            <Circle radius={size.radius} fill={CANVAS_COLORS.bgElevated} />
-            <Circle radius={size.radius - 2} fill={color} opacity={0.18} />
-            <Circle radius={size.radius * 0.55} fill={CANVAS_COLORS.bgSurface} opacity={0.4} />
+            {/* Base fill */}
+            <Circle radius={size.radius} fill={fillColor} opacity={fillOpacity} />
+            {/* Status tint */}
+            <Circle radius={size.radius} fill={color} opacity={tintOpacity} />
+            {/* Border */}
             <Circle
               radius={size.radius}
-              stroke={color}
-              strokeWidth={hovered ? 3 : 2}
+              stroke={borderColor}
+              strokeWidth={borderWidth}
               fill="transparent"
             />
+            {/* Selection indicator */}
             {isSelected && isEditing && (
               <Circle
-                radius={size.radius + 7}
+                radius={size.radius + 6}
                 stroke={CANVAS_COLORS.gold}
-                strokeWidth={2}
-                dash={[6, 4]}
+                strokeWidth={1.5}
+                dash={[5, 3]}
                 fill="transparent"
               />
             )}
           </>
         ) : (
           <>
+            {/* Base fill */}
             <Rect
               x={-size.width / 2}
               y={-size.height / 2}
               width={size.width}
               height={size.height}
-              cornerRadius={8}
-              fill={CANVAS_COLORS.bgElevated}
+              cornerRadius={6}
+              fill={fillColor}
+              opacity={fillOpacity}
             />
+            {/* Status tint */}
             <Rect
-              x={-size.width / 2 + 3}
-              y={-size.height / 2 + 3}
-              width={size.width - 6}
-              height={size.height - 6}
+              x={-size.width / 2}
+              y={-size.height / 2}
+              width={size.width}
+              height={size.height}
               cornerRadius={6}
               fill={color}
-              opacity={0.18}
+              opacity={tintOpacity}
             />
-            <Rect
-              x={-size.width / 2 + 8}
-              y={-size.height / 2 + 8}
-              width={size.width - 16}
-              height={size.height - 16}
-              cornerRadius={4}
-              fill={CANVAS_COLORS.bgSurface}
-              opacity={0.35}
-            />
+            {/* Border */}
             <Rect
               x={-size.width / 2}
               y={-size.height / 2}
               width={size.width}
               height={size.height}
-              cornerRadius={8}
-              stroke={color}
-              strokeWidth={hovered ? 3 : 2}
+              cornerRadius={6}
+              stroke={borderColor}
+              strokeWidth={borderWidth}
               fill="transparent"
             />
+            {/* Selection indicator */}
             {isSelected && isEditing && (
               <Rect
-                x={-size.width / 2 - 7}
-                y={-size.height / 2 - 7}
-                width={size.width + 14}
-                height={size.height + 14}
-                cornerRadius={10}
+                x={-size.width / 2 - 6}
+                y={-size.height / 2 - 6}
+                width={size.width + 12}
+                height={size.height + 12}
+                cornerRadius={8}
                 stroke={CANVAS_COLORS.gold}
-                strokeWidth={2}
-                dash={[6, 4]}
+                strokeWidth={1.5}
+                dash={[5, 3]}
                 fill="transparent"
               />
             )}
           </>
         )}
 
+        {/* Table label (number or name) */}
         <Text
           text={label}
-          x={-36}
-          y={-12}
-          width={72}
+          x={-40}
+          y={label ? -13 : -6}
+          width={80}
           align="center"
-          fontSize={13}
+          fontSize={12}
           fontStyle="bold"
+          fontFamily="Inter, system-ui, sans-serif"
           fill={CANVAS_COLORS.textPrimary}
           listening={false}
         />
-        <Text
-          text={capText}
-          x={-24}
-          y={3}
-          width={48}
-          align="center"
-          fontSize={10}
-          fill={CANVAS_COLORS.textSecondary}
-          listening={false}
-        />
+        {/* Capacity indicator */}
+        {label ? (
+          <Text
+            text={capText}
+            x={-30}
+            y={2}
+            width={60}
+            align="center"
+            fontSize={10}
+            fontFamily="Inter, system-ui, sans-serif"
+            fill={CANVAS_COLORS.textMuted}
+            listening={false}
+          />
+        ) : (
+          <Text
+            text={capText}
+            x={-30}
+            y={-6}
+            width={60}
+            align="center"
+            fontSize={12}
+            fontStyle="bold"
+            fontFamily="Inter, system-ui, sans-serif"
+            fill={CANVAS_COLORS.textSecondary}
+            listening={false}
+          />
+        )}
       </Group>
     </Group>
   );

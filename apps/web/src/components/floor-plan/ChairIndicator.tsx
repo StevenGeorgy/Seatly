@@ -1,23 +1,39 @@
 import { Rect } from "react-konva";
 
-/**
- * A single chair indicator rendered as a small rounded rectangle.
- * The `offsetX` / `offsetY` set the rotation pivot to the chair's centre,
- * so `rotation` spins it around its own midpoint to face the table.
- */
+import { CANVAS_COLORS } from "@/lib/canvas-colors";
+
 type ChairIndicatorProps = {
-  /** Centre position of the chair */
   x: number;
   y: number;
-  /** Degrees — 0 = pointing up, clockwise positive */
   angle: number;
-  /** Status colour of the parent table */
   color: string;
+  /** Whether this seat is occupied. Unfilled seats render as a dim outline. */
+  filled?: boolean;
 };
 
-export function ChairIndicator({ x, y, angle, color }: ChairIndicatorProps) {
-  const w = 12;
-  const h = 10;
+export function ChairIndicator({ x, y, angle, color, filled = true }: ChairIndicatorProps) {
+  const w = 10;
+  const h = 6;
+
+  if (filled) {
+    return (
+      <Rect
+        x={x}
+        y={y}
+        offsetX={w / 2}
+        offsetY={h / 2}
+        width={w}
+        height={h}
+        cornerRadius={3}
+        rotation={angle}
+        fill={color}
+        opacity={0.45}
+        listening={false}
+      />
+    );
+  }
+
+  // Unfilled: outline-only with dimmed stroke
   return (
     <Rect
       x={x}
@@ -28,10 +44,10 @@ export function ChairIndicator({ x, y, angle, color }: ChairIndicatorProps) {
       height={h}
       cornerRadius={3}
       rotation={angle}
-      fill={color}
-      opacity={0.55}
-      stroke="rgba(0,0,0,0.25)"
-      strokeWidth={0.5}
+      fill={CANVAS_COLORS.bgSurface}
+      stroke={color}
+      strokeWidth={0.8}
+      opacity={0.35}
       listening={false}
     />
   );

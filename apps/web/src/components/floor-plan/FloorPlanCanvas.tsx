@@ -21,7 +21,7 @@ import { WallSegment } from "./WallSegment";
 // ─── Dot-grid helper ─────────────────────────────────────────────────────────
 
 const GRID_STEP = FLOOR_PLAN_GRID_STEP;
-const DOT_RADIUS = 1;
+const DOT_RADIUS = 0.7;
 
 function buildGridDots(width: number, height: number) {
   const dots: { x: number; y: number }[] = [];
@@ -75,6 +75,51 @@ function snapWallAngle(x1: number, y1: number, x2: number, y2: number) {
     }
   }
   return { x2, y2 };
+}
+
+// ─── Wall endpoint snap ──────────────────────────────────────────────────────
+
+const WALL_SNAP_THRESHOLD = 15;
+
+type WallEndpoint = { wallId: string; endpoint: "start" | "end"; x: number; y: number };
+
+/** Collect all endpoints from all walls except the one being dragged. */
+function collectWallEndpoints(
+  walls: Wall[],
+  excludeWallId?: string,
+  excludeEndpoint?: "start" | "end",
+): WallEndpoint[] {
+  const pts: WallEndpoint[] = [];
+  for (const w of walls) {
+    if (w.id === excludeWallId && excludeEndpoint === "start") {
+      pts.push({ wallId: w.id, endpoint: "end", x: w.x2, y: w.y2 });
+    } else if (w.id === excludeWallId && excludeEndpoint === "end") {
+      pts.push({ wallId: w.id, endpoint: "start", x: w.x1, y: w.y1 });
+    } else {
+      pts.push({ wallId: w.id, endpoint: "start", x: w.x1, y: w.y1 });
+      pts.push({ wallId: w.id, endpoint: "end", x: w.x2, y: w.y2 });
+    }
+  }
+  return pts;
+}
+
+/** Find nearest wall endpoint within threshold. */
+function findNearestEndpoint(
+  x: number,
+  y: number,
+  endpoints: WallEndpoint[],
+  threshold: number = WALL_SNAP_THRESHOLD,
+): WallEndpoint | null {
+  let best: WallEndpoint | null = null;
+  let bestDist = threshold;
+  for (const ep of endpoints) {
+    const d = Math.hypot(ep.x - x, ep.y - y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = ep;
+    }
+  }
+  return best;
 }
 
 const MARQUEE_MIN_DRAG_PX = 8;
@@ -131,6 +176,8 @@ type FloorPlanCanvasProps = {
   onCanvasClick: (worldX: number, worldY: number) => void;
   onTableDragEnd: (id: string, x: number, y: number) => void;
   onWallDrawn: (wall: Wall) => void;
+  /** Called when a wall endpoint is dragged to a new position (with snapping applied). */
+  onWallEndpointUpdate?: (wallId: string, endpoint: "start" | "end", x: number, y: number) => void;
   /** Edit mode only — omit in live mode so decorations do not capture selection */
   onDecorationClick?: (id: string) => void;
   onDecorationDragEnd: (id: string, x: number, y: number) => void;
@@ -167,6 +214,7 @@ export function FloorPlanCanvas({
   onCanvasClick,
   onTableDragEnd,
   onWallDrawn,
+  onWallEndpointUpdate,
   onDecorationClick: onDecorationClickProp,
   onDecorationDragEnd,
   onStageScaleChange,
@@ -203,6 +251,8 @@ export function FloorPlanCanvas({
   wallDraftRef.current = wallDraft;
 
   const mouseUpHandlerRef = useRef<() => void>(() => {});
+  /** Snap indicator: shows a small ring where a wall endpoint will snap to. */
+  const [wallSnapTarget, setWallSnapTarget] = useState<{ x: number; y: number } | null>(null);
 
   const isEditing = mode === "edit";
   const isWallTool = activeTool === "add-wall";
@@ -280,6 +330,7 @@ export function FloorPlanCanvas({
     const wallCleared = { active: false, startX: 0, startY: 0, endX: 0, endY: 0 };
     wallDraftRef.current = wallCleared;
     setWallDraft(wallCleared);
+    setWallSnapTarget(null);
   };
 
   useEffect(() => {
@@ -400,7 +451,12 @@ export function FloorPlanCanvas({
       if (!stage) return;
       const pos = stage.getRelativePointerPosition();
       if (!pos) return;
-      setWallDraft({ active: true, startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y });
+      // Snap start point to nearby wall endpoint
+      const endpoints = collectWallEndpoints(walls);
+      const nearest = findNearestEndpoint(pos.x, pos.y, endpoints);
+      const sx = nearest ? nearest.x : pos.x;
+      const sy = nearest ? nearest.y : pos.y;
+      setWallDraft({ active: true, startX: sx, startY: sy, endX: sx, endY: sy });
       return;
     }
     if (
@@ -436,7 +492,16 @@ export function FloorPlanCanvas({
     const pos = stage.getRelativePointerPosition();
     if (!pos) return;
     const snapped = snapWallAngle(wallDraft.startX, wallDraft.startY, pos.x, pos.y);
-    setWallDraft((d) => ({ ...d, endX: snapped.x2, endY: snapped.y2 }));
+    // Check if the end point is near an existing wall endpoint
+    const endpoints = collectWallEndpoints(walls);
+    const nearest = findNearestEndpoint(snapped.x2, snapped.y2, endpoints);
+    if (nearest) {
+      setWallDraft((d) => ({ ...d, endX: nearest.x, endY: nearest.y }));
+      setWallSnapTarget({ x: nearest.x, y: nearest.y });
+    } else {
+      setWallDraft((d) => ({ ...d, endX: snapped.x2, endY: snapped.y2 }));
+      setWallSnapTarget(null);
+    }
     e.evt.preventDefault();
   }
 
@@ -512,7 +577,7 @@ export function FloorPlanCanvas({
               x={d.x}
               y={d.y}
               radius={DOT_RADIUS}
-              fill={CANVAS_COLORS.bgSurface}
+              fill={CANVAS_COLORS.gridDot}
               listening={false}
             />
           ))}
@@ -537,6 +602,22 @@ export function FloorPlanCanvas({
               x2={w.x2}
               y2={w.y2}
               draggable={isEditing}
+              showHandles={isEditing}
+              onEndpointDragMove={(wallId, endpoint, x, y) => {
+                // Show snap indicator if near another endpoint
+                const eps = collectWallEndpoints(walls, wallId, endpoint);
+                const nearest = findNearestEndpoint(x, y, eps);
+                setWallSnapTarget(nearest ? { x: nearest.x, y: nearest.y } : null);
+              }}
+              onEndpointDragEnd={(wallId, endpoint, x, y) => {
+                // Snap to nearby endpoint if close enough
+                const eps = collectWallEndpoints(walls, wallId, endpoint);
+                const nearest = findNearestEndpoint(x, y, eps);
+                const finalX = nearest ? nearest.x : snapToGrid(x);
+                const finalY = nearest ? nearest.y : snapToGrid(y);
+                setWallSnapTarget(null);
+                onWallEndpointUpdate?.(wallId, endpoint, finalX, finalY);
+              }}
             />
           ))}
 
@@ -548,6 +629,20 @@ export function FloorPlanCanvas({
               strokeWidth={5}
               dash={[8, 4]}
               lineCap="round"
+              listening={false}
+            />
+          )}
+
+          {/* Wall snap indicator */}
+          {wallSnapTarget && (
+            <Circle
+              x={wallSnapTarget.x}
+              y={wallSnapTarget.y}
+              radius={10}
+              stroke={CANVAS_COLORS.gold}
+              strokeWidth={2}
+              fill="transparent"
+              dash={[4, 3]}
               listening={false}
             />
           )}
