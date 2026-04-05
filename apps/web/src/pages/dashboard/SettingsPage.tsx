@@ -6,6 +6,7 @@ import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SectionCard } from "@/components/dashboard/SectionCard";
 import { Button } from "@/components/ui/button";
+import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { applyRestaurantTheme } from "@/lib/theme";
+import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 
 const CURRENCY_OPTIONS = [
   { value: "cad", label: "CAD — Canadian Dollar" },
@@ -23,6 +26,15 @@ const CURRENCY_OPTIONS = [
   { value: "mxn", label: "MXN — Mexican Peso" },
 ];
 
+function isLight(hex: string): boolean {
+  const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!match) return false;
+  const r = parseInt(match[1], 16);
+  const g = parseInt(match[2], 16);
+  const b = parseInt(match[3], 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
+}
+
 export default function SettingsPage() {
   const { t } = useTranslation();
   const { selectedRestaurant, refreshRestaurants } = useRestaurantScope();
@@ -30,9 +42,19 @@ export default function SettingsPage() {
   const [restaurantName, setRestaurantName] = useState(selectedRestaurant?.name ?? "");
   const [savingRestaurant, setSavingRestaurant] = useState(false);
 
+  // Theme state
+  const existingTheme = selectedRestaurant?.settings_json?.theme;
+  const [primaryColor, setPrimaryColor] = useState(existingTheme?.primaryColor ?? "#C9A84C");
+  const [accentColor, setAccentColor] = useState(existingTheme?.accentColor ?? "#22C55E");
+  const [backgroundColor, setBackgroundColor] = useState(existingTheme?.backgroundColor ?? "#0A0A0A");
+  const [savingTheme, setSavingTheme] = useState(false);
+
   useEffect(() => {
     setRestaurantName(selectedRestaurant?.name ?? "");
-  }, [selectedRestaurant?.id, selectedRestaurant?.name]);
+    setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
+    setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
+    setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
+  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.settings_json]);
 
   const saveRestaurantSettings = async () => {
     if (!selectedRestaurant) return;
@@ -62,6 +84,60 @@ export default function SettingsPage() {
     toast.success(t("dashboard.settings.saved"));
   };
 
+  // Live-preview theme as the user picks colors
+  function handlePrimaryChange(color: string) {
+    setPrimaryColor(color);
+    applyRestaurantTheme({ primaryColor: color, accentColor, backgroundColor });
+  }
+
+  function handleAccentChange(color: string) {
+    setAccentColor(color);
+  }
+
+  function handleBackgroundChange(color: string) {
+    setBackgroundColor(color);
+    applyRestaurantTheme({ primaryColor, accentColor, backgroundColor: color });
+  }
+
+  async function saveTheme() {
+    if (!selectedRestaurant) return;
+    if (!isSupabaseConfigured()) {
+      toast.error(t("auth.errors.supabaseNotConfigured"));
+      return;
+    }
+
+    setSavingTheme(true);
+    const client = getSupabaseBrowserClient();
+
+    const existingSettings = (selectedRestaurant.settings_json ?? {}) as RestaurantSettings;
+    const updatedSettings: RestaurantSettings = {
+      ...existingSettings,
+      theme: { primaryColor, accentColor, backgroundColor },
+    };
+
+    const { error } = await client
+      .from("restaurants")
+      .update({ settings_json: updatedSettings })
+      .eq("id", selectedRestaurant.id);
+
+    setSavingTheme(false);
+
+    if (error) {
+      toast.error(t("dashboard.settings.saveFailed"));
+      return;
+    }
+
+    refreshRestaurants();
+    toast.success(t("dashboard.settings.saved"));
+  }
+
+  function resetToDefault() {
+    setPrimaryColor("#C9A84C");
+    setAccentColor("#22C55E");
+    setBackgroundColor("#0A0A0A");
+    applyRestaurantTheme({ primaryColor: "#C9A84C", accentColor: "#22C55E", backgroundColor: "#0A0A0A" });
+  }
+
   return (
     <AnimatedPage className="flex flex-col gap-6">
       <PageHeader title={t("dashboard.settings.title")} />
@@ -72,6 +148,7 @@ export default function SettingsPage() {
           <TabsTrigger value="hours">{t("dashboard.settings.hours")}</TabsTrigger>
           <TabsTrigger value="policy">{t("dashboard.settings.policy")}</TabsTrigger>
           <TabsTrigger value="loyalty">{t("dashboard.settings.loyalty")}</TabsTrigger>
+          <TabsTrigger value="theme">Theme</TabsTrigger>
           <TabsTrigger value="billing">{t("dashboard.settings.billing")}</TabsTrigger>
         </TabsList>
 
@@ -161,6 +238,77 @@ export default function SettingsPage() {
                 <Input type="number" defaultValue="1" />
               </div>
               <Button className="self-end">{t("common.actions.save")}</Button>
+            </div>
+          </SectionCard>
+        </TabsContent>
+
+        <TabsContent value="theme" className="mt-6">
+          <SectionCard title="Restaurant Theme">
+            <div className="flex flex-col gap-6">
+              <p className="text-sm text-text-secondary">
+                Customize the colors for your restaurant. Changes preview live and are applied across the dashboard when your restaurant is selected.
+              </p>
+
+              <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+                <ColorPicker
+                  label="Primary Color"
+                  value={primaryColor}
+                  onChange={handlePrimaryChange}
+                />
+                <ColorPicker
+                  label="Accent Color"
+                  value={accentColor}
+                  onChange={handleAccentChange}
+                />
+                <ColorPicker
+                  label="Background Color"
+                  value={backgroundColor}
+                  onChange={handleBackgroundChange}
+                  presets={BACKGROUND_PRESETS}
+                />
+              </div>
+
+              {/* Preview */}
+              <div>
+                <span className="mb-2 block text-xs font-medium uppercase tracking-wide text-text-muted">
+                  Preview
+                </span>
+                <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-bg-elevated p-4">
+                  <div
+                    className="flex h-9 items-center rounded-md px-4 text-sm font-medium"
+                    style={{ backgroundColor: primaryColor, color: isLight(primaryColor) ? "#0A0A0A" : "#FFFFFF" }}
+                  >
+                    Primary Button
+                  </div>
+                  <div
+                    className="flex h-9 items-center rounded-md border-2 px-4 text-sm font-medium"
+                    style={{ borderColor: primaryColor, color: primaryColor }}
+                  >
+                    Outline Button
+                  </div>
+                  <div
+                    className="flex h-9 items-center rounded-md px-4 text-sm font-medium"
+                    style={{ backgroundColor: accentColor, color: isLight(accentColor) ? "#0A0A0A" : "#FFFFFF" }}
+                  >
+                    Accent
+                  </div>
+                  <span className="text-sm font-semibold" style={{ color: primaryColor }}>
+                    Highlighted text
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end">
+                <Button variant="ghost" onClick={resetToDefault}>
+                  Reset to default
+                </Button>
+                <Button
+                  disabled={savingTheme || !selectedRestaurant}
+                  onClick={() => void saveTheme()}
+                >
+                  {savingTheme ? t("routes.loading") : t("common.actions.save")}
+                </Button>
+              </div>
             </div>
           </SectionCard>
         </TabsContent>

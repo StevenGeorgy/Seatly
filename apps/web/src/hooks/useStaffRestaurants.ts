@@ -3,12 +3,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { UserRestaurantRole } from "@/types/auth";
 
+export type RestaurantTheme = {
+  primaryColor: string;
+  accentColor?: string;
+  backgroundColor?: string;
+};
+
+export type RestaurantSettings = {
+  theme?: RestaurantTheme;
+};
+
 export type StaffRestaurantRow = {
   id: string;
   name: string | null;
   slug: string;
   currency: string;
   timezone: string;
+  settings_json: RestaurantSettings | null;
 };
 
 /**
@@ -49,7 +60,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
       const client = getSupabaseBrowserClient();
       const { data, error: qErr } = await client
         .from("restaurants")
-        .select("id, name, slug, currency, timezone")
+        .select("id, name, slug, currency, timezone, settings_json")
         .in("id", ids);
 
       if (cancelled) return;

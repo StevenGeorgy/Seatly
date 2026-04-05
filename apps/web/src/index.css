@@ -82,6 +82,18 @@
     --sidebar-accent-foreground: #FFFFFF;
     --sidebar-border: #2E2E2E;
     --sidebar-ring: #C9A84C;
+    /* Restaurant-themeable brand colors */
+    --gold: #C9A84C;
+    --gold-light: #F5E6C8;
+    --gold-dark: #A8873A;
+    /* Restaurant-themeable surface colors */
+    --bg-base: #0A0A0A;
+    --bg-surface: #1A1A1A;
+    --bg-elevated: #242424;
+    --tw-border: #2E2E2E;
+    --text-primary: #FFFFFF;
+    --text-secondary: #AAAAAA;
+    --text-muted: #666666;
 }
 
 .dark {
@@ -116,6 +128,16 @@
     --sidebar-accent-foreground: #FFFFFF;
     --sidebar-border: #2E2E2E;
     --sidebar-ring: #C9A84C;
+    --gold: #C9A84C;
+    --gold-light: #F5E6C8;
+    --gold-dark: #A8873A;
+    --bg-base: #0A0A0A;
+    --bg-surface: #1A1A1A;
+    --bg-elevated: #242424;
+    --tw-border: #2E2E2E;
+    --text-primary: #FFFFFF;
+    --text-secondary: #AAAAAA;
+    --text-muted: #666666;
 }
 
 @layer base {

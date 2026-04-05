@@ -10,6 +10,7 @@ import {
 
 import { useUser } from "@/hooks/useUser";
 import { useStaffRestaurants, type StaffRestaurantRow } from "@/hooks/useStaffRestaurants";
+import { applyRestaurantTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "seatly.selectedRestaurantId";
 
@@ -87,6 +88,11 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
     () => restaurants.find((r) => r.id === selectedRestaurantId) ?? null,
     [restaurants, selectedRestaurantId],
   );
+
+  // Apply restaurant theme colors whenever the selected restaurant changes
+  useEffect(() => {
+    applyRestaurantTheme(selectedRestaurant?.settings_json?.theme);
+  }, [selectedRestaurant?.id, selectedRestaurant?.settings_json]);
 
   const value = useMemo(
     (): RestaurantScopeValue => ({
