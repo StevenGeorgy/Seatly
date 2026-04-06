@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardTopBar } from "@/components/dashboard/DashboardTopBar";
+import { cn } from "@/lib/utils";
 
 // Catches render errors in individual pages so the shell stays visible
 class PageErrorBoundary extends Component<
@@ -53,30 +54,62 @@ function PageSkeleton() {
 
 export default function DashboardLayout() {
   const { pathname } = useLocation();
+  /** Floor plan needs full width/height of the main column (no max-width shell or page padding). */
+  const isFloorPlanRoute = pathname.includes("/floor-plan");
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground sm:flex-row">
+    <div
+      className={cn(
+        "flex h-screen flex-col text-foreground sm:flex-row",
+        isFloorPlanRoute ? "bg-bg-surface" : "bg-background",
+      )}
+    >
       <DashboardSidebar />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+          isFloorPlanRoute && "bg-bg-surface",
+        )}
+      >
         <DashboardTopBar />
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl p-5 sm:p-6 lg:p-8">
+        <main
+          className={cn(
+            "flex-1 min-h-0",
+            isFloorPlanRoute
+              ? "flex flex-col overflow-hidden bg-bg-surface"
+              : "overflow-y-auto",
+          )}
+        >
+          <div
+            className={cn(
+              isFloorPlanRoute
+                ? "flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-bg-surface"
+                : "mx-auto max-w-7xl p-5 sm:p-6 lg:p-8",
+            )}
+          >
             {/* Suspense here keeps the shell (sidebar + topbar) visible while
                 a lazy page chunk is loading — the top-level Suspense would
                 replace the entire screen including the shell. */}
             <Suspense fallback={<PageSkeleton />}>
               <PageErrorBoundary key={pathname}>
-                <AnimatePresence mode="sync">
-                  <motion.div
-                    key={pathname}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.18, ease: [0.25, 0.46, 0.45, 0.94] }}
-                    className="min-h-0"
-                  >
+                {isFloorPlanRoute ? (
+                  /* Plain wrapper: skip AnimatePresence/motion so flex height reaches Konva reliably. */
+                  <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden bg-bg-surface">
                     <Outlet />
-                  </motion.div>
-                </AnimatePresence>
+                  </div>
+                ) : (
+                  <AnimatePresence mode="sync">
+                    <motion.div
+                      key={pathname}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, ease: [0.25, 0.46, 0.45, 0.94] }}
+                      className="min-h-0 min-w-0 w-full"
+                    >
+                      <Outlet />
+                    </motion.div>
+                  </AnimatePresence>
+                )}
               </PageErrorBoundary>
             </Suspense>
           </div>

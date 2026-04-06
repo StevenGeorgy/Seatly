@@ -21,11 +21,12 @@ import RegisterPage from "@/pages/auth/RegisterPage";
 import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
 import SetupPage from "@/pages/auth/SetupPage";
 import NotFoundPage from "@/pages/NotFoundPage";
+/** Eager: Konva floor editor — avoids Suspense chunk delay on every sidebar visit. */
+import FloorPlanPage from "@/pages/dashboard/FloorPlanPage";
 
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
-const FloorPlanPage = lazy(() => import("@/pages/dashboard/FloorPlanPage"));
 const WaitlistPage = lazy(() => import("@/pages/dashboard/WaitlistPage"));
 const OrdersPage = lazy(() => import("@/pages/dashboard/OrdersPage"));
 const MenuPage = lazy(() => import("@/pages/dashboard/MenuPage"));

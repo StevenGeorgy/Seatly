@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { Bell, LogOut } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useUser } from "@/hooks/useUser";
 import { resolveDashboardPageLabelKey } from "@/lib/auth/dashboard-access";
 
@@ -11,9 +12,17 @@ export function DashboardTopBar() {
   const { pathname } = useLocation();
   const { profile, signOut } = useUser();
   const titleKey = resolveDashboardPageLabelKey(pathname);
+  const isFloorPlanRoute = pathname.includes("/floor-plan");
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-card/60 px-4 backdrop-blur-xl sm:px-6">
+    <header
+      className={cn(
+        "flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border px-4 sm:px-6",
+        isFloorPlanRoute
+          ? "bg-bg-surface"
+          : "bg-card/60 backdrop-blur-xl",
+      )}
+    >
       <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
         {t(titleKey)}
       </h2>

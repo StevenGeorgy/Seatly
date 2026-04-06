@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { MOCK_SECTIONS } from "@/lib/mock-data";
+import i18n from "@/lib/i18n/i18n";
 import { nextSequentialTableNumber } from "@/lib/table-number";
+import { promiseWithTimeout } from "@/lib/promise-timeout";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+
+/** Prevents hung Supabase calls from leaving `loading` stuck forever. */
+const FLOOR_PLAN_FETCH_TIMEOUT_MS = 45_000;
 
 /** Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows. */
 export function isDatabaseUuid(id: string): boolean {
@@ -42,12 +46,25 @@ export type FloorPlanRow = {
   is_active: boolean;
 };
 
+/** Visual floor zone (Main Dining, Patio, …) — layout-only, draggable/resizable in edit mode. */
+export type FloorPlanZone = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Shown top-left inside the zone */
+  label: string;
+};
+
 export type FloorPlanLayout = {
   walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>;
   doors: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>;
   windows: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>;
   tableTransforms: Record<string, { rotation: number; scaleX: number; scaleY: number }>;
   decorations: DecorationItem[];
+  /** Room zones — tinted regions with labels (Konva). */
+  zones: FloorPlanZone[];
 };
 
 export type DecorationItem = {
@@ -78,6 +95,8 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
   const [sections, setSections] = useState<SectionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  /** Dismisses stale responses when `selectedRestaurantId` changes mid-flight. */
+  const fetchSeqRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) {
@@ -88,27 +107,49 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
       return;
     }
 
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     setError(null);
-    const client = getSupabaseBrowserClient();
 
-    const [tablesRes, plansRes, sectionsRes] = await Promise.all([
-      client.from("tables").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
-      client.from("floor_plans").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
-      client.from("restaurant_sections").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true).order("sort_order"),
-    ]);
+    try {
+      const client = getSupabaseBrowserClient();
 
-    if (tablesRes.error || plansRes.error || sectionsRes.error) {
-      setError(new Error(tablesRes.error?.message ?? plansRes.error?.message ?? sectionsRes.error?.message ?? "Unknown error"));
+      const [tablesRes, plansRes, sectionsRes] = await promiseWithTimeout(
+        Promise.all([
+          client.from("tables").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
+          client.from("floor_plans").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
+          client.from("restaurant_sections").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true).order("sort_order"),
+        ]),
+        FLOOR_PLAN_FETCH_TIMEOUT_MS,
+        "Floor plan load",
+      );
+
+      if (seq !== fetchSeqRef.current) return;
+
+      if (tablesRes.error || plansRes.error || sectionsRes.error) {
+        setError(
+          new Error(tablesRes.error?.message ?? plansRes.error?.message ?? sectionsRes.error?.message ?? "Unknown error"),
+        );
+      } else {
+        setError(null);
+      }
+
+      const rawTables = (tablesRes.data ?? []) as TableRow[];
+      const rawSections = (sectionsRes.data ?? []) as SectionRow[];
+      setTables(rawTables);
+      setFloorPlans((plansRes.data ?? []) as FloorPlanRow[]);
+      setSections(rawSections);
+    } catch (e) {
+      if (seq !== fetchSeqRef.current) return;
+      setError(e instanceof Error ? e : new Error(String(e)));
+      setTables([]);
+      setFloorPlans([]);
+      setSections([]);
+    } finally {
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+      }
     }
-
-    const rawTables = (tablesRes.data ?? []) as TableRow[];
-    const rawSections = (sectionsRes.data ?? []) as SectionRow[];
-    // Never substitute MOCK_TABLES when Supabase returns zero rows — that undoes saves and confuses drafts.
-    setTables(rawTables);
-    setFloorPlans((plansRes.data ?? []) as FloorPlanRow[]);
-    setSections(rawSections.length > 0 ? rawSections : MOCK_SECTIONS);
-    setLoading(false);
   }, [selectedRestaurantId]);
 
   const createSectionAndFloor = useCallback(
@@ -149,6 +190,7 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
             windows: [],
             tableTransforms: {},
             decorations: [],
+            zones: [],
           } satisfies FloorPlanLayout,
           is_active: true,
         })
@@ -179,6 +221,12 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
       notes?: string | null;
     }): Promise<TableRow | null> => {
       if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
+      if (!isDatabaseUuid(input.sectionId)) {
+        setError(
+          new Error(i18n.t("dashboard.floorPlan.sectionRequiredForTable")),
+        );
+        return null;
+      }
       const client = getSupabaseBrowserClient();
       const sectionName = sections.find((s) => s.id === input.sectionId)?.name ?? null;
       const tableNumber =

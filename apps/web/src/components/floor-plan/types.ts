@@ -16,6 +16,8 @@ export type ToolMode =
   | "extend-wall"
   | "add-decoration"
   | "add-section-label"
+  /** Visual room zone (Main Dining, Patio, …) — tinted rect, draggable/resizable. */
+  | "add-zone"
   | "delete";
 
 // ─── Snap ────────────────────────────────────────────────────────────────────

@@ -113,9 +113,11 @@ type TableShapeProps = {
   draggable?: boolean;
   /** When set with draggable, Konva keeps the table center inside these bounds while dragging. */
   dragBounds?: TableDragBounds | null;
+  dragging?: boolean;
   onClick: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onMouseEnter: (screenX: number, screenY: number) => void;
   onMouseLeave: () => void;
+  onDragStart?: () => void;
   onDragEnd?: (x: number, y: number) => void;
 };
 
@@ -130,9 +132,11 @@ export function TableShape({
   opacity = 1,
   draggable = false,
   dragBounds = null,
+  dragging = false,
   onClick,
   onMouseEnter,
   onMouseLeave,
+  onDragStart,
   onDragEnd,
 }: TableShapeProps) {
   const { t } = useTranslation();
@@ -143,7 +147,9 @@ export function TableShape({
   const sx = tableTransform?.scaleX ?? 1;
   const sy = tableTransform?.scaleY ?? 1;
   const titleText = tableFloorPlanTitle(t, table);
-  const capText = `${table.capacity ?? 0}`;
+  const capText = t("dashboard.floorPlan.seatsShort", {
+    count: table.capacity ?? 0,
+  });
 
   const chairs =
     table.shape === "circle"
@@ -164,11 +170,15 @@ export function TableShape({
     onMouseLeave();
   }
 
-  const borderWidth = hovered || isSelected ? 2.5 : 1.5;
+  const borderWidth = hovered || isSelected ? 2.75 : 1.5;
   const borderColor = isSelected && isEditing ? CANVAS_COLORS.gold : color;
   const fillColor = CANVAS_COLORS.bgElevated;
   const fillOpacity = 1;
   const tintOpacity = 0.12;
+  const shadowBlur = hovered || isSelected ? 14 : 6;
+  const shadowOpacity = isSelected && isEditing ? 0.32 : isEditing ? 0.22 : 0.18;
+  const hoverLift = hovered && !dragging ? 1.028 : dragging ? 1.012 : 1;
+  const statusGlow = 0.09;
 
   const dragBoundFunc =
     draggable && dragBounds
@@ -182,19 +192,34 @@ export function TableShape({
     <Group
       x={x}
       y={y}
-      opacity={opacity}
+      opacity={dragging ? opacity * 0.9 : opacity}
       draggable={draggable}
       dragBoundFunc={dragBoundFunc}
-      onClick={(ev) => onClick(ev)}
-      onTap={(ev) => onClick(ev)}
+      onClick={(ev) => {
+        ev.cancelBubble = true;
+        onClick(ev);
+      }}
+      onTap={(ev) => {
+        ev.cancelBubble = true;
+        onClick(ev as Konva.KonvaEventObject<MouseEvent | TouchEvent>);
+      }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onDragStart={() => {
+        onDragStart?.();
+      }}
       onDragEnd={(e) => {
         const pos = e.target;
         onDragEnd?.(pos.x(), pos.y());
       }}
     >
-      <Group ref={innerGroupRef} scaleX={sx} scaleY={sy} rotation={tableTransform?.rotation ?? 0}>
+      <Group
+        ref={innerGroupRef}
+        scaleX={sx}
+        scaleY={sy}
+        rotation={tableTransform?.rotation ?? 0}
+      >
+        <Group scaleX={hoverLift} scaleY={hoverLift}>
         {/* Chairs */}
         {chairs.map((c, i) => (
           <ChairIndicator
@@ -209,30 +234,56 @@ export function TableShape({
 
         {table.shape === "circle" ? (
           <>
+            <Circle
+              radius={size.radius + 5}
+              fill={color}
+              opacity={statusGlow}
+              listening={false}
+            />
             {/* Base fill */}
-            <Circle radius={size.radius} fill={fillColor} opacity={fillOpacity} />
+            <Circle
+              radius={size.radius}
+              fill={fillColor}
+              opacity={fillOpacity}
+              shadowColor={isSelected && isEditing ? CANVAS_COLORS.gold : CANVAS_COLORS.shadow}
+              shadowBlur={shadowBlur}
+              shadowOpacity={shadowOpacity}
+              shadowOffset={{ x: 0, y: 2 }}
+            />
             {/* Status tint */}
-            <Circle radius={size.radius} fill={color} opacity={tintOpacity} />
+            <Circle radius={size.radius} fill={color} opacity={tintOpacity} listening={false} />
             {/* Border */}
             <Circle
               radius={size.radius}
               stroke={borderColor}
               strokeWidth={borderWidth}
               fill="transparent"
+              listening={false}
             />
             {/* Selection indicator */}
             {isSelected && isEditing && (
               <Circle
-                radius={size.radius + 6}
+                radius={size.radius + 7}
                 stroke={CANVAS_COLORS.gold}
-                strokeWidth={1.5}
-                dash={[5, 3]}
+                strokeWidth={2}
+                dash={[5, 4]}
                 fill="transparent"
+                listening={false}
               />
             )}
           </>
         ) : (
           <>
+            <Rect
+              x={-size.width / 2 - 5}
+              y={-size.height / 2 - 5}
+              width={size.width + 10}
+              height={size.height + 10}
+              cornerRadius={9}
+              fill={color}
+              opacity={statusGlow}
+              listening={false}
+            />
             {/* Base fill */}
             <Rect
               x={-size.width / 2}
@@ -242,6 +293,10 @@ export function TableShape({
               cornerRadius={6}
               fill={fillColor}
               opacity={fillOpacity}
+              shadowColor={isSelected && isEditing ? CANVAS_COLORS.gold : CANVAS_COLORS.shadow}
+              shadowBlur={shadowBlur}
+              shadowOpacity={shadowOpacity}
+              shadowOffset={{ x: 0, y: 2 }}
             />
             {/* Status tint */}
             <Rect
@@ -252,6 +307,7 @@ export function TableShape({
               cornerRadius={6}
               fill={color}
               opacity={tintOpacity}
+              listening={false}
             />
             {/* Border */}
             <Rect
@@ -263,19 +319,21 @@ export function TableShape({
               stroke={borderColor}
               strokeWidth={borderWidth}
               fill="transparent"
+              listening={false}
             />
             {/* Selection indicator */}
             {isSelected && isEditing && (
               <Rect
-                x={-size.width / 2 - 6}
-                y={-size.height / 2 - 6}
-                width={size.width + 12}
-                height={size.height + 12}
-                cornerRadius={8}
+                x={-size.width / 2 - 7}
+                y={-size.height / 2 - 7}
+                width={size.width + 14}
+                height={size.height + 14}
+                cornerRadius={9}
                 stroke={CANVAS_COLORS.gold}
-                strokeWidth={1.5}
-                dash={[5, 3]}
+                strokeWidth={2}
+                dash={[5, 4]}
                 fill="transparent"
+                listening={false}
               />
             )}
           </>
@@ -284,12 +342,13 @@ export function TableShape({
         {/* Table title: Table(x) */}
         <Text
           text={titleText}
-          x={-70}
-          y={-13}
-          width={140}
+          x={-72}
+          y={-14}
+          width={144}
           align="center"
-          fontSize={12}
+          fontSize={13}
           fontStyle="bold"
+          letterSpacing={0.2}
           fontFamily="Inter, system-ui, sans-serif"
           fill={CANVAS_COLORS.textPrimary}
           listening={false}
@@ -297,15 +356,16 @@ export function TableShape({
         {/* Capacity indicator */}
         <Text
           text={capText}
-          x={-30}
-          y={2}
-          width={60}
+          x={-52}
+          y={3}
+          width={104}
           align="center"
           fontSize={10}
           fontFamily="Inter, system-ui, sans-serif"
-          fill={CANVAS_COLORS.textMuted}
+          fill={CANVAS_COLORS.textSecondary}
           listening={false}
         />
+        </Group>
       </Group>
     </Group>
   );

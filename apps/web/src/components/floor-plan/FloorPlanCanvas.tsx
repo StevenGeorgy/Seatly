@@ -1,17 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type Konva from "konva";
 import { Circle, Layer, Line, Rect, Stage, Transformer } from "react-konva";
 
 import type {
   DecorationItem as DecorationModel,
   FloorPlanLayout,
+  FloorPlanZone,
   SectionRow,
   TableRow,
 } from "@/hooks/useFloorPlan";
 import { CANVAS_COLORS } from "@/lib/canvas-colors";
+import {
+  clampFloorPlanStagePosition,
+  stagePositionAfterZoomAtScreenPoint,
+} from "@/lib/floor-plan-viewport";
 
 import { DecorationItem } from "./DecorationItem";
-import { SectionLabel } from "./SectionLabel";
+import { FloorPlanZoneShape } from "./FloorPlanZoneShape";
 import { getTableWorldBounds, TableShape, worldRectsIntersect } from "./TableShape";
 import type { FloorPlanMode, HoveredTableInfo, ToolMode, WallDraft } from "./types";
 import {
@@ -27,11 +39,71 @@ import { WallSegment } from "./WallSegment";
 const SNAP_STEP = FLOOR_PLAN_GRID_STEP;
 const GRID_VISUAL_STEP = FLOOR_PLAN_GRID_VISUAL_STEP;
 const DOT_RADIUS = 0.35;
+/** Hard cap so zoomed-out views cannot allocate millions of Konva circles (main-thread freeze looks like “loading stuck”). */
+const MAX_GRID_DOTS = 48_000;
 
-function buildGridDots(width: number, height: number) {
+/** Corners of the Stage viewport mapped into world space (inverse of stage pan/zoom). */
+function viewportCornersToWorldBounds(
+  stageX: number,
+  stageY: number,
+  scale: number,
+  viewportW: number,
+  viewportH: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const inv = 1 / scale;
+  const corners = [
+    { x: (0 - stageX) * inv, y: (0 - stageY) * inv },
+    { x: (viewportW - stageX) * inv, y: (0 - stageY) * inv },
+    { x: (0 - stageX) * inv, y: (viewportH - stageY) * inv },
+    { x: (viewportW - stageX) * inv, y: (viewportH - stageY) * inv },
+  ];
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+/** World-space rect that covers both the editable floor and whatever of the viewport maps outside it (no letterbox band). */
+function unionFloorPaintBounds(
+  worldW: number,
+  worldH: number,
+  vw: { minX: number; maxX: number; minY: number; maxY: number },
+): { x: number; y: number; width: number; height: number } {
+  const minX = Math.min(0, vw.minX);
+  const minY = Math.min(0, vw.minY);
+  const maxX = Math.max(worldW, vw.maxX);
+  const maxY = Math.max(worldH, vw.maxY);
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+function buildGridDotsForBounds(minX: number, maxX: number, minY: number, maxY: number) {
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (width < 1 || height < 1) return [];
+
+  let step = GRID_VISUAL_STEP;
+  for (let i = 0; i < 32; i++) {
+    const nx = Math.max(1, Math.ceil(width / step));
+    const ny = Math.max(1, Math.ceil(height / step));
+    if (nx * ny <= MAX_GRID_DOTS) break;
+    const factor = Math.ceil(Math.sqrt((nx * ny) / MAX_GRID_DOTS));
+    step *= Math.max(2, factor);
+  }
+
   const dots: { x: number; y: number }[] = [];
-  for (let x = 0; x <= width; x += GRID_VISUAL_STEP) {
-    for (let y = 0; y <= height; y += GRID_VISUAL_STEP) {
+  const startX = Math.floor(minX / step) * step;
+  const startY = Math.floor(minY / step) * step;
+  for (let x = startX; x <= maxX + step * 0.5; x += step) {
+    for (let y = startY; y <= maxY + step * 0.5; y += step) {
       dots.push({ x, y });
     }
   }
@@ -217,6 +289,9 @@ type FloorPlanCanvasProps = {
   activeTool: ToolMode;
   stageScale: number;
   stagePos: { x: number; y: number };
+  /** Same range as toolbar zoom / fit — wheel zoom must stay in band. */
+  scaleMin: number;
+  scaleMax: number;
   containerWidth: number;
   containerHeight: number;
   onTableClick: (id: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
@@ -245,6 +320,20 @@ type FloorPlanCanvasProps = {
   /** World size (px) from floor_plans.canvas_width / canvas_height — bounds grid and editing. */
   worldWidth?: number;
   worldHeight?: number;
+  /** Dot grid visibility (edit + live). */
+  showGrid?: boolean;
+  /** When false, table/wall placement uses raw coordinates (no grid snap). */
+  snapEnabled?: boolean;
+  /** Visual room zones (layout JSON). */
+  zones?: FloorPlanZone[];
+  selectedZoneId?: string | null;
+  onZoneSelect?: (id: string) => void;
+  onZoneDragEnd?: (id: string, x: number, y: number) => void;
+  onZoneTransformEnd?: (id: string, patch: Partial<Pick<FloorPlanZone, "x" | "y" | "width" | "height">>) => void;
+  /** Allow Konva resize on selected zone (edit mode). */
+  zoneTransformEnabled?: boolean;
+  /** Fired when the canvas wrapper is measured — keeps viewport math aligned with the real Stage size. */
+  onViewportPixelSize?: (width: number, height: number) => void;
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -262,6 +351,8 @@ export function FloorPlanCanvas({
   activeTool,
   stageScale,
   stagePos,
+  scaleMin,
+  scaleMax,
   containerWidth,
   containerHeight,
   onTableClick,
@@ -282,13 +373,64 @@ export function FloorPlanCanvas({
   onMarqueeSelect,
   worldWidth: worldWidthProp,
   worldHeight: worldHeightProp,
+  showGrid = true,
+  snapEnabled = true,
+  zones: zonesProp,
+  selectedZoneId = null,
+  onZoneSelect,
+  onZoneDragEnd,
+  onZoneTransformEnd,
+  zoneTransformEnabled = false,
+  onViewportPixelSize,
 }: FloorPlanCanvasProps) {
+  const zones = zonesProp ?? [];
   const worldW = Math.max(320, worldWidthProp ?? FLOOR_PLAN_DEFAULT_WORLD_WIDTH);
   const worldH = Math.max(240, worldHeightProp ?? FLOOR_PLAN_DEFAULT_WORLD_HEIGHT);
 
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const [viewportPx, setViewportPx] = useState({ w: 0, h: 0 });
+  const viewportW = viewportPx.w > 0 ? viewportPx.w : Math.max(1, containerWidth);
+  const viewportH = viewportPx.h > 0 ? viewportPx.h : Math.max(1, containerHeight);
+
+  useLayoutEffect(() => {
+    const el = canvasContainerRef.current;
+    if (!el) return;
+    const apply = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      if (w < 1 || h < 1) return;
+      setViewportPx((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+      onViewportPixelSize?.(w, h);
+    };
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    apply();
+    return () => ro.disconnect();
+  }, [onViewportPixelSize]);
+
+  const applySnap = useCallback(
+    (v: number) => (snapEnabled ? snapToGrid(v) : v),
+    [snapEnabled],
+  );
+
   const stageRef = useRef<Konva.Stage | null>(null);
+  /** Match device pixels so world units stay visually proportional on HiDPI screens. */
+  const [pixelRatio, setPixelRatio] = useState(1);
+  useEffect(() => {
+    const update = () => {
+      setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedTableInnerRef = useRef<Konva.Group | null>(null);
+  const zoneTransformerRef = useRef<Konva.Transformer | null>(null);
+  const selectedZoneInnerRef = useRef<Konva.Group | null>(null);
+  const [draggingTableId, setDraggingTableId] = useState<string | null>(null);
+  const [snapPulse, setSnapPulse] = useState<{ x: number; y: number } | null>(null);
   const [wallDraft, setWallDraft] = useState<WallDraft>({
     active: false,
     startX: 0,
@@ -328,7 +470,18 @@ export function FloorPlanCanvas({
     selectedTableIds.length === 1 ? (selectedTableIds[0] ?? null) : null;
 
   const showTableTransformer =
-    isEditing && activeTool === "select" && resizeEnabled && singleSelectedTableId !== null;
+    isEditing &&
+    activeTool === "select" &&
+    resizeEnabled &&
+    singleSelectedTableId !== null &&
+    selectedZoneId == null;
+
+  const showZoneTransformer =
+    isEditing &&
+    activeTool === "select" &&
+    zoneTransformEnabled &&
+    selectedZoneId != null &&
+    selectedZoneId !== "";
 
   useEffect(() => {
     const syncShift = (e: KeyboardEvent) => {
@@ -393,10 +546,10 @@ export function FloorPlanCanvas({
       const e = clampPointToWorld(endX, endY, worldW, worldH);
       onWallDrawn({
         id: `wall-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        x1: snapToGrid(s.x),
-        y1: snapToGrid(s.y),
-        x2: snapToGrid(e.x),
-        y2: snapToGrid(e.y),
+        x1: applySnap(s.x),
+        y1: applySnap(s.y),
+        x2: applySnap(e.x),
+        y2: applySnap(e.y),
       });
     }
     const wallCleared = { active: false, startX: 0, startY: 0, endX: 0, endY: 0 };
@@ -423,6 +576,24 @@ export function FloorPlanCanvas({
     tr.getLayer()?.batchDraw();
   }, [showTableTransformer, singleSelectedTableId, tables]);
 
+  useEffect(() => {
+    const tr = zoneTransformerRef.current;
+    if (!tr) return;
+    const node = selectedZoneInnerRef.current;
+    if (showZoneTransformer && node) {
+      tr.nodes([node]);
+    } else {
+      tr.nodes([]);
+    }
+    tr.getLayer()?.batchDraw();
+  }, [showZoneTransformer, selectedZoneId, zones]);
+
+  useEffect(() => {
+    if (!snapPulse) return;
+    const t = window.setTimeout(() => setSnapPulse(null), 200);
+    return () => clearTimeout(t);
+  }, [snapPulse]);
+
   function handleTransformerEnd() {
     const node = selectedTableInnerRef.current;
     const tid = singleSelectedTableId;
@@ -441,8 +612,181 @@ export function FloorPlanCanvas({
     onTableTransformEnd(tid, clamp(sx), clamp(sy));
   }
 
-  // Dot grid — bounded to floor plan world size (not an infinite plane)
-  const gridDots = useMemo(() => buildGridDots(worldW, worldH), [worldW, worldH]);
+  function handleZoneTransformerEnd() {
+    const node = selectedZoneInnerRef.current;
+    const zid = selectedZoneId;
+    if (!node || !zid || !onZoneTransformEnd) return;
+    const z = zones.find((q) => q.id === zid);
+    if (!z) return;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+    const w = Math.max(96, z.width * scaleX);
+    const h = Math.max(72, z.height * scaleY);
+    node.scaleX(1);
+    node.scaleY(1);
+    let nx = node.x();
+    let ny = node.y();
+    nx = Math.max(0, Math.min(worldW - w, nx));
+    ny = Math.max(0, Math.min(worldH - h, ny));
+    onZoneTransformEnd(zid, { x: nx, y: ny, width: w, height: h });
+  }
+
+  /** Floor paint + grid extend to the full visible viewport in world space so margins match (no darker band, grid everywhere). */
+  const floorPaintBounds = useMemo(() => {
+    const vw = viewportCornersToWorldBounds(
+      stagePos.x,
+      stagePos.y,
+      stageScale,
+      viewportW,
+      viewportH,
+    );
+    return unionFloorPaintBounds(worldW, worldH, vw);
+  }, [worldW, worldH, stagePos.x, stagePos.y, stageScale, viewportW, viewportH]);
+
+  const gridDots = useMemo(
+    () =>
+      buildGridDotsForBounds(
+        floorPaintBounds.x,
+        floorPaintBounds.x + floorPaintBounds.width,
+        floorPaintBounds.y,
+        floorPaintBounds.y + floorPaintBounds.height,
+      ),
+    [floorPaintBounds.x, floorPaintBounds.y, floorPaintBounds.width, floorPaintBounds.height],
+  );
+
+  const clampStagePos = useCallback(
+    (pos: { x: number; y: number }, scale: number) =>
+      clampFloorPlanStagePosition(pos, scale, worldW, worldH, viewportW, viewportH),
+    [worldW, worldH, viewportW, viewportH],
+  );
+
+  const stagePosRef = useRef(stagePos);
+  stagePosRef.current = stagePos;
+  const stageScaleRef = useRef(stageScale);
+  stageScaleRef.current = stageScale;
+
+  /** Wheel/pan reads must match React props — Konva's internal x/y can drift from controlled props. */
+  useLayoutEffect(() => {
+    const st = stageRef.current;
+    if (!st) return;
+    const sx = st.scaleX();
+    const sy = st.scaleY();
+    if (st.x() !== stagePos.x || st.y() !== stagePos.y) {
+      st.position({ x: stagePos.x, y: stagePos.y });
+    }
+    if (sx !== stageScale || sy !== stageScale) {
+      st.scale({ x: stageScale, y: stageScale });
+    }
+  }, [stagePos.x, stagePos.y, stageScale]);
+  const clampStagePosRef = useRef(clampStagePos);
+  clampStagePosRef.current = clampStagePos;
+  const onStagePosChangeRef = useRef(onStagePosChange);
+  onStagePosChangeRef.current = onStagePosChange;
+
+  const canvasHoveredRef = useRef(false);
+  const justFinishedPanRef = useRef(false);
+  const spacePressedRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [viewportPanning, setViewportPanning] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      if (!canvasHoveredRef.current) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.("input, textarea, select, [contenteditable=true]")) return;
+      e.preventDefault();
+      setSpaceHeld(true);
+      spacePressedRef.current = true;
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        setSpaceHeld(false);
+        spacePressedRef.current = false;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const startViewportPan = (clientX: number, clientY: number) => {
+      const sx0 = stagePosRef.current.x;
+      const sy0 = stagePosRef.current.y;
+      setViewportPanning(true);
+      const onMove = (ev: PointerEvent) => {
+        const dx = ev.clientX - clientX;
+        const dy = ev.clientY - clientY;
+        onStagePosChangeRef.current(
+          clampStagePosRef.current(
+            { x: sx0 + dx, y: sy0 + dy },
+            stageScaleRef.current,
+          ),
+        );
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        justFinishedPanRef.current = true;
+        setViewportPanning(false);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      const root = canvasContainerRef.current;
+      if (!root || !root.contains(e.target as Node)) return;
+      if (e.pointerType !== "mouse") return;
+      if (e.button === 1) {
+        e.preventDefault();
+        startViewportPan(e.clientX, e.clientY);
+        return;
+      }
+      if (e.button === 0 && spacePressedRef.current) {
+        e.preventDefault();
+        startViewportPan(e.clientX, e.clientY);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, { capture: true });
+    return () => document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+  }, []);
+
+  const beginLiveBackgroundPan = useCallback(
+    (clientX: number, clientY: number) => {
+      const sx0 = stagePosRef.current.x;
+      const sy0 = stagePosRef.current.y;
+      let moved = false;
+      const onMove = (e: MouseEvent) => {
+        const dx = e.clientX - clientX;
+        const dy = e.clientY - clientY;
+        if (!moved && Math.hypot(dx, dy) <= 5) return;
+        if (!moved) {
+          moved = true;
+          setViewportPanning(true);
+        }
+        onStagePosChange(
+          clampStagePosRef.current(
+            { x: sx0 + dx, y: sy0 + dy },
+            stageScaleRef.current,
+          ),
+        );
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (moved) justFinishedPanRef.current = true;
+        setViewportPanning(false);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [onStagePosChange],
+  );
 
   // Pinch / mouse wheel → zoom; 2-finger trackpad scroll (smooth pixels) → pan
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
@@ -452,61 +796,38 @@ export function FloorPlanCanvas({
     if (!stage) return;
 
     if (!wheelShouldZoom(ev)) {
-      onStagePosChange({
-        x: stage.x() - ev.deltaX,
-        y: stage.y() - ev.deltaY,
-      });
+      if (!panAllowed) return;
+      const oldScale = stageScaleRef.current;
+      const raw = {
+        x: stagePosRef.current.x - ev.deltaX,
+        y: stagePosRef.current.y - ev.deltaY,
+      };
+      onStagePosChange(clampStagePos(raw, oldScale));
       return;
     }
 
     const scaleBy = 1.06;
-    const oldScale = stage.scaleX();
-    const pointer = stage.getPointerPosition();
-    if (!pointer) return;
+    const oldScale = stageScaleRef.current;
+    const oldPos = stagePosRef.current;
+    /** Zoom about viewport center so the frame stays fixed; only content scales. */
+    const cx = viewportW / 2;
+    const cy = viewportH / 2;
+    const lo = Math.min(scaleMin, scaleMax);
+    const hi = Math.max(scaleMin, scaleMax);
     const newScale = ev.deltaY < 0
-      ? Math.min(3, oldScale * scaleBy)
-      : Math.max(0.3, oldScale / scaleBy);
-    const mousePointTo = {
-      x: (pointer.x - stage.x()) / oldScale,
-      y: (pointer.y - stage.y()) / oldScale,
-    };
-    const newPos = {
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
-    };
+      ? Math.min(hi, oldScale * scaleBy)
+      : Math.max(lo, oldScale / scaleBy);
+    const newPos = stagePositionAfterZoomAtScreenPoint(cx, cy, oldPos, oldScale, newScale);
     onStageScaleChange(newScale);
-    onStagePosChange(newPos);
-  }
-
-  // Stage drag end — only sync pan when the Stage itself was dragged.
-  // Table/wall/decoration dragend bubbles here; e.target would be the child,
-  // and using its x/y would corrupt viewport position (grid "teleports").
-  function handleStageDragStart(e: Konva.KonvaEventObject<DragEvent>) {
-    // Marquee uses stage drag when the stage is draggable (not add-/extend-wall).
-    if (!marqueeSelectEnabled || !isEditing || isWallDrawingTool) return;
-    const st = stageRef.current;
-    if (!st) return;
-    const evt = e.evt;
-    if (!("shiftKey" in evt) || !evt.shiftKey) return;
-    const dragNode = e.target;
-    if (dragNode !== st && !isCanvasBackgroundTarget(dragNode)) return;
-    st.stopDrag();
-    const pos = st.getRelativePointerPosition();
-    if (!pos) return;
-    const next = { active: true, x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y };
-    marqueeRef.current = next;
-    setMarquee(next);
-  }
-
-  function handleStageDragEnd(e: Konva.KonvaEventObject<DragEvent>) {
-    const node = e.target;
-    const st = node.getStage();
-    if (!st || node !== st) return;
-    onStagePosChange({ x: st.x(), y: st.y() });
+    onStagePosChange(clampStagePos(newPos, newScale));
   }
 
   // Stage click (background) — deselect / place table / start wall
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>) {
+    if (justFinishedPanRef.current) {
+      justFinishedPanRef.current = false;
+      return;
+    }
     if (justFinishedMarqueeRef.current) {
       justFinishedMarqueeRef.current = false;
       return;
@@ -520,6 +841,18 @@ export function FloorPlanCanvas({
 
   // Wall drawing + Shift+marquee on empty stage (any edit tool except shift+add-wall, which reserves marquee)
   function handleMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
+    const ev = e.evt;
+    const canPanWithBgDrag =
+      panAllowed &&
+      (mode === "live" || (isEditing && activeTool === "select")) &&
+      isCanvasBackgroundTarget(e.target) &&
+      ev.button === 0 &&
+      !ev.shiftKey &&
+      !isWallDrawingTool;
+    if (canPanWithBgDrag) {
+      beginLiveBackgroundPan(ev.clientX, ev.clientY);
+      return;
+    }
     if (isEditing && isAddWallTool) {
       // add-wall: only start from the floor background (extend-wall uses handle pointerdown).
       if (!isCanvasBackgroundTarget(e.target)) return;
@@ -537,8 +870,8 @@ export function FloorPlanCanvas({
         const rawX = nearest ? nearest.x : pos.x;
         const rawY = nearest ? nearest.y : pos.y;
         const c = clampPointToWorld(rawX, rawY, worldW, worldH);
-        const sx = snapToGrid(c.x);
-        const sy = snapToGrid(c.y);
+        const sx = applySnap(c.x);
+        const sy = applySnap(c.y);
         setWallDraft({ active: true, startX: sx, startY: sy, endX: sx, endY: sy });
         return;
       }
@@ -592,17 +925,37 @@ export function FloorPlanCanvas({
 
   const handleTableDragEnd = useCallback(
     (tableId: string, rawX: number, rawY: number) => {
+      setDraggingTableId(null);
       const t = tables.find((r) => r.id === tableId);
-      let x = snapToGrid(rawX);
-      let y = snapToGrid(rawY);
+      let x = applySnap(rawX);
+      let y = applySnap(rawY);
       if (t) {
         const c = clampTableCenterAfterSnap(x, y, t, tableTransforms[t.id] ?? null, worldW, worldH);
-        x = snapToGrid(c.x);
-        y = snapToGrid(c.y);
+        x = applySnap(c.x);
+        y = applySnap(c.y);
       }
       onTableDragEnd(tableId, x, y);
+      if (snapEnabled) {
+        setSnapPulse({ x, y });
+      }
     },
-    [onTableDragEnd, tables, tableTransforms, worldW, worldH],
+    [applySnap, onTableDragEnd, tables, tableTransforms, worldW, worldH, snapEnabled],
+  );
+
+  const handleZoneDragEnd = useCallback(
+    (zoneId: string, rawX: number, rawY: number) => {
+      const x = applySnap(rawX);
+      const y = applySnap(rawY);
+      onZoneDragEnd?.(zoneId, x, y);
+      if (snapEnabled) {
+        const z = zones.find((q) => q.id === zoneId);
+        setSnapPulse({
+          x: x + (z?.width ?? 0) / 2,
+          y: y + (z?.height ?? 0) / 2,
+        });
+      }
+    },
+    [applySnap, onZoneDragEnd, snapEnabled, zones],
   );
 
   const handleDecorationDragEndClamped = useCallback(
@@ -621,33 +974,73 @@ export function FloorPlanCanvas({
     [decorations, onDecorationDragEnd, worldW, worldH],
   );
 
-  // Section watermark — current floor name only
-  const sectionLabels = useMemo(() => {
-    if (!selectedSection) return [];
+  /** Current floor name — rendered in screen space (HTML overlay) so it does not pan/zoom with the plan. */
+  const activeSectionLabel = useMemo(() => {
+    if (!selectedSection) return null;
     const s = sections.find((x) => x.id === selectedSection);
-    if (!s?.is_active) return [];
-    return [{ section: s, position: { x: worldW / 2, y: worldH / 2 } }];
-  }, [sections, worldW, worldH, selectedSection]);
+    if (!s?.is_active) return null;
+    const raw = s.name?.trim();
+    return raw ? raw : null;
+  }, [sections, selectedSection]);
+
+  /** Pan is only useful when the scaled floor plan is larger than the viewport in at least one axis. */
+  const panAllowed =
+    worldW * stageScale > viewportW + 2 || worldH * stageScale > viewportH + 2;
 
   const stagePanBlocked =
     marqueeSelectEnabled && isEditing && !isWallDrawingTool && shiftHeld;
   const cursorStyle =
-    isWallDrawingTool ? "crosshair" : stagePanBlocked ? "crosshair" : "grab";
+    isWallDrawingTool
+      ? "crosshair"
+      : stagePanBlocked
+        ? "crosshair"
+        : spaceHeld
+          ? viewportPanning
+            ? "grabbing"
+            : "grab"
+          : viewportPanning
+            ? "grabbing"
+            : mode === "live" || (isEditing && activeTool === "select")
+              ? "grab"
+              : "default";
 
   return (
-    <div className="relative h-full w-full overflow-hidden" style={{ cursor: cursorStyle }}>
+    <div
+      ref={canvasContainerRef}
+      className="relative h-full w-full min-h-0 overflow-hidden rounded-sm ring-1 ring-inset ring-gold/20"
+      style={{ cursor: cursorStyle, backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+      onMouseEnter={() => {
+        canvasHoveredRef.current = true;
+      }}
+      onMouseLeave={() => {
+        canvasHoveredRef.current = false;
+      }}
+    >
+      {/* Ultra-light grain — reads as material depth, not pattern */}
+      <div
+        className="pointer-events-none absolute inset-0 z-[2] rounded-sm opacity-[0.035] mix-blend-overlay"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E")`,
+        }}
+        aria-hidden
+      />
       <Stage
         ref={stageRef}
-        width={containerWidth}
-        height={containerHeight}
+        width={viewportW}
+        height={viewportH}
+        pixelRatio={pixelRatio}
+        style={{
+          width: viewportW,
+          height: viewportH,
+          display: "block",
+          backgroundColor: CANVAS_COLORS.zoneBodyFill,
+        }}
         scaleX={stageScale}
         scaleY={stageScale}
         x={stagePos.x}
         y={stagePos.y}
-        draggable={!isWallDrawingTool && !stagePanBlocked}
+        draggable={false}
         onWheel={handleWheel}
-        onDragStart={handleStageDragStart}
-        onDragEnd={handleStageDragEnd}
         onClick={handleStageClick}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -658,43 +1051,39 @@ export function FloorPlanCanvas({
           {/* Floor plan bounds: finite room (clickable), not an infinite grid */}
           <Rect
             name={CANVAS_BG_HIT_NAME}
-            x={0}
-            y={0}
-            width={worldW}
-            height={worldH}
-            fill={CANVAS_COLORS.bgBase}
+            x={floorPaintBounds.x}
+            y={floorPaintBounds.y}
+            width={floorPaintBounds.width}
+            height={floorPaintBounds.height}
+            fill={CANVAS_COLORS.zoneBodyFill}
             listening
-          />
-          <Rect
-            x={0}
-            y={0}
-            width={worldW}
-            height={worldH}
-            stroke={CANVAS_COLORS.border}
-            strokeWidth={2}
-            fill="transparent"
-            listening={false}
           />
 
           {/* Dot grid */}
-          {gridDots.map((d, i) => (
-            <Circle
-              key={i}
-              x={d.x}
-              y={d.y}
-              radius={DOT_RADIUS}
-              fill={CANVAS_COLORS.gridDot}
-              listening={false}
-            />
-          ))}
+          {showGrid &&
+            gridDots.map((d, i) => (
+              <Circle
+                key={i}
+                x={d.x}
+                y={d.y}
+                radius={DOT_RADIUS}
+                fill={CANVAS_COLORS.gridDot}
+                listening={false}
+              />
+            ))}
 
-          {/* Section background labels */}
-          {sectionLabels.map(({ section, position }) => (
-            <SectionLabel
-              key={section.id}
-              text={section.name}
-              x={position.x}
-              y={position.y}
+          {/* Room zones — under furniture, above grid */}
+          {zones.map((z) => (
+            <FloorPlanZoneShape
+              key={z.id}
+              zone={z}
+              isSelected={z.id === selectedZoneId}
+              isEditing={isEditing}
+              worldW={worldW}
+              worldH={worldH}
+              innerRef={z.id === selectedZoneId ? selectedZoneInnerRef : undefined}
+              onSelect={() => onZoneSelect?.(z.id)}
+              onDragEnd={(nx, ny) => handleZoneDragEnd(z.id, nx, ny)}
             />
           ))}
 
@@ -716,8 +1105,8 @@ export function FloorPlanCanvas({
                 isEditing && isExtendWallTool
                   ? (_wallId, _ep, wx, wy) => {
                       const c = clampPointToWorld(wx, wy, worldW, worldH);
-                      const sx = snapToGrid(c.x);
-                      const sy = snapToGrid(c.y);
+                      const sx = applySnap(c.x);
+                      const sy = applySnap(c.y);
                       setWallDraft({
                         active: true,
                         startX: sx,
@@ -737,11 +1126,11 @@ export function FloorPlanCanvas({
               onEndpointDragEnd={(wallId, endpoint, x, y) => {
                 const eps = collectWallEndpoints(walls, wallId, endpoint);
                 const nearest = findNearestEndpoint(x, y, eps);
-                const rawX = nearest ? nearest.x : snapToGrid(x);
-                const rawY = nearest ? nearest.y : snapToGrid(y);
+                const rawX = nearest ? nearest.x : applySnap(x);
+                const rawY = nearest ? nearest.y : applySnap(y);
                 const c = clampPointToWorld(rawX, rawY, worldW, worldH);
                 setWallSnapTarget(null);
-                onWallEndpointUpdate?.(wallId, endpoint, snapToGrid(c.x), snapToGrid(c.y));
+                onWallEndpointUpdate?.(wallId, endpoint, applySnap(c.x), applySnap(c.y));
               }}
             />
           ))}
@@ -806,8 +1195,23 @@ export function FloorPlanCanvas({
               onMouseEnter={(sx, sy) => onTableHover({ table: t, screenX: sx, screenY: sy })}
               onMouseLeave={() => onTableHover(null)}
               onDragEnd={(rx, ry) => handleTableDragEnd(t.id, rx, ry)}
+              dragging={draggingTableId === t.id}
+              onDragStart={() => setDraggingTableId(t.id)}
             />
           ))}
+
+          {snapPulse && (
+            <Circle
+              x={snapPulse.x}
+              y={snapPulse.y}
+              radius={16}
+              stroke={CANVAS_COLORS.gold}
+              strokeWidth={1.5}
+              fill="transparent"
+              opacity={0.55}
+              listening={false}
+            />
+          )}
 
           {marquee.active && (
             <Rect
@@ -838,8 +1242,8 @@ export function FloorPlanCanvas({
             ]}
             anchorFill={CANVAS_COLORS.goldDark}
             anchorStroke={CANVAS_COLORS.gold}
-            anchorSize={10}
-            anchorCornerRadius={2}
+            anchorSize={9}
+            anchorCornerRadius={3}
             borderStroke={CANVAS_COLORS.gold}
             borderStrokeWidth={1}
             boundBoxFunc={(oldBox, newBox) => {
@@ -850,8 +1254,44 @@ export function FloorPlanCanvas({
             }}
             onTransformEnd={resizeEnabled ? handleTransformerEnd : undefined}
           />
+
+          <Transformer
+            ref={zoneTransformerRef}
+            rotateEnabled={false}
+            enabledAnchors={[
+              "top-left",
+              "top-center",
+              "top-right",
+              "middle-right",
+              "middle-left",
+              "bottom-left",
+              "bottom-center",
+              "bottom-right",
+            ]}
+            borderStroke={CANVAS_COLORS.gold}
+            borderStrokeWidth={0.9}
+            borderDash={[6, 4]}
+            anchorFill="rgba(20,20,20,0.95)"
+            anchorStroke={CANVAS_COLORS.gold}
+            anchorSize={8}
+            anchorCornerRadius={2}
+            padding={4}
+            boundBoxFunc={(oldBox, newBox) => {
+              if (newBox.width < 96 || newBox.height < 72) return oldBox;
+              return newBox;
+            }}
+            onTransformEnd={zoneTransformEnabled ? handleZoneTransformerEnd : undefined}
+          />
         </Layer>
       </Stage>
+      {activeSectionLabel != null && (
+        <div
+          className="pointer-events-none absolute inset-x-0 top-7 z-[8] select-none text-center text-lg font-semibold uppercase tracking-[0.35em] text-text-muted opacity-[0.32]"
+          aria-hidden
+        >
+          {activeSectionLabel.toUpperCase()}
+        </div>
+      )}
     </div>
   );
 }

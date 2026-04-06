@@ -24,10 +24,10 @@ export function SectionTabs({ sections, selected, onChange, disabled = false }: 
             className={[
               "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors",
               disabled
-                ? "cursor-not-allowed border border-border/60 bg-bg-elevated/60 text-text-muted"
+                ? "cursor-not-allowed border border-border/60 bg-bg-surface text-text-muted opacity-70"
                 : active
                   ? "bg-gold text-bg-base shadow-sm shadow-gold/25"
-                  : "border border-border bg-bg-elevated text-text-secondary hover:border-border/80 hover:text-text-primary",
+                  : "border border-border bg-bg-surface text-text-secondary hover:border-border/80 hover:text-text-primary",
             ].join(" ")}
           >
             {tab.name}

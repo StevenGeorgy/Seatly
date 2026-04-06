@@ -1,13 +1,26 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import type Konva from "konva";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 import { Check, Loader2, Plus } from "lucide-react";
 
 import { AddFloorDialog } from "@/components/floor-plan/AddFloorDialog";
+import { FloorPlanCommandBar } from "@/components/floor-plan/FloorPlanCommandBar";
 import { FloorPlanCanvas } from "@/components/floor-plan/FloorPlanCanvas";
 import { FloorPlanEmptyState } from "@/components/floor-plan/FloorPlanEmptyState";
+import { FloorInspectorEmpty } from "@/components/floor-plan/FloorInspectorEmpty";
+import { FloorPlanNoSectionState } from "@/components/floor-plan/FloorPlanNoSectionState";
 import { FloorPlanToolbar } from "@/components/floor-plan/FloorPlanToolbar";
+import { LiveServiceTablePanel } from "@/components/floor-plan/LiveServiceTablePanel";
 import { SectionTabs } from "@/components/floor-plan/SectionTabs";
 import { StatusLegend } from "@/components/floor-plan/StatusLegend";
 import { TableDetailDrawer } from "@/components/floor-plan/TableDetailDrawer";
@@ -19,18 +32,34 @@ import type {
   HoveredTableInfo,
   ToolMode,
 } from "@/components/floor-plan/types";
+import { getZoneLabelForTable } from "@/lib/floor-plan-zone";
 import {
   FLOOR_PLAN_DEFAULT_WORLD_HEIGHT,
   FLOOR_PLAN_DEFAULT_WORLD_WIDTH,
   FLOOR_PLAN_GRID_STEP,
 } from "@/components/floor-plan/types";
+import {
+  computeFloorPlanContentBounds,
+  computeZoneUnionBounds,
+  shouldFrameRoomInViewport,
+} from "@/lib/floor-plan-content-bounds";
+import {
+  clampFloorPlanStagePosition,
+  FLOOR_PLAN_VIEWPORT_CONTAIN_PAD,
+  FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
+  getFloorPlanScaleBounds,
+  scaleWorldToContainViewport,
+  stagePositionAfterZoomAtScreenPoint,
+} from "@/lib/floor-plan-viewport";
+import { CANVAS_COLORS } from "@/lib/canvas-colors";
 import { ensureTableNumbersForSave, nextSequentialTableNumber } from "@/lib/table-number";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import { useFloorPlan, isDatabaseUuid } from "@/hooks/useFloorPlan";
-import type { FloorPlanLayout, SectionRow, TableRow } from "@/hooks/useFloorPlan";
+import type { FloorPlanLayout, FloorPlanZone, SectionRow, TableRow } from "@/hooks/useFloorPlan";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // ─── Undo / redo reducer ──────────────────────────────────────────────────────
 
@@ -82,7 +111,22 @@ function historyReducer(state: HistoryState, action: HistoryAction): HistoryStat
 }
 
 function emptyLayout(): FloorPlanLayout {
-  return { walls: [], doors: [], windows: [], tableTransforms: {}, decorations: [] };
+  return {
+    walls: [],
+    doors: [],
+    windows: [],
+    tableTransforms: {},
+    decorations: [],
+    zones: [],
+  };
+}
+
+function normalizeLayout(layout: FloorPlanLayout): FloorPlanLayout {
+  const z = layout.zones;
+  return {
+    ...layout,
+    zones: Array.isArray(z) ? z : [],
+  };
 }
 
 function parseLayoutFromFloorPlanRow(
@@ -95,13 +139,15 @@ function parseLayoutFromFloorPlanRow(
   if (typeof rawLayout === "string") {
     try {
       const parsed = JSON.parse(rawLayout) as FloorPlanLayout;
-      return parsed && typeof parsed === "object" ? parsed : emptyLayout();
+      return parsed && typeof parsed === "object"
+        ? normalizeLayout(parsed)
+        : emptyLayout();
     } catch {
       return emptyLayout();
     }
   }
   if (typeof rawLayout === "object") {
-    return JSON.parse(JSON.stringify(rawLayout)) as FloorPlanLayout;
+    return normalizeLayout(JSON.parse(JSON.stringify(rawLayout)) as FloorPlanLayout);
   }
   return emptyLayout();
 }
@@ -155,12 +201,15 @@ function AutosaveIndicator({
   statusRef: React.RefObject<SaveStatus>;
   listenersRef: React.RefObject<Set<() => void>>;
 }) {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<SaveStatus>("idle");
 
   useEffect(() => {
-    const update = () => setStatus(statusRef.current);
-    listenersRef.current.add(update);
-    return () => { listenersRef.current.delete(update); };
+    const update = () => setStatus(statusRef.current ?? "idle");
+    listenersRef.current?.add(update);
+    return () => {
+      listenersRef.current?.delete(update);
+    };
   }, [statusRef, listenersRef]);
 
   if (status === "idle") return null;
@@ -170,17 +219,17 @@ function AutosaveIndicator({
       {status === "saving" && (
         <>
           <Loader2 className="size-3 animate-spin text-gold" />
-          <span className="text-text-secondary">Saving…</span>
+          <span className="text-text-secondary">{t("dashboard.floorPlan.statusSaving")}</span>
         </>
       )}
       {status === "saved" && (
         <>
           <Check className="size-3 text-success" />
-          <span className="text-success">Saved</span>
+          <span className="text-success">{t("dashboard.floorPlan.statusSaved")}</span>
         </>
       )}
       {status === "error" && (
-        <span className="text-danger">Save failed</span>
+        <span className="text-danger">{t("dashboard.floorPlan.saveFailed")}</span>
       )}
     </span>
   );
@@ -224,43 +273,55 @@ export default function FloorPlanPage() {
   const canResizeTables = rolesHere.some((r) => r.role === "owner");
   const [activeTool, setActiveTool] = useState<ToolMode>("select");
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
+  /** Drives right panel: single focused table (independent of multi-select for canvas). */
+  const [selectedPanelTableId, setSelectedPanelTableId] = useState<string | null>(null);
   const [selectedDecorationId, setSelectedDecorationId] = useState<string | null>(null);
   const [selectedWallIds, setSelectedWallIds] = useState<string[]>([]);
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [selectedSection, setSelectedSection] = useState<string>("");
   const [addFloorOpen, setAddFloorOpen] = useState(false);
   const [addFloorPending, setAddFloorPending] = useState(false);
   const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
+  const [showGrid, setShowGrid] = useState(true);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  /** Edit mode: right rail tabs (service control vs layout form) */
+  const [editRightTab, setEditRightTab] = useState<"control" | "layout">("control");
 
   // ── Zoom / pan ─────────────────────────────────────────────────────────────
   const [stageScale, setStageScale] = useState(1);
+  /** Scale after last "full view" fit — zoom % is shown relative to this so 100% = proportional to the fitted view. */
+  const [fullViewBaselineScale, setFullViewBaselineScale] = useState(1);
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
 
   /** Snapshot when entering edit mode — used on Save to diff creates/updates/deletes (draft stays local until then). */
   const editBaselineRef = useRef<{ tables: TableRow[]; layout: FloorPlanLayout } | null>(null);
 
-  // Container size for Stage
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0].contentRect;
-      setContainerSize({ w: rect.width, h: rect.height });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+  /** Konva viewport size — driven by {@link FloorPlanCanvas} ResizeObserver on the actual canvas wrapper (authoritative). */
+  const canvasSlotRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const onCanvasViewportSize = useCallback((w: number, h: number) => {
+    const nw = Math.max(0, Math.round(w));
+    const nh = Math.max(0, Math.round(h));
+    setContainerSize((prev) => (prev.w === nw && prev.h === nh ? prev : { w: nw, h: nh }));
   }, []);
 
   // Keep a valid floor tab selected whenever sections load or change
   useEffect(() => {
     const active = sections.filter((s) => s.is_active);
-    if (active.length === 0) return;
+    if (active.length === 0) {
+      setSelectedSection("");
+      return;
+    }
     setSelectedSection((prev) => {
       if (prev && active.some((s) => s.id === prev)) return prev;
       return active[0].id;
     });
   }, [sections]);
+
+  const needsFloorFirst =
+    isSupabaseConfigured() &&
+    selectedRestaurantId != null &&
+    sections.filter((s) => s.is_active).length === 0;
 
   // ── Undo / redo — active layout row follows selected section tab (never fall back to another floor) ──
   const activeFloorPlan = useMemo(() => {
@@ -296,11 +357,75 @@ export default function FloorPlanPage() {
   const tablesDraft = historyState.present.tables;
   const layoutDraft = historyState.present.layout;
 
+  /**
+   * Room zones only — used for zoom limits so “fit” matches the floor surface, not the full DB canvas.
+   */
+  const zoneFrameBounds = useMemo(
+    () => computeZoneUnionBounds(layoutDraft.zones ?? [], worldBounds.w, worldBounds.h, 4),
+    [layoutDraft.zones, worldBounds.w, worldBounds.h],
+  );
+
+  /** Shared with canvas wheel zoom and toolbar zoom — derived from zone frame when zones exist. */
+  const floorPlanScaleBounds = useMemo(() => {
+    const cw = Math.max(1, containerSize.w);
+    const ch = Math.max(1, containerSize.h);
+    if (zoneFrameBounds) {
+      return getFloorPlanScaleBounds(cw, ch, zoneFrameBounds.width, zoneFrameBounds.height, {
+        containPadding: FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
+        useCoverFit: true,
+      });
+    }
+    return getFloorPlanScaleBounds(cw, ch, worldBounds.w, worldBounds.h);
+  }, [containerSize.w, containerSize.h, worldBounds.w, worldBounds.h, zoneFrameBounds]);
+
+  /**
+   * Editable floor size: at least DB canvas, and large enough that at minimum zoom the scaled world
+   * still covers the viewport. Otherwise letterboxing maps the bottom/top margins to coordinates
+   * outside 0…world (tables cannot be dropped there).
+   */
+  const effectiveWorld = useMemo(() => {
+    const baseW = worldBounds.w;
+    const baseH = worldBounds.h;
+    const cw = Math.max(1, containerSize.w);
+    const ch = Math.max(1, containerSize.h);
+    const minScale = floorPlanScaleBounds.min;
+    if (cw < 2 || ch < 2 || minScale < 1e-9) {
+      return { w: baseW, h: baseH };
+    }
+    const needW = Math.ceil(cw / minScale);
+    const needH = Math.ceil(ch / minScale);
+    return {
+      w: Math.max(baseW, needW),
+      h: Math.max(baseH, needH),
+    };
+  }, [worldBounds.w, worldBounds.h, containerSize.w, containerSize.h, floorPlanScaleBounds.min]);
+
+  const clampedSetStageScale = useCallback(
+    (s: number) => {
+      setStageScale(
+        Math.max(floorPlanScaleBounds.min, Math.min(floorPlanScaleBounds.max, s)),
+      );
+    },
+    [floorPlanScaleBounds.min, floorPlanScaleBounds.max],
+  );
+
+  /** After resize, keep zoom inside the current band (same limits as wheel / buttons). */
+  useEffect(() => {
+    setStageScale((s) =>
+      Math.max(floorPlanScaleBounds.min, Math.min(floorPlanScaleBounds.max, s)),
+    );
+  }, [floorPlanScaleBounds.min, floorPlanScaleBounds.max]);
+
   /** Viewport: one floor at a time (state still holds all tables for save). */
   const tablesForCanvas = useMemo(() => {
     if (!selectedSection) return [];
     return tablesDraft.filter((t) => t.section_id === selectedSection);
   }, [tablesDraft, selectedSection]);
+
+  const tablesForCanvasRef = useRef(tablesForCanvas);
+  tablesForCanvasRef.current = tablesForCanvas;
+  const layoutDraftRef = useRef(layoutDraft);
+  layoutDraftRef.current = layoutDraft;
 
   // Drop selection / hover when they reference tables hidden on another floor.
   useEffect(() => {
@@ -311,7 +436,21 @@ export default function FloorPlanPage() {
         return row.section_id === selectedSection;
       }),
     );
+    setSelectedPanelTableId((pid) => {
+      if (!pid) return null;
+      const row = tablesDraft.find((t) => t.id === pid);
+      if (!row || row.section_id !== selectedSection) return null;
+      return pid;
+    });
   }, [selectedSection, tablesDraft]);
+
+  // If the focused table row disappears from draft, clear panel selection.
+  useEffect(() => {
+    if (!selectedPanelTableId) return;
+    if (!tablesDraft.some((t) => t.id === selectedPanelTableId)) {
+      setSelectedPanelTableId(null);
+    }
+  }, [tablesDraft, selectedPanelTableId]);
 
   // Hover tooltip: clear if table removed, or if that table belongs to another floor tab.
   useEffect(() => {
@@ -348,27 +487,128 @@ export default function FloorPlanPage() {
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
-  // ── Selected table object ──────────────────────────────────────────────────
-  const selectedTable =
-    selectedTableIds.length === 1
-      ? tablesDraft.find((t) => t.id === selectedTableIds[0]) ?? null
-      : null;
+  // ── Selected table for right panel (explicit id → always matches user click) ──
+  const selectedTable = useMemo((): TableRow | null => {
+    if (!selectedPanelTableId) return null;
+    return tablesDraft.find((t) => t.id === selectedPanelTableId) ?? null;
+  }, [selectedPanelTableId, tablesDraft]);
 
-  /** Fit world 0…W × 0…H into the Stage so the room border stays visible (e.g. when the properties panel opens). */
+  const floorStatusCounts = useMemo(() => {
+    const c = { empty: 0, reserved: 0, occupied: 0, cleaning: 0, blocked: 0 };
+    for (const row of tablesForCanvas) {
+      const k = row.status as keyof typeof c;
+      if (k in c) c[k]++;
+    }
+    return c;
+  }, [tablesForCanvas]);
+
+  const zoneCountForInspector = (layoutDraft.zones ?? []).length;
+
+  const selectedZoneLabel = useMemo(() => {
+    if (!selectedTable) return null;
+    return getZoneLabelForTable(selectedTable, layoutDraft.zones ?? []);
+  }, [selectedTable, layoutDraft.zones]);
+
+  useEffect(() => {
+    setEditRightTab("control");
+  }, [selectedTable?.id]);
+
+  /**
+   * Fit the view: when room zones exist, frame **only the zone union** (the floor surface) so it fills
+   * the editor — walls/tables must not inflate bounds to the full canvas. Otherwise fall back to
+   * content union or full world.
+   */
   const fitWorldToViewport = useCallback(() => {
-    const w = worldBounds.w;
-    const h = worldBounds.h;
+    const w = effectiveWorld.w;
+    const h = effectiveWorld.h;
     const cw = containerSize.w;
     const ch = containerSize.h;
     if (cw < 1 || ch < 1 || w < 1 || h < 1) return;
-    const padding = 0.96;
-    const raw = Math.min((cw * padding) / w, (ch * padding) / h);
-    const scale = Math.min(3, Math.max(0.3, raw));
-    const px = cw / 2 - (w / 2) * scale;
-    const py = ch / 2 - (h / 2) * scale;
+
+    const bounds = floorPlanScaleBounds;
+    const layout = layoutDraftRef.current;
+    const tables = tablesForCanvasRef.current;
+
+    const zoneFrame = computeZoneUnionBounds(layout.zones ?? [], w, h, 4);
+    if (zoneFrame) {
+      /** Same as {@link floorPlanScaleBounds.fitScale} for zone+cover — avoids double math / clamp bugs. */
+      const targetScale = bounds.fitScale;
+      const scale = Math.min(bounds.max, Math.max(bounds.min, targetScale));
+      const focusCx = zoneFrame.left + zoneFrame.width / 2;
+      const focusCy = zoneFrame.top + zoneFrame.height / 2;
+      const px = cw / 2 - focusCx * scale;
+      const py = ch / 2 - focusCy * scale;
+      setFullViewBaselineScale(scale);
+      setStageScale(scale);
+      setStagePos(
+        clampFloorPlanStagePosition({ x: px, y: py }, scale, w, h, cw, ch),
+      );
+      return;
+    }
+
+    const content = computeFloorPlanContentBounds(
+      tables,
+      {
+        walls: layout.walls,
+        doors: layout.doors,
+        windows: layout.windows,
+        decorations: layout.decorations,
+        zones: layout.zones ?? [],
+      },
+      layout.tableTransforms,
+      w,
+      h,
+    );
+
+    const hasZones = (layout.zones?.length ?? 0) > 0;
+
+    let scale: number;
+    let focusCx: number;
+    let focusCy: number;
+
+    if (content && shouldFrameRoomInViewport(content, w, h, hasZones)) {
+      const effW = Math.max(content.width, 200);
+      const effH = Math.max(content.height, 140);
+      scale = scaleWorldToContainViewport(cw, ch, effW, effH, FLOOR_PLAN_VIEWPORT_CONTAIN_PAD);
+      scale = Math.max(bounds.min, Math.min(bounds.max, scale));
+      focusCx = content.left + content.width / 2;
+      focusCy = content.top + content.height / 2;
+    } else {
+      scale = Math.max(bounds.min, Math.min(bounds.max, bounds.fitScale));
+      focusCx = w / 2;
+      focusCy = h / 2;
+    }
+
+    const px = cw / 2 - focusCx * scale;
+    const py = ch / 2 - focusCy * scale;
+
+    setFullViewBaselineScale(scale);
     setStageScale(scale);
-    setStagePos({ x: px, y: py });
-  }, [worldBounds.w, worldBounds.h, containerSize.w, containerSize.h]);
+    setStagePos(
+      clampFloorPlanStagePosition({ x: px, y: py }, scale, w, h, cw, ch),
+    );
+  }, [effectiveWorld.w, effectiveWorld.h, containerSize.w, containerSize.h, floorPlanScaleBounds]);
+
+  /** Keep stage position valid when zoom buttons change scale or layout resizes (canvas only clamps during drag/wheel). */
+  useEffect(() => {
+    if (containerSize.w < 1 || containerSize.h < 1) return;
+    setStagePos((prev) =>
+      clampFloorPlanStagePosition(
+        prev,
+        stageScale,
+        effectiveWorld.w,
+        effectiveWorld.h,
+        containerSize.w,
+        containerSize.h,
+      ),
+    );
+  }, [
+    stageScale,
+    effectiveWorld.w,
+    effectiveWorld.h,
+    containerSize.w,
+    containerSize.h,
+  ]);
 
   const selectedKey =
     selectedTableIds.length === 1 ? (selectedTableIds[0] ?? "") : "";
@@ -383,7 +623,7 @@ export default function FloorPlanPage() {
   useEffect(() => {
     if (containerSize.w < 20) return;
     fitWorldToViewport();
-  }, [selectedSection, worldBounds.w, worldBounds.h, containerSize.w, containerSize.h, fitWorldToViewport]);
+  }, [selectedSection, effectiveWorld.w, effectiveWorld.h, containerSize.w, containerSize.h, fitWorldToViewport]);
 
   useEffect(() => {
     const wasEdit = prevModeForFitRef.current === "edit";
@@ -429,8 +669,10 @@ export default function FloorPlanPage() {
     setMode("edit");
     setActiveTool("select");
     setSelectedTableIds([]);
+    setSelectedPanelTableId(null);
     setSelectedDecorationId(null);
     setSelectedWallIds([]);
+    setSelectedZoneId(null);
     try {
       if (selectedRestaurantId) {
         sessionStorage.setItem(`seatly:floor-plan-edit-${selectedRestaurantId}`, "1");
@@ -460,11 +702,21 @@ export default function FloorPlanPage() {
     setMode("live");
     setActiveTool("select");
     setSelectedTableIds([]);
+    setSelectedPanelTableId(null);
     setSelectedDecorationId(null);
     setSelectedWallIds([]);
+    setSelectedZoneId(null);
     // Refetch once on exit so live mode has fresh DB data
     await refetch();
   }
+
+  // Session restore or edge cases: cannot stay in edit mode without a real section row
+  useEffect(() => {
+    if (loading || mode !== "edit") return;
+    if (sections.filter((s) => s.is_active).length > 0) return;
+    void exitEditMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: run when sections/mode/loading change
+  }, [loading, mode, sections]);
 
   async function handleAddFloor(name: string) {
     setAddFloorPending(true);
@@ -523,6 +775,16 @@ export default function FloorPlanPage() {
       const idMap = idMapRef.current;
       const curSections = sectionsRef.current;
       const curFloorPlan = activeFloorPlanRef.current;
+
+      const hasRealSection = curSections.some((s) => isDatabaseUuid(s.id));
+      const draftHasNewLocalTables = draft.tables.some((t) =>
+        t.id.startsWith(LOCAL_TABLE_ID_PREFIX),
+      );
+      if (draftHasNewLocalTables && !hasRealSection) {
+        notifySaveStatus("error");
+        toast.error(t("dashboard.floorPlan.saveNeedsFloor"));
+        return;
+      }
 
       const resolvedTables = draft.tables.map((t) => {
         const realId = idMap.get(t.id);
@@ -645,6 +907,7 @@ export default function FloorPlanPage() {
       const updated = tablesDraft.filter((t) => !idSet.has(t.id));
       dispatch({ type: "PUSH", entry: { tables: updated, layout: layoutDraft } });
       setSelectedTableIds((prev) => prev.filter((tid) => !idSet.has(tid)));
+      setSelectedPanelTableId((pid) => (pid && idSet.has(pid) ? null : pid));
     },
     [tablesDraft, layoutDraft],
   );
@@ -682,9 +945,60 @@ export default function FloorPlanPage() {
     [tablesDraft, layoutDraft],
   );
 
+  const removeZoneFromDraft = useCallback(
+    (id: string) => {
+      const zones = (layoutDraft.zones ?? []).filter((z) => z.id !== id);
+      dispatch({
+        type: "PUSH",
+        entry: { tables: tablesDraft, layout: { ...layoutDraft, zones } },
+      });
+      setSelectedZoneId((prev) => (prev === id ? null : prev));
+    },
+    [tablesDraft, layoutDraft],
+  );
+
+  function handleZoneDragEnd(id: string, x: number, y: number) {
+    const zones = (layoutDraft.zones ?? []).map((z) => (z.id === id ? { ...z, x, y } : z));
+    pushHistory(tablesDraft, { ...layoutDraft, zones });
+  }
+
+  function handleZoneTransformEnd(
+    id: string,
+    patch: Partial<Pick<FloorPlanZone, "x" | "y" | "width" | "height">>,
+  ) {
+    const zones = (layoutDraft.zones ?? []).map((z) => (z.id === id ? { ...z, ...patch } : z));
+    pushHistory(tablesDraft, { ...layoutDraft, zones });
+  }
+
+  const handleZoneSelect = useCallback(
+    (id: string) => {
+      if (mode !== "edit" || !canEdit) return;
+      if (activeTool === "delete") {
+        removeZoneFromDraft(id);
+        return;
+      }
+      setSelectedZoneId(id);
+      setSelectedTableIds([]);
+      setSelectedPanelTableId(null);
+      setSelectedDecorationId(null);
+      setSelectedWallIds([]);
+    },
+    [mode, canEdit, activeTool, removeZoneFromDraft],
+  );
+
+  useEffect(() => {
+    setSelectedZoneId(null);
+  }, [selectedSection]);
+
   useEffect(() => {
     if (mode !== "edit" || !canEdit) return;
-    if (selectedTableIds.length === 0 && !selectedDecorationId && selectedWallIds.length === 0) return;
+    if (
+      selectedTableIds.length === 0 &&
+      !selectedDecorationId &&
+      selectedWallIds.length === 0 &&
+      !selectedZoneId
+    )
+      return;
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.isComposing) return;
@@ -706,6 +1020,11 @@ export default function FloorPlanPage() {
         removeWallsFromDraft(selectedWallIds);
         return;
       }
+      if (selectedZoneId) {
+        e.preventDefault();
+        removeZoneFromDraft(selectedZoneId);
+        return;
+      }
       if (selectedTableIds.length > 0) {
         e.preventDefault();
         deleteTablesFromDraft(selectedTableIds);
@@ -720,9 +1039,11 @@ export default function FloorPlanPage() {
     selectedTableIds,
     selectedDecorationId,
     selectedWallIds,
+    selectedZoneId,
     deleteTablesFromDraft,
     removeDecoration,
     removeWallsFromDraft,
+    removeZoneFromDraft,
   ]);
 
   function handleDecorationClick(id: string) {
@@ -731,13 +1052,17 @@ export default function FloorPlanPage() {
       return;
     }
     setSelectedTableIds([]);
+    setSelectedPanelTableId(null);
     setSelectedWallIds([]);
+    setSelectedZoneId(null);
     setSelectedDecorationId((prev) => (prev === id ? null : id));
   }
 
   function handleWallClick(wallId: string) {
     setSelectedTableIds([]);
+    setSelectedPanelTableId(null);
     setSelectedDecorationId(null);
+    setSelectedZoneId(null);
     if (activeTool === "delete") {
       removeWallsFromDraft([wallId]);
       return;
@@ -748,22 +1073,25 @@ export default function FloorPlanPage() {
   function handleTableClick(id: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     setSelectedDecorationId(null);
     setSelectedWallIds([]);
+    setSelectedZoneId(null);
     if (activeTool === "delete") {
       handleDeleteTable(id);
+      setSelectedPanelTableId(null);
       return;
     }
     const shiftHeld = "shiftKey" in e.evt && e.evt.shiftKey;
-    if (mode === "live") {
-      setSelectedTableIds((prev) => (prev.length === 1 && prev[0] === id ? [] : [id]));
-      return;
-    }
-    if (shiftHeld && canResizeTables) {
-      setSelectedTableIds((prev) =>
-        prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-      );
-      return;
-    }
-    setSelectedTableIds((prev) => (prev.length === 1 && prev[0] === id ? [] : [id]));
+    setSelectedTableIds((prev) => {
+      let next: string[];
+      if (mode === "live") {
+        next = prev.length === 1 && prev[0] === id ? [] : [id];
+      } else if (shiftHeld && canResizeTables) {
+        next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      } else {
+        next = prev.length === 1 && prev[0] === id ? [] : [id];
+      }
+      setSelectedPanelTableId(next.length === 1 ? next[0]! : null);
+      return next;
+    });
   }
 
   function handleCanvasClick(worldX: number, worldY: number) {
@@ -776,6 +1104,46 @@ export default function FloorPlanPage() {
       activeTool === "delete"
     ) {
       setSelectedTableIds([]);
+      setSelectedPanelTableId(null);
+      setSelectedDecorationId(null);
+      setSelectedWallIds([]);
+      setSelectedZoneId(null);
+      return;
+    }
+    if (activeTool === "add-zone") {
+      if (!selectedRestaurantId) return;
+      const presetKeys = [
+        "dashboard.floorPlan.zoneMainDining",
+        "dashboard.floorPlan.zonePatio",
+        "dashboard.floorPlan.zoneBar",
+        "dashboard.floorPlan.zoneVip",
+      ] as const;
+      const zones = layoutDraft.zones ?? [];
+      const label = t(presetKeys[zones.length % presetKeys.length]);
+      const w = 240;
+      const h = 168;
+      const gx = snapEnabled
+        ? Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
+        : worldX;
+      const gy = snapEnabled
+        ? Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
+        : worldY;
+      let px = gx - w / 2;
+      let py = gy - h / 2;
+      px = Math.max(0, Math.min(effectiveWorld.w - w, px));
+      py = Math.max(0, Math.min(effectiveWorld.h - h, py));
+      const newZone: FloorPlanZone = {
+        id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        x: px,
+        y: py,
+        width: w,
+        height: h,
+        label,
+      };
+      pushHistory(tablesDraft, { ...layoutDraft, zones: [...zones, newZone] });
+      setSelectedZoneId(newZone.id);
+      setSelectedTableIds([]);
+      setSelectedPanelTableId(null);
       setSelectedDecorationId(null);
       setSelectedWallIds([]);
       return;
@@ -788,10 +1156,14 @@ export default function FloorPlanPage() {
     const shape = shapeMap[activeTool];
     if (!shape || !selectedRestaurantId) return;
 
-    const gx = Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP;
-    const gy = Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP;
-    const px = Math.max(0, Math.min(worldBounds.w, gx));
-    const py = Math.max(0, Math.min(worldBounds.h, gy));
+    const gx = snapEnabled
+      ? Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
+      : worldX;
+    const gy = snapEnabled
+      ? Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
+      : worldY;
+    const px = Math.max(0, Math.min(effectiveWorld.w, gx));
+    const py = Math.max(0, Math.min(effectiveWorld.h, gy));
 
     const newTable = buildLocalDraftTable(
       shape,
@@ -806,16 +1178,64 @@ export default function FloorPlanPage() {
   }
 
   function handleTableDragEnd(id: string, x: number, y: number) {
-    const updated = tablesDraft.map((t) =>
-      t.id === id ? { ...t, position_x: x, position_y: y } : t,
-    );
-    pushHistory(updated, layoutDraft);
+    const isMulti = selectedTableIds.length > 1 && selectedTableIds.includes(id);
+    if (isMulti) {
+      const dragged = tablesDraft.find((t) => t.id === id);
+      if (!dragged) return;
+      const dx = x - (dragged.position_x ?? 0);
+      const dy = y - (dragged.position_y ?? 0);
+      const selectedSet = new Set(selectedTableIds);
+      const updated = tablesDraft.map((t) =>
+        selectedSet.has(t.id)
+          ? { ...t, position_x: (t.position_x ?? 0) + dx, position_y: (t.position_y ?? 0) + dy }
+          : t,
+      );
+      pushHistory(updated, layoutDraft);
+    } else {
+      const updated = tablesDraft.map((t) =>
+        t.id === id ? { ...t, position_x: x, position_y: y } : t,
+      );
+      pushHistory(updated, layoutDraft);
+    }
   }
 
   function handleTablePatch(id: string, patch: Partial<TableRow>) {
     const updated = tablesDraft.map((t) => (t.id === id ? { ...t, ...patch } : t));
     pushHistory(updated, layoutDraft);
   }
+
+  const handleDuplicateTable = useCallback(
+    (id: string) => {
+      const row = tablesDraft.find((r) => r.id === id);
+      if (!row || !selectedRestaurantId) return;
+      const newTable = buildLocalDraftTable(
+        row.shape,
+        (row.position_x ?? 0) + FLOOR_PLAN_GRID_STEP * 2,
+        (row.position_y ?? 0) + FLOOR_PLAN_GRID_STEP * 2,
+        selectedRestaurantId,
+        sections,
+        tablesDraft,
+        row.section_id ?? (selectedSection || null),
+      );
+      const merged: TableRow = {
+        ...newTable,
+        table_number: nextSequentialTableNumber([...tablesDraft, newTable]),
+        capacity: row.capacity,
+        min_party: row.min_party,
+        label: row.label,
+        notes: row.notes,
+        shape: row.shape,
+      };
+      pushHistory([...tablesDraft, merged], layoutDraft);
+      setSelectedTableIds([merged.id]);
+      setSelectedPanelTableId(merged.id);
+    },
+    [tablesDraft, selectedRestaurantId, sections, layoutDraft, selectedSection],
+  );
+
+  const handleCombineTable = useCallback(() => {
+    toast.info(t("dashboard.floorPlan.combineComingSoon"));
+  }, [t]);
 
   function handleTableTransformEnd(tableId: string, scaleX: number, scaleY: number) {
     const prev = layoutDraft.tableTransforms[tableId] ?? {
@@ -835,6 +1255,16 @@ export default function FloorPlanPage() {
     if (seatedCount !== undefined) patch.seated_count = seatedCount;
     await updateTable(tableId, patch);
     await refetch();
+  }
+
+  function handleControlStatusChange(tableId: string, status: string, seatedCount?: number) {
+    if (mode === "edit") {
+      const patch: Partial<TableRow> = { status };
+      if (seatedCount !== undefined) patch.seated_count = seatedCount;
+      handleTablePatch(tableId, patch);
+      return;
+    }
+    void handleLiveStatusChange(tableId, status, seatedCount);
   }
 
   // ── Wall / decoration ──────────────────────────────────────────────────────
@@ -857,9 +1287,16 @@ export default function FloorPlanPage() {
   }
 
   function handleDecorationDragEnd(id: string, x: number, y: number) {
-    const updatedDecorations = layoutDraft.decorations.map((d) =>
-      d.id === id ? { ...d, x, y } : d,
-    );
+    const w = effectiveWorld.w;
+    const h = effectiveWorld.h;
+    const updatedDecorations = layoutDraft.decorations.map((d) => {
+      if (d.id !== id) return d;
+      const hw = d.width / 2;
+      const hh = d.height / 2;
+      const nx = Math.max(hw, Math.min(w - hw, x));
+      const ny = Math.max(hh, Math.min(h - hh, y));
+      return { ...d, x: nx, y: ny };
+    });
     pushHistory(tablesDraft, { ...layoutDraft, decorations: updatedDecorations });
   }
 
@@ -868,11 +1305,27 @@ export default function FloorPlanPage() {
   const ZOOM_STEP = 0.15;
 
   function zoomIn() {
-    setStageScale((s) => Math.min(3, s + ZOOM_STEP));
+    const cw = containerSize.w;
+    const ch = containerSize.h;
+    const w = effectiveWorld.w;
+    const h = effectiveWorld.h;
+    if (cw < 1 || ch < 1) return;
+    const newScale = Math.min(floorPlanScaleBounds.max, stageScale + ZOOM_STEP);
+    const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
+    setStageScale(newScale);
+    setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
   }
 
   function zoomOut() {
-    setStageScale((s) => Math.max(0.3, s - ZOOM_STEP));
+    const cw = containerSize.w;
+    const ch = containerSize.h;
+    const w = effectiveWorld.w;
+    const h = effectiveWorld.h;
+    if (cw < 1 || ch < 1) return;
+    const newScale = Math.max(floorPlanScaleBounds.min, stageScale - ZOOM_STEP);
+    const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
+    setStageScale(newScale);
+    setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
   }
 
   function resetZoom() {
@@ -883,7 +1336,7 @@ export default function FloorPlanPage() {
 
   if (loading) {
     return (
-      <div className="flex h-full flex-col gap-4 p-6">
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-4 bg-bg-surface p-6">
         <div className="flex items-center justify-between">
           <div className="h-7 w-44 animate-pulse rounded-lg bg-bg-elevated" />
           <div className="h-9 w-28 animate-pulse rounded-lg bg-bg-elevated" />
@@ -895,7 +1348,7 @@ export default function FloorPlanPage() {
 
   if (error) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-bg-surface p-8 text-center">
         <p className="text-sm text-danger">{error.message}</p>
         <Button variant="outline" onClick={() => void refetch()}>
           {t("common.actions.retry")}
@@ -904,87 +1357,106 @@ export default function FloorPlanPage() {
     );
   }
 
-  const isEmpty = dbTables.length === 0;
+  const hasActiveSections = sections.filter((s) => s.is_active).length > 0;
+  const isEmpty = hasActiveSections && dbTables.length === 0;
+
+  const showRightColumn = !needsFloorFirst && !(isEmpty && mode === "live");
+  const rightPanelKey = selectedPanelTableId ? `table-${selectedPanelTableId}` : "overview";
 
   return (
-    <div className="flex min-h-0 h-full min-w-0 flex-col">
-      {/* ── Top bar: sticky + high z-index so Konva canvas (sibling below) never steals clicks ── */}
-      <div className="sticky top-0 z-50 flex min-w-0 items-center gap-3 border-b border-border bg-bg-base px-4 py-2.5 shadow-sm shadow-black/20">
-        <h1 className="shrink-0 text-sm font-semibold text-text-primary">
-          {t("dashboard.floorPlan.title")}
-        </h1>
-
-        {mode === "edit" && (
-          <span className="shrink-0 rounded-md bg-gold/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gold">
-            Editing
-          </span>
-        )}
-
-        {/* Section tabs + add floor — must shrink (min-w-0) so the Edit column keeps a real hit target */}
-        <div className="min-w-0 flex flex-1 items-center gap-2 overflow-hidden">
-          <div className="min-w-0 flex-1">
-            <SectionTabs
-              sections={sections.filter((s) => s.is_active)}
-              selected={selectedSection}
-              onChange={setSelectedSection}
-              disabled={mode === "edit"}
-            />
-          </div>
-          {canEdit &&
-            isSupabaseConfigured() &&
-            selectedRestaurantId != null && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0 gap-1"
-                onClick={() => setAddFloorOpen(true)}
-                aria-label={t("dashboard.floorPlan.addFloorAriaLabel")}
-              >
-                <Plus className="size-4 shrink-0" />
-                <span className="hidden sm:inline">{t("dashboard.floorPlan.addFloor")}</span>
-              </Button>
-            )}
-        </div>
-
-        <div className="relative z-[60] flex shrink-0 items-center gap-2 pointer-events-auto">
-          {canEdit && mode === "live" && (
+    <div
+      className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
+      style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+    >
+      <FloorPlanCommandBar
+        mode={mode}
+        canEdit={canEdit}
+        needsFloorFirst={needsFloorFirst}
+        sectionTabsSlot={
+          <SectionTabs
+            sections={sections.filter((s) => s.is_active)}
+            selected={selectedSection}
+            onChange={setSelectedSection}
+            disabled={mode === "edit"}
+          />
+        }
+        addFloorSlot={
+          canEdit &&
+          isSupabaseConfigured() &&
+          selectedRestaurantId != null &&
+          !needsFloorFirst ? (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                enterEditMode();
-              }}
+              className="shrink-0 gap-1"
+              onClick={() => setAddFloorOpen(true)}
+              aria-label={t("dashboard.floorPlan.addFloorAriaLabel")}
             >
-              {t("common.actions.edit")}
+              <Plus className="size-4 shrink-0" />
+              <span className="hidden sm:inline">{t("dashboard.floorPlan.addFloor")}</span>
             </Button>
-          )}
-          {mode === "edit" && (
-            <>
-              <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
-              <Button type="button" size="sm" onClick={() => void exitEditMode()}>
-                Done
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
+          ) : undefined
+        }
+        undoDisabled={historyState.past.length === 0}
+        redoDisabled={historyState.future.length === 0}
+        onUndo={() => {
+          dispatch({ type: "UNDO" });
+          setEditSeq((n) => n + 1);
+        }}
+        onRedo={() => {
+          dispatch({ type: "REDO" });
+          setEditSeq((n) => n + 1);
+        }}
+        showGrid={showGrid}
+        onShowGridChange={setShowGrid}
+        snapEnabled={snapEnabled}
+        onSnapChange={setSnapEnabled}
+        zoomSlot={
+          <ZoomControls
+            scale={stageScale}
+            baselineScale={fullViewBaselineScale}
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onReset={resetZoom}
+          />
+        }
+        saveIndicatorSlot={
+          <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
+        }
+        onEnterEdit={enterEditMode}
+        onExitEdit={() => void exitEditMode()}
+      />
 
-      {/* ── Canvas area (z-0 so it stays under the sticky control bar) ─────── */}
-      <div className="relative z-0 flex min-h-0 flex-1 overflow-hidden">
-        {/* Left toolbar (edit mode only) */}
+      {/* Canvas + side rails — floor editor uses one continuous floor colour (matches Konva world). */}
+      <div
+        className="relative z-0 flex min-h-0 min-w-0 flex-1 overflow-hidden"
+        style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+      >
         {mode === "edit" && (
-          <div className="flex shrink-0 flex-col overflow-y-auto border-r border-border bg-bg-surface px-3 py-3">
+          <div className="flex shrink-0 flex-col overflow-y-auto border-r border-border/80 bg-bg-surface/95 px-3 py-3">
             <FloorPlanToolbar activeTool={activeTool} onToolChange={setActiveTool} />
           </div>
         )}
 
-        {/* Main canvas */}
-        <div ref={containerRef} className="relative flex-1 overflow-hidden">
-          {isEmpty && mode === "live" ? (
+        {/* Main canvas — ref on flex slot (not absolute child) so width tracks the row. */}
+        <div
+          ref={canvasSlotRef}
+          className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
+          style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+        >
+          <div
+            className="absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden"
+            style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+          >
+          {needsFloorFirst ? (
+            <FloorPlanNoSectionState
+              canEdit={
+                canEdit && isSupabaseConfigured() && selectedRestaurantId != null
+              }
+              onAddFloor={() => setAddFloorOpen(true)}
+            />
+          ) : isEmpty && mode === "live" ? (
             <FloorPlanEmptyState canEdit={canEdit} onEnterEdit={enterEditMode} />
           ) : (
             <FloorPlanCanvas
@@ -999,10 +1471,13 @@ export default function FloorPlanPage() {
               activeTool={activeTool}
               stageScale={stageScale}
               stagePos={stagePos}
-              worldWidth={activeFloorPlan?.canvas_width}
-              worldHeight={activeFloorPlan?.canvas_height}
-              containerWidth={containerSize.w}
-              containerHeight={containerSize.h}
+              scaleMin={floorPlanScaleBounds.min}
+              scaleMax={floorPlanScaleBounds.max}
+              worldWidth={effectiveWorld.w}
+              worldHeight={effectiveWorld.h}
+              containerWidth={Math.max(1, containerSize.w)}
+              containerHeight={Math.max(1, containerSize.h)}
+              onViewportPixelSize={onCanvasViewportSize}
               onTableClick={handleTableClick}
               onTableHover={setHoveredTable}
               onCanvasClick={(x, y) => void handleCanvasClick(x, y)}
@@ -1011,7 +1486,7 @@ export default function FloorPlanPage() {
               onWallEndpointUpdate={handleWallEndpointUpdate}
               onDecorationClick={mode === "edit" && canEdit ? handleDecorationClick : undefined}
               onDecorationDragEnd={handleDecorationDragEnd}
-              onStageScaleChange={setStageScale}
+              onStageScaleChange={clampedSetStageScale}
               onStagePosChange={setStagePos}
               tableTransforms={layoutDraft.tableTransforms}
               resizeEnabled={canResizeTables}
@@ -1019,83 +1494,150 @@ export default function FloorPlanPage() {
               marqueeSelectEnabled={canEdit}
               onMarqueeSelect={({ tableIds, wallIds }) => {
                 setSelectedTableIds(tableIds);
+                setSelectedPanelTableId(tableIds.length === 1 ? tableIds[0]! : null);
                 setSelectedWallIds(wallIds);
                 setSelectedDecorationId(null);
               }}
               selectedWallIds={selectedWallIds}
               onWallClick={mode === "edit" && canEdit ? handleWallClick : undefined}
+              showGrid={showGrid}
+              snapEnabled={snapEnabled}
+              zones={layoutDraft.zones ?? []}
+              selectedZoneId={selectedZoneId}
+              onZoneSelect={handleZoneSelect}
+              onZoneDragEnd={handleZoneDragEnd}
+              onZoneTransformEnd={handleZoneTransformEnd}
+              zoneTransformEnabled={canEdit}
             />
           )}
 
-          {/* Bottom overlays */}
-          <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col items-start gap-2">
-            <div className="pointer-events-auto">
-              <StatusLegend />
-            </div>
-          </div>
-
-          <div className="pointer-events-none absolute bottom-4 right-4">
-            <div className="pointer-events-auto">
-              <ZoomControls
-                scale={stageScale}
-                onZoomIn={zoomIn}
-                onZoomOut={zoomOut}
-                onReset={resetZoom}
-              />
-            </div>
-          </div>
-
-          {/* Undo / redo hint in edit mode */}
-          {mode === "edit" && (
-            <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-2">
-              <div className="flex gap-1">
-                <Button
-                  className="pointer-events-auto"
-                  variant="outline"
-                  size="sm"
-                  disabled={historyState.past.length === 0}
-                  onClick={() => { dispatch({ type: "UNDO" }); setEditSeq((n) => n + 1); }}
-                >
-                  {t("dashboard.floorPlan.undo")}
-                </Button>
-                <Button
-                  className="pointer-events-auto"
-                  variant="outline"
-                  size="sm"
-                  disabled={historyState.future.length === 0}
-                  onClick={() => { dispatch({ type: "REDO" }); setEditSeq((n) => n + 1); }}
-                >
-                  {t("dashboard.floorPlan.redo")}
-                </Button>
+          {/* Mobile: legend when the right rail is hidden */}
+          {!needsFloorFirst && !(isEmpty && mode === "live") && (
+            <div className="pointer-events-none absolute bottom-4 left-4 lg:hidden">
+              <div className="pointer-events-auto">
+                <StatusLegend />
               </div>
-              {canEdit && (
-                <p className="max-w-[14rem] text-right text-xs text-text-muted">
-                  {t("dashboard.floorPlan.marqueeSelectHint")}
-                </p>
-              )}
             </div>
           )}
+          </div>
         </div>
 
-        {/* Right panel: properties (edit) or nothing (live detail drawer handles it) */}
-        {mode === "edit" && selectedTable && (
-          <TablePropertiesPanel
-            table={selectedTable}
-            sections={sections}
-            onPatch={handleTablePatch}
-            onDelete={handleDeleteTable}
-          />
+        {showRightColumn && (
+          <div className="relative hidden min-h-0 w-[min(26rem,40vw)] max-w-md shrink-0 lg:flex lg:flex-col">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={rightPanelKey}
+                role="region"
+                aria-label={
+                  selectedTable
+                    ? t("dashboard.floorPlan.ariaTableControl")
+                    : t("dashboard.floorPlan.ariaFloorOverview")
+                }
+                initial={{ opacity: 0, x: 18 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -14 }}
+                transition={{ duration: 0.24, ease: [0.33, 1, 0.68, 1] }}
+                className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-border/80 bg-bg-surface"
+              >
+                {selectedTable ? (
+                  mode === "edit" ? (
+                    <Tabs
+                      value={editRightTab}
+                      onValueChange={(v) => setEditRightTab(v as "control" | "layout")}
+                      className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden"
+                    >
+                      <div className="shrink-0 border-b border-gold/15 bg-bg-elevated/50 px-3 pt-3">
+                        <TabsList className="h-10 w-full gap-1 border border-border/60 bg-bg-base/90 p-1">
+                          <TabsTrigger
+                            value="control"
+                            className="flex-1 text-xs font-semibold data-[state=active]:border data-[state=active]:border-gold/35 data-[state=active]:bg-gold/12 data-[state=active]:text-gold data-[state=active]:shadow-none"
+                          >
+                            {t("dashboard.floorPlan.floorPlanRightTabControl")}
+                          </TabsTrigger>
+                          <TabsTrigger
+                            value="layout"
+                            className="flex-1 text-xs font-semibold data-[state=active]:border data-[state=active]:border-gold/35 data-[state=active]:bg-gold/12 data-[state=active]:text-gold data-[state=active]:shadow-none"
+                          >
+                            {t("dashboard.floorPlan.floorPlanRightTabLayout")}
+                          </TabsTrigger>
+                        </TabsList>
+                      </div>
+                      <TabsContent
+                        value="control"
+                        className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden p-0 outline-none"
+                      >
+                        <LiveServiceTablePanel
+                          variant="edit"
+                          table={selectedTable}
+                          sections={sections}
+                          zoneLabel={selectedZoneLabel}
+                          onUpdateStatus={handleControlStatusChange}
+                          onCombine={handleCombineTable}
+                          onEditTable={canEdit ? () => setEditRightTab("layout") : undefined}
+                          canEdit={canEdit}
+                        />
+                      </TabsContent>
+                      <TabsContent
+                        value="layout"
+                        className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden p-0 outline-none"
+                      >
+                        <TablePropertiesPanel
+                          embedded
+                          table={selectedTable}
+                          sections={sections}
+                          onPatch={handleTablePatch}
+                          onDelete={handleDeleteTable}
+                          onDuplicate={handleDuplicateTable}
+                          onCombine={handleCombineTable}
+                        />
+                      </TabsContent>
+                    </Tabs>
+                  ) : (
+                    <LiveServiceTablePanel
+                      variant="live"
+                      table={selectedTable}
+                      sections={sections}
+                      zoneLabel={selectedZoneLabel}
+                      onUpdateStatus={handleControlStatusChange}
+                      onCombine={handleCombineTable}
+                      onEditTable={canEdit ? () => enterEditMode() : undefined}
+                      canEdit={canEdit}
+                    />
+                  )
+                ) : (
+                  <FloorInspectorEmpty
+                    mode={mode}
+                    sections={sections}
+                    selectedSectionId={selectedSection}
+                    showGrid={showGrid}
+                    snapEnabled={snapEnabled}
+                    tableCount={tablesForCanvas.length}
+                    zoneCount={zoneCountForInspector}
+                    statusCounts={floorStatusCounts}
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </div>
         )}
       </div>
 
-      {/* Live mode: detail drawer */}
       {mode === "live" && (
-        <TableDetailDrawer
-          table={selectedTable}
-          sections={sections}
-          onClose={() => setSelectedTableIds([])}
-          onUpdateStatus={(id, status, seatedCount) => void handleLiveStatusChange(id, status, seatedCount)}
-        />
+        <div className="lg:hidden">
+          <TableDetailDrawer
+            table={selectedTable}
+            sections={sections}
+            zoneLabel={selectedZoneLabel}
+            onClose={() => {
+              setSelectedTableIds([]);
+              setSelectedPanelTableId(null);
+            }}
+            onUpdateStatus={handleControlStatusChange}
+            onCombine={handleCombineTable}
+            onEditTable={canEdit ? () => enterEditMode() : undefined}
+            canEdit={canEdit}
+          />
+        </div>
       )}
 
       {/* Tooltip */}

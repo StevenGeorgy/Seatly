@@ -20,7 +20,7 @@ export function StatusLegend() {
   const { t } = useTranslation();
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-bg-elevated/90 px-3 py-1.5 backdrop-blur-md">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-bg-surface px-3 py-1.5 shadow-sm shadow-black/25">
       {STATUS_ENTRIES.map(({ key, dotClass }) => (
         <div key={key} className="flex items-center gap-1.5">
           <span className={`size-2 shrink-0 rounded-full ${dotClass}`} />

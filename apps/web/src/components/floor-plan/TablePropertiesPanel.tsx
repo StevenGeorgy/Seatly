@@ -2,10 +2,11 @@ import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Minus, Plus, Trash2 } from "lucide-react";
+import { Ban, Copy, Link2, Minus, Plus, Trash2 } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -40,6 +41,10 @@ type TablePropertiesPanelProps = {
   sections: SectionRow[];
   onPatch: (id: string, patch: Partial<TableRow>) => void;
   onDelete: (id: string) => void;
+  onDuplicate?: (id: string) => void;
+  onCombine?: () => void;
+  /** Nested under table control (no left border / fixed width) */
+  embedded?: boolean;
 };
 
 function toFormValues(table: TableRow): FormValues {
@@ -75,6 +80,9 @@ export function TablePropertiesPanel({
   sections,
   onPatch,
   onDelete,
+  onDuplicate,
+  onCombine,
+  embedded = false,
 }: TablePropertiesPanelProps) {
   const { t } = useTranslation();
 
@@ -131,15 +139,74 @@ export function TablePropertiesPanel({
   const minParty = watch("min_party");
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col gap-0 overflow-y-auto border-l border-border bg-bg-surface">
+    <div
+      className={cn(
+        "flex flex-col gap-0 bg-bg-surface",
+        embedded
+          ? "h-full min-h-0 max-h-[min(56vh,520px)] flex-1 overflow-hidden border-t border-gold/15"
+          : "h-full w-full min-w-0 shrink-0 overflow-y-auto border-l border-border/80",
+      )}
+    >
       {/* Header */}
-      <div className="border-b border-border px-4 py-3">
+      <div
+        className={cn(
+          "border-b border-border/80 bg-bg-elevated/25 px-4 py-3.5",
+          embedded && "bg-bg-elevated/40 py-3",
+        )}
+      >
         <p className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
           {t("dashboard.floorPlan.tableProperties")}
         </p>
+        <p className="mt-1 text-sm font-semibold tracking-tight text-text-primary">
+          {t("dashboard.floorPlan.tableTitleFormat", {
+            number: table.table_number?.trim() || t("dashboard.floorPlan.tableIdPlaceholder"),
+          })}
+        </p>
       </div>
 
-      <div className="flex flex-col gap-4 px-4 py-4">
+      <div
+        className={cn(
+          "flex flex-col gap-4 px-4 py-4",
+          embedded && "min-h-0 flex-1 overflow-y-auto overscroll-contain",
+        )}
+      >
+        {/* Quick actions */}
+        <div className="flex flex-wrap gap-2">
+          {onDuplicate && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5 border-border/80 bg-bg-elevated/40 text-xs font-medium"
+              onClick={() => onDuplicate(table.id)}
+            >
+              <Copy className="size-3.5 shrink-0 opacity-80" />
+              {t("dashboard.floorPlan.actionDuplicate")}
+            </Button>
+          )}
+          {onCombine && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5 border-border/80 bg-bg-elevated/40 text-xs font-medium"
+              onClick={() => onCombine()}
+            >
+              <Link2 className="size-3.5 shrink-0 opacity-80" />
+              {t("dashboard.floorPlan.actionCombine")}
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="min-w-[calc(50%-0.25rem)] flex-1 gap-1.5 border-border/80 bg-bg-elevated/40 text-xs font-medium"
+            onClick={() => onPatch(table.id, { status: "blocked" })}
+          >
+            <Ban className="size-3.5 shrink-0 opacity-80" />
+            {t("dashboard.floorPlan.actionBlockQuick")}
+          </Button>
+        </div>
         {/* Table Number */}
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs text-text-secondary">{t("dashboard.floorPlan.tableNumber")}</Label>
@@ -281,10 +348,10 @@ export function TablePropertiesPanel({
       </div>
 
       {/* Delete */}
-      <div className="mt-auto border-t border-border px-4 py-3">
+      <div className="mt-auto border-t border-border/80 bg-bg-elevated/10 px-4 py-3">
         <Button
           variant="destructive"
-          className="w-full gap-2"
+          className="w-full gap-2 shadow-sm"
           onClick={() => onDelete(table.id)}
         >
           <Trash2 className="size-4" />

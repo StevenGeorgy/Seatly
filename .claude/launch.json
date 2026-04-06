@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "Seatly Web (Vite)",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace=apps/web"],
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["/Users/mark_habbi/Seatly-10/node_modules/.bin/vite", "--config", "apps/web/vite.config.ts", "--port", "5173"],
       "port": 5173
     }
   ]

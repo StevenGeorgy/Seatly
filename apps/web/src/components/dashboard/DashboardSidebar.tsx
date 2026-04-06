@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
@@ -52,7 +52,9 @@ const ICONS: Record<string, typeof LayoutDashboard> = {
 
 export function DashboardSidebar() {
   const { t } = useTranslation();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
+  const isFloorPlanRoute = pathname.includes("/floor-plan");
   const { restaurantRoles, canUseCustomerView, switchToCustomerView } = useUser();
   const { selectedRestaurantId, restaurants, setSelectedRestaurantId } =
     useRestaurantScope();
@@ -206,7 +208,10 @@ export function DashboardSidebar() {
       {/* Mobile toggle */}
       <button
         type="button"
-        className="fixed left-3 top-3 z-50 flex size-10 items-center justify-center rounded-lg border border-border bg-card text-foreground shadow-lg shadow-black/20 backdrop-blur-sm sm:hidden"
+        className={cn(
+          "fixed left-3 top-3 z-50 flex size-10 items-center justify-center rounded-lg border border-border text-foreground shadow-lg shadow-black/20 backdrop-blur-sm sm:hidden",
+          isFloorPlanRoute ? "bg-bg-surface" : "bg-card",
+        )}
         onClick={() => setMobileOpen((v) => !v)}
         aria-label="Toggle menu"
       >
@@ -235,7 +240,10 @@ export function DashboardSidebar() {
             animate={{ x: 0 }}
             exit={{ x: "-100%" }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border bg-card sm:hidden"
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border sm:hidden",
+              isFloorPlanRoute ? "bg-bg-surface" : "bg-card",
+            )}
           >
             {sidebarContent}
           </motion.aside>
@@ -243,7 +251,12 @@ export function DashboardSidebar() {
       </AnimatePresence>
 
       {/* Desktop sidebar */}
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-border bg-card sm:flex">
+      <aside
+        className={cn(
+          "hidden w-56 shrink-0 flex-col border-r border-border sm:flex",
+          isFloorPlanRoute ? "bg-bg-surface" : "bg-card",
+        )}
+      >
         {sidebarContent}
       </aside>
     </>

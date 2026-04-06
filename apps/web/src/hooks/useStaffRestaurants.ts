@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { promiseWithTimeout } from "@/lib/promise-timeout";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+
+const STAFF_RESTAURANTS_FETCH_TIMEOUT_MS = 45_000;
 import type { UserRestaurantRole } from "@/types/auth";
 
 export type RestaurantTheme = {
@@ -57,23 +60,34 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
     setError(null);
 
     void (async () => {
-      const client = getSupabaseBrowserClient();
-      const { data, error: qErr } = await client
-        .from("restaurants")
-        .select("id, name, slug, currency, timezone, settings_json")
-        .in("id", ids);
+      try {
+        const client = getSupabaseBrowserClient();
+        const { data, error: qErr } = await promiseWithTimeout(
+          client
+            .from("restaurants")
+            .select("id, name, slug, currency, timezone, settings_json")
+            .in("id", ids),
+          STAFF_RESTAURANTS_FETCH_TIMEOUT_MS,
+          "Restaurants list",
+        );
 
-      if (cancelled) return;
+        if (cancelled) return;
 
-      if (qErr) {
-        setError(new Error(qErr.message));
+        if (qErr) {
+          setError(new Error(qErr.message));
+          setRestaurants([]);
+          setLoading(false);
+          return;
+        }
+
+        setRestaurants((data ?? []) as StaffRestaurantRow[]);
+        setLoading(false);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e : new Error(String(e)));
         setRestaurants([]);
         setLoading(false);
-        return;
       }
-
-      setRestaurants((data ?? []) as StaffRestaurantRow[]);
-      setLoading(false);
     })();
 
     return () => {

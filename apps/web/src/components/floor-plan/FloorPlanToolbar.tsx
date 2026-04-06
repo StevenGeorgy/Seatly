@@ -1,5 +1,6 @@
 import {
   Circle,
+  LayoutGrid,
   Minus,
   MousePointer2,
   RectangleHorizontal,
@@ -27,6 +28,7 @@ const TABLE_TOOLS: ToolItem[] = [
 ];
 
 const OBJECT_TOOLS: ToolItem[] = [
+  { tool: "add-zone", icon: <LayoutGrid className="size-5" />, labelKey: "dashboard.floorPlan.toolAddZone" },
   { tool: "add-wall", icon: <Minus className="size-5" />, labelKey: "dashboard.floorPlan.toolWall" },
   {
     tool: "extend-wall",
@@ -97,23 +99,23 @@ export function FloorPlanToolbar({ activeTool, onToolChange }: FloorPlanToolbarP
   const { t } = useTranslation();
 
   return (
-    <div className="flex w-52 shrink-0 flex-col gap-4 py-1">
+    <div className="flex w-60 shrink-0 flex-col gap-0 rounded-2xl border border-border/60 bg-bg-elevated/40 p-2 shadow-lg shadow-black/40">
       <ToolSection
-        title={t("dashboard.floorPlan.toolbarTables", "Tables")}
+        title={t("dashboard.floorPlan.toolbarTables")}
         items={TABLE_TOOLS}
         activeTool={activeTool}
         onToolChange={onToolChange}
       />
       <div className="mx-2 h-px bg-border/60" />
       <ToolSection
-        title={t("dashboard.floorPlan.toolbarObjects", "Objects")}
+        title={t("dashboard.floorPlan.toolbarObjects")}
         items={OBJECT_TOOLS}
         activeTool={activeTool}
         onToolChange={onToolChange}
       />
       <div className="mx-2 h-px bg-border/60" />
       <ToolSection
-        title={t("dashboard.floorPlan.toolbarActions", "Actions")}
+        title={t("dashboard.floorPlan.toolbarActions")}
         items={ACTION_TOOLS}
         activeTool={activeTool}
         onToolChange={onToolChange}
