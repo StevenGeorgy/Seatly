@@ -21,9 +21,6 @@ import RegisterPage from "@/pages/auth/RegisterPage";
 import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
 import SetupPage from "@/pages/auth/SetupPage";
 import NotFoundPage from "@/pages/NotFoundPage";
-/** Eager: Konva floor editor — avoids Suspense chunk delay on every sidebar visit. */
-import FloorPlanPage from "@/pages/dashboard/FloorPlanPage";
-
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
@@ -38,6 +35,7 @@ const ExpensesPage = lazy(() => import("@/pages/dashboard/ExpensesPage"));
 const EventsPage = lazy(() => import("@/pages/dashboard/EventsPage"));
 const ExportPage = lazy(() => import("@/pages/dashboard/ExportPage"));
 const SettingsPage = lazy(() => import("@/pages/dashboard/SettingsPage"));
+const FloorPlanPage = lazy(() => import("@/pages/dashboard/FloorPlanPage"));
 
 export function AppRoutes() {
   return (

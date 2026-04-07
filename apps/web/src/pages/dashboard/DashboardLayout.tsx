@@ -1,9 +1,11 @@
-import { Component, Suspense, type ReactNode } from "react";
+import { Component, Suspense, useEffect, type ReactNode } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardTopBar } from "@/components/dashboard/DashboardTopBar";
+import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
 
 // Catches render errors in individual pages so the shell stays visible
@@ -54,6 +56,15 @@ function PageSkeleton() {
 
 export default function DashboardLayout() {
   const { pathname } = useLocation();
+  const { selectedRestaurantId } = useRestaurantScope();
+
+  /** Warm floor-plan data + JS chunk while the user is on other dashboard screens. */
+  useEffect(() => {
+    if (!selectedRestaurantId) return;
+    void prefetchFloorPlanData(selectedRestaurantId);
+    void import("@/pages/dashboard/FloorPlanPage");
+  }, [selectedRestaurantId]);
+
   /** Floor plan needs full width/height of the main column (no max-width shell or page padding). */
   const isFloorPlanRoute = pathname.includes("/floor-plan");
 

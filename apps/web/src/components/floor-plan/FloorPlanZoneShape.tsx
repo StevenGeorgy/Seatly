@@ -73,6 +73,16 @@ export function FloorPlanZoneShape({
         onDragEnd(n.x(), n.y());
       }}
     >
+      {/* Subtle warm tint so the zone reads as a distinct floor area */}
+      <Rect
+        x={0}
+        y={0}
+        width={w}
+        height={h}
+        cornerRadius={r}
+        fill="rgba(201, 168, 76, 0.045)"
+        listening={false}
+      />
       <Rect
         x={0}
         y={0}

@@ -27,7 +27,7 @@ export function ChairIndicator({ x, y, angle, color, filled = true }: ChairIndic
         cornerRadius={3}
         rotation={angle}
         fill={color}
-        opacity={0.45}
+        opacity={0.72}
         listening={false}
       />
     );
@@ -46,8 +46,8 @@ export function ChairIndicator({ x, y, angle, color, filled = true }: ChairIndic
       rotation={angle}
       fill={CANVAS_COLORS.bgSurface}
       stroke={color}
-      strokeWidth={0.8}
-      opacity={0.35}
+      strokeWidth={1.2}
+      opacity={0.58}
       listening={false}
     />
   );

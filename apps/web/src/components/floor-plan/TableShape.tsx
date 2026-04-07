@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type Konva from "konva";
 import { useTranslation } from "react-i18next";
 import { Circle, Group, Rect, Text } from "react-konva";
@@ -114,14 +114,14 @@ type TableShapeProps = {
   /** When set with draggable, Konva keeps the table center inside these bounds while dragging. */
   dragBounds?: TableDragBounds | null;
   dragging?: boolean;
-  onClick: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
-  onMouseEnter: (screenX: number, screenY: number) => void;
+  onClick: (tableId: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  onMouseEnter: (tableId: string, screenX: number, screenY: number) => void;
   onMouseLeave: () => void;
-  onDragStart?: () => void;
-  onDragEnd?: (x: number, y: number) => void;
+  onDragStart?: (tableId: string) => void;
+  onDragEnd?: (tableId: string, x: number, y: number) => void;
 };
 
-export function TableShape({
+function TableShapeInner({
   table,
   x,
   y,
@@ -162,7 +162,7 @@ export function TableShape({
 
   function handleMouseEnter(e: { evt: MouseEvent }) {
     setHovered(true);
-    onMouseEnter(e.evt.clientX, e.evt.clientY);
+    onMouseEnter(table.id, e.evt.clientX, e.evt.clientY);
   }
 
   function handleMouseLeave() {
@@ -197,20 +197,20 @@ export function TableShape({
       dragBoundFunc={dragBoundFunc}
       onClick={(ev) => {
         ev.cancelBubble = true;
-        onClick(ev);
+        onClick(table.id, ev);
       }}
       onTap={(ev) => {
         ev.cancelBubble = true;
-        onClick(ev as Konva.KonvaEventObject<MouseEvent | TouchEvent>);
+        onClick(table.id, ev as Konva.KonvaEventObject<MouseEvent | TouchEvent>);
       }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onDragStart={() => {
-        onDragStart?.();
+        onDragStart?.(table.id);
       }}
       onDragEnd={(e) => {
         const pos = e.target;
-        onDragEnd?.(pos.x(), pos.y());
+        onDragEnd?.(table.id, pos.x(), pos.y());
       }}
     >
       <Group
@@ -370,3 +370,5 @@ export function TableShape({
     </Group>
   );
 }
+
+export const TableShape = memo(TableShapeInner);

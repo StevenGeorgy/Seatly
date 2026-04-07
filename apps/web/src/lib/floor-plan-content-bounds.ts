@@ -146,6 +146,23 @@ export function computeZoneUnionBounds(
 }
 
 /**
+ * When the zone union is only a small part of the canvas, keep using **full-world** zoom limits and
+ * fit logic. Otherwise the first placed zone (small default rect) forces cover-fit on a tiny box and
+ * `fitWorldToViewport` zooms in massively.
+ */
+export function zoneUnionCoversEnoughOfWorld(
+  zoneFrame: { width: number; height: number },
+  worldW: number,
+  worldH: number,
+  minAreaRatio = 0.1,
+): boolean {
+  const worldArea = worldW * worldH;
+  if (worldArea < 1) return false;
+  const ratio = (zoneFrame.width * zoneFrame.height) / worldArea;
+  return ratio >= minAreaRatio;
+}
+
+/**
  * Whether to zoom/center the view on {@link computeFloorPlanContentBounds} instead of the full room.
  *
  * Uses both **area** and **span**: a layout can use most of the *area* (e.g. L-shape) while still

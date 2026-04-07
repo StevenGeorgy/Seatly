@@ -42,6 +42,7 @@ import {
   computeFloorPlanContentBounds,
   computeZoneUnionBounds,
   shouldFrameRoomInViewport,
+  zoneUnionCoversEnoughOfWorld,
 } from "@/lib/floor-plan-content-bounds";
 import {
   clampFloorPlanStagePosition,
@@ -282,6 +283,27 @@ export default function FloorPlanPage() {
   const [addFloorOpen, setAddFloorOpen] = useState(false);
   const [addFloorPending, setAddFloorPending] = useState(false);
   const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
+  const pendingHoverRef = useRef<HoveredTableInfo | null>(null);
+  const hoverFlushRafRef = useRef<number | null>(null);
+
+  /** Coalesce hover updates to one React commit per frame (fewer full-page re-renders while skimming tables). */
+  const queueTableHover = useCallback((info: HoveredTableInfo | null) => {
+    pendingHoverRef.current = info;
+    if (hoverFlushRafRef.current != null) return;
+    hoverFlushRafRef.current = requestAnimationFrame(() => {
+      hoverFlushRafRef.current = null;
+      setHoveredTable(pendingHoverRef.current);
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (hoverFlushRafRef.current != null) {
+        cancelAnimationFrame(hoverFlushRafRef.current);
+      }
+    },
+    [],
+  );
   const [showGrid, setShowGrid] = useState(true);
   const [snapEnabled, setSnapEnabled] = useState(true);
   /** Edit mode: right rail tabs (service control vs layout form) */
@@ -358,25 +380,16 @@ export default function FloorPlanPage() {
   const layoutDraft = historyState.present.layout;
 
   /**
-   * Room zones only — used for zoom limits so “fit” matches the floor surface, not the full DB canvas.
+   * Zoom limits and “full view” baseline are always tied to the **full DB canvas**, not the zone
+   * union. Switching to zone-based min/max when zones appear caused {@link setStageScale} clamp
+   * effects to jump the camera (often zoom in) on every new zone — see second-room-zone report.
+   * Zone-only cover scale is computed only inside {@link fitWorldToViewport} when framing zones.
    */
-  const zoneFrameBounds = useMemo(
-    () => computeZoneUnionBounds(layoutDraft.zones ?? [], worldBounds.w, worldBounds.h, 4),
-    [layoutDraft.zones, worldBounds.w, worldBounds.h],
-  );
-
-  /** Shared with canvas wheel zoom and toolbar zoom — derived from zone frame when zones exist. */
   const floorPlanScaleBounds = useMemo(() => {
     const cw = Math.max(1, containerSize.w);
     const ch = Math.max(1, containerSize.h);
-    if (zoneFrameBounds) {
-      return getFloorPlanScaleBounds(cw, ch, zoneFrameBounds.width, zoneFrameBounds.height, {
-        containPadding: FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
-        useCoverFit: true,
-      });
-    }
     return getFloorPlanScaleBounds(cw, ch, worldBounds.w, worldBounds.h);
-  }, [containerSize.w, containerSize.h, worldBounds.w, worldBounds.h, zoneFrameBounds]);
+  }, [containerSize.w, containerSize.h, worldBounds.w, worldBounds.h]);
 
   /**
    * Editable floor size: at least DB canvas, and large enough that at minimum zoom the scaled world
@@ -504,6 +517,11 @@ export default function FloorPlanPage() {
 
   const zoneCountForInspector = (layoutDraft.zones ?? []).length;
 
+  const totalSeatsForInspector = useMemo(
+    () => tablesForCanvas.reduce((sum, t) => sum + (t.capacity ?? 0), 0),
+    [tablesForCanvas],
+  );
+
   const selectedZoneLabel = useMemo(() => {
     if (!selectedTable) return null;
     return getZoneLabelForTable(selectedTable, layoutDraft.zones ?? []);
@@ -530,9 +548,15 @@ export default function FloorPlanPage() {
     const tables = tablesForCanvasRef.current;
 
     const zoneFrame = computeZoneUnionBounds(layout.zones ?? [], w, h, 4);
-    if (zoneFrame) {
-      /** Same as {@link floorPlanScaleBounds.fitScale} for zone+cover — avoids double math / clamp bugs. */
-      const targetScale = bounds.fitScale;
+    const zoneSubstantial =
+      zoneFrame != null && zoneUnionCoversEnoughOfWorld(zoneFrame, w, h);
+    if (zoneFrame && zoneSubstantial) {
+      const zoneBounds = getFloorPlanScaleBounds(cw, ch, zoneFrame.width, zoneFrame.height, {
+        containPadding: FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
+        useCoverFit: true,
+      });
+      /** Zone cover “fit” but never outside world zoom band (bounds = full canvas). */
+      const targetScale = zoneBounds.fitScale;
       const scale = Math.min(bounds.max, Math.max(bounds.min, targetScale));
       const focusCx = zoneFrame.left + zoneFrame.width / 2;
       const focusCy = zoneFrame.top + zoneFrame.height / 2;
@@ -561,12 +585,14 @@ export default function FloorPlanPage() {
     );
 
     const hasZones = (layout.zones?.length ?? 0) > 0;
+    /** Avoid aggressive “has zones” framing until the union is a meaningful slice of the floor. */
+    const hasEstablishedZoneViewport = hasZones && zoneSubstantial;
 
     let scale: number;
     let focusCx: number;
     let focusCy: number;
 
-    if (content && shouldFrameRoomInViewport(content, w, h, hasZones)) {
+    if (content && shouldFrameRoomInViewport(content, w, h, hasEstablishedZoneViewport)) {
       const effW = Math.max(content.width, 200);
       const effH = Math.max(content.height, 140);
       scale = scaleWorldToContainViewport(cw, ch, effW, effH, FLOOR_PLAN_VIEWPORT_CONTAIN_PAD);
@@ -587,7 +613,15 @@ export default function FloorPlanPage() {
     setStagePos(
       clampFloorPlanStagePosition({ x: px, y: py }, scale, w, h, cw, ch),
     );
-  }, [effectiveWorld.w, effectiveWorld.h, containerSize.w, containerSize.h, floorPlanScaleBounds]);
+  }, [
+    containerSize.w,
+    containerSize.h,
+    effectiveWorld.w,
+    effectiveWorld.h,
+    floorPlanScaleBounds.fitScale,
+    floorPlanScaleBounds.max,
+    floorPlanScaleBounds.min,
+  ]);
 
   /** Keep stage position valid when zoom buttons change scale or layout resizes (canvas only clamps during drag/wheel). */
   useEffect(() => {
@@ -706,8 +740,8 @@ export default function FloorPlanPage() {
     setSelectedDecorationId(null);
     setSelectedWallIds([]);
     setSelectedZoneId(null);
-    // Refetch once on exit so live mode has fresh DB data
-    await refetch();
+    // Refetch once on exit so live mode has fresh DB data (no full-page loading flash)
+    await refetch({ silent: true });
   }
 
   // Session restore or edge cases: cannot stay in edit mode without a real section row
@@ -1237,6 +1271,74 @@ export default function FloorPlanPage() {
     toast.info(t("dashboard.floorPlan.combineComingSoon"));
   }, [t]);
 
+  // ── Editor keyboard shortcuts (edit-mode only) ─────────────────────────────
+  useEffect(() => {
+    if (mode !== "edit" || !canEdit) return;
+
+    function handleKey(e: KeyboardEvent) {
+      if (e.isComposing) return;
+      const meta = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+
+      // Ctrl/Cmd + D — duplicate selected table
+      if (meta && (e.key === "d" || e.key === "D")) {
+        if (!selectedPanelTableId) return;
+        e.preventDefault();
+        handleDuplicateTable(selectedPanelTableId);
+        return;
+      }
+
+      // Non-modifier shortcuts only below
+      if (meta || e.altKey) return;
+
+      switch (e.key) {
+        case "Escape":
+          e.preventDefault();
+          setActiveTool("select");
+          setSelectedTableIds([]);
+          setSelectedPanelTableId(null);
+          setSelectedWallIds([]);
+          setSelectedDecorationId(null);
+          setSelectedZoneId(null);
+          break;
+        case "1":
+          e.preventDefault();
+          setActiveTool("add-rect-table");
+          break;
+        case "2":
+          e.preventDefault();
+          setActiveTool("add-circle-table");
+          break;
+        case "3":
+          e.preventDefault();
+          setActiveTool("add-square-table");
+          break;
+        case "g":
+        case "G":
+          if (e.shiftKey) break;
+          e.preventDefault();
+          setShowGrid((v) => !v);
+          break;
+        case "s":
+        case "S":
+          if (e.shiftKey) break;
+          e.preventDefault();
+          setSnapEnabled((v) => !v);
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [
+    mode, canEdit,
+    selectedPanelTableId, handleDuplicateTable,
+    setActiveTool, setSelectedTableIds, setSelectedPanelTableId,
+    setSelectedWallIds, setSelectedDecorationId, setSelectedZoneId,
+    setShowGrid, setSnapEnabled,
+  ]);
+
   function handleTableTransformEnd(tableId: string, scaleX: number, scaleY: number) {
     const prev = layoutDraft.tableTransforms[tableId] ?? {
       scaleX: 1,
@@ -1254,7 +1356,7 @@ export default function FloorPlanPage() {
     const patch: Partial<TableRow> = { status };
     if (seatedCount !== undefined) patch.seated_count = seatedCount;
     await updateTable(tableId, patch);
-    await refetch();
+    await refetch({ silent: true });
   }
 
   function handleControlStatusChange(tableId: string, status: string, seatedCount?: number) {
@@ -1301,28 +1403,76 @@ export default function FloorPlanPage() {
   }
 
   // ── Zoom helpers ───────────────────────────────────────────────────────────
+  /** Toolbar +/- steps match the zoom label: 10% per click vs last full-view fit (see ZoomControls). */
+  const ZOOM_DISPLAY_STEP_PCT = 10;
+  const ZOOM_STEP_MULT = 1 + ZOOM_DISPLAY_STEP_PCT / 100;
 
-  const ZOOM_STEP = 0.15;
+  function readZoomViewportSize(): { cw: number; ch: number } {
+    return {
+      cw: Math.max(
+        1,
+        Math.round((containerSize.w || canvasSlotRef.current?.clientWidth) ?? 0),
+      ),
+      ch: Math.max(
+        1,
+        Math.round((containerSize.h || canvasSlotRef.current?.clientHeight) ?? 0),
+      ),
+    };
+  }
 
   function zoomIn() {
-    const cw = containerSize.w;
-    const ch = containerSize.h;
+    const { cw, ch } = readZoomViewportSize();
     const w = effectiveWorld.w;
     const h = effectiveWorld.h;
-    if (cw < 1 || ch < 1) return;
-    const newScale = Math.min(floorPlanScaleBounds.max, stageScale + ZOOM_STEP);
+    const base = fullViewBaselineScale;
+    if (base < 1e-9) return;
+    const curPct = (stageScale / base) * 100;
+    const maxPct = (floorPlanScaleBounds.max / base) * 100;
+    const nextPct = Math.min(
+      maxPct,
+      Math.floor(curPct / ZOOM_DISPLAY_STEP_PCT) * ZOOM_DISPLAY_STEP_PCT + ZOOM_DISPLAY_STEP_PCT,
+    );
+    let newScale = Math.min(
+      floorPlanScaleBounds.max,
+      Math.max(floorPlanScaleBounds.min, base * (nextPct / 100)),
+    );
+    const zoomEps = Math.max(1e-9, stageScale * 1e-9);
+    if (newScale <= stageScale + zoomEps) {
+      newScale = Math.min(floorPlanScaleBounds.max, stageScale * ZOOM_STEP_MULT);
+    }
+    newScale = Math.min(
+      floorPlanScaleBounds.max,
+      Math.max(floorPlanScaleBounds.min, newScale),
+    );
     const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
     setStageScale(newScale);
     setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
   }
 
   function zoomOut() {
-    const cw = containerSize.w;
-    const ch = containerSize.h;
+    const { cw, ch } = readZoomViewportSize();
     const w = effectiveWorld.w;
     const h = effectiveWorld.h;
-    if (cw < 1 || ch < 1) return;
-    const newScale = Math.max(floorPlanScaleBounds.min, stageScale - ZOOM_STEP);
+    const base = fullViewBaselineScale;
+    if (base < 1e-9) return;
+    const curPct = (stageScale / base) * 100;
+    const minPct = (floorPlanScaleBounds.min / base) * 100;
+    const nextPct = Math.max(
+      minPct,
+      Math.ceil(curPct / ZOOM_DISPLAY_STEP_PCT) * ZOOM_DISPLAY_STEP_PCT - ZOOM_DISPLAY_STEP_PCT,
+    );
+    let newScale = Math.min(
+      floorPlanScaleBounds.max,
+      Math.max(floorPlanScaleBounds.min, base * (nextPct / 100)),
+    );
+    const zoomEps = Math.max(1e-9, stageScale * 1e-9);
+    if (newScale >= stageScale - zoomEps) {
+      newScale = Math.max(floorPlanScaleBounds.min, stageScale / ZOOM_STEP_MULT);
+    }
+    newScale = Math.min(
+      floorPlanScaleBounds.max,
+      Math.max(floorPlanScaleBounds.min, newScale),
+    );
     const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
     setStageScale(newScale);
     setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
@@ -1408,19 +1558,6 @@ export default function FloorPlanPage() {
           dispatch({ type: "REDO" });
           setEditSeq((n) => n + 1);
         }}
-        showGrid={showGrid}
-        onShowGridChange={setShowGrid}
-        snapEnabled={snapEnabled}
-        onSnapChange={setSnapEnabled}
-        zoomSlot={
-          <ZoomControls
-            scale={stageScale}
-            baselineScale={fullViewBaselineScale}
-            onZoomIn={zoomIn}
-            onZoomOut={zoomOut}
-            onReset={resetZoom}
-          />
-        }
         saveIndicatorSlot={
           <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
         }
@@ -1479,7 +1616,7 @@ export default function FloorPlanPage() {
               containerHeight={Math.max(1, containerSize.h)}
               onViewportPixelSize={onCanvasViewportSize}
               onTableClick={handleTableClick}
-              onTableHover={setHoveredTable}
+              onTableHover={queueTableHover}
               onCanvasClick={(x, y) => void handleCanvasClick(x, y)}
               onTableDragEnd={handleTableDragEnd}
               onWallDrawn={handleWallDrawn}
@@ -1520,6 +1657,59 @@ export default function FloorPlanPage() {
             </div>
           )}
           </div>
+
+          {/* ── Floating canvas controls: zoom · grid · snap ────────────────── */}
+          {!needsFloorFirst && !(isEmpty && mode === "live") && (
+            <div className="pointer-events-none absolute bottom-4 right-4 z-50 flex items-center gap-2">
+              {/* Grid + Snap icon toggles */}
+              <div className="pointer-events-auto flex items-center gap-0.5 rounded-lg border border-border/70 bg-bg-surface/90 px-1 py-1 shadow-md shadow-black/30 backdrop-blur-sm">
+                <button
+                  type="button"
+                  title={`Grid (G) — ${showGrid ? "on" : "off"}`}
+                  aria-label={t("dashboard.floorPlan.toggleGrid")}
+                  aria-pressed={showGrid}
+                  onClick={() => setShowGrid((v) => !v)}
+                  className={`flex size-7 items-center justify-center rounded-md transition-colors ${
+                    showGrid
+                      ? "bg-gold/15 text-gold"
+                      : "text-text-muted hover:bg-bg-elevated hover:text-text-secondary"
+                  }`}
+                >
+                  <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                    <path d="M1 5.5h14M1 10.5h14M5.5 1v14M10.5 1v14" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  title={`Snap (S) — ${snapEnabled ? "on" : "off"}`}
+                  aria-label={t("dashboard.floorPlan.toggleSnap")}
+                  aria-pressed={snapEnabled}
+                  onClick={() => setSnapEnabled((v) => !v)}
+                  className={`flex size-7 items-center justify-center rounded-md transition-colors ${
+                    snapEnabled
+                      ? "bg-gold/15 text-gold"
+                      : "text-text-muted hover:bg-bg-elevated hover:text-text-secondary"
+                  }`}
+                >
+                  <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="8" cy="8" r="2.5" />
+                    <path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
+                    <path d="M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M11.3 4.7l-1.2 1.2M4.7 11.3l-1.2 1.2" />
+                  </svg>
+                </button>
+              </div>
+              {/* Zoom controls */}
+              <div className="pointer-events-auto">
+                <ZoomControls
+                  scale={stageScale}
+                  baselineScale={fullViewBaselineScale}
+                  onZoomIn={zoomIn}
+                  onZoomOut={zoomOut}
+                  onReset={resetZoom}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {showRightColumn && (
@@ -1612,6 +1802,7 @@ export default function FloorPlanPage() {
                     showGrid={showGrid}
                     snapEnabled={snapEnabled}
                     tableCount={tablesForCanvas.length}
+                    totalSeats={totalSeatsForInspector}
                     zoneCount={zoneCountForInspector}
                     statusCounts={floorStatusCounts}
                   />

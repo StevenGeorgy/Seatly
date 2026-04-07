@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import type Konva from "konva";
-import { Circle, Layer, Line, Rect, Stage, Transformer } from "react-konva";
+import { Circle, Layer, Line, Rect, Shape, Stage, Transformer } from "react-konva";
 
 import type {
   DecorationItem as DecorationModel,
@@ -83,6 +83,29 @@ function unionFloorPaintBounds(
     width: Math.max(1, maxX - minX),
     height: Math.max(1, maxY - minY),
   };
+}
+
+/**
+ * World bounds that always cover the viewport for any clamped pan at scale ≥ scaleMin.
+ * Decouples dot-grid generation from live pan so we do not reconcile 10k+ circles every frame.
+ */
+function gridCoverageWorldBounds(
+  worldW: number,
+  worldH: number,
+  viewportW: number,
+  viewportH: number,
+  scaleMin: number,
+): { x: number; y: number; width: number; height: number } {
+  const invS = 1 / Math.max(scaleMin, 1e-6);
+  const padX = viewportW * invS;
+  const padY = viewportH * invS;
+  const expanded = {
+    minX: -padX,
+    maxX: worldW + padX,
+    minY: -padY,
+    maxY: worldH + padY,
+  };
+  return unionFloorPaintBounds(worldW, worldH, expanded);
 }
 
 function buildGridDotsForBounds(minX: number, maxX: number, minY: number, maxY: number) {
@@ -273,6 +296,72 @@ function getWallWorldBounds(w: Wall): { left: number; top: number; right: number
     top: Math.min(w.y1, w.y2) - pad,
     bottom: Math.max(w.y1, w.y2) + pad,
   };
+}
+
+type DotGridBounds = { x: number; y: number; width: number; height: number };
+
+/** Avoid multi‑megapixel bitmaps when caching the grid (world units can be very large). */
+const DOT_GRID_MAX_CACHE_DIM = 3200;
+
+/**
+ * One Konva shape draws all grid dots (vs thousands of Circle nodes).
+ * Optional bitmap cache when bounds are modest — skipped for very large floors.
+ */
+function FloorPlanDotGrid({
+  bounds,
+  dots,
+  dotRadius,
+  fill,
+  stagePixelRatio,
+}: {
+  bounds: DotGridBounds;
+  dots: { x: number; y: number }[];
+  dotRadius: number;
+  fill: string;
+  stagePixelRatio: number;
+}) {
+  const shapeRef = useRef<Konva.Shape | null>(null);
+  const { x: ox, y: oy, width: bw, height: bh } = bounds;
+
+  const sceneFunc = useCallback(
+    (ctx: Konva.Context, shape: Konva.Shape) => {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      for (const d of dots) {
+        const lx = d.x - ox;
+        const ly = d.y - oy;
+        ctx.moveTo(lx + dotRadius, ly);
+        ctx.arc(lx, ly, dotRadius, 0, Math.PI * 2, false);
+      }
+      ctx.fillShape(shape);
+    },
+    [dots, ox, oy, dotRadius, fill],
+  );
+
+  useLayoutEffect(() => {
+    const n = shapeRef.current;
+    if (!n) return;
+    n.clearCache();
+    if (dots.length === 0 || bw < 1 || bh < 1) return;
+    if (bw <= DOT_GRID_MAX_CACHE_DIM && bh <= DOT_GRID_MAX_CACHE_DIM) {
+      n.cache({ pixelRatio: Math.min(stagePixelRatio, 2) });
+    }
+  }, [bh, bw, dots, dots.length, fill, ox, oy, stagePixelRatio]);
+
+  if (dots.length === 0 || bw < 1 || bh < 1) return null;
+
+  return (
+    <Shape
+      ref={shapeRef}
+      x={ox}
+      y={oy}
+      width={bw}
+      height={bh}
+      listening={false}
+      perfectDrawEnabled={false}
+      sceneFunc={sceneFunc}
+    />
+  );
 }
 
 type FloorPlanCanvasProps = {
@@ -483,6 +572,38 @@ export function FloorPlanCanvas({
     selectedZoneId != null &&
     selectedZoneId !== "";
 
+  const tablesRef = useRef(tables);
+  tablesRef.current = tables;
+  const onTableClickRef = useRef(onTableClick);
+  onTableClickRef.current = onTableClick;
+  const onTableHoverRef = useRef(onTableHover);
+  onTableHoverRef.current = onTableHover;
+
+  const tableShapeClick = useCallback(
+    (id: string, ev: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+      onTableClickRef.current(id, ev);
+    },
+    [],
+  );
+
+  const tableShapeMouseEnter = useCallback((id: string, sx: number, sy: number) => {
+    const row = tablesRef.current.find((r) => r.id === id);
+    if (row) onTableHoverRef.current({ table: row, screenX: sx, screenY: sy });
+  }, []);
+
+  const tableShapeMouseLeave = useCallback(() => {
+    onTableHoverRef.current(null);
+  }, []);
+
+  const tableDragBoundsById = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof tableDragBoundsForWorld>>();
+    if (!isEditing) return m;
+    for (const t of tables) {
+      m.set(t.id, tableDragBoundsForWorld(t, tableTransforms[t.id] ?? null, worldW, worldH));
+    }
+    return m;
+  }, [isEditing, tables, tableTransforms, worldW, worldH]);
+
   useEffect(() => {
     const syncShift = (e: KeyboardEvent) => {
       setShiftHeld(e.shiftKey);
@@ -643,15 +764,20 @@ export function FloorPlanCanvas({
     return unionFloorPaintBounds(worldW, worldH, vw);
   }, [worldW, worldH, stagePos.x, stagePos.y, stageScale, viewportW, viewportH]);
 
+  const gridCoverageBounds = useMemo(
+    () => gridCoverageWorldBounds(worldW, worldH, viewportW, viewportH, scaleMin),
+    [worldW, worldH, viewportW, viewportH, scaleMin],
+  );
+
   const gridDots = useMemo(
     () =>
       buildGridDotsForBounds(
-        floorPaintBounds.x,
-        floorPaintBounds.x + floorPaintBounds.width,
-        floorPaintBounds.y,
-        floorPaintBounds.y + floorPaintBounds.height,
+        gridCoverageBounds.x,
+        gridCoverageBounds.x + gridCoverageBounds.width,
+        gridCoverageBounds.y,
+        gridCoverageBounds.y + gridCoverageBounds.height,
       ),
-    [floorPaintBounds.x, floorPaintBounds.y, floorPaintBounds.width, floorPaintBounds.height],
+    [gridCoverageBounds.x, gridCoverageBounds.y, gridCoverageBounds.width, gridCoverageBounds.height],
   );
 
   const clampStagePos = useCallback(
@@ -664,11 +790,52 @@ export function FloorPlanCanvas({
   stagePosRef.current = stagePos;
   const stageScaleRef = useRef(stageScale);
   stageScaleRef.current = stageScale;
+  const blockStagePropSyncRef = useRef(false);
+  const pendingStageFlushRef = useRef<{ scale: number; pos: { x: number; y: number } } | null>(
+    null,
+  );
+  const stageFlushRafRef = useRef<number | null>(null);
+  const clampStagePosRef = useRef(clampStagePos);
+  clampStagePosRef.current = clampStagePos;
+  const onStagePosChangeRef = useRef(onStagePosChange);
+  onStagePosChangeRef.current = onStagePosChange;
+  const onStageScaleChangeRef = useRef(onStageScaleChange);
+  onStageScaleChangeRef.current = onStageScaleChange;
+
+  const scheduleStageFlushToParent = useCallback(() => {
+    if (stageFlushRafRef.current != null) return;
+    stageFlushRafRef.current = requestAnimationFrame(() => {
+      stageFlushRafRef.current = null;
+      const pending = pendingStageFlushRef.current;
+      pendingStageFlushRef.current = null;
+      if (!pending) {
+        blockStagePropSyncRef.current = false;
+        return;
+      }
+      blockStagePropSyncRef.current = false;
+      onStageScaleChangeRef.current(pending.scale);
+      onStagePosChangeRef.current(pending.pos);
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (stageFlushRafRef.current != null) {
+        cancelAnimationFrame(stageFlushRafRef.current);
+      }
+    },
+    [],
+  );
 
   /** Wheel/pan reads must match React props — Konva's internal x/y can drift from controlled props. */
   useLayoutEffect(() => {
     const st = stageRef.current;
     if (!st) return;
+    if (blockStagePropSyncRef.current) {
+      st.scale({ x: stageScaleRef.current, y: stageScaleRef.current });
+      st.position({ x: stagePosRef.current.x, y: stagePosRef.current.y });
+      return;
+    }
     const sx = st.scaleX();
     const sy = st.scaleY();
     if (st.x() !== stagePos.x || st.y() !== stagePos.y) {
@@ -678,10 +845,6 @@ export function FloorPlanCanvas({
       st.scale({ x: stageScale, y: stageScale });
     }
   }, [stagePos.x, stagePos.y, stageScale]);
-  const clampStagePosRef = useRef(clampStagePos);
-  clampStagePosRef.current = clampStagePos;
-  const onStagePosChangeRef = useRef(onStagePosChange);
-  onStagePosChangeRef.current = onStagePosChange;
 
   const canvasHoveredRef = useRef(false);
   const justFinishedPanRef = useRef(false);
@@ -717,21 +880,25 @@ export function FloorPlanCanvas({
     const startViewportPan = (clientX: number, clientY: number) => {
       const sx0 = stagePosRef.current.x;
       const sy0 = stagePosRef.current.y;
+      blockStagePropSyncRef.current = true;
       setViewportPanning(true);
       const onMove = (ev: PointerEvent) => {
         const dx = ev.clientX - clientX;
         const dy = ev.clientY - clientY;
-        onStagePosChangeRef.current(
-          clampStagePosRef.current(
-            { x: sx0 + dx, y: sy0 + dy },
-            stageScaleRef.current,
-          ),
+        const next = clampStagePosRef.current(
+          { x: sx0 + dx, y: sy0 + dy },
+          stageScaleRef.current,
         );
+        stagePosRef.current = next;
+        const st = stageRef.current;
+        if (st) st.position(next);
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         justFinishedPanRef.current = true;
+        blockStagePropSyncRef.current = false;
+        onStagePosChangeRef.current(stagePosRef.current);
         setViewportPanning(false);
       };
       window.addEventListener("pointermove", onMove);
@@ -756,37 +923,40 @@ export function FloorPlanCanvas({
     return () => document.removeEventListener("pointerdown", onPointerDown, { capture: true });
   }, []);
 
-  const beginLiveBackgroundPan = useCallback(
-    (clientX: number, clientY: number) => {
-      const sx0 = stagePosRef.current.x;
-      const sy0 = stagePosRef.current.y;
-      let moved = false;
-      const onMove = (e: MouseEvent) => {
-        const dx = e.clientX - clientX;
-        const dy = e.clientY - clientY;
-        if (!moved && Math.hypot(dx, dy) <= 5) return;
-        if (!moved) {
-          moved = true;
-          setViewportPanning(true);
-        }
-        onStagePosChange(
-          clampStagePosRef.current(
-            { x: sx0 + dx, y: sy0 + dy },
-            stageScaleRef.current,
-          ),
-        );
-      };
-      const onUp = () => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        if (moved) justFinishedPanRef.current = true;
-        setViewportPanning(false);
-      };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-    },
-    [onStagePosChange],
-  );
+  const beginLiveBackgroundPan = useCallback((clientX: number, clientY: number) => {
+    const sx0 = stagePosRef.current.x;
+    const sy0 = stagePosRef.current.y;
+    let moved = false;
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - clientX;
+      const dy = e.clientY - clientY;
+      if (!moved && Math.hypot(dx, dy) <= 5) return;
+      if (!moved) {
+        moved = true;
+        blockStagePropSyncRef.current = true;
+        setViewportPanning(true);
+      }
+      const next = clampStagePosRef.current(
+        { x: sx0 + dx, y: sy0 + dy },
+        stageScaleRef.current,
+      );
+      stagePosRef.current = next;
+      const st = stageRef.current;
+      if (st) st.position(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (moved) {
+        justFinishedPanRef.current = true;
+        blockStagePropSyncRef.current = false;
+        onStagePosChangeRef.current(stagePosRef.current);
+      }
+      setViewportPanning(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
 
   // Pinch / mouse wheel → zoom; 2-finger trackpad scroll (smooth pixels) → pan
   function handleWheel(e: Konva.KonvaEventObject<WheelEvent>) {
@@ -802,7 +972,12 @@ export function FloorPlanCanvas({
         x: stagePosRef.current.x - ev.deltaX,
         y: stagePosRef.current.y - ev.deltaY,
       };
-      onStagePosChange(clampStagePos(raw, oldScale));
+      const next = clampStagePos(raw, oldScale);
+      stagePosRef.current = next;
+      stage.position(next);
+      blockStagePropSyncRef.current = true;
+      pendingStageFlushRef.current = { scale: oldScale, pos: next };
+      scheduleStageFlushToParent();
       return;
     }
 
@@ -818,8 +993,14 @@ export function FloorPlanCanvas({
       ? Math.min(hi, oldScale * scaleBy)
       : Math.max(lo, oldScale / scaleBy);
     const newPos = stagePositionAfterZoomAtScreenPoint(cx, cy, oldPos, oldScale, newScale);
-    onStageScaleChange(newScale);
-    onStagePosChange(clampStagePos(newPos, newScale));
+    const clampedPos = clampStagePos(newPos, newScale);
+    stageScaleRef.current = newScale;
+    stagePosRef.current = clampedPos;
+    stage.scale({ x: newScale, y: newScale });
+    stage.position(clampedPos);
+    blockStagePropSyncRef.current = true;
+    pendingStageFlushRef.current = { scale: newScale, pos: clampedPos };
+    scheduleStageFlushToParent();
   }
 
   // Stage click (background) — deselect / place table / start wall
@@ -942,6 +1123,17 @@ export function FloorPlanCanvas({
     [applySnap, onTableDragEnd, tables, tableTransforms, worldW, worldH, snapEnabled],
   );
 
+  const handleTableDragEndRef = useRef(handleTableDragEnd);
+  handleTableDragEndRef.current = handleTableDragEnd;
+
+  const tableShapeDragEnd = useCallback((id: string, rx: number, ry: number) => {
+    handleTableDragEndRef.current(id, rx, ry);
+  }, []);
+
+  const tableShapeDragStart = useCallback((id: string) => {
+    setDraggingTableId(id);
+  }, []);
+
   const handleZoneDragEnd = useCallback(
     (zoneId: string, rawX: number, rawY: number) => {
       const x = applySnap(rawX);
@@ -1047,7 +1239,7 @@ export function FloorPlanCanvas({
         onMouseUp={() => mouseUpHandlerRef.current()}
         onTouchEnd={() => mouseUpHandlerRef.current()}
       >
-        <Layer>
+        <Layer perfectDrawEnabled={false}>
           {/* Floor plan bounds: finite room (clickable), not an infinite grid */}
           <Rect
             name={CANVAS_BG_HIT_NAME}
@@ -1059,18 +1251,16 @@ export function FloorPlanCanvas({
             listening
           />
 
-          {/* Dot grid */}
-          {showGrid &&
-            gridDots.map((d, i) => (
-              <Circle
-                key={i}
-                x={d.x}
-                y={d.y}
-                radius={DOT_RADIUS}
-                fill={CANVAS_COLORS.gridDot}
-                listening={false}
-              />
-            ))}
+          {/* Dot grid — single Shape (+ optional cache) instead of N Circle nodes */}
+          {showGrid && (
+            <FloorPlanDotGrid
+              bounds={gridCoverageBounds}
+              dots={gridDots}
+              dotRadius={DOT_RADIUS}
+              fill={CANVAS_COLORS.gridDot}
+              stagePixelRatio={pixelRatio}
+            />
+          )}
 
           {/* Room zones — under furniture, above grid */}
           {zones.map((z) => (
@@ -1190,13 +1380,13 @@ export function FloorPlanCanvas({
               }
               opacity={1}
               draggable={isEditing}
-              dragBounds={isEditing ? tableDragBoundsForWorld(t, tableTransforms[t.id] ?? null, worldW, worldH) : null}
-              onClick={(ev) => onTableClick(t.id, ev)}
-              onMouseEnter={(sx, sy) => onTableHover({ table: t, screenX: sx, screenY: sy })}
-              onMouseLeave={() => onTableHover(null)}
-              onDragEnd={(rx, ry) => handleTableDragEnd(t.id, rx, ry)}
+              dragBounds={isEditing ? (tableDragBoundsById.get(t.id) ?? null) : null}
+              onClick={tableShapeClick}
+              onMouseEnter={tableShapeMouseEnter}
+              onMouseLeave={tableShapeMouseLeave}
+              onDragEnd={tableShapeDragEnd}
               dragging={draggingTableId === t.id}
-              onDragStart={() => setDraggingTableId(t.id)}
+              onDragStart={tableShapeDragStart}
             />
           ))}
 

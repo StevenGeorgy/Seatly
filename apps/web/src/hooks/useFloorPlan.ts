@@ -1,50 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { fetchFloorPlanBundle } from "@/lib/floor-plan-bundle-fetch";
+import type { FloorPlanRow, SectionRow, TableRow } from "@/lib/floor-plan-db-types";
+import { readFloorPlanCache, writeFloorPlanCache } from "@/lib/floor-plan-data-cache";
 import i18n from "@/lib/i18n/i18n";
 import { nextSequentialTableNumber } from "@/lib/table-number";
-import { promiseWithTimeout } from "@/lib/promise-timeout";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
-/** Prevents hung Supabase calls from leaving `loading` stuck forever. */
-const FLOOR_PLAN_FETCH_TIMEOUT_MS = 45_000;
+export type { FloorPlanRow, SectionRow, TableRow };
 
 /** Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows. */
 export function isDatabaseUuid(id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 }
-
-export type TableRow = {
-  id: string;
-  restaurant_id: string;
-  table_number: string | null;
-  label: string | null;
-  capacity: number;
-  min_party: number | null;
-  section: string | null;
-  section_id: string | null;
-  position_x: number | null;
-  position_y: number | null;
-  shape: string;
-  status: string;
-  combined_with: string[] | null;
-  seated_count: number;
-  qr_code_url: string | null;
-  notes: string | null;
-  is_active: boolean;
-  updated_at: string | null;
-};
-
-export type FloorPlanRow = {
-  id: string;
-  restaurant_id: string;
-  section_id: string | null;
-  name: string;
-  layout: { walls: unknown[]; tables: unknown[]; decorations: unknown[] } | null;
-  canvas_width: number;
-  canvas_height: number;
-  is_active: boolean;
-};
 
 /** Visual floor zone (Main Dining, Patio, …) — layout-only, draggable/resizable in edit mode. */
 export type FloorPlanZone = {
@@ -79,14 +48,6 @@ export type DecorationItem = {
   seats: number | null;
 };
 
-export type SectionRow = {
-  id: string;
-  restaurant_id: string;
-  name: string;
-  sort_order: number;
-  is_active: boolean;
-};
-
 export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
   const pauseRealtime = options?.pauseRealtime ?? false;
   const { selectedRestaurantId } = useRestaurantScope();
@@ -98,59 +59,59 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
   /** Dismisses stale responses when `selectedRestaurantId` changes mid-flight. */
   const fetchSeqRef = useRef(0);
 
-  const fetchAll = useCallback(async () => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) {
-      setTables([]);
-      setFloorPlans([]);
-      setSections([]);
-      setLoading(false);
-      return;
-    }
+  const fetchAll = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false;
 
-    const seq = ++fetchSeqRef.current;
-    setLoading(true);
-    setError(null);
-
-    try {
-      const client = getSupabaseBrowserClient();
-
-      const [tablesRes, plansRes, sectionsRes] = await promiseWithTimeout(
-        Promise.all([
-          client.from("tables").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
-          client.from("floor_plans").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true),
-          client.from("restaurant_sections").select("*").eq("restaurant_id", selectedRestaurantId).eq("is_active", true).order("sort_order"),
-        ]),
-        FLOOR_PLAN_FETCH_TIMEOUT_MS,
-        "Floor plan load",
-      );
-
-      if (seq !== fetchSeqRef.current) return;
-
-      if (tablesRes.error || plansRes.error || sectionsRes.error) {
-        setError(
-          new Error(tablesRes.error?.message ?? plansRes.error?.message ?? sectionsRes.error?.message ?? "Unknown error"),
-        );
-      } else {
-        setError(null);
-      }
-
-      const rawTables = (tablesRes.data ?? []) as TableRow[];
-      const rawSections = (sectionsRes.data ?? []) as SectionRow[];
-      setTables(rawTables);
-      setFloorPlans((plansRes.data ?? []) as FloorPlanRow[]);
-      setSections(rawSections);
-    } catch (e) {
-      if (seq !== fetchSeqRef.current) return;
-      setError(e instanceof Error ? e : new Error(String(e)));
-      setTables([]);
-      setFloorPlans([]);
-      setSections([]);
-    } finally {
-      if (seq === fetchSeqRef.current) {
+      if (!selectedRestaurantId || !isSupabaseConfigured()) {
+        setTables([]);
+        setFloorPlans([]);
+        setSections([]);
         setLoading(false);
+        return;
       }
-    }
-  }, [selectedRestaurantId]);
+
+      const seq = ++fetchSeqRef.current;
+      if (!silent) {
+        setLoading(true);
+      }
+      setError(null);
+
+      try {
+        const bundle = await fetchFloorPlanBundle(selectedRestaurantId);
+        if (seq !== fetchSeqRef.current) return;
+
+        if (bundle.error) {
+          setError(bundle.error);
+        } else {
+          setError(null);
+          writeFloorPlanCache(selectedRestaurantId, bundle);
+        }
+
+        setTables(bundle.tables);
+        setFloorPlans(bundle.floorPlans);
+        setSections(bundle.sections);
+      } catch (e) {
+        if (seq !== fetchSeqRef.current) return;
+        setError(e instanceof Error ? e : new Error(String(e)));
+        if (!silent) {
+          setTables([]);
+          setFloorPlans([]);
+          setSections([]);
+        }
+      } finally {
+        if (seq === fetchSeqRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [selectedRestaurantId],
+  );
+
+  const refetch = useCallback(
+    (opts?: { silent?: boolean }) => fetchAll({ silent: opts?.silent ?? false }),
+    [fetchAll],
+  );
 
   const createSectionAndFloor = useCallback(
     async (name: string): Promise<{ sectionId: string; floorPlanId: string } | null> => {
@@ -201,7 +162,7 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         return null;
       }
 
-      await fetchAll();
+      await fetchAll({ silent: true });
       return { sectionId, floorPlanId: floorPlanRes.data.id as string };
     },
     [fetchAll, sections, selectedRestaurantId],
@@ -301,7 +262,7 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
       setError(new Error(res.error.message));
       return false;
     }
-    if (refetchAfter) await fetchAll();
+    if (refetchAfter) await fetchAll({ silent: true });
     return true;
   }, [fetchAll]);
 
@@ -316,7 +277,30 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     return true;
   }, []);
 
-  useEffect(() => { void fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) {
+      setTables([]);
+      setFloorPlans([]);
+      setSections([]);
+      setLoading(false);
+      return;
+    }
+
+    const cached = readFloorPlanCache(selectedRestaurantId);
+    if (cached && !cached.error) {
+      setTables(cached.tables);
+      setFloorPlans(cached.floorPlans);
+      setSections(cached.sections);
+      setError(null);
+      setLoading(false);
+      void fetchAll({ silent: true });
+    } else {
+      setTables([]);
+      setFloorPlans([]);
+      setSections([]);
+      void fetchAll({ silent: false });
+    }
+  }, [selectedRestaurantId, fetchAll]);
 
   useEffect(() => {
     if (!selectedRestaurantId || !isSupabaseConfigured() || pauseRealtime) return;
@@ -327,7 +311,7 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "tables", filter: `restaurant_id=eq.${selectedRestaurantId}` },
-        () => { void fetchAll(); },
+        () => { void fetchAll({ silent: true }); },
       )
       .subscribe();
 
@@ -340,7 +324,7 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     sections,
     loading,
     error,
-    refetch: fetchAll,
+    refetch,
     createSectionAndFloor,
     createTable,
     updateTable,
