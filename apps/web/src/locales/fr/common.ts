@@ -295,6 +295,13 @@ const common = {
       zonePatio: "Terrasse",
       zoneBar: "Bar",
       zoneVip: "VIP",
+      addZoneDialogTitle: "Nommer la zone",
+      addZoneDialogDesc: "Donnez un nom à cette zone — il apparaîtra comme étiquette sur le plan.",
+      zoneNameLabel: "Nom de la zone",
+      zoneNamePlaceholder: "ex. Salle principale, Terrasse, Bar…",
+      zoneNameRequired: "Entrez un nom pour cette zone.",
+      zoneNameTooLong: "Le nom doit comporter 80 caractères ou moins.",
+      addZoneConfirm: "Ajouter la zone",
     },
     waitlist: {
       title: "Liste d\u2019attente",

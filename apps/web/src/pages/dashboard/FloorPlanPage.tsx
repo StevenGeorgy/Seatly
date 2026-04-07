@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { Check, Loader2, Plus } from "lucide-react";
 
 import { AddFloorDialog } from "@/components/floor-plan/AddFloorDialog";
+import { AddZoneDialog } from "@/components/floor-plan/AddZoneDialog";
 import { FloorPlanCommandBar } from "@/components/floor-plan/FloorPlanCommandBar";
 import { FloorPlanCanvas } from "@/components/floor-plan/FloorPlanCanvas";
 import { FloorPlanEmptyState } from "@/components/floor-plan/FloorPlanEmptyState";
@@ -281,6 +282,7 @@ export default function FloorPlanPage() {
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [selectedSection, setSelectedSection] = useState<string>("");
   const [addFloorOpen, setAddFloorOpen] = useState(false);
+  const [pendingZone, setPendingZone] = useState<{ x: number; y: number; w: number; h: number; defaultName: string } | null>(null);
   const [addFloorPending, setAddFloorPending] = useState(false);
   const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
   const pendingHoverRef = useRef<HoveredTableInfo | null>(null);
@@ -1134,7 +1136,6 @@ export default function FloorPlanPage() {
       mode !== "edit" ||
       activeTool === "select" ||
       activeTool === "add-wall" ||
-      activeTool === "extend-wall" ||
       activeTool === "delete"
     ) {
       setSelectedTableIds([]);
@@ -1153,7 +1154,7 @@ export default function FloorPlanPage() {
         "dashboard.floorPlan.zoneVip",
       ] as const;
       const zones = layoutDraft.zones ?? [];
-      const label = t(presetKeys[zones.length % presetKeys.length]);
+      const defaultName = t(presetKeys[zones.length % presetKeys.length]);
       const w = 240;
       const h = 168;
       const gx = snapEnabled
@@ -1166,20 +1167,8 @@ export default function FloorPlanPage() {
       let py = gy - h / 2;
       px = Math.max(0, Math.min(effectiveWorld.w - w, px));
       py = Math.max(0, Math.min(effectiveWorld.h - h, py));
-      const newZone: FloorPlanZone = {
-        id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        x: px,
-        y: py,
-        width: w,
-        height: h,
-        label,
-      };
-      pushHistory(tablesDraft, { ...layoutDraft, zones: [...zones, newZone] });
-      setSelectedZoneId(newZone.id);
-      setSelectedTableIds([]);
-      setSelectedPanelTableId(null);
-      setSelectedDecorationId(null);
-      setSelectedWallIds([]);
+      // Open naming dialog instead of placing immediately
+      setPendingZone({ x: px, y: py, w, h, defaultName });
       return;
     }
     const shapeMap: Record<string, string> = {
@@ -1384,6 +1373,23 @@ export default function FloorPlanPage() {
       return endpoint === "start"
         ? { ...w, x1: x, y1: y }
         : { ...w, x2: x, y2: y };
+    });
+    pushHistory(tablesDraft, { ...layoutDraft, walls: updatedWalls });
+  }
+
+  function handleWallDragEnd(wallId: string, dx: number, dy: number) {
+    const ww = effectiveWorld.w;
+    const wh = effectiveWorld.h;
+    const updatedWalls = layoutDraft.walls.map((w) => {
+      if (w.id !== wallId) return w;
+      // Clamp so neither endpoint goes outside the world boundary
+      const minDx = Math.max(-w.x1, -w.x2);
+      const maxDx = Math.min(ww - w.x1, ww - w.x2);
+      const minDy = Math.max(-w.y1, -w.y2);
+      const maxDy = Math.min(wh - w.y1, wh - w.y2);
+      const cdx = Math.max(minDx, Math.min(maxDx, dx));
+      const cdy = Math.max(minDy, Math.min(maxDy, dy));
+      return { ...w, x1: w.x1 + cdx, y1: w.y1 + cdy, x2: w.x2 + cdx, y2: w.y2 + cdy };
     });
     pushHistory(tablesDraft, { ...layoutDraft, walls: updatedWalls });
   }
@@ -1621,6 +1627,7 @@ export default function FloorPlanPage() {
               onTableDragEnd={handleTableDragEnd}
               onWallDrawn={handleWallDrawn}
               onWallEndpointUpdate={handleWallEndpointUpdate}
+              onWallDragEnd={handleWallDragEnd}
               onDecorationClick={mode === "edit" && canEdit ? handleDecorationClick : undefined}
               onDecorationDragEnd={handleDecorationDragEnd}
               onStageScaleChange={clampedSetStageScale}
@@ -1839,6 +1846,30 @@ export default function FloorPlanPage() {
         onOpenChange={setAddFloorOpen}
         onConfirm={handleAddFloor}
         isPending={addFloorPending}
+      />
+
+      <AddZoneDialog
+        open={pendingZone !== null}
+        defaultName={pendingZone?.defaultName ?? ""}
+        onOpenChange={(open) => { if (!open) setPendingZone(null); }}
+        onConfirm={(name) => {
+          if (!pendingZone) return;
+          const newZone: FloorPlanZone = {
+            id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            x: pendingZone.x,
+            y: pendingZone.y,
+            width: pendingZone.w,
+            height: pendingZone.h,
+            label: name,
+          };
+          pushHistory(tablesDraft, { ...layoutDraft, zones: [...(layoutDraft.zones ?? []), newZone] });
+          setSelectedZoneId(newZone.id);
+          setSelectedTableIds([]);
+          setSelectedPanelTableId(null);
+          setSelectedDecorationId(null);
+          setSelectedWallIds([]);
+          setPendingZone(null);
+        }}
       />
     </div>
   );

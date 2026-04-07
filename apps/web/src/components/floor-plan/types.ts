@@ -12,8 +12,6 @@ export type ToolMode =
   | "add-circle-table"
   | "add-square-table"
   | "add-wall"
-  /** Start a new wall segment from an existing endpoint (click handle, then drag). */
-  | "extend-wall"
   | "add-decoration"
   | "add-section-label"
   /** Visual room zone (Main Dining, Patio, …) — tinted rect, draggable/resizable. */

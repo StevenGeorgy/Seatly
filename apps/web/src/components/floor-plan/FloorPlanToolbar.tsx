@@ -7,7 +7,6 @@ import {
   Square,
   Trash2,
   Type,
-  UnfoldHorizontal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -31,7 +30,6 @@ const TABLE_TOOLS: ToolItem[] = [
 const OBJECT_TOOLS: ToolItem[] = [
   { tool: "add-zone",          icon: <LayoutGrid className="size-5" />,          labelKey: "dashboard.floorPlan.toolAddZone" },
   { tool: "add-wall",          icon: <Minus className="size-5" />,               labelKey: "dashboard.floorPlan.toolWall" },
-  { tool: "extend-wall",       icon: <UnfoldHorizontal className="size-5" />,    labelKey: "dashboard.floorPlan.toolWallExtend" },
   { tool: "add-section-label", icon: <Type className="size-5" />,                labelKey: "dashboard.floorPlan.toolSectionLabel" },
 ];
 

@@ -391,6 +391,8 @@ type FloorPlanCanvasProps = {
   onWallDrawn: (wall: Wall) => void;
   /** Called when a wall endpoint is dragged to a new position (with snapping applied). */
   onWallEndpointUpdate?: (wallId: string, endpoint: "start" | "end", x: number, y: number) => void;
+  /** Called when the wall body is dragged — dx/dy are the world-space offset to apply to both endpoints. */
+  onWallDragEnd?: (wallId: string, dx: number, dy: number) => void;
   /** Edit mode: wall line/handle clicked (select / delete tool) — not used during add-wall / extend-wall. */
   onWallClick?: (wallId: string) => void;
   /** Edit mode only — omit in live mode so decorations do not capture selection */
@@ -450,6 +452,7 @@ export function FloorPlanCanvas({
   onTableDragEnd,
   onWallDrawn,
   onWallEndpointUpdate,
+  onWallDragEnd,
   onWallClick: onWallClickProp,
   onDecorationClick: onDecorationClickProp,
   onDecorationDragEnd,
@@ -547,8 +550,7 @@ export function FloorPlanCanvas({
 
   const isEditing = mode === "edit";
   const isAddWallTool = activeTool === "add-wall";
-  const isExtendWallTool = activeTool === "extend-wall";
-  const isWallDrawingTool = isAddWallTool || isExtendWallTool;
+  const isWallDrawingTool = isAddWallTool;
 
   function emitWallSelectClick(wallId: string) {
     if (!isEditing || isWallDrawingTool) return;
@@ -1035,7 +1037,7 @@ export function FloorPlanCanvas({
       return;
     }
     if (isEditing && isAddWallTool) {
-      // add-wall: only start from the floor background (extend-wall uses handle pointerdown).
+      // add-wall: only start from the floor background.
       if (!isCanvasBackgroundTarget(e.target)) return;
       // Shift+drag = box select; plain click-drag = new wall segment
       if (marqueeSelectEnabled && e.evt.shiftKey) {
@@ -1289,24 +1291,8 @@ export function FloorPlanCanvas({
               selected={selectedWallIds.includes(w.id)}
               draggable={isEditing}
               showHandles={isEditing}
-              endpointHandlesDraggable={!isExtendWallTool}
+              onDragEnd={onWallDragEnd}
               onWallSelect={onWallClickProp && !isWallDrawingTool ? emitWallSelectClick : undefined}
-              onEndpointPointerDown={
-                isEditing && isExtendWallTool
-                  ? (_wallId, _ep, wx, wy) => {
-                      const c = clampPointToWorld(wx, wy, worldW, worldH);
-                      const sx = applySnap(c.x);
-                      const sy = applySnap(c.y);
-                      setWallDraft({
-                        active: true,
-                        startX: sx,
-                        startY: sy,
-                        endX: sx,
-                        endY: sy,
-                      });
-                    }
-                  : undefined
-              }
               onEndpointDragMove={(wallId, endpoint, x, y) => {
                 // Show snap indicator if near another endpoint
                 const eps = collectWallEndpoints(walls, wallId, endpoint);
