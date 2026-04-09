@@ -10,6 +10,9 @@
     "seed:users": "tsx scripts/seed-users.ts",
     "fix:profile": "tsx scripts/fix-profile.ts",
     "dev": "npm run dev --workspace=apps/web",
+    "dev:mobile": "cd apps/mobile && npx expo start",
+    "mobile": "cd apps/mobile && npx expo start",
+    "expo:start": "cd apps/mobile && npx expo start",
     "build": "npm run build --workspace=apps/web",
     "start": "npm run start --workspace=apps/web"
   },
