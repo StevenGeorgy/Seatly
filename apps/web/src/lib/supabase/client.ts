@@ -31,8 +31,6 @@ export function isSupabaseConfigured(): boolean {
 
 /**
  * Browser-only Supabase client for the Vite SPA.
- * Sessions are intentionally non-persistent, so users must log in again
- * after each refresh/new page load.
  */
 export function getSupabaseBrowserClient() {
   if (typeof window === "undefined") {
@@ -49,8 +47,8 @@ export function getSupabaseBrowserClient() {
   return createBrowserClient(url, anonKey, {
     isSingleton: true,
     auth: {
-      persistSession: false,
-      autoRefreshToken: false,
+      persistSession: true,
+      autoRefreshToken: true,
     },
   });
 }

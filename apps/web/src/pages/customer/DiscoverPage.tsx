@@ -19,6 +19,7 @@ import {
   ArrowLeftRight,
 } from "lucide-react";
 import { useUser } from "@/hooks/useUser";
+import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -35,94 +36,32 @@ import {
 
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
-type MockRestaurant = {
-  id: string;
-  slug: string;
-  name: string;
-  cuisine_type: string;
-  avg_rating: number;
-  total_reviews: number;
-  price_range: number;
-  city: string;
-  address: string;
-  distance_km: number;
-  wait_minutes: number | null;
-  is_open: boolean;
-  featured: boolean;
-  tags: string[];
-  gradient: string;
-  emoji: string;
+const CUISINE_GRADIENT: Record<string, string> = {
+  French:   "from-indigo-900 to-blue-800",
+  Japanese: "from-rose-900 to-pink-800",
+  Italian:  "from-green-900 to-emerald-800",
+  Mexican:  "from-orange-900 to-red-800",
+  Seafood:  "from-cyan-900 to-teal-800",
+  BBQ:      "from-stone-800 to-neutral-700",
+  Indian:   "from-yellow-900 to-orange-800",
+  Egyptian: "from-amber-900 to-yellow-800",
+  Thai:     "from-lime-900 to-green-800",
+  Chinese:  "from-red-900 to-rose-800",
+  American: "from-blue-900 to-indigo-800",
+  Greek:    "from-sky-900 to-blue-800",
 };
 
-const MOCK_RESTAURANTS: MockRestaurant[] = [
-  {
-    id: "r-1", slug: "the-golden-fork", name: "The Golden Fork",
-    cuisine_type: "French", avg_rating: 4.8, total_reviews: 312, price_range: 3,
-    city: "Toronto", address: "142 King St W", distance_km: 0.4, wait_minutes: null,
-    is_open: true, featured: true, tags: ["Date Night", "Fine Dining"],
-    gradient: "from-amber-900 to-yellow-800", emoji: "🍽️",
-  },
-  {
-    id: "r-2", slug: "sakura-house", name: "Sakura House",
-    cuisine_type: "Japanese", avg_rating: 4.6, total_reviews: 481, price_range: 2,
-    city: "Toronto", address: "88 Queen St E", distance_km: 0.9, wait_minutes: 20,
-    is_open: true, featured: true, tags: ["Sushi", "Ramen"],
-    gradient: "from-rose-900 to-pink-800", emoji: "🍣",
-  },
-  {
-    id: "r-3", slug: "brasserie-lumiere", name: "Brasserie Lumière",
-    cuisine_type: "French", avg_rating: 4.7, total_reviews: 198, price_range: 3,
-    city: "Montreal", address: "350 Rue Saint-Denis", distance_km: 1.2, wait_minutes: null,
-    is_open: true, featured: true, tags: ["Brunch", "Cocktails"],
-    gradient: "from-indigo-900 to-blue-800", emoji: "🥂",
-  },
-  {
-    id: "r-4", slug: "casa-fuego", name: "Casa Fuego",
-    cuisine_type: "Mexican", avg_rating: 4.4, total_reviews: 276, price_range: 2,
-    city: "Toronto", address: "210 Ossington Ave", distance_km: 1.6, wait_minutes: 35,
-    is_open: true, featured: false, tags: ["Tacos", "Tequila Bar"],
-    gradient: "from-orange-900 to-red-800", emoji: "🌮",
-  },
-  {
-    id: "r-5", slug: "terra-verde", name: "Terra Verde",
-    cuisine_type: "Italian", avg_rating: 4.5, total_reviews: 389, price_range: 2,
-    city: "Toronto", address: "77 College St", distance_km: 0.7, wait_minutes: 15,
-    is_open: true, featured: false, tags: ["Pasta", "Vegetarian-Friendly"],
-    gradient: "from-green-900 to-emerald-800", emoji: "🍝",
-  },
-  {
-    id: "r-6", slug: "harbour-grill", name: "Harbour Grill",
-    cuisine_type: "Seafood", avg_rating: 4.9, total_reviews: 156, price_range: 4,
-    city: "Toronto", address: "1 Harbour Square", distance_km: 2.1, wait_minutes: null,
-    is_open: true, featured: false, tags: ["Waterfront", "Business Dinner"],
-    gradient: "from-cyan-900 to-teal-800", emoji: "🦞",
-  },
-  {
-    id: "r-7", slug: "spice-route", name: "Spice Route",
-    cuisine_type: "Indian", avg_rating: 4.3, total_reviews: 521, price_range: 2,
-    city: "Mississauga", address: "3025 Hurontario St", distance_km: 3.4, wait_minutes: 10,
-    is_open: true, featured: false, tags: ["Vegetarian", "Halal"],
-    gradient: "from-yellow-900 to-orange-800", emoji: "🍛",
-  },
-  {
-    id: "r-8", slug: "le-petit-bistro", name: "Le Petit Bistro",
-    cuisine_type: "French", avg_rating: 4.6, total_reviews: 94, price_range: 3,
-    city: "Montreal", address: "485 Rue Laurier O", distance_km: 1.8, wait_minutes: null,
-    is_open: false, featured: false, tags: ["Quiet", "Romantic"],
-    gradient: "from-purple-900 to-violet-800", emoji: "🥗",
-  },
-  {
-    id: "r-9", slug: "smoke-and-barrel", name: "Smoke & Barrel",
-    cuisine_type: "BBQ", avg_rating: 4.7, total_reviews: 633, price_range: 2,
-    city: "Toronto", address: "512 Adelaide St W", distance_km: 1.1, wait_minutes: 25,
-    is_open: true, featured: false, tags: ["Casual", "Craft Beer"],
-    gradient: "from-stone-800 to-neutral-700", emoji: "🥩",
-  },
-];
+const CUISINE_EMOJI: Record<string, string> = {
+  French: "🥂", Japanese: "🍣", Italian: "🍝", Mexican: "🌮",
+  Seafood: "🦞", BBQ: "🥩", Indian: "🍛", Egyptian: "🧆",
+  Thai: "🍜", Chinese: "🥡", American: "🍔", Greek: "🥙",
+};
 
 const CUISINES = ["All", "Italian", "Japanese", "Mexican", "French", "Indian", "Thai", "Seafood", "BBQ"];
 
-function RestaurantCard({ r, index }: { r: MockRestaurant; index: number }) {
+function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
+  const gradient = CUISINE_GRADIENT[r.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-800";
+  const emoji = CUISINE_EMOJI[r.cuisine_type ?? ""] ?? "🍽️";
   return (
     <motion.div
       initial={{ opacity: 0, y: 14 }}
@@ -134,25 +73,19 @@ function RestaurantCard({ r, index }: { r: MockRestaurant; index: number }) {
         className="group block overflow-hidden rounded-xl border border-border bg-bg-surface transition-all hover:border-gold/30 hover:shadow-lg hover:shadow-gold/5"
       >
         {/* Photo area */}
-        <div className={`relative h-44 w-full bg-gradient-to-br ${r.gradient} overflow-hidden`}>
-          <div className="absolute inset-0 flex items-center justify-center text-5xl opacity-30">
-            {r.emoji}
-          </div>
+        <div className={`relative h-44 w-full overflow-hidden`}>
+          {r.cover_photo_url ? (
+            <img src={r.cover_photo_url} alt={r.name} className="h-full w-full object-cover" />
+          ) : (
+            <div className={`h-full w-full bg-gradient-to-br ${gradient}`}>
+              <div className="flex h-full items-center justify-center text-5xl opacity-30">{emoji}</div>
+            </div>
+          )}
           <div className="absolute inset-0 bg-gradient-to-t from-bg-base/80 via-transparent to-transparent" />
-
-          {/* Badges */}
-          <div className="absolute left-3 top-3 flex gap-1.5">
-            {r.tags.slice(0, 1).map((tag) => (
-              <span key={tag} className="rounded-full bg-black/50 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-sm">
-                {tag}
-              </span>
-            ))}
-          </div>
-
-          {!r.is_open && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-              <span className="rounded-full bg-black/70 px-3 py-1 text-xs font-semibold text-text-muted">
-                Closed
+          {r.cuisine_type && (
+            <div className="absolute left-3 top-3">
+              <span className="rounded-full bg-black/50 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-sm">
+                {r.cuisine_type}
               </span>
             </div>
           )}
@@ -166,31 +99,29 @@ function RestaurantCard({ r, index }: { r: MockRestaurant; index: number }) {
                 {r.name}
               </h3>
               <div className="mt-1 flex items-center gap-2 text-xs text-text-muted">
-                <span>{r.cuisine_type}</span>
-                <span className="text-gold">{PRICE_LABELS[r.price_range]}</span>
-                <span className="flex items-center gap-0.5">
-                  <MapPin className="size-2.5" />
-                  {r.distance_km} km
-                </span>
+                {r.price_range != null && <span className="text-gold">{PRICE_LABELS[r.price_range]}</span>}
+                {r.city && (
+                  <span className="flex items-center gap-0.5">
+                    <MapPin className="size-2.5" />
+                    {r.city}
+                  </span>
+                )}
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-lg bg-gold/10 px-2 py-1">
-              <Star className="size-3 fill-gold text-gold" />
-              <span className="text-xs font-bold text-gold">{r.avg_rating.toFixed(1)}</span>
-            </div>
+            {r.avg_rating != null && (
+              <div className="flex shrink-0 items-center gap-1 rounded-lg bg-gold/10 px-2 py-1">
+                <Star className="size-3 fill-gold text-gold" />
+                <span className="text-xs font-bold text-gold">{r.avg_rating.toFixed(1)}</span>
+              </div>
+            )}
           </div>
 
           {/* Footer row */}
           <div className="mt-3 flex items-center justify-between">
-            <span className="text-xs text-text-muted">{r.total_reviews} reviews</span>
-            {r.wait_minutes != null ? (
-              <span className="flex items-center gap-1 text-xs text-warning">
-                <Clock className="size-3" />
-                {r.wait_minutes} min wait
-              </span>
-            ) : r.is_open ? (
-              <span className="text-xs font-medium text-success">Book instantly</span>
-            ) : null}
+            <span className="text-xs text-text-muted">
+              {r.total_reviews != null ? `${r.total_reviews} reviews` : ""}
+            </span>
+            <span className="text-xs font-medium text-success">Book a table</span>
           </div>
         </div>
       </Link>
@@ -202,12 +133,13 @@ export default function DiscoverPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView } = useUser();
+  const { restaurants, loading: restaurantsLoading } = usePublicRestaurants();
   const [search, setSearch] = useState("");
   const [activeCuisine, setActiveCuisine] = useState("All");
   const [chatOpen, setChatOpen] = useState(false);
 
   const filtered = useMemo(() => {
-    let list = MOCK_RESTAURANTS;
+    let list = restaurants;
     if (activeCuisine !== "All") {
       list = list.filter((r) => r.cuisine_type === activeCuisine);
     }
@@ -216,15 +148,15 @@ export default function DiscoverPage() {
       list = list.filter(
         (r) =>
           r.name.toLowerCase().includes(q) ||
-          r.cuisine_type.toLowerCase().includes(q) ||
-          r.city.toLowerCase().includes(q),
+          (r.cuisine_type ?? "").toLowerCase().includes(q) ||
+          (r.city ?? "").toLowerCase().includes(q),
       );
     }
     return list;
-  }, [search, activeCuisine]);
+  }, [search, activeCuisine, restaurants]);
 
-  const featured = MOCK_RESTAURANTS.filter((r) => r.featured);
-  const nearYou = MOCK_RESTAURANTS.filter((r) => !r.featured).sort((a, b) => a.distance_km - b.distance_km);
+  const featured = restaurants.filter((r) => (r.avg_rating ?? 0) >= 4.7);
+  const others = restaurants.filter((r) => (r.avg_rating ?? 0) < 4.7);
 
   const showFiltered = search.trim() !== "" || activeCuisine !== "All";
   const initials = (profile?.full_name ?? profile?.email ?? "?")
@@ -354,7 +286,13 @@ export default function DiscoverPage() {
         </div>
 
         {/* Search / filtered results */}
-        {showFiltered ? (
+        {restaurantsLoading ? (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-64 animate-pulse rounded-xl border border-border bg-bg-surface" />
+            ))}
+          </div>
+        ) : showFiltered ? (
           <section>
             <p className="mb-4 text-sm text-text-muted">
               {filtered.length} result{filtered.length !== 1 ? "s" : ""} found
@@ -377,42 +315,46 @@ export default function DiscoverPage() {
           </section>
         ) : (
           <>
-            {/* Featured */}
-            <section>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="flex items-center gap-2 text-base font-semibold text-text-primary">
-                  <Flame className="size-4 text-gold" />
-                  Featured Tonight
-                </h2>
-                <button type="button" className="flex items-center gap-1 text-xs text-text-muted hover:text-gold transition-colors">
-                  View all <ChevronRight className="size-3" />
-                </button>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {featured.map((r, i) => (
-                  <RestaurantCard key={r.id} r={r} index={i} />
-                ))}
-              </div>
-            </section>
+            {/* Top Rated */}
+            {featured.length > 0 && (
+              <section>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-text-primary">
+                    <Flame className="size-4 text-gold" />
+                    Top Rated
+                  </h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {featured.map((r, i) => (
+                    <RestaurantCard key={r.id} r={r} index={i} />
+                  ))}
+                </div>
+              </section>
+            )}
 
-            {/* Near You */}
-            <section>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="flex items-center gap-2 text-base font-semibold text-text-primary">
-                  <MapPin className="size-4 text-gold" />
-                  Near You
-                  <span className="text-xs font-normal text-text-muted">Southern Ontario</span>
-                </h2>
-                <button type="button" className="flex items-center gap-1 text-xs text-text-muted hover:text-gold transition-colors">
-                  View all <ChevronRight className="size-3" />
-                </button>
+            {/* All Restaurants */}
+            {others.length > 0 && (
+              <section>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-text-primary">
+                    <MapPin className="size-4 text-gold" />
+                    All Restaurants
+                  </h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {others.map((r, i) => (
+                    <RestaurantCard key={r.id} r={r} index={i} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {restaurants.length === 0 && (
+              <div className="flex flex-col items-center gap-3 py-16 text-center">
+                <p className="font-semibold text-text-primary">No restaurants yet</p>
+                <p className="text-sm text-text-muted">Check back soon.</p>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {nearYou.map((r, i) => (
-                  <RestaurantCard key={r.id} r={r} index={i} />
-                ))}
-              </div>
-            </section>
+            )}
           </>
         )}
       </main>

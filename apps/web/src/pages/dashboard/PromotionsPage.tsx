@@ -184,6 +184,13 @@ function PromoFormDrawer({
     return isValid(d) ? d : startOfToday();
   }, [form.starts_at]);
 
+  // Only show real DB items (mock fallback IDs like "mi-1" are not valid UUIDs)
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const realMenuItems = useMemo(
+    () => menuItems.filter((m) => UUID_RE.test(m.id) && m.is_active),
+    [menuItems],
+  );
+
   // Toggle a menu item in bogo_item_ids
   const toggleBogoItem = (id: string) => {
     set("bogo_item_ids",
@@ -193,7 +200,7 @@ function PromoFormDrawer({
     );
   };
 
-  const allSelected = menuItems.length > 0 && form.bogo_item_ids.length === menuItems.length;
+  const allSelected = realMenuItems.length > 0 && form.bogo_item_ids.length === realMenuItems.length;
 
   return (
     <AnimatePresence>
@@ -279,25 +286,27 @@ function PromoFormDrawer({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
                     <Label>Applies to which items?</Label>
-                    <button
-                      type="button"
-                      onClick={() => set("bogo_item_ids", allSelected ? [] : menuItems.map((m) => m.id))}
-                      className="text-[11px] text-gold hover:underline"
-                    >
-                      {allSelected ? "Deselect all" : "Select all"}
-                    </button>
+                    {realMenuItems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => set("bogo_item_ids", allSelected ? [] : realMenuItems.map((m) => m.id))}
+                        className="text-[11px] text-gold hover:underline"
+                      >
+                        {allSelected ? "Deselect all" : "Select all"}
+                      </button>
+                    )}
                   </div>
                   {menuLoading ? (
                     <div className="flex flex-col gap-1.5">
                       {[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-md" />)}
                     </div>
-                  ) : menuItems.length === 0 ? (
+                  ) : realMenuItems.length === 0 ? (
                     <p className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
-                      No menu items found. Add items in Menu first.
+                      No menu items found. Add items in Menu first to enable item selection.
                     </p>
                   ) : (
                     <div className="max-h-52 overflow-y-auto rounded-md border border-border bg-bg-elevated">
-                      {menuItems.filter((m) => m.is_active).map((m) => {
+                      {realMenuItems.map((m) => {
                         const checked = form.bogo_item_ids.includes(m.id);
                         return (
                           <button
@@ -316,7 +325,7 @@ function PromoFormDrawer({
                       })}
                     </div>
                   )}
-                  {form.bogo_item_ids.length === 0 && (
+                  {form.bogo_item_ids.length === 0 && realMenuItems.length > 0 && (
                     <p className="text-[11px] text-text-muted">No items selected — BOGO applies to all items.</p>
                   )}
                 </div>
@@ -328,11 +337,15 @@ function PromoFormDrawer({
                   <Label>What is the free item?</Label>
                   {menuLoading ? (
                     <Skeleton className="h-10 rounded-md" />
+                  ) : realMenuItems.length === 0 ? (
+                    <p className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+                      No menu items found. Add items in Menu first.
+                    </p>
                   ) : (
                     <Select
                       value={form.free_item_id}
                       onValueChange={(v) => {
-                        const item = menuItems.find((m) => m.id === v);
+                        const item = realMenuItems.find((m) => m.id === v);
                         set("free_item_id", v);
                         set("free_item_name", item?.name ?? "");
                       }}
@@ -341,7 +354,7 @@ function PromoFormDrawer({
                         <SelectValue placeholder="Select the free item…" />
                       </SelectTrigger>
                       <SelectContent>
-                        {menuItems.filter((m) => m.is_active).map((m) => (
+                        {realMenuItems.map((m) => (
                           <SelectItem key={m.id} value={m.id}>
                             {m.name} — ${m.price.toFixed(2)}
                           </SelectItem>
@@ -551,6 +564,7 @@ export default function PromotionsPage() {
   const handleSave = async (form: FormState) => {
     const startsDate = form.starts_at ? new Date(form.starts_at) : new Date();
     const endsDate = form.ends_at ? new Date(form.ends_at) : null;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     const payload: CreatePromotionPayload = {
       title: form.title.trim(),
@@ -566,21 +580,25 @@ export default function PromotionsPage() {
       promo_code: form.promo_code.trim() || null,
       max_uses: form.max_uses ? Number(form.max_uses) : null,
       badge_color: form.badge_color,
-      bogo_item_ids: form.promo_type === "bogo" ? form.bogo_item_ids : [],
-      free_item_id: form.promo_type === "free_item" && form.free_item_id ? form.free_item_id : null,
+      bogo_item_ids: form.promo_type === "bogo"
+        ? form.bogo_item_ids.filter((id) => UUID_RE.test(id))
+        : [],
+      free_item_id: form.promo_type === "free_item" && form.free_item_id && UUID_RE.test(form.free_item_id)
+        ? form.free_item_id
+        : null,
       free_item_name: form.promo_type === "free_item" && form.free_item_name ? form.free_item_name : null,
     };
 
-    const ok = editTarget
+    const err = editTarget
       ? await updatePromotion(editTarget.id, payload)
       : await createPromotion(payload);
 
-    if (ok) {
+    if (err === null) {
       toast.success(editTarget ? "Promotion updated" : "Promotion created");
       setDrawerOpen(false);
       setEditTarget(null);
     } else {
-      toast.error("Could not save promotion. Try again.");
+      toast.error(err || "Could not save promotion. Try again.");
     }
   };
 
@@ -696,6 +714,7 @@ export default function PromotionsPage() {
       )}
 
       <PromoFormDrawer
+        key={editTarget?.id ?? "new"}
         open={drawerOpen}
         onClose={() => { setDrawerOpen(false); setEditTarget(null); }}
         onSave={handleSave}

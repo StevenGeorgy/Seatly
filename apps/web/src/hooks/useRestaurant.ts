@@ -158,6 +158,38 @@ export type Restaurant = {
   business_type: string | null;
 };
 
+export function usePublicRestaurants() {
+  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      setRestaurants(Object.values(MOCK_RESTAURANTS));
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const client = getSupabaseBrowserClient();
+      const { data } = await client
+        .from("restaurants")
+        .select("id, name, slug, cover_photo_url, cuisine_type, avg_rating, total_reviews, price_range, city, address, is_active")
+        .eq("is_active", true)
+        .order("avg_rating", { ascending: false, nullsFirst: false });
+
+      if (cancelled) return;
+      const rows = (data ?? []) as Restaurant[];
+      setRestaurants(rows.length > 0 ? rows : Object.values(MOCK_RESTAURANTS));
+      setLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  return { restaurants, loading };
+}
+
 export function useRestaurant(slugOrId?: string) {
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [loading, setLoading] = useState(true);

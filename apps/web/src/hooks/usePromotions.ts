@@ -114,21 +114,24 @@ export function usePromotions() {
 
   useEffect(() => { void fetch(); }, [fetch]);
 
-  const createPromotion = useCallback(async (payload: CreatePromotionPayload) => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) return false;
+  /** Returns null on success, or an error string on failure. */
+  const createPromotion = useCallback(async (payload: CreatePromotionPayload): Promise<string | null> => {
+    if (!selectedRestaurantId) return "No restaurant selected.";
+    if (!isSupabaseConfigured()) return "Supabase not configured.";
     setSaving(true);
     const client = getSupabaseBrowserClient();
     const { error } = await client
       .from("promotions")
       .insert({ ...payload, restaurant_id: selectedRestaurantId });
     setSaving(false);
-    if (error) return false;
+    if (error) return error.message;
     await fetch();
-    return true;
+    return null;
   }, [selectedRestaurantId, fetch]);
 
-  const updatePromotion = useCallback(async (id: string, payload: Partial<CreatePromotionPayload>) => {
-    if (!isSupabaseConfigured()) return false;
+  /** Returns null on success, or an error string on failure. */
+  const updatePromotion = useCallback(async (id: string, payload: Partial<CreatePromotionPayload>): Promise<string | null> => {
+    if (!isSupabaseConfigured()) return "Supabase not configured.";
     setSaving(true);
     const client = getSupabaseBrowserClient();
     const { error } = await client
@@ -136,9 +139,9 @@ export function usePromotions() {
       .update(payload)
       .eq("id", id);
     setSaving(false);
-    if (error) return false;
+    if (error) return error.message;
     await fetch();
-    return true;
+    return null;
   }, [fetch]);
 
   const deletePromotion = useCallback(async (id: string) => {

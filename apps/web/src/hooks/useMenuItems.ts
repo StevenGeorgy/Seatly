@@ -4,6 +4,66 @@ import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { MOCK_CATEGORIES, MOCK_MENU_ITEMS } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
+export function usePublicMenuCategories(restaurantId: string | null | undefined) {
+  const [categories, setCategories] = useState<MenuCategoryRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!restaurantId || !isSupabaseConfigured()) {
+      setCategories([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
+      const client = getSupabaseBrowserClient();
+      const { data } = await client
+        .from("menu_categories")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .eq("is_active", true)
+        .order("sort_order");
+      if (cancelled) return;
+      setCategories((data ?? []) as MenuCategoryRow[]);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [restaurantId]);
+
+  return { categories, loading };
+}
+
+export function usePublicMenuItems(restaurantId: string | null | undefined) {
+  const [items, setItems] = useState<MenuItemRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!restaurantId || !isSupabaseConfigured()) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
+      const client = getSupabaseBrowserClient();
+      const { data } = await client
+        .from("menu_items")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .eq("is_active", true)
+        .order("sort_order");
+      if (cancelled) return;
+      setItems((data ?? []) as MenuItemRow[]);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [restaurantId]);
+
+  return { items, loading };
+}
+
 export type MenuCategoryRow = {
   id: string;
   restaurant_id: string;

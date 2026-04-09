@@ -34,6 +34,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRestaurant } from "@/hooks/useRestaurant";
+import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -308,14 +309,39 @@ export default function RestaurantPublicPage() {
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { promotions: allPromos } = useAllActivePromotions();
+  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
   const restaurantPromos = useMemo(
     () => allPromos.filter((p) => p.restaurant_id === restaurant?.id),
     [allPromos, restaurant?.id],
   );
 
+  // Map DB menu items to the local MenuItem shape used by the cart/allergen system
+  const menuItems = useMemo<MenuItem[]>(() => {
+    if (dbMenuItems.length === 0) return MENU;
+    return dbMenuItems.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description ?? "",
+      price: row.price,
+      category: row.category ?? (dbCategories.find((c) => c.id === row.category_id)?.name ?? "Other"),
+      popular: row.is_featured,
+      dietary: row.dietary_flags ?? [],
+      emoji: "🍽️",
+      allergens: row.allergens ?? [],
+      ingredients: row.description ?? "",
+    }));
+  }, [dbMenuItems, dbCategories]);
+
+  const categoryList = useMemo(
+    () => ["All", ...dbCategories.map((c) => c.name)],
+    [dbCategories],
+  );
+
   const [step, setStep] = useState<Step>("type");
   const [orderType, setOrderType] = useState<OrderType | null>(null);
   const [activeCategory, setActiveCategory] = useState("All");
+  const [activePromoId, setActivePromoId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
 
   const [dineIn, setDineIn] = useState<DineInDetails>({
@@ -376,10 +402,23 @@ export default function RestaurantPublicPage() {
     return isValid(d) ? d : undefined;
   }, [dineIn.date]);
 
-  const filteredMenu = useMemo(
-    () => activeCategory === "All" ? MENU : MENU.filter((m) => m.category === activeCategory),
-    [activeCategory],
-  );
+  const filteredMenu = useMemo(() => {
+    let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
+    if (activePromoId) {
+      const promo = restaurantPromos.find((p) => p.id === activePromoId);
+      if (promo) {
+        if (promo.promo_type === "bogo" && promo.bogo_item_ids.length > 0) {
+          const ids = new Set(promo.bogo_item_ids);
+          list = list.filter((m) => ids.has(m.id));
+        } else if (promo.promo_type === "free_item" && promo.free_item_id) {
+          list = list.filter((m) => m.id === promo.free_item_id);
+        }
+        // bogo with empty bogo_item_ids = full menu — no item-level filter
+        // percentage / fixed — no item-level filter
+      }
+    }
+    return list;
+  }, [activeCategory, activePromoId, menuItems, restaurantPromos]);
 
   // Parse the user's allergy text into individual keywords and find flagged items
   const { flaggedItems, allergenKeywords } = useMemo(() => {
@@ -419,7 +458,7 @@ export default function RestaurantPublicPage() {
       else Object.values(ALIAS).forEach((v) => { if (v.includes(k) || k.includes(v)) matched.add(v); });
     });
 
-    const flagged = MENU.filter((item) =>
+    const flagged = menuItems.filter((item) =>
       item.allergens.some((a) => matched.has(a)),
     ).map((item) => ({
       ...item,
@@ -427,7 +466,7 @@ export default function RestaurantPublicPage() {
     }));
 
     return { flaggedItems: flagged, allergenKeywords: Array.from(matched) };
-  }, [dineIn.allergies, orderType]);
+  }, [dineIn.allergies, orderType, menuItems]);
 
   const cartTotal   = cart.reduce((s, i) => s + i.price * i.qty, 0);
   const cartCount   = cart.reduce((s, i) => s + i.qty, 0);
@@ -932,26 +971,53 @@ export default function RestaurantPublicPage() {
                     {restaurantPromos.map((promo) => {
                       const label = getPromotionLabel(promo);
                       const badgeClasses = getPromoTypeBadgeClasses(promo.badge_color);
+                      const isSelected = activePromoId === promo.id;
+                      const canFilter =
+                        (promo.promo_type === "bogo" && promo.bogo_item_ids.length > 0) ||
+                        (promo.promo_type === "free_item" && !!promo.free_item_id);
                       return (
-                        <div
+                        <button
                           key={promo.id}
-                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${badgeClasses}`}
+                          type="button"
+                          onClick={() => setActivePromoId(isSelected ? null : promo.id)}
+                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition-all ${badgeClasses} ${
+                            isSelected
+                              ? "ring-2 ring-current ring-offset-1 ring-offset-bg-base opacity-100"
+                              : "opacity-80 hover:opacity-100"
+                          }`}
                         >
                           <span className="font-bold tracking-wide">{label}</span>
                           <span className="font-medium opacity-90">{promo.title}</span>
                           {promo.free_item_name && (
                             <span className="opacity-75">· Free: {promo.free_item_name}</span>
                           )}
-                        </div>
+                          {canFilter && (
+                            <span className="ml-1 rounded-full bg-current/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide">
+                              {isSelected ? "Clear" : "Filter"}
+                            </span>
+                          )}
+                        </button>
                       );
                     })}
                   </div>
+                  {activePromoId && (
+                    <p className="text-[11px] text-text-muted">
+                      Showing items included in this deal.{" "}
+                      <button
+                        type="button"
+                        onClick={() => setActivePromoId(null)}
+                        className="text-gold underline hover:no-underline"
+                      >
+                        Show all
+                      </button>
+                    </p>
+                  )}
                 </div>
               )}
 
               {/* Category chips */}
               <div className="mb-4 flex flex-wrap gap-2">
-                {CATEGORIES.map((cat) => (
+                {(categoryList.length > 1 ? categoryList : ["All", "Starters", "Mains", "Desserts", "Drinks"]).map((cat) => (
                   <button
                     key={cat}
                     type="button"
