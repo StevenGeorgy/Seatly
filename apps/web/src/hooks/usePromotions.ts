@@ -24,6 +24,9 @@ export type PromotionRow = {
   max_uses: number | null;
   current_uses: number;
   badge_color: BadgeColor;
+  bogo_item_ids: string[];
+  free_item_id: string | null;
+  free_item_name: string | null;
   created_at: string;
 };
 

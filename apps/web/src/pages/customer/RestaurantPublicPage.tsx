@@ -34,6 +34,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRestaurant } from "@/hooks/useRestaurant";
+import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -306,6 +307,11 @@ export default function RestaurantPublicPage() {
   const { t } = useTranslation();
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
+  const { promotions: allPromos } = useAllActivePromotions();
+  const restaurantPromos = useMemo(
+    () => allPromos.filter((p) => p.restaurant_id === restaurant?.id),
+    [allPromos, restaurant?.id],
+  );
 
   const [step, setStep] = useState<Step>("type");
   const [orderType, setOrderType] = useState<OrderType | null>(null);
@@ -916,6 +922,31 @@ export default function RestaurantPublicPage() {
                     ))}
                   </div>
                 </motion.div>
+              )}
+
+              {/* Active promotions strip */}
+              {restaurantPromos.length > 0 && (
+                <div className="mb-4 flex flex-col gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-amber-400">Active Deals</p>
+                  <div className="flex flex-wrap gap-2">
+                    {restaurantPromos.map((promo) => {
+                      const label = getPromotionLabel(promo);
+                      const badgeClasses = getPromoTypeBadgeClasses(promo.badge_color);
+                      return (
+                        <div
+                          key={promo.id}
+                          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${badgeClasses}`}
+                        >
+                          <span className="font-bold tracking-wide">{label}</span>
+                          <span className="font-medium opacity-90">{promo.title}</span>
+                          {promo.free_item_name && (
+                            <span className="opacity-75">· Free: {promo.free_item_name}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
 
               {/* Category chips */}

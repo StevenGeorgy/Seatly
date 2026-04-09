@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Tag, Plus, Pencil, Trash2, X, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { Tag, Plus, Pencil, Trash2, X, CheckCircle2, Clock, CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
+import { format, isValid, parse, startOfToday } from "date-fns";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -18,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useMenuItems } from "@/hooks/useMenuItems";
 import {
   usePromotions,
   getPromotionLabel,
@@ -42,6 +46,9 @@ type FormState = {
   promo_code: string;
   max_uses: string;
   badge_color: BadgeColor;
+  bogo_item_ids: string[];
+  free_item_id: string;
+  free_item_name: string;
 };
 
 const DEFAULT_FORM: FormState = {
@@ -52,12 +59,15 @@ const DEFAULT_FORM: FormState = {
   discount_unit: "percent",
   applies_to: "all",
   min_order_amount: "",
-  starts_at: new Date().toISOString().slice(0, 16),
+  starts_at: new Date().toISOString().slice(0, 10),
   ends_at: "",
   is_active: true,
   promo_code: "",
   max_uses: "",
   badge_color: "amber",
+  bogo_item_ids: [],
+  free_item_id: "",
+  free_item_name: "",
 };
 
 function promoStatus(p: PromotionRow): "active" | "expired" | "scheduled" | "paused" {
@@ -83,6 +93,70 @@ function StatusPill({ status }: { status: ReturnType<typeof promoStatus> }) {
   );
 }
 
+function DatePickerButton({
+  value,
+  onChange,
+  placeholder,
+  disableBefore,
+}: {
+  value: string;
+  onChange: (iso: string) => void;
+  placeholder: string;
+  disableBefore?: Date;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const selected = useMemo(() => {
+    if (!value) return undefined;
+    const d = parse(value, "yyyy-MM-dd", new Date());
+    return isValid(d) ? d : undefined;
+  }, [value]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40"
+        >
+          <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+          <span className={`truncate text-xs leading-none ${value ? "text-text-primary" : "text-text-muted"}`}>
+            {selected
+              ? format(selected, "EEE, MMM d, yyyy")
+              : placeholder}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl">
+        <Calendar
+          mode="single"
+          required={false}
+          selected={selected}
+          onSelect={(d) => {
+            onChange(d ? format(d, "yyyy-MM-dd") : "");
+            if (d) setOpen(false);
+          }}
+          disabled={disableBefore ? { before: disableBefore } : undefined}
+          className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+        />
+        {value && (
+          <div className="border-t border-border p-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full text-text-secondary hover:bg-bg-surface hover:text-text-primary"
+              onClick={() => { onChange(""); setOpen(false); }}
+            >
+              Clear date
+            </Button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function PromoFormDrawer({
   open,
   onClose,
@@ -97,18 +171,34 @@ function PromoFormDrawer({
   initial: FormState;
 }) {
   const [form, setForm] = useState<FormState>(initial);
+  const { items: menuItems, loading: menuLoading } = useMenuItems();
 
-  // Reset when drawer opens with new initial
   const set = <K extends keyof FormState>(key: K, val: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: val }));
 
   const showDiscountValue = form.promo_type === "percentage" || form.promo_type === "fixed";
 
+  const startsAtDate = useMemo(() => {
+    if (!form.starts_at) return startOfToday();
+    const d = parse(form.starts_at, "yyyy-MM-dd", new Date());
+    return isValid(d) ? d : startOfToday();
+  }, [form.starts_at]);
+
+  // Toggle a menu item in bogo_item_ids
+  const toggleBogoItem = (id: string) => {
+    set("bogo_item_ids",
+      form.bogo_item_ids.includes(id)
+        ? form.bogo_item_ids.filter((x) => x !== id)
+        : [...form.bogo_item_ids, id]
+    );
+  };
+
+  const allSelected = menuItems.length > 0 && form.bogo_item_ids.length === menuItems.length;
+
   return (
     <AnimatePresence>
       {open && (
         <>
-          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -116,7 +206,6 @@ function PromoFormDrawer({
             className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
             onClick={onClose}
           />
-          {/* Drawer */}
           <motion.aside
             initial={{ x: "100%" }}
             animate={{ x: 0 }}
@@ -167,7 +256,12 @@ function PromoFormDrawer({
               {/* Type */}
               <div className="flex flex-col gap-1.5">
                 <Label>Deal Type *</Label>
-                <Select value={form.promo_type} onValueChange={(v) => set("promo_type", v as PromoType)}>
+                <Select value={form.promo_type} onValueChange={(v) => {
+                  set("promo_type", v as PromoType);
+                  set("bogo_item_ids", []);
+                  set("free_item_id", "");
+                  set("free_item_name", "");
+                }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -180,7 +274,85 @@ function PromoFormDrawer({
                 </Select>
               </div>
 
-              {/* Discount value (only for percentage / fixed) */}
+              {/* BOGO — item checklist */}
+              {form.promo_type === "bogo" && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label>Applies to which items?</Label>
+                    <button
+                      type="button"
+                      onClick={() => set("bogo_item_ids", allSelected ? [] : menuItems.map((m) => m.id))}
+                      className="text-[11px] text-gold hover:underline"
+                    >
+                      {allSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                  {menuLoading ? (
+                    <div className="flex flex-col gap-1.5">
+                      {[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-md" />)}
+                    </div>
+                  ) : menuItems.length === 0 ? (
+                    <p className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+                      No menu items found. Add items in Menu first.
+                    </p>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto rounded-md border border-border bg-bg-elevated">
+                      {menuItems.filter((m) => m.is_active).map((m) => {
+                        const checked = form.bogo_item_ids.includes(m.id);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => toggleBogoItem(m.id)}
+                            className={`flex w-full items-center gap-3 border-b border-border/50 px-3 py-2.5 text-left transition-colors last:border-0 hover:bg-bg-surface ${checked ? "bg-gold/5" : ""}`}
+                          >
+                            <div className={`flex size-4 shrink-0 items-center justify-center rounded border ${checked ? "border-gold bg-gold" : "border-border bg-transparent"}`}>
+                              {checked && <CheckCircle2 className="size-3 text-bg-base" />}
+                            </div>
+                            <span className="min-w-0 flex-1 truncate text-xs text-text-primary">{m.name}</span>
+                            <span className="shrink-0 text-xs text-text-muted">${m.price.toFixed(2)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {form.bogo_item_ids.length === 0 && (
+                    <p className="text-[11px] text-text-muted">No items selected — BOGO applies to all items.</p>
+                  )}
+                </div>
+              )}
+
+              {/* Free Item — single select */}
+              {form.promo_type === "free_item" && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>What is the free item?</Label>
+                  {menuLoading ? (
+                    <Skeleton className="h-10 rounded-md" />
+                  ) : (
+                    <Select
+                      value={form.free_item_id}
+                      onValueChange={(v) => {
+                        const item = menuItems.find((m) => m.id === v);
+                        set("free_item_id", v);
+                        set("free_item_name", item?.name ?? "");
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select the free item…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {menuItems.filter((m) => m.is_active).map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.name} — ${m.price.toFixed(2)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              )}
+
+              {/* Discount value (percentage / fixed only) */}
               {showDiscountValue && (
                 <div className="flex gap-3">
                   <div className="flex flex-1 flex-col gap-1.5">
@@ -229,24 +401,24 @@ function PromoFormDrawer({
                 </Select>
               </div>
 
-              {/* Dates */}
+              {/* Dates — calendar pickers */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="promo-starts">Starts At</Label>
-                  <Input
-                    id="promo-starts"
-                    type="datetime-local"
+                  <Label>Starts</Label>
+                  <DatePickerButton
                     value={form.starts_at}
-                    onChange={(e) => set("starts_at", e.target.value)}
+                    onChange={(v) => set("starts_at", v)}
+                    placeholder="Start date"
+                    disableBefore={startOfToday()}
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="promo-ends">Ends At</Label>
-                  <Input
-                    id="promo-ends"
-                    type="datetime-local"
+                  <Label>Ends</Label>
+                  <DatePickerButton
                     value={form.ends_at}
-                    onChange={(e) => set("ends_at", e.target.value)}
+                    onChange={(v) => set("ends_at", v)}
+                    placeholder="No expiry"
+                    disableBefore={startsAtDate}
                   />
                 </div>
               </div>
@@ -352,7 +524,7 @@ export default function PromotionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<PromotionRow | null>(null);
 
-  const initialForm = editTarget
+  const initialForm: FormState = editTarget
     ? {
         title: editTarget.title,
         description: editTarget.description ?? "",
@@ -361,26 +533,25 @@ export default function PromotionsPage() {
         discount_unit: editTarget.discount_unit ?? "percent",
         applies_to: editTarget.applies_to,
         min_order_amount: editTarget.min_order_amount?.toString() ?? "",
-        starts_at: editTarget.starts_at.slice(0, 16),
-        ends_at: editTarget.ends_at?.slice(0, 16) ?? "",
+        starts_at: editTarget.starts_at.slice(0, 10),
+        ends_at: editTarget.ends_at?.slice(0, 10) ?? "",
         is_active: editTarget.is_active,
         promo_code: editTarget.promo_code ?? "",
         max_uses: editTarget.max_uses?.toString() ?? "",
         badge_color: editTarget.badge_color,
+        bogo_item_ids: editTarget.bogo_item_ids ?? [],
+        free_item_id: editTarget.free_item_id ?? "",
+        free_item_name: editTarget.free_item_name ?? "",
       }
     : DEFAULT_FORM;
 
-  const openCreate = () => {
-    setEditTarget(null);
-    setDrawerOpen(true);
-  };
-
-  const openEdit = (p: PromotionRow) => {
-    setEditTarget(p);
-    setDrawerOpen(true);
-  };
+  const openCreate = () => { setEditTarget(null); setDrawerOpen(true); };
+  const openEdit = (p: PromotionRow) => { setEditTarget(p); setDrawerOpen(true); };
 
   const handleSave = async (form: FormState) => {
+    const startsDate = form.starts_at ? new Date(form.starts_at) : new Date();
+    const endsDate = form.ends_at ? new Date(form.ends_at) : null;
+
     const payload: CreatePromotionPayload = {
       title: form.title.trim(),
       description: form.description.trim() || null,
@@ -389,12 +560,15 @@ export default function PromotionsPage() {
       discount_unit: form.discount_value ? form.discount_unit : null,
       applies_to: form.applies_to,
       min_order_amount: form.min_order_amount ? Number(form.min_order_amount) : null,
-      starts_at: new Date(form.starts_at).toISOString(),
-      ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
+      starts_at: startsDate.toISOString(),
+      ends_at: endsDate ? endsDate.toISOString() : null,
       is_active: form.is_active,
       promo_code: form.promo_code.trim() || null,
       max_uses: form.max_uses ? Number(form.max_uses) : null,
       badge_color: form.badge_color,
+      bogo_item_ids: form.promo_type === "bogo" ? form.bogo_item_ids : [],
+      free_item_id: form.promo_type === "free_item" && form.free_item_id ? form.free_item_id : null,
+      free_item_name: form.promo_type === "free_item" && form.free_item_name ? form.free_item_name : null,
     };
 
     const ok = editTarget
@@ -462,18 +636,22 @@ export default function PromotionsPage() {
                 transition={{ duration: 0.25, delay: i * 0.04 }}
                 className="flex items-center gap-4 rounded-lg border border-border bg-bg-surface px-4 py-3 transition-colors hover:border-gold/20"
               >
-                {/* Deal badge */}
                 <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold tracking-wide ${badgeClasses}`}>
                   {label}
                 </span>
 
-                {/* Info */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-medium text-text-primary">{p.title}</p>
                     <StatusPill status={status} />
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-text-muted">
+                    {p.free_item_name && (
+                      <span className="text-green-400">Free: {p.free_item_name}</span>
+                    )}
+                    {p.bogo_item_ids?.length > 0 && (
+                      <span>{p.bogo_item_ids.length} item{p.bogo_item_ids.length !== 1 ? "s" : ""}</span>
+                    )}
                     {p.promo_code && (
                       <span className="font-mono uppercase text-gold/80">{p.promo_code}</span>
                     )}
@@ -493,7 +671,6 @@ export default function PromotionsPage() {
                   </div>
                 </div>
 
-                {/* Actions */}
                 <div className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
