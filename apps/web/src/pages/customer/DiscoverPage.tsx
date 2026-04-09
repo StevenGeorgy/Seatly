@@ -8,6 +8,7 @@ import {
   Clock,
   Flame,
   ChevronRight,
+  Tag,
   SlidersHorizontal,
   MessageCircle,
   X,
@@ -328,6 +329,14 @@ export default function DiscoverPage() {
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-6 sm:px-6">
         {/* Cuisine filter chips */}
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void navigate("/deals")}
+            className="flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/20 px-4 py-1.5 text-xs font-semibold text-amber-400 transition-colors hover:bg-amber-500/30 whitespace-nowrap"
+          >
+            <Tag className="size-3" />
+            Deals &amp; Offers
+          </button>
           {CUISINES.map((cuisine) => (
             <button
               key={cuisine}

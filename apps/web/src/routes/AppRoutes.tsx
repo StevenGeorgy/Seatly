@@ -21,7 +21,9 @@ import RegisterPage from "@/pages/auth/RegisterPage";
 import ResetPasswordPage from "@/pages/auth/ResetPasswordPage";
 import SetupPage from "@/pages/auth/SetupPage";
 import NotFoundPage from "@/pages/NotFoundPage";
+import DealsPage from "@/pages/customer/DealsPage";
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
+const PromotionsPage = lazy(() => import("@/pages/dashboard/PromotionsPage"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
 const WaitlistPage = lazy(() => import("@/pages/dashboard/WaitlistPage"));
@@ -98,6 +100,16 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
+        <Route
+          path="/deals"
+          element={
+            <RequireAuth>
+              <RequireCustomer>
+                <DealsPage />
+              </RequireCustomer>
+            </RequireAuth>
+          }
+        />
 
         <Route
           path="/dashboard"
@@ -127,6 +139,7 @@ export function AppRoutes() {
           <Route path="events" element={<EventsPage />} />
           <Route path="export" element={<ExportPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="promotions" element={<PromotionsPage />} />
         </Route>
 
         <Route path="/:restaurantSlug" element={<RestaurantPublicPage />} />

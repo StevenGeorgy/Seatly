@@ -456,6 +456,12 @@ const common = {
       noExports: "No exports yet",
       noExportsDesc: "Generate your first accountant-ready report.",
     },
+    promotions: {
+      title: "Promotions",
+      create: "New Promotion",
+      noPromos: "No promotions yet",
+      noPromosDesc: "Create your first promotion to attract customers.",
+    },
     settings: {
       title: "Settings",
       restaurant: "Restaurant",
@@ -531,6 +537,7 @@ const common = {
       events: { title: "Events" },
       export: { title: "Export" },
       settings: { title: "Settings" },
+      promotions: { title: "Promotions" },
     },
   },
   auth: {

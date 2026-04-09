@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/stevengeorgy/Seatly-3 && git add -A -- ':!.claude/worktrees' && git diff --staged --quiet || git commit -m \"chore: auto-save $(date '+%Y-%m-%d %H:%M')\"",
+            "statusMessage": "Committing changes to main..."
+          }
+        ]
+      }
+    ]
+  }
+}

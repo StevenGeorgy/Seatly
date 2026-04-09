@@ -27,6 +27,7 @@ export const DASHBOARD_PATH_ROLES: Record<string, readonly StaffRole[]> = {
   "/dashboard/events": ["owner", "manager"],
   "/dashboard/export": ["owner"],
   "/dashboard/settings": ["owner"],
+  "/dashboard/promotions": ["owner", "manager"],
 };
 
 /** Sidebar order — must match keys in `DASHBOARD_PATH_ROLES`. */
@@ -45,6 +46,7 @@ export const DASHBOARD_NAV_ITEMS: readonly { path: string; labelKey: string }[] 
   { path: "/dashboard/events", labelKey: "routes.dashboard.events.title" },
   { path: "/dashboard/export", labelKey: "routes.dashboard.export.title" },
   { path: "/dashboard/settings", labelKey: "routes.dashboard.settings.title" },
+  { path: "/dashboard/promotions", labelKey: "routes.dashboard.promotions.title" },
 ];
 
 export function normalizeDashboardPath(pathname: string): string {

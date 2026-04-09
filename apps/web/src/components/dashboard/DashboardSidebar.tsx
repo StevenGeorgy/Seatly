@@ -17,6 +17,7 @@ import {
   PartyPopper,
   FileDown,
   Settings,
+  Tag,
   ChevronDown,
   Menu,
   X,
@@ -48,6 +49,7 @@ const ICONS: Record<string, typeof LayoutDashboard> = {
   "/dashboard/events": PartyPopper,
   "/dashboard/export": FileDown,
   "/dashboard/settings": Settings,
+  "/dashboard/promotions": Tag,
 };
 
 export function DashboardSidebar() {
