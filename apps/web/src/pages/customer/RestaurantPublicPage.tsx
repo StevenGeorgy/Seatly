@@ -1,4 +1,4 @@
-import { useState, useMemo, useId, useEffect } from "react";
+import { useState, useMemo, useId, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { format, isValid, parse, startOfToday } from "date-fns";
 import { useParams, Link } from "react-router-dom";
@@ -36,6 +36,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
+import { useUser } from "@/hooks/useUser";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -210,6 +212,18 @@ function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Convert "7:00 PM" → "19:00" for timestamptz storage. */
+function convertTo24h(time12: string): string {
+  const match = time12.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return "19:00";
+  let h = parseInt(match[1], 10);
+  const m = match[2];
+  const period = match[3].toUpperCase();
+  if (period === "PM" && h !== 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return `${h.toString().padStart(2, "0")}:${m}`;
+}
+
 /** Demo checkout: enough digits for a test PAN, expiry, and CVC. */
 function isCardFilled(num: string, exp: string, cvc: string): boolean {
   const digits = num.replace(/\D/g, "");
@@ -227,8 +241,8 @@ function formatCardPanInput(value: string): string {
 // ─── Step indicator ───────────────────────────────────────────────────────────
 const STEPS: { key: Step; labelKey: string }[] = [
   { key: "type", labelKey: "customerPublic.booking.stepService" },
-  { key: "details", labelKey: "customerPublic.booking.stepDetails" },
   { key: "menu", labelKey: "customerPublic.booking.stepMenu" },
+  { key: "details", labelKey: "customerPublic.booking.stepDetails" },
   { key: "checkout", labelKey: "customerPublic.booking.stepPayment" },
 ];
 
@@ -308,6 +322,7 @@ export default function RestaurantPublicPage() {
   const { t } = useTranslation();
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
+  const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
   const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
@@ -356,6 +371,37 @@ export default function RestaurantPublicPage() {
     name: "", email: "", phone: "", time: "6:00 PM",
   });
 
+  // Pre-fill contact fields from logged-in profile (only on first load)
+  useEffect(() => {
+    if (!profile) return;
+    const name = profile.full_name ?? "";
+    const email = profile.email ?? "";
+    const phone = profile.phone ?? "";
+    const allergies = profile.allergies?.join(", ") ?? "";
+    const seating = profile.seating_preference ?? "";
+    setDineIn((d) => ({
+      ...d,
+      name: d.name || name,
+      email: d.email || email,
+      phone: d.phone || phone,
+      allergies: d.allergies || allergies,
+      seating_preference: d.seating_preference || seating,
+    }));
+    setDelivery((d) => ({
+      ...d,
+      name: d.name || name,
+      email: d.email || email,
+      phone: d.phone || phone,
+    }));
+    setPickup((d) => ({
+      ...d,
+      name: d.name || name,
+      email: d.email || email,
+      phone: d.phone || phone,
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
+
   const [cardNumber, setCardNumber] = useState("");
   const [cardExpiry, setCardExpiry] = useState("");
   const [cardCvc, setCardCvc] = useState("");
@@ -390,6 +436,9 @@ export default function RestaurantPublicPage() {
   }, [paymentSplitMode, splitPartyCount]);
   const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
   const [customTipAmount, setCustomTipAmount] = useState("");
+  const [placing, setPlacing] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
+  const [confirmationCode, setConfirmationCode] = useState<string>("");
 
   const currency = restaurant?.currency ?? "cad";
   const gradient = CUISINE_GRADIENT[restaurant?.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-900";
@@ -534,6 +583,145 @@ export default function RestaurantPublicPage() {
     return false;
   };
 
+  const handlePlaceOrder = useCallback(async () => {
+    if (!restaurant || !orderType || cart.length === 0) return;
+    const isRealUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(restaurant.id);
+    if (!isSupabaseConfigured() || !isRealUuid) {
+      // Mock mode — just show confirmation
+      setConfirmationCode(`SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
+      setStep("confirmed");
+      return;
+    }
+
+    setPlacing(true);
+    setOrderError(null);
+    const code = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    try {
+      const client = getSupabaseBrowserClient();
+
+      // Determine contact info based on order type
+      const contactName =
+        orderType === "dine_in" ? dineIn.name :
+        orderType === "pickup" ? pickup.name : delivery.name;
+      const contactEmail =
+        orderType === "dine_in" ? dineIn.email :
+        orderType === "pickup" ? pickup.email : delivery.email;
+      const contactPhone =
+        orderType === "dine_in" ? dineIn.phone :
+        orderType === "pickup" ? pickup.phone : delivery.phone;
+
+      // 1. Upsert a guest record for this restaurant
+      let guestId: string | null = null;
+      if (profile) {
+        // Check if guest record already exists for this user + restaurant
+        const { data: existingGuest } = await client
+          .from("guests")
+          .select("id")
+          .eq("restaurant_id", restaurant.id)
+          .eq("user_profile_id", profile.id)
+          .maybeSingle();
+
+        if (existingGuest) {
+          guestId = existingGuest.id;
+        } else {
+          const { data: newGuest, error: guestErr } = await client
+            .from("guests")
+            .insert({
+              restaurant_id: restaurant.id,
+              user_profile_id: profile.id,
+              full_name: contactName,
+              email: contactEmail,
+              phone: contactPhone,
+              dietary_restrictions: dineIn.allergies ? dineIn.allergies.split(",").map((s: string) => s.trim()).filter(Boolean) : [],
+              seating_preference: orderType === "dine_in" ? dineIn.seating_preference : null,
+            })
+            .select("id")
+            .single();
+          if (guestErr) throw new Error(`Guest: ${guestErr.message}`);
+          guestId = newGuest.id;
+        }
+      }
+
+      // 2. For dine-in, create a reservation
+      let reservationId: string | null = null;
+      if (orderType === "dine_in") {
+        const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
+        const { data: resData, error: resErr } = await client
+          .from("reservations")
+          .insert({
+            restaurant_id: restaurant.id,
+            guest_id: guestId,
+            party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
+            reserved_at: reservedAt,
+            status: "pending",
+            source: "web",
+            special_request: dineIn.allergies || null,
+            occasion: dineIn.occasion || null,
+            confirmation_code: code,
+            is_guest_checkout: !profile,
+            guest_full_name: contactName,
+            guest_email: contactEmail,
+            guest_phone: contactPhone,
+            dietary_notes: dineIn.allergies || null,
+          })
+          .select("id")
+          .single();
+        if (resErr) throw new Error(`Reservation: ${resErr.message}`);
+        reservationId = resData.id;
+      }
+
+      // 3. Create the order
+      const { data: orderData, error: orderErr } = await client
+        .from("orders")
+        .insert({
+          restaurant_id: restaurant.id,
+          reservation_id: reservationId,
+          guest_id: guestId,
+          is_preorder: orderType !== "dine_in",
+          order_type: orderType === "pickup" ? "takeout" : orderType,
+          status: "pending",
+          subtotal: roundMoney(cartTotal),
+          tax_amount: roundMoney(tax),
+          tip_amount: roundMoney(tipAmount),
+          total_amount: roundMoney(totalNow),
+          payment_method: paymentSplitMode === "split" ? "split" : "card",
+          confirmation_code: code,
+        })
+        .select("id")
+        .single();
+      if (orderErr) throw new Error(`Order: ${orderErr.message}`);
+
+      // 4. Insert order items
+      const items = cart.map((item) => ({
+        order_id: orderData.id,
+        menu_item_id: item.id.startsWith("m") ? null : item.id, // skip mock IDs
+        name: item.name,
+        quantity: item.qty,
+        unit_price: roundMoney(item.price),
+        line_total: roundMoney(item.price * item.qty),
+        status: "pending",
+      }));
+      const { error: itemsErr } = await client.from("order_items").insert(items);
+      if (itemsErr) throw new Error(`Order items: ${itemsErr.message}`);
+
+      // 5. Save phone to user profile if it changed (so it's remembered next time)
+      if (profile && contactPhone && contactPhone !== (profile.phone ?? "")) {
+        await client
+          .from("user_profiles")
+          .update({ phone: contactPhone })
+          .eq("id", profile.id);
+      }
+
+      setConfirmationCode(code);
+      setStep("confirmed");
+    } catch (err) {
+      setOrderError(err instanceof Error ? err.message : "Failed to place order");
+    } finally {
+      setPlacing(false);
+    }
+  }, [restaurant, orderType, cart, profile, dineIn, pickup, delivery, cartTotal, tax, tipAmount, totalNow, paymentSplitMode]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-bg-base">
@@ -614,7 +802,7 @@ export default function RestaurantPublicPage() {
                   <button
                     key={key}
                     type="button"
-                    onClick={() => { setOrderType(key); setStep("details"); }}
+                    onClick={() => { setOrderType(key); setStep("menu"); }}
                     className="flex items-center gap-4 rounded-2xl border border-border bg-bg-surface p-5 text-left transition-all hover:border-gold/40 hover:bg-bg-elevated group"
                   >
                     <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-gold/10 transition-colors group-hover:bg-gold/20">
@@ -645,8 +833,8 @@ export default function RestaurantPublicPage() {
                 <h2 className="text-lg font-bold text-white">
                   {orderType === "dine_in" ? "Book your table" : orderType === "pickup" ? "Pickup details" : "Delivery details"}
                 </h2>
-                <button type="button" onClick={() => setStep("type")} className="text-xs text-text-muted hover:text-gold transition-colors">
-                  ← Change
+                <button type="button" onClick={() => setStep("menu")} className="text-xs text-text-muted hover:text-gold transition-colors">
+                  ← Back to menu
                 </button>
               </div>
 
@@ -901,9 +1089,9 @@ export default function RestaurantPublicPage() {
               <Button
                 className="mt-5 h-12 w-full text-base font-semibold"
                 disabled={!canProceedDetails()}
-                onClick={() => setStep("menu")}
+                onClick={() => setStep("checkout")}
               >
-                Continue to Menu
+                Continue to Checkout
                 <ChevronRight className="size-4 ml-1" />
               </Button>
             </motion.div>
@@ -914,7 +1102,7 @@ export default function RestaurantPublicPage() {
             <motion.div key="menu" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-lg font-bold text-white">Choose your items</h2>
-                <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Back</button>
+                <button type="button" onClick={() => setStep("type")} className="text-xs text-text-muted hover:text-gold transition-colors">← Change type</button>
               </div>
 
               {/* ── Allergen warning section ── */}
@@ -1091,11 +1279,11 @@ export default function RestaurantPublicPage() {
                 <Button
                   className="h-12 w-full text-base font-semibold shadow-xl"
                   disabled={cartCount === 0}
-                  onClick={() => setStep("checkout")}
+                  onClick={() => setStep("details")}
                 >
                   {cartCount === 0
                     ? "Add items to continue"
-                    : `Review order · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
+                    : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
                   {cartCount > 0 && <ChevronRight className="size-4 ml-1" />}
                 </Button>
               </div>
@@ -1107,7 +1295,7 @@ export default function RestaurantPublicPage() {
             <motion.div key="checkout" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-lg font-bold text-white">Review & Pay</h2>
-                <button type="button" onClick={() => setStep("menu")} className="text-xs text-text-muted hover:text-gold transition-colors">← Edit order</button>
+                <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Edit details</button>
               </div>
 
               {/* Order summary */}
@@ -1442,13 +1630,18 @@ export default function RestaurantPublicPage() {
                 </div>
               </div>
 
+              {orderError && (
+                <div className="mt-4 rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+                  {orderError}
+                </div>
+              )}
               <Button
                 className="mt-5 h-12 w-full text-base font-semibold"
-                disabled={paymentSplitMode === "split" && !splitCheckoutValid}
-                onClick={() => setStep("confirmed")}
+                disabled={(paymentSplitMode === "split" && !splitCheckoutValid) || placing}
+                onClick={() => void handlePlaceOrder()}
               >
                 <Lock className="size-4 mr-2" />
-                Place Order
+                {placing ? "Placing order…" : "Place Order"}
               </Button>
               <p className="mt-2 text-center text-[11px] text-text-muted">
                 By placing your order you agree to our terms.{" "}
@@ -1493,7 +1686,7 @@ export default function RestaurantPublicPage() {
               <div className="w-full rounded-2xl border border-success/20 bg-success/5 px-6 py-4">
                 <p className="text-xs text-text-muted">Confirmation code</p>
                 <p className="mt-1 font-mono text-xl font-bold tracking-widest text-gold">
-                  SEAT-{Math.random().toString(36).slice(2, 6).toUpperCase()}
+                  {confirmationCode}
                 </p>
                 <p className="mt-1 text-xs text-text-muted">A confirmation has been sent to your email.</p>
               </div>
@@ -1507,10 +1700,12 @@ export default function RestaurantPublicPage() {
                     setTipOption("18");
                     setCustomTipAmount("");
                     setPaymentSplitMode("single");
-                    setSplitFirstAmount("");
-                    setCard2Number("");
-                    setCard2Expiry("");
-                    setCard2Cvc("");
+                    setSplitPartyCountInput("2");
+                    setCardNumber("");
+                    setCardExpiry("");
+                    setCardCvc("");
+                    setConfirmationCode("");
+                    setOrderError(null);
                   }}
                 >
                   Order again

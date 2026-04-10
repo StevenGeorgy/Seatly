@@ -3,9 +3,12 @@
   "configurations": [
     {
       "name": "Seatly Web (Vite)",
-      "runtimeExecutable": "/usr/local/bin/node",
-      "runtimeArgs": ["/Users/mark_habbi/Seatly-10/node_modules/.bin/vite", "--config", "apps/web/vite.config.ts", "--port", "5173"],
-      "port": 5173
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--workspace=apps/web", "--", "--port", "5177"],
+      "port": 5177,
+      "env": {
+        "VITE_DEV_SERVER_HTTPS": "false"
+      }
     }
   ]
 }

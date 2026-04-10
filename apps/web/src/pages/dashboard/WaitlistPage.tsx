@@ -63,13 +63,13 @@ export default function WaitlistPage() {
                       <span>{entry.party_size} guests</span>
                       {entry.estimated_wait_minutes ? (
                         <>
-                          <span>\u00b7</span>
+                          <span>·</span>
                           <span>~{entry.estimated_wait_minutes} {t("dashboard.waitlist.minutes")}</span>
                         </>
                       ) : null}
                       {entry.remote_join ? (
                         <>
-                          <span>\u00b7</span>
+                          <span>·</span>
                           <span className="rounded bg-info/15 px-1.5 py-0.5 text-info">
                             {t("dashboard.waitlist.remoteJoin")}
                           </span>
