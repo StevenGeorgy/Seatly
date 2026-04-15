@@ -670,6 +670,32 @@ const common = {
       noData: "Aucune donn\u00e9e disponible",
     },
   },
+  cenaiva: {
+    title: "Cenaiva",
+    subtitle: "Bonjour ! Je suis Cenaiva, votre assistant restaurant IA. Comment puis-je vous aider ?",
+    inputPlaceholder: "Posez-moi une question sur les restaurants...",
+    suggestedPrompts: {
+      dateNight: "Meilleurs restaurants pour un rendez-vous",
+      budget: "O\u00f9 manger des sushis pour moins de 30$ ?",
+      allergy: "J'ai une allergie aux noix, que puis-je manger ?",
+      birthday: "Organiser un d\u00eener d'anniversaire pour 6",
+    },
+    status: {
+      idle: "Pr\u00eat \u00e0 aider",
+      listening: "\u00c9coute...",
+      thinking: "R\u00e9flexion...",
+      speaking: "En train de parler...",
+    },
+    wakeWord: {
+      enable: "Activer le mot-cl\u00e9 \"Hey Cenaiva\"",
+      disable: "D\u00e9sactiver le mot-cl\u00e9",
+    },
+    actions: {
+      reservationCreated: "R\u00e9servation effectu\u00e9e",
+      orderPlaced: "Commande pass\u00e9e",
+      availabilityChecked: "Disponibilit\u00e9 v\u00e9rifi\u00e9e",
+    },
+  },
 } as const;
 
 export default common;
