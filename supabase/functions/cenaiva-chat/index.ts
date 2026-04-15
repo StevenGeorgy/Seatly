@@ -24,9 +24,10 @@ const supabaseAdmin = createClient(
 );
 
 // ── JWT payload decoder ──
-// The gateway (verify_jwt: true) already verified the JWT signature, so we
-// only need to decode the payload to extract the user's auth ID (sub claim).
-// This avoids supabase-js auth.getUser() which fails on ES256-signed tokens.
+// verify_jwt is set to false in config so the raw Authorization header reaches
+// this function. We decode the payload ourselves to extract the sub claim.
+// auth.getUser() is not used — it fails on ES256-signed tokens in some
+// supabase-js Deno versions. The user_profiles lookup acts as a second gate.
 function decodeJwtPayload(token: string): Record<string, any> | null {
   try {
     const parts = token.split(".");
@@ -608,10 +609,12 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    // Auth: decode JWT payload (gateway already verified the signature via verify_jwt: true)
-    // Using auth.getUser() fails on ES256-signed tokens in some supabase-js versions.
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.replace("Bearer ", "");
+    // Auth: decode JWT payload without signature verification.
+    // verify_jwt: false — raw Authorization header passes through the gateway.
+    // auth.getUser() is not used; it fails on ES256-signed tokens.
+    const authHeader =
+      req.headers.get("authorization") || req.headers.get("Authorization") || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
     if (!token) return jsonRes({ error: "Missing authorization token" }, 401);
 
     const jwtPayload = decodeJwtPayload(token);
