@@ -23,6 +23,23 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
+// ── JWT payload decoder ──
+// The gateway (verify_jwt: true) already verified the JWT signature, so we
+// only need to decode the payload to extract the user's auth ID (sub claim).
+// This avoids supabase-js auth.getUser() which fails on ES256-signed tokens.
+function decodeJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
 // ── Claude tools definition ──
 const TOOLS: Anthropic.Tool[] = [
   {
@@ -591,22 +608,21 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    // Auth: extract user from JWT
+    // Auth: decode JWT payload (gateway already verified the signature via verify_jwt: true)
+    // Using auth.getUser() fails on ES256-signed tokens in some supabase-js versions.
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.replace("Bearer ", "");
     if (!token) return jsonRes({ error: "Missing authorization token" }, 401);
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabaseAdmin.auth.getUser(token);
-    if (authError || !user) return jsonRes({ error: "Unauthorized" }, 401);
+    const jwtPayload = decodeJwtPayload(token);
+    const authUserId = jwtPayload?.sub as string | undefined;
+    if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
 
     // Look up user profile
     const { data: profile } = await supabaseAdmin
       .from("user_profiles")
       .select("id, full_name, email, phone, allergies, dietary_restrictions")
-      .eq("auth_user_id", user.id)
+      .eq("auth_user_id", authUserId)
       .single();
     if (!profile) return jsonRes({ error: "User profile not found" }, 404);
 

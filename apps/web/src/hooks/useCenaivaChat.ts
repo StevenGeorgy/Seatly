@@ -41,17 +41,9 @@ export function useCenaivaChat() {
 
       try {
         const client = getSupabaseBrowserClient();
-
-        // refreshSession() fetches a fresh access token from the server so the
-        // edge function never sees an expired JWT. Falls back to getSession()
-        // if the refresh token itself is gone (user must log in again).
-        let session = (await client.auth.getSession()).data.session;
-        if (session) {
-          const refreshed = await client.auth.refreshSession();
-          if (refreshed.data.session) {
-            session = refreshed.data.session;
-          }
-        }
+        const {
+          data: { session },
+        } = await client.auth.getSession();
         if (!session?.access_token) {
           setError("Please sign in to use Cenaiva.");
           setLoading(false);
