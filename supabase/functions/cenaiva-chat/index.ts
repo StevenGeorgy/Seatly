@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import Anthropic from "npm:@anthropic-ai/sdk@0.32.1";
+import OpenAI from "npm:openai@4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -41,121 +41,142 @@ function decodeJwtPayload(token: string): Record<string, any> | null {
   }
 }
 
-// ── Claude tools definition ──
-const TOOLS: Anthropic.Tool[] = [
+// ── OpenAI tools definition ──
+const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
-    name: "search_restaurants",
-    description:
-      "Search for restaurants by name, cuisine type, or city. Returns up to 5 matches.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        query: { type: "string", description: "Free-text search term" },
-        cuisine_type: { type: "string", description: "e.g. Italian, Japanese, Lebanese" },
-      },
-    },
-  },
-  {
-    name: "get_restaurant_info",
-    description: "Get detailed information about a specific restaurant.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        restaurant_id: { type: "string" },
-      },
-      required: ["restaurant_id"],
-    },
-  },
-  {
-    name: "browse_menu",
-    description:
-      "Browse menu items for a restaurant, optionally filtered by category or dietary needs.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        restaurant_id: { type: "string" },
-        category: { type: "string", description: "Menu category name to filter by" },
-        dietary_filter: {
-          type: "string",
-          description: "e.g. vegetarian, gluten-free, nut-free",
+    type: "function",
+    function: {
+      name: "search_restaurants",
+      description:
+        "Search for restaurants by name, cuisine type, or city. Returns up to 5 matches.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Free-text search term" },
+          cuisine_type: { type: "string", description: "e.g. Italian, Japanese, Lebanese" },
         },
-        max_price: { type: "number" },
       },
-      required: ["restaurant_id"],
     },
   },
   {
-    name: "check_availability",
-    description:
-      "Check available reservation time slots for a restaurant on a specific date.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        restaurant_id: { type: "string" },
-        date: { type: "string", description: "YYYY-MM-DD" },
-        party_size: { type: "number", minimum: 1 },
-      },
-      required: ["restaurant_id", "date", "party_size"],
-    },
-  },
-  {
-    name: "create_reservation",
-    description:
-      "Book a reservation at a restaurant. ALWAYS confirm the details with the user before calling this tool.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        restaurant_id: { type: "string" },
-        date_time: { type: "string", description: "ISO 8601 datetime for the reservation" },
-        party_size: { type: "number" },
-        shift_id: { type: "string" },
-        special_request: { type: "string" },
-        occasion: { type: "string" },
-      },
-      required: ["restaurant_id", "date_time", "party_size", "shift_id"],
-    },
-  },
-  {
-    name: "place_order",
-    description:
-      "Place a pickup or delivery order. ALWAYS confirm items and total with the user before calling this tool.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        restaurant_id: { type: "string" },
-        order_type: {
-          type: "string",
-          enum: ["takeout", "delivery"],
-          description: "Use 'takeout' for pickup orders",
+    type: "function",
+    function: {
+      name: "get_restaurant_info",
+      description: "Get detailed information about a specific restaurant.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string" },
         },
-        items: {
-          type: "array",
+        required: ["restaurant_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_menu",
+      description:
+        "Browse menu items for a restaurant, optionally filtered by category or dietary needs.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string" },
+          category: { type: "string", description: "Menu category name to filter by" },
+          dietary_filter: {
+            type: "string",
+            description: "e.g. vegetarian, gluten-free, nut-free",
+          },
+          max_price: { type: "number" },
+        },
+        required: ["restaurant_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_availability",
+      description:
+        "Check available reservation time slots for a restaurant on a specific date.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string" },
+          date: { type: "string", description: "YYYY-MM-DD" },
+          party_size: { type: "number", minimum: 1 },
+        },
+        required: ["restaurant_id", "date", "party_size"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_reservation",
+      description:
+        "Book a reservation at a restaurant. ALWAYS confirm the details with the user before calling this tool.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string" },
+          date_time: { type: "string", description: "ISO 8601 datetime for the reservation" },
+          party_size: { type: "number" },
+          shift_id: { type: "string" },
+          special_request: { type: "string" },
+          occasion: { type: "string" },
+        },
+        required: ["restaurant_id", "date_time", "party_size", "shift_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "place_order",
+      description:
+        "Place a pickup or delivery order. ALWAYS confirm items and total with the user before calling this tool.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string" },
+          order_type: {
+            type: "string",
+            enum: ["takeout", "delivery"],
+            description: "Use 'takeout' for pickup orders",
+          },
           items: {
-            type: "object",
-            properties: {
-              menu_item_id: { type: "string" },
-              name: { type: "string" },
-              quantity: { type: "number" },
-              unit_price: { type: "number" },
-              modifications: { type: "string" },
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                menu_item_id: { type: "string" },
+                name: { type: "string" },
+                quantity: { type: "number" },
+                unit_price: { type: "number" },
+                modifications: { type: "string" },
+              },
+              required: ["menu_item_id", "name", "quantity", "unit_price"],
             },
-            required: ["menu_item_id", "name", "quantity", "unit_price"],
           },
         },
+        required: ["restaurant_id", "order_type", "items"],
       },
-      required: ["restaurant_id", "order_type", "items"],
     },
   },
   {
-    name: "get_user_reservations",
-    description: "Get the current user's upcoming reservations.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        status: {
-          type: "string",
-          enum: ["pending", "confirmed", "all"],
-          description: "Filter by reservation status",
+    type: "function",
+    function: {
+      name: "get_user_reservations",
+      description: "Get the current user's upcoming reservations.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["pending", "confirmed", "all"],
+            description: "Filter by reservation status",
+          },
         },
       },
     },
@@ -202,7 +223,6 @@ async function executeTool(
     }
 
     case "browse_menu": {
-      // Fetch categories first
       const { data: categories } = await supabaseAdmin
         .from("menu_categories")
         .select("id, name")
@@ -227,7 +247,6 @@ async function executeTool(
       const { data: items, error } = await itemQuery;
       if (error) return JSON.stringify({ error: error.message });
 
-      // Filter by category name if provided
       let filtered = items || [];
       if (input.category && categories) {
         const cat = categories.find(
@@ -238,7 +257,6 @@ async function executeTool(
         }
       }
 
-      // Filter by dietary needs
       if (input.dietary_filter) {
         const filter = input.dietary_filter.toLowerCase();
         filtered = filtered.filter((i: any) => {
@@ -341,7 +359,6 @@ async function executeTool(
       const { restaurant_id, date_time, party_size, shift_id, special_request, occasion } =
         input;
 
-      // Find or create guest record for this user at this restaurant
       const { data: existingGuest } = await supabaseAdmin
         .from("guests")
         .select("id")
@@ -393,7 +410,6 @@ async function executeTool(
       if (resvErr)
         return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
 
-      // Fire n8n webhook if configured
       fireWebhook("reservation_created", { reservation, restaurant_id });
 
       return JSON.stringify({
@@ -406,7 +422,6 @@ async function executeTool(
     case "place_order": {
       const { restaurant_id, order_type, items } = input;
 
-      // Find or create guest
       const { data: existingGuest } = await supabaseAdmin
         .from("guests")
         .select("id")
@@ -437,7 +452,6 @@ async function executeTool(
         guestId = newGuest.id;
       }
 
-      // Get restaurant tax rate
       const { data: rest } = await supabaseAdmin
         .from("restaurants")
         .select("tax_rate, currency")
@@ -507,7 +521,6 @@ async function executeTool(
     }
 
     case "get_user_reservations": {
-      // Find all guest records for this user
       const { data: guests } = await supabaseAdmin
         .from("guests")
         .select("id, restaurant_id, restaurants(name)")
@@ -629,8 +642,8 @@ Deno.serve(async (req: Request) => {
       .single();
     if (!profile) return jsonRes({ error: "User profile not found" }, 404);
 
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) return jsonRes({ error: "ANTHROPIC_API_KEY not configured" }, 500);
+    const apiKey = Deno.env.get("OPENAI_API_KEY");
+    if (!apiKey) return jsonRes({ error: "OPENAI_API_KEY not configured" }, 500);
 
     const body = await req.json();
     const { message, conversation_id, restaurant_id, language = "en" } = body;
@@ -679,101 +692,93 @@ Deno.serve(async (req: Request) => {
       .order("created_at", { ascending: true })
       .limit(20);
 
-    // Build Claude messages from history
-    const claudeMessages: Anthropic.MessageParam[] = [];
+    // Build OpenAI messages from history
+    const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
     for (const msg of history || []) {
       if (msg.role === "user") {
-        claudeMessages.push({ role: "user", content: msg.content });
+        openaiMessages.push({ role: "user", content: msg.content });
       } else if (msg.role === "assistant") {
-        claudeMessages.push({ role: "assistant", content: msg.content });
+        openaiMessages.push({ role: "assistant", content: msg.content });
       } else if (msg.role === "tool_call" && msg.metadata) {
-        // Tool use block from assistant
-        claudeMessages.push({
+        openaiMessages.push({
           role: "assistant",
-          content: [
+          content: null,
+          tool_calls: [
             {
-              type: "tool_use",
               id: msg.metadata.tool_use_id,
-              name: msg.metadata.tool_name,
-              input: msg.metadata.input,
+              type: "function",
+              function: {
+                name: msg.metadata.tool_name,
+                arguments: JSON.stringify(msg.metadata.input),
+              },
             },
           ],
         });
       } else if (msg.role === "tool_result" && msg.metadata) {
-        claudeMessages.push({
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: msg.metadata.tool_use_id,
-              content: msg.content,
-            },
-          ],
+        openaiMessages.push({
+          role: "tool",
+          tool_call_id: msg.metadata.tool_use_id,
+          content: msg.content,
         });
       }
     }
 
-    // Call Claude with tool-use loop
-    const anthropic = new Anthropic({ apiKey });
+    // Call OpenAI with tool-use loop
+    const openai = new OpenAI({ apiKey });
     const systemPrompt = buildSystemPrompt(profile, language, restaurantContext);
     const actionsTaken: { type: string; data: Record<string, any> }[] = [];
     let finalReply = "";
     let iterations = 0;
     const MAX_ITERATIONS = 5;
 
-    let currentMessages = [...claudeMessages];
+    let currentMessages = [...openaiMessages];
 
     while (iterations < MAX_ITERATIONS) {
       iterations++;
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
         max_tokens: 1024,
-        system: systemPrompt,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...currentMessages,
+        ],
         tools: TOOLS,
-        messages: currentMessages,
+        tool_choice: "auto",
       });
 
-      // Check if there are tool_use blocks
-      const toolUseBlocks = response.content.filter(
-        (b: any) => b.type === "tool_use",
-      );
-      const textBlocks = response.content
-        .filter((b: any) => b.type === "text")
-        .map((b: any) => b.text)
-        .join("");
+      const message = response.choices[0].message;
 
-      if (toolUseBlocks.length === 0) {
-        // No tools, just text — we're done
-        finalReply = textBlocks;
+      if (!message.tool_calls?.length) {
+        // No tool calls — final text reply
+        finalReply = message.content || "";
         break;
       }
 
-      // Process each tool call
-      const assistantContent = response.content;
-      currentMessages.push({ role: "assistant", content: assistantContent as any });
+      // Add assistant message with tool calls to context
+      currentMessages.push(message as OpenAI.Chat.ChatCompletionMessageParam);
 
-      const toolResults: any[] = [];
-      for (const block of toolUseBlocks) {
-        const toolBlock = block as any;
+      // Execute each tool call
+      for (const toolCall of message.tool_calls) {
+        const input = JSON.parse(toolCall.function.arguments);
+
         // Save tool_call to DB
         await supabaseAdmin.from("chat_messages").insert({
           conversation_id: convId,
           role: "tool_call",
-          content: JSON.stringify(toolBlock.input),
+          content: toolCall.function.arguments,
           metadata: {
-            tool_use_id: toolBlock.id,
-            tool_name: toolBlock.name,
-            input: toolBlock.input,
+            tool_use_id: toolCall.id,
+            tool_name: toolCall.function.name,
+            input,
           },
         });
 
-        // Execute the tool
-        const result = await executeTool(toolBlock.name, toolBlock.input, profile.id);
+        const result = await executeTool(toolCall.function.name, input, profile.id);
 
-        // Track actions
+        // Track successful actions
         const parsed = JSON.parse(result);
         if (parsed.success) {
-          actionsTaken.push({ type: `${toolBlock.name}_completed`, data: parsed });
+          actionsTaken.push({ type: `${toolCall.function.name}_completed`, data: parsed });
         }
 
         // Save tool_result to DB
@@ -781,21 +786,20 @@ Deno.serve(async (req: Request) => {
           conversation_id: convId,
           role: "tool_result",
           content: result,
-          metadata: { tool_use_id: toolBlock.id },
+          metadata: { tool_use_id: toolCall.id },
         });
 
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: toolBlock.id,
+        // Add tool result to context
+        currentMessages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
           content: result,
         });
       }
 
-      currentMessages.push({ role: "user", content: toolResults });
-
-      // If this was the last iteration and Claude wanted to call more tools, capture text
-      if (textBlocks && iterations === MAX_ITERATIONS) {
-        finalReply = textBlocks;
+      // Capture any text if we hit the iteration limit
+      if (message.content && iterations === MAX_ITERATIONS) {
+        finalReply = message.content;
       }
     }
 
