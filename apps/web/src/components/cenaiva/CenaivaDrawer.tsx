@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,6 +48,7 @@ export function CenaivaDrawer() {
   const ttsEnabled = cenaiva?.ttsEnabled ?? false;
   const setTtsEnabled = cenaiva?.setTtsEnabled ?? (() => {});
   const isRecognitionSupported = cenaiva?.isRecognitionSupported ?? false;
+  const voiceMode = cenaiva?.voiceMode ?? false;
   const wakeWordEnabled = cenaiva?.wakeWordEnabled ?? false;
   const toggleWakeWord = cenaiva?.toggleWakeWord ?? (() => {});
   const isWakeWordSupported = cenaiva?.isWakeWordSupported ?? false;
@@ -59,10 +59,9 @@ export function CenaivaDrawer() {
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, loading]);
 
   // Focus input when drawer opens
   useEffect(() => {
@@ -77,9 +76,11 @@ export function CenaivaDrawer() {
       const text = input.trim();
       if (!text || loading) return;
       setInput("");
+      // Typing manually exits the continuous voice loop
+      if (voiceMode) stopVoiceInput();
       await sendMessage(text);
     },
-    [input, loading, sendMessage],
+    [input, loading, sendMessage, voiceMode, stopVoiceInput],
   );
 
   const handleSuggestion = useCallback(
@@ -91,12 +92,13 @@ export function CenaivaDrawer() {
   );
 
   const handleMic = useCallback(async () => {
-    if (isRecording) {
+    if (isRecording || voiceMode) {
+      // Stop recording / exit voice mode
       stopVoiceInput();
     } else {
       await startVoiceInput();
     }
-  }, [isRecording, startVoiceInput, stopVoiceInput]);
+  }, [isRecording, voiceMode, startVoiceInput, stopVoiceInput]);
 
   const statusLabel =
     status === "listening"
@@ -122,10 +124,10 @@ export function CenaivaDrawer() {
     <Sheet open={isOpen} onOpenChange={(open) => !open && close()}>
       <SheetContent
         side="right"
-        className="flex w-full flex-col border-l border-[#2E2E2E] bg-[#141414] p-0 sm:w-[400px]"
+        className="flex h-full w-full flex-col overflow-hidden border-l border-[#2E2E2E] bg-[#141414] p-0 sm:w-[400px]"
       >
         {/* Header */}
-        <SheetHeader className="border-b border-[#2E2E2E] px-4 py-3">
+        <SheetHeader className="shrink-0 border-b border-[#2E2E2E] px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <SheetTitle className="text-lg font-semibold text-white">
@@ -134,7 +136,7 @@ export function CenaivaDrawer() {
               <div className={cn("h-2 w-2 rounded-full", statusColor)} />
               <span className="text-xs text-muted-foreground">{statusLabel}</span>
             </div>
-            <div className="flex items-center gap-1 mr-8">
+            <div className="mr-8 flex items-center gap-1">
               {/* TTS toggle */}
               <Button
                 variant="ghost"
@@ -188,8 +190,9 @@ export function CenaivaDrawer() {
           </div>
         </SheetHeader>
 
-        {/* Messages */}
-        <ScrollArea className="flex-1 px-4" ref={scrollRef as any}>
+        {/* Messages — plain div with overflow-y-auto + min-h-0 so it scrolls
+            properly inside the flex column without pushing the input off screen */}
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4">
           <div className="space-y-4 py-4">
             {messages.length === 0 ? (
               <div className="space-y-4 pt-8">
@@ -237,10 +240,10 @@ export function CenaivaDrawer() {
               </div>
             )}
           </div>
-        </ScrollArea>
+        </div>
 
-        {/* Input */}
-        <div className="border-t border-[#2E2E2E] px-4 py-3">
+        {/* Input — shrink-0 keeps it pinned at the bottom */}
+        <div className="shrink-0 border-t border-[#2E2E2E] px-4 py-3">
           <form onSubmit={handleSubmit} className="flex items-center gap-2">
             {isRecognitionSupported && (
               <Button
@@ -251,10 +254,18 @@ export function CenaivaDrawer() {
                   "h-9 w-9 shrink-0",
                   isRecording
                     ? "text-red-400 hover:text-red-300"
-                    : "text-muted-foreground hover:text-white",
+                    : voiceMode
+                      ? "text-[#C8A951] hover:text-[#B89A42]"
+                      : "text-muted-foreground hover:text-white",
                 )}
                 onClick={handleMic}
-                title={isRecording ? "Stop listening" : "Speak to Cenaiva"}
+                title={
+                  isRecording
+                    ? "Stop listening"
+                    : voiceMode
+                      ? "Exit voice mode"
+                      : "Speak to Cenaiva"
+                }
               >
                 {isRecording ? (
                   <motion.div
@@ -262,6 +273,13 @@ export function CenaivaDrawer() {
                     transition={{ duration: 1, repeat: Infinity }}
                   >
                     <MicOff className="h-4 w-4" />
+                  </motion.div>
+                ) : voiceMode ? (
+                  <motion.div
+                    animate={{ scale: [1, 1.1, 1] }}
+                    transition={{ duration: 2, repeat: Infinity }}
+                  >
+                    <Mic className="h-4 w-4" />
                   </motion.div>
                 ) : (
                   <Mic className="h-4 w-4" />
@@ -272,10 +290,11 @@ export function CenaivaDrawer() {
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={t(
-                "cenaiva.inputPlaceholder",
-                "Ask me anything about restaurants...",
-              )}
+              placeholder={
+                voiceMode
+                  ? t("cenaiva.inputPlaceholder.voiceMode", "Listening... type to switch to text")
+                  : t("cenaiva.inputPlaceholder", "Ask me anything about restaurants...")
+              }
               className="flex-1 border-[#2E2E2E] bg-[#1E1E1E] text-sm text-white placeholder:text-gray-500"
               disabled={loading || isRecording}
             />
