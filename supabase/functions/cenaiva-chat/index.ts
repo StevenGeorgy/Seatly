@@ -41,6 +41,31 @@ function decodeJwtPayload(token: string): Record<string, any> | null {
   }
 }
 
+// ── Timezone helpers ──
+// Returns how many minutes UTC is ahead of the given timezone at `date`.
+// e.g. America/Toronto in EDT → 240 (UTC+4 hours ahead of EDT).
+function getUTCOffsetMinutes(date: Date, timezone: string): number {
+  // Parse the same instant in UTC and in the target timezone as local strings,
+  // then subtract to get the offset.
+  const utcMs = new Date(
+    date.toLocaleString("en-US", { timeZone: "UTC" }),
+  ).getTime();
+  const tzMs = new Date(
+    date.toLocaleString("en-US", { timeZone: timezone }),
+  ).getTime();
+  return (utcMs - tzMs) / 60_000;
+}
+
+// Convert a restaurant-local date + HH:MM time to a UTC ISO string.
+// e.g. ("2026-04-15", "19:00", "America/Toronto") → "2026-04-15T23:00:00.000Z"
+function localToUTC(dateStr: string, timeStr: string, timezone: string): string {
+  // Temporarily treat the local time as if it were UTC (wrong offset, right numbers)
+  const tempDate = new Date(`${dateStr}T${timeStr}:00Z`);
+  // Get the actual offset and correct
+  const offsetMinutes = getUTCOffsetMinutes(tempDate, timezone);
+  return new Date(tempDate.getTime() + offsetMinutes * 60_000).toISOString();
+}
+
 // ── OpenAI tools definition ──
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
@@ -289,9 +314,26 @@ async function executeTool(
 
     case "check_availability": {
       const { restaurant_id, date, party_size } = input;
-      const dateObj = new Date(date);
-      const dayOfWeek = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
       const dateOnly = date.slice(0, 10);
+
+      // Fetch restaurant timezone so all slot times are in the correct local time
+      const { data: restaurantRow } = await supabaseAdmin
+        .from("restaurants")
+        .select("timezone")
+        .eq("id", restaurant_id)
+        .single();
+      const timezone = restaurantRow?.timezone || "UTC";
+
+      // Use a UTC noon anchor to get the correct day-of-week in the restaurant tz
+      const anchorUTC = new Date(`${dateOnly}T12:00:00Z`);
+      const localDow = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        weekday: "short",
+      }).format(anchorUTC);
+      const dowMap: Record<string, number> = {
+        Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+      };
+      const dayOfWeek = dowMap[localDow] ?? (anchorUTC.getUTCDay() || 7);
 
       const { data: shifts } = await supabaseAdmin
         .from("shifts")
@@ -305,15 +347,25 @@ async function executeTool(
       if (!shifts?.length)
         return JSON.stringify({ slots: [], message: "No shifts available on this date." });
 
+      // Query existing reservations using UTC bounds for the restaurant's local day
+      const dayStartUTC = localToUTC(dateOnly, "00:00", timezone);
+      const dayEndUTC = localToUTC(dateOnly, "23:59", timezone);
+
       const { data: reservations } = await supabaseAdmin
         .from("reservations")
         .select("shift_id, reserved_at, party_size")
         .eq("restaurant_id", restaurant_id)
         .in("status", ["pending", "confirmed", "seated"])
-        .gte("reserved_at", `${dateOnly}T00:00:00`)
-        .lte("reserved_at", `${dateOnly}T23:59:59`);
+        .gte("reserved_at", dayStartUTC)
+        .lte("reserved_at", dayEndUTC);
 
-      const slots: { shift_id: string; shift_name: string; time: string }[] = [];
+      const slots: {
+        shift_id: string;
+        shift_name: string;
+        date_time: string;
+        display_time: string;
+      }[] = [];
+
       for (const shift of shifts) {
         if (
           party_size < (shift.min_party_size || 1) ||
@@ -331,9 +383,14 @@ async function executeTool(
         const endMin = eH * 60 + eM;
 
         while (slotMin + slotMins <= endMin) {
-          const slotStart = new Date(dateObj);
-          slotStart.setHours(Math.floor(slotMin / 60), slotMin % 60, 0, 0);
-          const slotEnd = new Date(slotStart.getTime() + turnMins * 60 * 1000);
+          const slotHour = Math.floor(slotMin / 60);
+          const slotMinute = slotMin % 60;
+          const timeStr = `${String(slotHour).padStart(2, "0")}:${String(slotMinute).padStart(2, "0")}`;
+
+          // Convert restaurant local time → UTC
+          const slotDateTimeUTC = localToUTC(dateOnly, timeStr, timezone);
+          const slotStart = new Date(slotDateTimeUTC);
+          const slotEnd = new Date(slotStart.getTime() + turnMins * 60_000);
 
           const shiftResvs = (reservations || []).filter(
             (r: any) => r.shift_id === shift.id,
@@ -342,7 +399,7 @@ async function executeTool(
           let available = true;
           for (const r of shiftResvs) {
             const resvStart = new Date(r.reserved_at);
-            const resvEnd = new Date(resvStart.getTime() + turnMins * 60 * 1000);
+            const resvEnd = new Date(resvStart.getTime() + turnMins * 60_000);
             if (slotStart < resvEnd && slotEnd > resvStart) {
               totalCovers += r.party_size || 0;
               if (totalCovers > maxCovers) {
@@ -355,10 +412,11 @@ async function executeTool(
             slots.push({
               shift_id: shift.id,
               shift_name: shift.name || "Shift",
-              // date_time: pass this value directly to create_reservation
+              // date_time: exact UTC ISO string — pass directly to create_reservation
               date_time: slotStart.toISOString(),
-              // display_time: show this to the user
+              // display_time: local time in restaurant's timezone, shown to the user
               display_time: slotStart.toLocaleTimeString("en-US", {
+                timeZone: timezone,
                 hour: "numeric",
                 minute: "2-digit",
                 hour12: true,
