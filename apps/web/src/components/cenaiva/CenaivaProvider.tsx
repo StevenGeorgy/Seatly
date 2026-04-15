@@ -64,8 +64,8 @@ export function useCenaiva(): CenaivaContextValue | null {
 
 export function CenaivaProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
-  // Default TTS on so Cenaiva speaks responses aloud immediately
-  const [ttsEnabled, setTtsEnabled] = useState(true);
+  // TTS off by default — user can enable via the speaker toggle in the drawer
+  const [ttsEnabled, setTtsEnabled] = useState(false);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   // voiceMode = continuous STT loop; true when session was started via wake word
   const [voiceMode, setVoiceMode] = useState(false);
@@ -96,6 +96,9 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // startVoiceInputRef lets handleWakeWord / sendMessage call the latest
   // startVoiceInput without it being listed as a dep (which would cause churn).
   const startVoiceInputRef = useRef<() => Promise<void>>(async () => {});
+  // Guard: prevents concurrent startVoiceInput calls (e.g. wake word 800ms timer
+  // firing while the user already manually clicked the mic button).
+  const voiceInputInProgressRef = useRef(false);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -119,13 +122,14 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   );
 
   const startVoiceInput = useCallback(async () => {
+    // Prevent concurrent calls: wake word timer and manual mic click can race.
+    if (voiceInputInProgressRef.current) return;
+    voiceInputInProgressRef.current = true;
     try {
       // Synchronously stop the wake word recognizer to free the mic.
       wakeWordRef.current?.forceStop();
 
-      // Give Chrome time to fully release the mic hardware.
-      // 350ms is the safe minimum observed across devices; wake-word path adds
-      // another 800ms on top (see handleWakeWord), so total is ~1150ms.
+      // Give Chrome time to fully release the mic hardware before claiming it.
       await new Promise<void>((r) => setTimeout(r, 350));
 
       const transcript = await speech.startRecognition();
@@ -134,13 +138,18 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
         await sendMessage(normalizeTranscript(transcript));
       } else if (voiceModeRef.current) {
         // No speech detected — stay in the loop
+        voiceInputInProgressRef.current = false;
         startVoiceInputRef.current();
+        return; // skip the finally re-enable below
       }
     } catch {
       if (voiceModeRef.current) {
+        voiceInputInProgressRef.current = false;
         setTimeout(() => startVoiceInputRef.current(), 1000);
+        return;
       }
     } finally {
+      voiceInputInProgressRef.current = false;
       // Re-enable wake word only when we've fully exited voice mode
       if (!voiceModeRef.current && wakeWordRef.current?.isSupported) {
         setTimeout(() => wakeWordRef.current?.setEnabled(true), 500);
@@ -164,11 +173,10 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
     }
   }, [speech]);
 
-  // When wake word fires: enter voice mode, open drawer, ensure TTS is on,
-  // free the mic, then start capturing the user's voice command.
+  // When wake word fires: enter voice mode, open drawer, free the mic, then
+  // start capturing the user's voice command.
   // Stable (deps = []) — all state access is via refs and React setters.
   const handleWakeWord = useCallback(() => {
-    setTtsEnabled(true);
     setVoiceMode(true);
     setIsOpen(true);
     wakeWordRef.current?.forceStop();

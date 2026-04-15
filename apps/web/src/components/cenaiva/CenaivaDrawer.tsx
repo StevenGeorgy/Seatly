@@ -92,13 +92,15 @@ export function CenaivaDrawer() {
   );
 
   const handleMic = useCallback(async () => {
-    if (isRecording || voiceMode) {
-      // Stop recording / exit voice mode
+    if (isRecording) {
+      // Red mic — stop recording and exit voice mode entirely
       stopVoiceInput();
     } else {
+      // Gold mic (voiceMode, not yet recording) or grey (idle):
+      // clicking always starts recording immediately.
       await startVoiceInput();
     }
-  }, [isRecording, voiceMode, startVoiceInput, stopVoiceInput]);
+  }, [isRecording, startVoiceInput, stopVoiceInput]);
 
   const statusLabel =
     status === "listening"
@@ -261,9 +263,9 @@ export function CenaivaDrawer() {
                 onClick={handleMic}
                 title={
                   isRecording
-                    ? "Stop listening"
+                    ? "Stop listening (click to exit voice mode)"
                     : voiceMode
-                      ? "Exit voice mode"
+                      ? "Click to start listening now"
                       : "Speak to Cenaiva"
                 }
               >
