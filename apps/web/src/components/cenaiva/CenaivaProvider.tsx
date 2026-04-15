@@ -12,6 +12,19 @@ import { useCenaivaChat, type ChatMessage, type ActionTaken } from "@/hooks/useC
 import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
 
+// Regex that matches phonetic variants of "Cenaiva" (with or without "hey")
+// at the start of a captured STT command. Replaces them with "Cenaiva" so the
+// chat bubble always shows the canonical spelling.
+const WAKE_VARIANT_RE =
+  /^(?:hey[\s,]+)?(?:cenaiva|senaiva|seneva|ceneva|soneva|caniva|ceniva|cenefa|siniva|sineva|sinaiva|syneva|syniva|senai|cenai|sinai|saniva|sonaiva|naiva|synova|hastenova|geneva|chennaiwa|cheniva|canova|son\s+iva|son\s+eva|son\s+either|son\s+over|sin\s+iva|sin\s+eva|sin\s+eye\s+va|sinai\s+va|seen\s+eva|hey\s+sana|hey\s+sene)[\s,]*/i;
+
+function normalizeTranscript(transcript: string): string {
+  if (WAKE_VARIANT_RE.test(transcript)) {
+    return transcript.replace(WAKE_VARIANT_RE, "Cenaiva, ").trim();
+  }
+  return transcript;
+}
+
 type CenaivaStatus = "idle" | "listening" | "thinking" | "speaking";
 
 type CenaivaContextValue = {
@@ -105,7 +118,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
 
       const transcript = await speech.startRecognition();
       if (transcript) {
-        await sendMessage(transcript);
+        await sendMessage(normalizeTranscript(transcript));
       }
     } catch {
       // Recognition failed — wake word will re-enable below

@@ -25,12 +25,19 @@ const WAKE_PHRASES = [
   "hey sinai", "hey sin eye", "hey sine eye", "hey sinaiva", "hey siniva",
   "hey sin eva", "hey sin iva", "hey seen a va",
   // ── Observed Chrome transcripts (from live console logs) ──
-  // "hey saniva", "hey sonaiva", "hey synova", "case naiva", "hasten ivor"
+  // Session 1: "hey saniva", "hey sonaiva", "hey synova", "case naiva", "hasten ivor"
   "saniva", "sonaiva", "naiva", "synova",
-  "son iva", "son eva", "son either",
+  "son iva", "son eva", "son either", "son over",
   "hey saniva", "hey sonaiva", "hey synova",
-  "hey son iva", "hey son eva", "hey son either",
+  "hey son iva", "hey son eva", "hey son either", "hey son over",
   "case naiva", "hasten ivor", "hasten iv",
+  // Session 2: "hastenova", "hey geneva", "hey chennai*", "hey canova", "hey sana/sene"
+  "hastenova", "hasten over",
+  "hey geneva", "geneva",
+  "hey chennai", "hey chennaiwa", "hey cheniva", "chennaiwa", "cheniva",
+  "hey canova", "canova",
+  "hey sana", "hey sene",
+  "hey seneva",
 ];
 
 function isWakePhrase(transcript: string): boolean {
