@@ -346,7 +346,14 @@ async function executeTool(
             slots.push({
               shift_id: shift.id,
               shift_name: shift.name || "Shift",
-              time: slotStart.toISOString().slice(0, 16).replace("T", " "),
+              // date_time: pass this value directly to create_reservation
+              date_time: slotStart.toISOString(),
+              // display_time: show this to the user
+              display_time: slotStart.toLocaleTimeString("en-US", {
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+              }),
             });
           }
           slotMin += slotMins;
@@ -608,12 +615,13 @@ Restaurant ID: ${restaurantContext.id}`
 
 Rules:
 1. ALWAYS check availability before creating a reservation.
-2. ALWAYS confirm details with the user before creating a reservation or placing an order — list what you will book/order and ask "Shall I go ahead?"
+2. For ORDERS: confirm the item list and total with the user, then call place_order.
+   For RESERVATIONS: once you have all four required details (restaurant, date, time, party size) and the user selects or confirms a time, call create_reservation IMMEDIATELY using the exact shift_id and date_time from the check_availability result — do NOT ask again for the same details. One confirmation question maximum.
 3. If the user has allergies, proactively flag menu items that contain those allergens.
 4. When recommending restaurants, consider the user's dietary restrictions.
 5. For reservations, you need: restaurant, date, time, and party size at minimum.
 6. For orders, you need: restaurant, items with quantities, and order type (pickup/delivery).
-7. When presenting time slots, show them in a readable format like "7:00 PM" not ISO strings.
+7. When presenting time slots, use the display_time field (e.g. "7:00 PM"). When calling create_reservation, use the date_time field from the same slot — never reformat it.
 8. Be helpful but never fabricate restaurant names, menu items, or prices — always use tools to look up real data.`;
 }
 
