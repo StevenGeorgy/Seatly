@@ -6,22 +6,24 @@ const SpeechRecognitionAPI =
     : null;
 
 // Phonetic variants of "Cenaiva" (pronounced "sin-eye-vuh") that speech
-// recognition engines may return. Deliberately excludes broad prefixes
-// like "hey c" / "hey s" which caused false positives on any "hey c…" sentence.
+// recognition engines may return. Add new entries here if you see something
+// unexpected in the console log "[CenaivaWakeWord] heard: …".
 const WAKE_PHRASES = [
   // Direct spellings
-  "cenaiva", "senaiva", "seneva", "ceneva", "soneva", "caniva",
+  "cenaiva", "senaiva", "seneva", "ceneva", "soneva", "caniva", "ceniva", "cenefa",
   // Phonetic: "sin-eye-vuh" broken up
   "sin iva", "sin eva", "sine iva", "sine eva",
   "sin eye va", "sine eye va", "sin i va",
   "sinai va", "sinai vuh",
+  "seen a va", "seen eva", "see neva", "seena va",
   // As one word
   "siniva", "sineva", "sinaiva", "syneva", "syniva",
-  // Partial root matches
+  // Partial root matches (long enough to avoid accidental hits)
   "senai", "cenai", "sinai",
   // Explicit "hey <name>" forms
-  "hey cenaiva", "hey senaiva", "hey seneva", "hey ceneva",
+  "hey cenaiva", "hey senaiva", "hey seneva", "hey ceneva", "hey ceniva",
   "hey sinai", "hey sin eye", "hey sine eye", "hey sinaiva", "hey siniva",
+  "hey sin eva", "hey sin iva", "hey seen a va",
 ];
 
 function isWakePhrase(transcript: string): boolean {
@@ -48,6 +50,18 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
     enabledRef.current = enabled;
   }, [enabled]);
 
+  // Synchronously stop the recognizer and clear the ref.
+  // Used by CenaivaProvider to free the mic before starting the command
+  // recognizer — avoids the Chrome "one active recognizer" race condition.
+  const forceStop = useCallback(() => {
+    enabledRef.current = false;
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    if (rec) {
+      try { rec.stop(); } catch {}
+    }
+  }, []);
+
   const startListening = useCallback(() => {
     if (!SpeechRecognitionAPI || !enabledRef.current) return;
 
@@ -68,6 +82,9 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
       recognition.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript.toLowerCase().trim();
+          // Log every transcript so you can see what Chrome is hearing
+          // and add new phrases to WAKE_PHRASES if needed.
+          console.log("[CenaivaWakeWord] heard:", transcript);
           if (isWakePhrase(transcript)) {
             // Disable BEFORE calling onWake so the onend handler won't
             // schedule a 300ms auto-restart and race the command recognizer.
@@ -91,8 +108,8 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
           console.warn("[CenaivaWakeWord] Microphone permission denied:", event.error);
           setEnabled(false);
-        } else {
-          // no-speech / network / aborted — onend will handle the restart
+        } else if (event.error !== "no-speech" && event.error !== "aborted") {
+          // no-speech / aborted are normal; onend handles the restart
           console.warn("[CenaivaWakeWord] Recognition error:", event.error);
         }
       };
@@ -126,5 +143,6 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
     isSupported,
     toggle,
     setEnabled,
+    forceStop,
   };
 }

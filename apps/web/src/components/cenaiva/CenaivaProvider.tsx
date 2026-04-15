@@ -49,7 +49,8 @@ export function useCenaiva(): CenaivaContextValue | null {
 
 export function CenaivaProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  // Default TTS on so Cenaiva speaks responses aloud immediately
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
 
   const chat = useCenaivaChat();
@@ -80,7 +81,11 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // Refs to break circular deps: handleWakeWord → wakeWord → handleWakeWord.
   // wakeWordRef lets startVoiceInput pause/resume the wake listener without
   // taking it as a dep (which would churn handleWakeWord's identity).
-  const wakeWordRef = useRef<{ setEnabled: (v: boolean) => void; isSupported: boolean } | null>(null);
+  const wakeWordRef = useRef<{
+    setEnabled: (v: boolean) => void;
+    forceStop: () => void;
+    isSupported: boolean;
+  } | null>(null);
   // startVoiceInputRef lets handleWakeWord call the latest startVoiceInput
   // without listing it as a dep (which would churn handleWakeWord's identity
   // and in turn restart the underlying SpeechRecognition on every render).
@@ -88,8 +93,16 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
 
   const startVoiceInput = useCallback(async () => {
     try {
-      // Pause wake word so it doesn't compete for the mic
-      wakeWordRef.current?.setEnabled(false);
+      // Synchronously stop the wake word recognizer to free the mic.
+      // setEnabled(false) queues a React state update which only runs after
+      // the next render — too slow. forceStop() clears the instance now.
+      wakeWordRef.current?.forceStop();
+
+      // Give Chrome ~200ms to fully release the mic hardware after the wake
+      // recognizer stops. Without this delay Chrome rejects the new start()
+      // and immediately fires onend, making the mic button appear to unclick.
+      await new Promise<void>((r) => setTimeout(r, 200));
+
       const transcript = await speech.startRecognition();
       if (transcript) {
         await sendMessage(transcript);
@@ -109,31 +122,33 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
     startVoiceInputRef.current = startVoiceInput;
   }, [startVoiceInput]);
 
-  // When wake word fires: turn TTS on, open drawer, pause wake listener,
+  // When wake word fires: open drawer, ensure TTS is on, free the mic,
   // then start capturing the user's voice command.
-  // This callback is intentionally stable (deps = []) — it accesses live
-  // state only via refs and React state setters, both of which are stable.
+  // Stable (deps = []) — all state access is via refs and React setters.
   const handleWakeWord = useCallback(() => {
     setTtsEnabled(true);
     setIsOpen(true);
-    // Pause wake listener immediately to free the mic for voice input
-    wakeWordRef.current?.setEnabled(false);
-    // Brief delay so the wake recognizer fully shuts down before we start
-    // the command recognizer (Chrome only allows one active at a time)
+    // Free the mic immediately; startVoiceInput will also call forceStop
+    // but that's after the 400ms delay — this prevents the onend restart timer
+    wakeWordRef.current?.forceStop();
+    // Brief delay so Chrome fully releases the mic before the command recognizer
     setTimeout(() => startVoiceInputRef.current(), 400);
   }, []); // stable — all state access via refs/setters
 
   const wakeWord = useCenaivaWakeWord(handleWakeWord);
 
-  // Keep wakeWordRef in sync with the latest setEnabled / isSupported
+  // Keep wakeWordRef in sync with the latest methods / flags
   useEffect(() => {
-    wakeWordRef.current = { setEnabled: wakeWord.setEnabled, isSupported: wakeWord.isSupported };
-  }, [wakeWord.setEnabled, wakeWord.isSupported]);
+    wakeWordRef.current = {
+      setEnabled: wakeWord.setEnabled,
+      forceStop: wakeWord.forceStop,
+      isSupported: wakeWord.isSupported,
+    };
+  }, [wakeWord.setEnabled, wakeWord.forceStop, wakeWord.isSupported]);
 
   // Auto-enable wake word as soon as the browser supports it.
-  // No auth gate here — the chat layer already shows "Please sign in to use
-  // Cenaiva." if the user isn't authenticated, so wake word itself doesn't
-  // need to be gated on the session.
+  // No auth gate — the chat layer already shows "Please sign in to use
+  // Cenaiva." if the user isn't authenticated.
   useEffect(() => {
     if (wakeWord.isSupported && !wakeWord.enabled) {
       wakeWord.setEnabled(true);

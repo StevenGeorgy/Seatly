@@ -41,9 +41,17 @@ export function useCenaivaChat() {
 
       try {
         const client = getSupabaseBrowserClient();
-        const {
-          data: { session },
-        } = await client.auth.getSession();
+
+        // refreshSession() fetches a fresh access token from the server so the
+        // edge function never sees an expired JWT. Falls back to getSession()
+        // if the refresh token itself is gone (user must log in again).
+        let session = (await client.auth.getSession()).data.session;
+        if (session) {
+          const refreshed = await client.auth.refreshSession();
+          if (refreshed.data.session) {
+            session = refreshed.data.session;
+          }
+        }
         if (!session?.access_token) {
           setError("Please sign in to use Cenaiva.");
           setLoading(false);
@@ -74,7 +82,8 @@ export function useCenaivaChat() {
 
         const data = await res.json();
         if (!res.ok) {
-          setError(data.error || "Something went wrong.");
+          // Supabase gateway errors use `message` or `msg`; our function uses `error`
+          setError(data.error || data.message || data.msg || "Something went wrong.");
           setLoading(false);
           return null;
         }

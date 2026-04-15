@@ -134,7 +134,7 @@ export function CenaivaDrawer() {
               <div className={cn("h-2 w-2 rounded-full", statusColor)} />
               <span className="text-xs text-muted-foreground">{statusLabel}</span>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 mr-8">
               {/* TTS toggle */}
               <Button
                 variant="ghost"
