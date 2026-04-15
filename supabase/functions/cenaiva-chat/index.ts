@@ -200,9 +200,18 @@ async function executeTool(
         query = query.ilike("cuisine_type", `%${input.cuisine_type}%`);
       }
       if (input.query) {
-        query = query.or(
-          `name.ilike.%${input.query}%,cuisine_type.ilike.%${input.query}%,city.ilike.%${input.query}%`,
-        );
+        // Split into words and OR them so voice-transcribed names like
+        // "Georgie Inc" still match "Georgy Inc" via the shared word "Inc".
+        const words = input.query
+          .trim()
+          .split(/\s+/)
+          .filter((w: string) => w.length > 1);
+        const conditions = words
+          .map((w: string) =>
+            `name.ilike.%${w}%,cuisine_type.ilike.%${w}%,city.ilike.%${w}%`,
+          )
+          .join(",");
+        query = query.or(conditions);
       }
       const { data, error } = await query;
       if (error) return JSON.stringify({ error: error.message });
@@ -622,7 +631,8 @@ Rules:
 5. For reservations, you need: restaurant, date, time, and party size at minimum.
 6. For orders, you need: restaurant, items with quantities, and order type (pickup/delivery).
 7. When presenting time slots, use the display_time field (e.g. "7:00 PM"). When calling create_reservation, use the date_time field from the same slot — never reformat it.
-8. Be helpful but never fabricate restaurant names, menu items, or prices — always use tools to look up real data.`;
+8. Be helpful but never fabricate restaurant names, menu items, or prices — always use tools to look up real data.
+9. If a restaurant name search returns no results (voice transcription may mispronounce names), retry with the cuisine type or a single distinctive word from the name rather than telling the user the restaurant doesn't exist.`;
 }
 
 // ── Main handler ──

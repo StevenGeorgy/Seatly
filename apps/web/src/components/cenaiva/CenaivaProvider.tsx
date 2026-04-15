@@ -106,6 +106,9 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       // Speak the reply if TTS is on
       if (result?.reply && ttsEnabled) {
         await speech.speak(result.reply);
+        // Wait for speaker audio to fully fade before reopening the mic.
+        // Without this pause the STT picks up the TTS output as user speech.
+        await new Promise<void>((r) => setTimeout(r, 700));
       }
       // In voice mode: automatically restart STT for the next turn
       if (voiceModeRef.current) {
@@ -120,8 +123,10 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       // Synchronously stop the wake word recognizer to free the mic.
       wakeWordRef.current?.forceStop();
 
-      // Give Chrome ~200ms to fully release the mic hardware.
-      await new Promise<void>((r) => setTimeout(r, 200));
+      // Give Chrome time to fully release the mic hardware.
+      // 350ms is the safe minimum observed across devices; wake-word path adds
+      // another 800ms on top (see handleWakeWord), so total is ~1150ms.
+      await new Promise<void>((r) => setTimeout(r, 350));
 
       const transcript = await speech.startRecognition();
       if (transcript) {
@@ -167,7 +172,9 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
     setVoiceMode(true);
     setIsOpen(true);
     wakeWordRef.current?.forceStop();
-    setTimeout(() => startVoiceInputRef.current(), 400);
+    // 800ms: enough for Chrome to fire onend on the wake recognizer and fully
+    // release the mic hardware before startVoiceInput tries to claim it.
+    setTimeout(() => startVoiceInputRef.current(), 800);
   }, []); // stable — all state access via refs/setters
 
   const wakeWord = useCenaivaWakeWord(handleWakeWord);
