@@ -113,10 +113,8 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
         // Without this pause the STT picks up the TTS output as user speech.
         await new Promise<void>((r) => setTimeout(r, 700));
       }
-      // In voice mode: automatically restart STT for the next turn
-      if (voiceModeRef.current) {
-        startVoiceInputRef.current();
-      }
+      // Voice-mode restart is owned by startVoiceInput's finally block —
+      // calling it here races with the inProgress guard and silently no-ops.
     },
     [chat, restaurantId, ttsEnabled, speech],
   );
@@ -134,24 +132,27 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
 
       const transcript = await speech.startRecognition();
       if (transcript) {
-        // sendMessage will restart STT automatically if voiceMode is still on
         await sendMessage(normalizeTranscript(transcript));
-      } else if (voiceModeRef.current) {
-        // No speech detected — stay in the loop
-        voiceInputInProgressRef.current = false;
-        startVoiceInputRef.current();
-        return; // skip the finally re-enable below
       }
-    } catch {
-      if (voiceModeRef.current) {
-        voiceInputInProgressRef.current = false;
-        setTimeout(() => startVoiceInputRef.current(), 1000);
-        return;
+      // Empty transcript: fall through to finally which restarts if in voice mode
+    } catch (err: any) {
+      // Mic permission denied — can't continue, exit voice mode
+      if (err?.message === "not-allowed" || err?.message === "audio-capture") {
+        voiceModeRef.current = false;
+        setVoiceMode(false);
       }
+      // Other errors: finally will restart if voice mode is still on
     } finally {
+      // Clear the guard FIRST, then decide whether to restart.
+      // If the restart call happened before this (e.g. inside sendMessage) it
+      // would silently no-op because the flag was still true — that's the bug
+      // this structure fixes.
       voiceInputInProgressRef.current = false;
-      // Re-enable wake word only when we've fully exited voice mode
-      if (!voiceModeRef.current && wakeWordRef.current?.isSupported) {
+      if (voiceModeRef.current) {
+        // Voice mode still active: immediately queue next listening turn
+        startVoiceInputRef.current();
+      } else if (wakeWordRef.current?.isSupported) {
+        // Voice mode off: hand the mic back to the wake word listener
         setTimeout(() => wakeWordRef.current?.setEnabled(true), 500);
       }
     }
@@ -164,6 +165,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
 
   // Stop recording and exit the continuous voice loop
   const stopVoiceInput = useCallback(() => {
+    voiceModeRef.current = false; // sync ref immediately; state update is async
     setVoiceMode(false);
     speech.stopRecognition();
     speech.stopSpeaking();
@@ -177,6 +179,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // start capturing the user's voice command.
   // Stable (deps = []) — all state access is via refs and React setters.
   const handleWakeWord = useCallback(() => {
+    voiceModeRef.current = true; // sync ref immediately; state update is async
     setVoiceMode(true);
     setIsOpen(true);
     wakeWordRef.current?.forceStop();
