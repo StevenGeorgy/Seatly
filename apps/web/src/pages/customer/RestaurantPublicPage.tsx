@@ -39,6 +39,7 @@ import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } f
 import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type OrderType = "dine_in" | "pickup" | "delivery";
@@ -402,6 +403,13 @@ export default function RestaurantPublicPage() {
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
+
+  // Apply this restaurant's theme while on its public page; reset on leave.
+  useEffect(() => {
+    if (!restaurant?.settings_json?.theme) return;
+    applyRestaurantTheme(restaurant.settings_json.theme);
+    return () => { resetTheme(); };
+  }, [restaurant?.id, restaurant?.settings_json]);
 
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
