@@ -145,40 +145,37 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "create_reservation",
+      name: "complete_booking",
       description:
-        "Book a reservation at a restaurant. ALWAYS confirm the details with the user before calling this tool.",
-      parameters: {
-        type: "object",
-        properties: {
-          restaurant_id: { type: "string" },
-          date_time: { type: "string", description: "ISO 8601 datetime for the reservation" },
-          party_size: { type: "number" },
-          shift_id: { type: "string" },
-          special_request: { type: "string" },
-          occasion: { type: "string" },
-        },
-        required: ["restaurant_id", "date_time", "party_size", "shift_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "place_order",
-      description:
-        "Place a pickup or delivery order. ALWAYS confirm items and total with the user before calling this tool.",
+        "Complete a full booking in one step: creates the guest record, reservation (dine-in only), order, and order items. " +
+        "This is the ONLY tool that finalises a booking — never use partial tools. " +
+        "Items are MANDATORY for every booking type. Do NOT call this tool unless items has at least one entry.",
       parameters: {
         type: "object",
         properties: {
           restaurant_id: { type: "string" },
           order_type: {
             type: "string",
-            enum: ["takeout", "delivery"],
-            description: "Use 'takeout' for pickup orders",
+            enum: ["dine_in", "takeout", "delivery"],
+            description: "dine_in creates a reservation + order. takeout/delivery creates an order only.",
           },
+          // ── Dine-in reservation fields (required when order_type = dine_in) ──
+          date_time: {
+            type: "string",
+            description: "UTC ISO datetime from check_availability. Required for dine_in.",
+          },
+          shift_id: {
+            type: "string",
+            description: "Shift ID from check_availability. Required for dine_in.",
+          },
+          party_size: {
+            type: "number",
+            description: "Number of guests. Required for dine_in.",
+          },
+          // ── Order items — REQUIRED for ALL booking types ──
           items: {
             type: "array",
+            description: "REQUIRED. Items the customer is ordering. Must have at least one item.",
             items: {
               type: "object",
               properties: {
@@ -186,14 +183,32 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
                 name: { type: "string" },
                 quantity: { type: "number" },
                 unit_price: { type: "number" },
-                modifications: { type: "string", description: "Per-item modifications or notes" },
+                modifications: { type: "string", description: "Per-item modifications" },
               },
               required: ["menu_item_id", "name", "quantity", "unit_price"],
             },
           },
+          // ── Guest details ──
+          guest_name: { type: "string" },
+          guest_email: { type: "string" },
+          guest_phone: { type: "string" },
+          // ── Optional extras ──
+          special_request: { type: "string", description: "Dietary notes or requests for the kitchen / host" },
+          occasion: {
+            type: "string",
+            enum: ["Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"],
+          },
+          seating_preference: {
+            type: "string",
+            description: "e.g. By window, Booth, Patio, Quiet corner",
+          },
           notes: {
             type: "string",
-            description: "Any special requests, dietary needs, or delivery instructions for the whole order",
+            description: "Order-level notes or delivery instructions",
+          },
+          delivery_address: {
+            type: "string",
+            description: "Full delivery address. Required when order_type = delivery.",
           },
         },
         required: ["restaurant_id", "order_type", "items"],
@@ -553,10 +568,46 @@ async function executeTool(
       return JSON.stringify({ slots: slots.slice(0, 15) });
     }
 
-    case "create_reservation": {
-      const { restaurant_id, date_time, party_size, shift_id, special_request, occasion } =
-        input;
+    case "complete_booking": {
+      const {
+        restaurant_id,
+        order_type,
+        date_time,
+        shift_id,
+        party_size,
+        items,
+        guest_name,
+        guest_email,
+        guest_phone,
+        special_request,
+        occasion,
+        seating_preference,
+        notes,
+        delivery_address,
+      } = input;
 
+      // Hard guard — must have items
+      if (!items?.length) {
+        return JSON.stringify({
+          error: "items are required. Browse the menu and add at least one item before completing the booking.",
+        });
+      }
+
+      // Dine-in requires reservation fields
+      if (order_type === "dine_in" && (!date_time || !shift_id || !party_size)) {
+        return JSON.stringify({
+          error: "date_time, shift_id, and party_size are required for dine-in bookings. Call check_availability first.",
+        });
+      }
+
+      // Fetch full user profile for guest upsert
+      const { data: userProfile } = await supabaseAdmin
+        .from("user_profiles")
+        .select("full_name, email, phone, allergies, dietary_restrictions, seating_preference, noise_preference")
+        .eq("id", userProfileId)
+        .single();
+
+      // Find or create guest, always refreshing dietary/seating info
       const { data: existingGuest } = await supabaseAdmin
         .from("guests")
         .select("id")
@@ -564,20 +615,15 @@ async function executeTool(
         .eq("user_profile_id", userProfileId)
         .maybeSingle();
 
-      // Always fetch the full profile so dietary/seating info is kept up to date on the guest record
-      const { data: userProfile } = await supabaseAdmin
-        .from("user_profiles")
-        .select("full_name, email, phone, allergies, dietary_restrictions, seating_preference, noise_preference")
-        .eq("id", userProfileId)
-        .single();
-
       const guestFields = {
-        full_name: userProfile?.full_name || "Guest",
-        email: userProfile?.email || "",
-        phone: userProfile?.phone || "",
-        dietary_restrictions: userProfile?.dietary_restrictions?.length ? userProfile.dietary_restrictions : undefined,
+        full_name: guest_name || userProfile?.full_name || "Guest",
+        email: guest_email || userProfile?.email || "",
+        phone: guest_phone || userProfile?.phone || "",
+        dietary_restrictions: userProfile?.dietary_restrictions?.length
+          ? userProfile.dietary_restrictions
+          : undefined,
         allergies: userProfile?.allergies?.length ? userProfile.allergies : undefined,
-        seating_preference: userProfile?.seating_preference || undefined,
+        seating_preference: seating_preference || userProfile?.seating_preference || undefined,
         noise_preference: userProfile?.noise_preference || undefined,
       };
 
@@ -591,116 +637,78 @@ async function executeTool(
         if (guestErr) return JSON.stringify({ error: `Guest creation failed: ${guestErr.message}` });
         guestId = newGuest.id;
       } else {
-        // Refresh dietary/seating info on the existing guest record
         await supabaseAdmin.from("guests").update(guestFields).eq("id", guestId);
       }
 
       const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-      const { data: reservation, error: resvErr } = await supabaseAdmin
-        .from("reservations")
-        .insert({
-          restaurant_id,
-          guest_id: guestId,
-          shift_id,
-          party_size,
-          reserved_at: date_time,
-          status: "confirmed",
-          source: "cenaiva",
-          confirmation_code: confirmationCode,
-          special_request: special_request || null,
-          occasion: occasion || null,
-        })
-        .select("id, reserved_at, party_size, confirmation_code")
-        .single();
 
-      if (resvErr)
-        return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
-
-      fireWebhook("reservation_created", { reservation, restaurant_id });
-
-      return JSON.stringify({
-        success: true,
-        confirmation_code: confirmationCode,
-        reservation,
-      });
-    }
-
-    case "place_order": {
-      const { restaurant_id, order_type, items, notes } = input;
-
-      const { data: existingGuest } = await supabaseAdmin
-        .from("guests")
-        .select("id")
-        .eq("restaurant_id", restaurant_id)
-        .eq("user_profile_id", userProfileId)
-        .maybeSingle();
-
-      // Always fetch full profile so dietary/seating info is kept fresh on the guest record
-      const { data: userProfile } = await supabaseAdmin
-        .from("user_profiles")
-        .select("full_name, email, phone, allergies, dietary_restrictions, seating_preference, noise_preference")
-        .eq("id", userProfileId)
-        .single();
-
-      const guestFields = {
-        full_name: userProfile?.full_name || "Guest",
-        email: userProfile?.email || "",
-        phone: userProfile?.phone || "",
-        dietary_restrictions: userProfile?.dietary_restrictions?.length ? userProfile.dietary_restrictions : undefined,
-        allergies: userProfile?.allergies?.length ? userProfile.allergies : undefined,
-        seating_preference: userProfile?.seating_preference || undefined,
-        noise_preference: userProfile?.noise_preference || undefined,
-      };
-
-      let guestId = existingGuest?.id;
-      if (!guestId) {
-        const { data: newGuest, error: guestErr } = await supabaseAdmin
-          .from("guests")
-          .insert({ restaurant_id, user_profile_id: userProfileId, ...guestFields })
+      // Create reservation for dine-in
+      let reservationId: string | null = null;
+      if (order_type === "dine_in") {
+        const { data: reservation, error: resvErr } = await supabaseAdmin
+          .from("reservations")
+          .insert({
+            restaurant_id,
+            guest_id: guestId,
+            shift_id,
+            party_size,
+            reserved_at: date_time,
+            status: "confirmed",
+            source: "cenaiva",
+            confirmation_code: confirmationCode,
+            special_request: special_request || null,
+            occasion: occasion || null,
+          })
           .select("id")
           .single();
-        if (guestErr) return JSON.stringify({ error: `Guest creation failed: ${guestErr.message}` });
-        guestId = newGuest.id;
-      } else {
-        // Refresh dietary/seating info on the existing guest record
-        await supabaseAdmin.from("guests").update(guestFields).eq("id", guestId);
+        if (resvErr) return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
+        reservationId = reservation.id;
       }
 
+      // Calculate order totals
       const { data: rest } = await supabaseAdmin
         .from("restaurants")
         .select("tax_rate, currency")
         .eq("id", restaurant_id)
         .single();
       const taxRate = rest?.tax_rate ?? 0.13;
-
       const subtotal = items.reduce(
         (sum: number, i: any) => sum + i.unit_price * i.quantity,
         0,
       );
       const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
       const total = Math.round((subtotal + taxAmount) * 100) / 100;
-      const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+      // Create order
+      const orderNotes = [
+        notes,
+        special_request,
+        delivery_address ? `Delivery to: ${delivery_address}` : null,
+      ]
+        .filter(Boolean)
+        .join(" | ") || null;
 
       const { data: order, error: orderErr } = await supabaseAdmin
         .from("orders")
         .insert({
           restaurant_id,
           guest_id: guestId,
-          order_type,
+          reservation_id: reservationId,
+          order_type: order_type === "dine_in" ? "dine_in" : order_type,
+          is_preorder: order_type !== "dine_in",
           status: "pending",
           subtotal: Math.round(subtotal * 100) / 100,
           tax_amount: taxAmount,
           total_amount: total,
           confirmation_code: confirmationCode,
-          notes: notes || null,
+          notes: orderNotes,
           source: "cenaiva",
         })
         .select("id")
         .single();
+      if (orderErr) return JSON.stringify({ error: `Order creation failed: ${orderErr.message}` });
 
-      if (orderErr)
-        return JSON.stringify({ error: `Order creation failed: ${orderErr.message}` });
-
+      // Create order items
       const orderItems = items.map((item: any) => ({
         order_id: order.id,
         menu_item_id: item.menu_item_id,
@@ -708,36 +716,39 @@ async function executeTool(
         quantity: item.quantity,
         unit_price: item.unit_price,
         line_total: Math.round(item.unit_price * item.quantity * 100) / 100,
+        modifications: item.modifications || null,
         status: "pending",
       }));
-      const { error: itemsErr } = await supabaseAdmin
-        .from("order_items")
-        .insert(orderItems);
+      const { error: itemsErr } = await supabaseAdmin.from("order_items").insert(orderItems);
+      if (itemsErr) return JSON.stringify({ error: `Order items failed: ${itemsErr.message}` });
 
-      if (itemsErr)
-        return JSON.stringify({ error: `Order items failed: ${itemsErr.message}` });
-
-      fireWebhook("order_placed", {
-        order_id: order.id,
-        restaurant_id,
+      fireWebhook("booking_completed", {
         order_type,
+        restaurant_id,
+        reservation_id: reservationId,
+        order_id: order.id,
         total,
         confirmation_code: confirmationCode,
-        notes: notes || null,
         guest_name: guestFields.full_name,
         dietary_restrictions: guestFields.dietary_restrictions || [],
         allergies: guestFields.allergies || [],
       });
 
+      const itemsSummary = items
+        .map((i: any) => `${i.quantity}× ${i.name}`)
+        .join(", ");
+
       return JSON.stringify({
         success: true,
-        order_id: order.id,
         confirmation_code: confirmationCode,
+        order_type,
+        reservation_id: reservationId,
+        order_id: order.id,
+        items_ordered: itemsSummary,
         subtotal: Math.round(subtotal * 100) / 100,
         tax: taxAmount,
         total,
         currency: rest?.currency || "CAD",
-        notes: notes || null,
       });
     }
 
@@ -1044,17 +1055,30 @@ Restaurant ID: ${restaurantContext.id}`
 }
 
 Operational rules:
-1. ALWAYS check availability before creating a reservation.
-2. For ORDERS: confirm the item list and total with the user, then call place_order.
-   For RESERVATIONS: once you have all four required details (restaurant, date, time, party size) and the user selects or confirms a time, call create_reservation IMMEDIATELY — do NOT ask again for the same details. One confirmation question maximum.
+1. MANDATORY BOOKING FLOW — follow this sequence every time, no shortcuts:
+   • Dine-in:  check_availability → browse_menu → confirm item list with user → collect guest details → complete_booking
+   • Takeout / Delivery:  browse_menu → confirm item list with user → collect guest details → complete_booking
+   Never skip steps. Never call complete_booking before the user has chosen at least one menu item.
+
+2. complete_booking is the ONLY tool that finalises any booking (dine-in, takeout, or delivery).
+   It REQUIRES a non-empty items array. If items is missing or empty, do NOT call the tool — go back and browse the menu first.
+   Never call check_availability or browse_menu and then jump straight to complete_booking without confirming the items with the user.
+
 3. If the user has allergies, proactively flag menu items that contain those allergens.
+
 4. When the user asks for restaurants "near me", "nearby", or "in my area": call search_restaurants with city set to the User's current city from context above. If no city is available, ask which city they're in.
+
 5. When the user wants "any restaurant", "show me what's available", or doesn't specify — call search_restaurants with NO parameters to return all restaurants on Seatly. Do NOT ask for more info first.
+
 6. NEVER pass location phrases ("near me", "close to me", "nearby") as the query parameter — that searches for restaurants literally named "near me". Use the city parameter instead.
-7. When presenting time slots, use the display_time field (e.g. "7:00 PM"). When calling create_reservation, use the date_time field from the same slot — never reformat it.
+
+7. When presenting time slots, use the display_time field (e.g. "7:00 PM"). When passing date_time to complete_booking, use the exact date_time ISO string from check_availability — never reformat it.
+
 8. Never fabricate restaurant names, menu items, or prices — always use tools to look up real data.
+
 9. If a restaurant name search returns no results, retry with a single word or the cuisine type before telling the user nothing was found.
-10. When confirming an order, ask if the customer has any special requests or dietary needs — pass them as the notes parameter to place_order.`;
+
+10. After the user selects items and confirms, ask if they have any special requests or dietary needs. Pass these as special_request in complete_booking. One confirmation question maximum before calling the tool.`;
 }
 
 // ── Owner / staff system prompt ──
