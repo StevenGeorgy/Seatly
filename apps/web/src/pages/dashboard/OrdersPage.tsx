@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { UtensilsCrossed, Wine, Plus, Minus, X, Phone, User, Search } from "lucide-react";
+import { UtensilsCrossed, Wine, Plus, Minus, X, Phone, User, Search, AlertTriangle, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDistanceToNowStrict } from "date-fns";
 
@@ -441,22 +441,63 @@ export default function OrdersPage() {
                         className="group rounded-lg border border-border bg-bg-elevated p-3 transition-colors hover:border-gold/30"
                       >
                         <div className="mb-2 flex items-center justify-between">
-                          <span className="text-xs font-semibold uppercase tracking-wider text-gold">
-                            {order.order_type === "pickup" || order.order_type === "takeout"
-                              ? "Pickup"
-                              : order.order_type === "delivery"
-                                ? "Delivery"
-                                : `${t("dashboard.orders.table")} ${tableNum}`}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gold">
+                              {order.order_type === "pickup" || order.order_type === "takeout"
+                                ? "Pickup"
+                                : order.order_type === "delivery"
+                                  ? "Delivery"
+                                  : `${t("dashboard.orders.table")} ${tableNum}`}
+                            </span>
+                            {order.source === "cenaiva" && (
+                              <span className="rounded bg-[#C8A951]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#C8A951]">
+                                AI
+                              </span>
+                            )}
+                          </div>
                           <span className="text-xs text-text-muted">{timeAgo}</span>
                         </div>
+
+                        {/* Guest name */}
+                        {order.guests?.full_name && (
+                          <p className="mb-1.5 text-xs font-medium text-text-secondary">
+                            {order.guests.full_name}
+                          </p>
+                        )}
+
+                        {/* Allergies / dietary — shown prominently */}
+                        {((order.guests?.allergies?.length ?? 0) > 0 || (order.guests?.dietary_restrictions?.length ?? 0) > 0) && (
+                          <div className="mb-2 flex items-start gap-1.5 rounded bg-warning/10 px-2 py-1.5">
+                            <AlertTriangle className="mt-0.5 size-3 shrink-0 text-warning" />
+                            <p className="text-xs text-warning">
+                              {[
+                                ...(order.guests?.allergies ?? []).map((a) => `⚠ ${a}`),
+                                ...(order.guests?.dietary_restrictions ?? []),
+                              ].join(" · ")}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Order notes / special requests */}
+                        {order.notes && (
+                          <div className="mb-2 flex items-start gap-1.5 rounded bg-bg-surface px-2 py-1.5">
+                            <MessageSquare className="mt-0.5 size-3 shrink-0 text-text-muted" />
+                            <p className="text-xs text-text-muted">{order.notes}</p>
+                          </div>
+                        )}
+
                         <ul className="mb-3 flex flex-col gap-1">
                           {order.order_items.slice(0, 5).map((item) => (
-                            <li key={item.id} className="flex items-center gap-2 text-sm text-text-secondary">
+                            <li key={item.id} className="flex items-start gap-2 text-sm text-text-secondary">
                               <span className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-surface text-xs font-semibold text-text-muted">
                                 {item.quantity}
                               </span>
-                              <span className="truncate">{item.name || item.menu_items?.name || "\u2014"}</span>
+                              <span className="min-w-0">
+                                <span className="block truncate">{item.name || item.menu_items?.name || "\u2014"}</span>
+                                {item.modifications && (
+                                  <span className="block truncate text-xs text-text-muted">{item.modifications}</span>
+                                )}
+                              </span>
                             </li>
                           ))}
                           {order.order_items.length > 5 ? (

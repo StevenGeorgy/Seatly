@@ -29,6 +29,8 @@ export type OrderRow = {
   is_preorder: boolean;
   order_type: string | null;
   confirmation_code: string | null;
+  notes: string | null;
+  source: string | null;
   status: string;
   subtotal: number | null;
   tax_amount: number | null;
@@ -37,6 +39,14 @@ export type OrderRow = {
   created_at: string | null;
   order_items: OrderItemRow[];
   reservations?: { table_id: string | null; tables?: { table_number: string | null } | null } | null;
+  guests?: {
+    full_name: string | null;
+    phone: string | null;
+    dietary_restrictions: string[] | null;
+    allergies: string[] | null;
+    seating_preference: string | null;
+    noise_preference: string | null;
+  } | null;
 };
 
 export type OrderFilters = {
@@ -62,7 +72,7 @@ export function useOrders(filters?: OrderFilters) {
 
     const { data, error: qErr } = await client
       .from("orders")
-      .select("*, order_items(*, menu_items(name, name_fr)), reservations!orders_reservation_id_fkey(table_id, tables(table_number))")
+      .select("*, order_items(*, menu_items(name, name_fr)), reservations!orders_reservation_id_fkey(table_id, tables(table_number)), guests(full_name, phone, dietary_restrictions, allergies, seating_preference, noise_preference)")
       .eq("restaurant_id", selectedRestaurantId)
       .in("status", ["pending", "confirmed", "preparing", "ready"])
       .order("created_at", { ascending: true });

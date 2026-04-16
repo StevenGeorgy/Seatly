@@ -179,10 +179,14 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
                 name: { type: "string" },
                 quantity: { type: "number" },
                 unit_price: { type: "number" },
-                modifications: { type: "string" },
+                modifications: { type: "string", description: "Per-item modifications or notes" },
               },
               required: ["menu_item_id", "name", "quantity", "unit_price"],
             },
+          },
+          notes: {
+            type: "string",
+            description: "Any special requests, dietary needs, or delivery instructions for the whole order",
           },
         },
         required: ["restaurant_id", "order_type", "items"],
@@ -543,27 +547,35 @@ async function executeTool(
         .eq("user_profile_id", userProfileId)
         .maybeSingle();
 
+      // Always fetch the full profile so dietary/seating info is kept up to date on the guest record
+      const { data: userProfile } = await supabaseAdmin
+        .from("user_profiles")
+        .select("full_name, email, phone, allergies, dietary_restrictions, seating_preference, noise_preference")
+        .eq("id", userProfileId)
+        .single();
+
+      const guestFields = {
+        full_name: userProfile?.full_name || "Guest",
+        email: userProfile?.email || "",
+        phone: userProfile?.phone || "",
+        dietary_restrictions: userProfile?.dietary_restrictions?.length ? userProfile.dietary_restrictions : undefined,
+        allergies: userProfile?.allergies?.length ? userProfile.allergies : undefined,
+        seating_preference: userProfile?.seating_preference || undefined,
+        noise_preference: userProfile?.noise_preference || undefined,
+      };
+
       let guestId = existingGuest?.id;
       if (!guestId) {
-        const { data: profile } = await supabaseAdmin
-          .from("user_profiles")
-          .select("full_name, email, phone")
-          .eq("id", userProfileId)
-          .single();
-
         const { data: newGuest, error: guestErr } = await supabaseAdmin
           .from("guests")
-          .insert({
-            restaurant_id,
-            user_profile_id: userProfileId,
-            full_name: profile?.full_name || "Guest",
-            email: profile?.email || "",
-            phone: profile?.phone || "",
-          })
+          .insert({ restaurant_id, user_profile_id: userProfileId, ...guestFields })
           .select("id")
           .single();
         if (guestErr) return JSON.stringify({ error: `Guest creation failed: ${guestErr.message}` });
         guestId = newGuest.id;
+      } else {
+        // Refresh dietary/seating info on the existing guest record
+        await supabaseAdmin.from("guests").update(guestFields).eq("id", guestId);
       }
 
       const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
@@ -597,7 +609,7 @@ async function executeTool(
     }
 
     case "place_order": {
-      const { restaurant_id, order_type, items } = input;
+      const { restaurant_id, order_type, items, notes } = input;
 
       const { data: existingGuest } = await supabaseAdmin
         .from("guests")
@@ -606,27 +618,35 @@ async function executeTool(
         .eq("user_profile_id", userProfileId)
         .maybeSingle();
 
+      // Always fetch full profile so dietary/seating info is kept fresh on the guest record
+      const { data: userProfile } = await supabaseAdmin
+        .from("user_profiles")
+        .select("full_name, email, phone, allergies, dietary_restrictions, seating_preference, noise_preference")
+        .eq("id", userProfileId)
+        .single();
+
+      const guestFields = {
+        full_name: userProfile?.full_name || "Guest",
+        email: userProfile?.email || "",
+        phone: userProfile?.phone || "",
+        dietary_restrictions: userProfile?.dietary_restrictions?.length ? userProfile.dietary_restrictions : undefined,
+        allergies: userProfile?.allergies?.length ? userProfile.allergies : undefined,
+        seating_preference: userProfile?.seating_preference || undefined,
+        noise_preference: userProfile?.noise_preference || undefined,
+      };
+
       let guestId = existingGuest?.id;
       if (!guestId) {
-        const { data: profile } = await supabaseAdmin
-          .from("user_profiles")
-          .select("full_name, email, phone")
-          .eq("id", userProfileId)
-          .single();
-
         const { data: newGuest, error: guestErr } = await supabaseAdmin
           .from("guests")
-          .insert({
-            restaurant_id,
-            user_profile_id: userProfileId,
-            full_name: profile?.full_name || "Guest",
-            email: profile?.email || "",
-            phone: profile?.phone || "",
-          })
+          .insert({ restaurant_id, user_profile_id: userProfileId, ...guestFields })
           .select("id")
           .single();
         if (guestErr) return JSON.stringify({ error: `Guest creation failed: ${guestErr.message}` });
         guestId = newGuest.id;
+      } else {
+        // Refresh dietary/seating info on the existing guest record
+        await supabaseAdmin.from("guests").update(guestFields).eq("id", guestId);
       }
 
       const { data: rest } = await supabaseAdmin
@@ -655,6 +675,8 @@ async function executeTool(
           tax_amount: taxAmount,
           total_amount: total,
           confirmation_code: confirmationCode,
+          notes: notes || null,
+          source: "cenaiva",
         })
         .select("id")
         .single();
@@ -684,6 +706,10 @@ async function executeTool(
         order_type,
         total,
         confirmation_code: confirmationCode,
+        notes: notes || null,
+        guest_name: guestFields.full_name,
+        dietary_restrictions: guestFields.dietary_restrictions || [],
+        allergies: guestFields.allergies || [],
       });
 
       return JSON.stringify({
@@ -694,6 +720,7 @@ async function executeTool(
         tax: taxAmount,
         total,
         currency: rest?.currency || "CAD",
+        notes: notes || null,
       });
     }
 
@@ -753,7 +780,8 @@ async function executeTool(
       let query = supabaseAdmin
         .from("reservations")
         .select(
-          "id, reserved_at, party_size, status, confirmation_code, special_request, occasion, guests(full_name, phone)",
+          "id, reserved_at, party_size, status, confirmation_code, special_request, occasion, " +
+          "guests(full_name, phone, dietary_restrictions, allergies, seating_preference, noise_preference)",
         )
         .eq("restaurant_id", restaurantId)
         .gte("reserved_at", dayStartUTC)
@@ -785,6 +813,10 @@ async function executeTool(
         confirmation_code: r.confirmation_code,
         special_request: r.special_request || null,
         occasion: r.occasion || null,
+        dietary_restrictions: (r.guests as any)?.dietary_restrictions || [],
+        allergies: (r.guests as any)?.allergies || [],
+        seating_preference: (r.guests as any)?.seating_preference || null,
+        noise_preference: (r.guests as any)?.noise_preference || null,
       }));
 
       return JSON.stringify({ date: dateStr, count: result.length, reservations: result });
@@ -819,7 +851,9 @@ async function executeTool(
       let query = supabaseAdmin
         .from("orders")
         .select(
-          "id, order_type, status, total_amount, confirmation_code, created_at, guests(full_name), order_items(name, quantity, unit_price, status)",
+          "id, order_type, status, total_amount, confirmation_code, notes, created_at, " +
+          "guests(full_name, phone, dietary_restrictions, allergies, seating_preference, noise_preference), " +
+          "order_items(name, quantity, unit_price, modifications, status)",
         )
         .eq("restaurant_id", restaurantId)
         .gte("created_at", dayStartUTC)
@@ -832,7 +866,32 @@ async function executeTool(
 
       const { data, error } = await query;
       if (error) return JSON.stringify({ error: error.message });
-      return JSON.stringify({ date: dateStr, count: (data || []).length, orders: data || [] });
+
+      // Flatten guest info into each order for easier reading by the AI
+      const orders = (data || []).map((o: any) => ({
+        id: o.id,
+        order_type: o.order_type,
+        status: o.status,
+        total_amount: o.total_amount,
+        confirmation_code: o.confirmation_code,
+        notes: o.notes || null,
+        created_at: o.created_at,
+        guest_name: (o.guests as any)?.full_name || "Unknown",
+        guest_phone: (o.guests as any)?.phone || "",
+        dietary_restrictions: (o.guests as any)?.dietary_restrictions || [],
+        allergies: (o.guests as any)?.allergies || [],
+        seating_preference: (o.guests as any)?.seating_preference || null,
+        noise_preference: (o.guests as any)?.noise_preference || null,
+        items: (o.order_items || []).map((i: any) => ({
+          name: i.name,
+          quantity: i.quantity,
+          unit_price: i.unit_price,
+          modifications: i.modifications || null,
+          status: i.status,
+        })),
+      }));
+
+      return JSON.stringify({ date: dateStr, count: orders.length, orders });
     }
 
     case "update_order_status": {
@@ -969,7 +1028,8 @@ Rules:
 6. For orders, you need: restaurant, items with quantities, and order type (pickup/delivery).
 7. When presenting time slots, use the display_time field (e.g. "7:00 PM"). When calling create_reservation, use the date_time field from the same slot — never reformat it.
 8. Be helpful but never fabricate restaurant names, menu items, or prices — always use tools to look up real data.
-9. If a restaurant name search returns no results (voice transcription may mispronounce names), retry with the cuisine type or a single distinctive word from the name rather than telling the user the restaurant doesn't exist.`;
+9. If a restaurant name search returns no results (voice transcription may mispronounce names), retry with the cuisine type or a single distinctive word from the name rather than telling the user the restaurant doesn't exist.
+10. When confirming an order, ask if the customer has any special requests, dietary needs, or delivery instructions — pass them as the notes parameter to place_order so the restaurant sees them.`;
 }
 
 // ── Owner / staff system prompt ──
@@ -1002,7 +1062,9 @@ Rules:
 4. For "any orders" or "current orders", call list_orders — use status "pending" or omit for all active.
 5. For a quick overview of the day, call get_daily_summary.
 6. If an ID is needed (e.g. to seat a specific guest), use the id from the list_reservations result.
-7. Never fabricate reservation or order data — always use tools.`;
+7. Never fabricate reservation or order data — always use tools.
+8. ALWAYS surface dietary restrictions, allergies, seating preferences, and special requests / notes when listing reservations or orders — these are critical for service. Flag allergies prominently.
+9. For orders placed via Cenaiva, the notes field contains the customer's special requests. For reservations, use the special_request field.`;
 }
 
 // ── Main handler ──
