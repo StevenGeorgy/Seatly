@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import type Konva from "konva";
-import { Circle, Layer, Line, Rect, Shape, Stage, Transformer } from "react-konva";
+import { Circle, Layer, Line, Rect, Stage, Transformer } from "react-konva";
 
 import type {
   DecorationItem as DecorationModel,
@@ -39,8 +39,6 @@ import { WallSegment } from "./WallSegment";
 const SNAP_STEP = FLOOR_PLAN_GRID_STEP;
 const GRID_VISUAL_STEP = FLOOR_PLAN_GRID_VISUAL_STEP;
 const DOT_RADIUS = 0.35;
-/** Hard cap so zoomed-out views cannot allocate millions of Konva circles (main-thread freeze looks like “loading stuck”). */
-const MAX_GRID_DOTS = 48_000;
 
 /** Corners of the Stage viewport mapped into world space (inverse of stage pan/zoom). */
 function viewportCornersToWorldBounds(
@@ -85,53 +83,6 @@ function unionFloorPaintBounds(
   };
 }
 
-/**
- * World bounds that always cover the viewport for any clamped pan at scale ≥ scaleMin.
- * Decouples dot-grid generation from live pan so we do not reconcile 10k+ circles every frame.
- */
-function gridCoverageWorldBounds(
-  worldW: number,
-  worldH: number,
-  viewportW: number,
-  viewportH: number,
-  scaleMin: number,
-): { x: number; y: number; width: number; height: number } {
-  const invS = 1 / Math.max(scaleMin, 1e-6);
-  const padX = viewportW * invS;
-  const padY = viewportH * invS;
-  const expanded = {
-    minX: -padX,
-    maxX: worldW + padX,
-    minY: -padY,
-    maxY: worldH + padY,
-  };
-  return unionFloorPaintBounds(worldW, worldH, expanded);
-}
-
-function buildGridDotsForBounds(minX: number, maxX: number, minY: number, maxY: number) {
-  const width = maxX - minX;
-  const height = maxY - minY;
-  if (width < 1 || height < 1) return [];
-
-  let step = GRID_VISUAL_STEP;
-  for (let i = 0; i < 32; i++) {
-    const nx = Math.max(1, Math.ceil(width / step));
-    const ny = Math.max(1, Math.ceil(height / step));
-    if (nx * ny <= MAX_GRID_DOTS) break;
-    const factor = Math.ceil(Math.sqrt((nx * ny) / MAX_GRID_DOTS));
-    step *= Math.max(2, factor);
-  }
-
-  const dots: { x: number; y: number }[] = [];
-  const startX = Math.floor(minX / step) * step;
-  const startY = Math.floor(minY / step) * step;
-  for (let x = startX; x <= maxX + step * 0.5; x += step) {
-    for (let y = startY; y <= maxY + step * 0.5; y += step) {
-      dots.push({ x, y });
-    }
-  }
-  return dots;
-}
 
 // ─── Snap helpers ─────────────────────────────────────────────────────────────
 
@@ -298,68 +249,51 @@ function getWallWorldBounds(w: Wall): { left: number; top: number; right: number
   };
 }
 
-type DotGridBounds = { x: number; y: number; width: number; height: number };
-
-/** Avoid multi‑megapixel bitmaps when caching the grid (world units can be very large). */
-const DOT_GRID_MAX_CACHE_DIM = 3200;
-
 /**
- * One Konva shape draws all grid dots (vs thousands of Circle nodes).
- * Optional bitmap cache when bounds are modest — skipped for very large floors.
+ * Dot grid rendered as a tiled canvas pattern — zero per-frame arc calls, GPU-accelerated tiling.
+ * Replaces the previous arc-drawing approach that generated up to 48k dot positions per render.
  */
 function FloorPlanDotGrid({
-  bounds,
-  dots,
-  dotRadius,
+  worldW,
+  worldH,
   fill,
   stagePixelRatio,
 }: {
-  bounds: DotGridBounds;
-  dots: { x: number; y: number }[];
-  dotRadius: number;
+  worldW: number;
+  worldH: number;
   fill: string;
   stagePixelRatio: number;
 }) {
-  const shapeRef = useRef<Konva.Shape | null>(null);
-  const { x: ox, y: oy, width: bw, height: bh } = bounds;
+  const dpr = Math.min(Math.max(1, stagePixelRatio), 2);
+  const step = GRID_VISUAL_STEP;
 
-  const sceneFunc = useCallback(
-    (ctx: Konva.Context, shape: Konva.Shape) => {
-      ctx.fillStyle = fill;
-      ctx.beginPath();
-      for (const d of dots) {
-        const lx = d.x - ox;
-        const ly = d.y - oy;
-        ctx.moveTo(lx + dotRadius, ly);
-        ctx.arc(lx, ly, dotRadius, 0, Math.PI * 2, false);
-      }
-      ctx.fillShape(shape);
-    },
-    [dots, ox, oy, dotRadius, fill],
-  );
+  const patternCanvas = useMemo(() => {
+    const sz = Math.max(2, Math.round(step * dpr));
+    const c = document.createElement("canvas");
+    c.width = sz;
+    c.height = sz;
+    const ctx = c.getContext("2d");
+    if (!ctx) return c;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.arc(sz / 2, sz / 2, Math.max(0.5, DOT_RADIUS * dpr), 0, Math.PI * 2);
+    ctx.fill();
+    return c;
+  }, [fill, dpr, step]);
 
-  useLayoutEffect(() => {
-    const n = shapeRef.current;
-    if (!n) return;
-    n.clearCache();
-    if (dots.length === 0 || bw < 1 || bh < 1) return;
-    if (bw <= DOT_GRID_MAX_CACHE_DIM && bh <= DOT_GRID_MAX_CACHE_DIM) {
-      n.cache({ pixelRatio: Math.min(stagePixelRatio, 2) });
-    }
-  }, [bh, bw, dots, dots.length, fill, ox, oy, stagePixelRatio]);
-
-  if (dots.length === 0 || bw < 1 || bh < 1) return null;
+  if (worldW < 1 || worldH < 1) return null;
 
   return (
-    <Shape
-      ref={shapeRef}
-      x={ox}
-      y={oy}
-      width={bw}
-      height={bh}
+    <Rect
+      x={0}
+      y={0}
+      width={worldW}
+      height={worldH}
+      fillPatternImage={patternCanvas as unknown as HTMLImageElement}
+      fillPatternScaleX={1 / dpr}
+      fillPatternScaleY={1 / dpr}
       listening={false}
       perfectDrawEnabled={false}
-      sceneFunc={sceneFunc}
     />
   );
 }
@@ -765,22 +699,6 @@ export function FloorPlanCanvas({
     );
     return unionFloorPaintBounds(worldW, worldH, vw);
   }, [worldW, worldH, stagePos.x, stagePos.y, stageScale, viewportW, viewportH]);
-
-  const gridCoverageBounds = useMemo(
-    () => gridCoverageWorldBounds(worldW, worldH, viewportW, viewportH, scaleMin),
-    [worldW, worldH, viewportW, viewportH, scaleMin],
-  );
-
-  const gridDots = useMemo(
-    () =>
-      buildGridDotsForBounds(
-        gridCoverageBounds.x,
-        gridCoverageBounds.x + gridCoverageBounds.width,
-        gridCoverageBounds.y,
-        gridCoverageBounds.y + gridCoverageBounds.height,
-      ),
-    [gridCoverageBounds.x, gridCoverageBounds.y, gridCoverageBounds.width, gridCoverageBounds.height],
-  );
 
   const clampStagePos = useCallback(
     (pos: { x: number; y: number }, scale: number) =>
@@ -1256,9 +1174,8 @@ export function FloorPlanCanvas({
           {/* Dot grid — single Shape (+ optional cache) instead of N Circle nodes */}
           {showGrid && (
             <FloorPlanDotGrid
-              bounds={gridCoverageBounds}
-              dots={gridDots}
-              dotRadius={DOT_RADIUS}
+              worldW={worldW}
+              worldH={worldH}
               fill={CANVAS_COLORS.gridDot}
               stagePixelRatio={pixelRatio}
             />

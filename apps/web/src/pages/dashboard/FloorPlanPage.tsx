@@ -149,7 +149,7 @@ function parseLayoutFromFloorPlanRow(
     }
   }
   if (typeof rawLayout === "object") {
-    return normalizeLayout(JSON.parse(JSON.stringify(rawLayout)) as FloorPlanLayout);
+    return normalizeLayout(structuredClone(rawLayout) as FloorPlanLayout);
   }
   return emptyLayout();
 }
@@ -371,11 +371,16 @@ export default function FloorPlanPage() {
     future: [],
   });
 
-  // Sync history present when DB data loads, section tab changes, or layout row changes (live mode)
+  // Sync history present when DB data loads, section tab changes, or layout row changes (live mode).
+  // Skip the very first run — useReducer already initialised with these values, no wasted redraw.
+  const skipFirstSyncRef = useRef(true);
   useEffect(() => {
-    if (mode === "live") {
-      dispatch({ type: "RESET", entry: { tables: dbTables, layout: initialLayout } });
+    if (mode !== "live") return;
+    if (skipFirstSyncRef.current) {
+      skipFirstSyncRef.current = false;
+      return;
     }
+    dispatch({ type: "RESET", entry: { tables: dbTables, layout: initialLayout } });
   }, [dbTables, mode, initialLayout]);
 
   const tablesDraft = historyState.present.tables;
