@@ -10,13 +10,12 @@ import {
   ChevronRight,
   Tag,
   SlidersHorizontal,
-  MessageCircle,
   X,
   LogOut,
   Plus,
   User,
   Settings,
-  ArrowLeftRight,
+  LayoutDashboard,
 } from "lucide-react";
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
@@ -132,7 +131,7 @@ function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
 export default function DiscoverPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView } = useUser();
+  const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView, restaurantRoles } = useUser();
   const { restaurants, loading: restaurantsLoading } = usePublicRestaurants();
   const [search, setSearch] = useState("");
   const [activeCuisine, setActiveCuisine] = useState("All");
@@ -196,10 +195,10 @@ export default function DiscoverPage() {
             variant="outline"
             size="icon"
             className="shrink-0"
-            onClick={() => setChatOpen(!chatOpen)}
-            title="AI Assistant"
+            onClick={() => void navigate("/account")}
+            title="Settings"
           >
-            <MessageCircle className="size-4" />
+            <Settings className="size-4" />
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -227,27 +226,6 @@ export default function DiscoverPage() {
                 <Plus className="size-4" />
                 {t("dashboard.shell.setupRestaurant")}
               </DropdownMenuItem>
-              {canUseCustomerView && isCustomerView && (
-                <DropdownMenuItem
-                  onClick={() => {
-                    switchToStaffView();
-                    void navigate("/dashboard");
-                  }}
-                >
-                  <ArrowLeftRight className="size-4" />
-                  {t("dashboard.shell.switchToStaffView")}
-                </DropdownMenuItem>
-              )}
-              {canUseCustomerView && !isCustomerView && (
-                <DropdownMenuItem
-                  onClick={() => {
-                    void navigate("/dashboard");
-                  }}
-                >
-                  <Settings className="size-4" />
-                  {t("routes.dashboard.settings.title")}
-                </DropdownMenuItem>
-              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
                 <LogOut className="size-4" />
@@ -255,6 +233,21 @@ export default function DiscoverPage() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {restaurantRoles.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1.5"
+              onClick={() => {
+                if (canUseCustomerView && isCustomerView) switchToStaffView();
+                void navigate("/dashboard");
+              }}
+              title="Dashboard"
+            >
+              <LayoutDashboard className="size-4" />
+              Dashboard
+            </Button>
+          )}
         </div>
       </header>
 
