@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\": \"Memory system active. Project memory files are at ~/.claude/projects/-Users-stevengeorgy-Seatly-3/memory/. Update them with any new implementation details, schema changes, edge functions, or frontend work discovered this session.\"}'",
+            "statusMessage": "Loading project memory reminder..."
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -7,6 +18,11 @@
             "type": "command",
             "command": "cd /Users/stevengeorgy/Seatly-3 && git add -A -- ':!.claude/worktrees' && git diff --staged --quiet || git commit -m \"chore: auto-save $(date '+%Y-%m-%d %H:%M')\"",
             "statusMessage": "Committing changes to main..."
+          },
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\": \"Before finishing: check if any new backend tables, edge functions, frontend routes/hooks, or integrations were added this session. If so, update the relevant memory files in ~/.claude/projects/-Users-stevengeorgy-Seatly-3/memory/.\"}'",
+            "statusMessage": "Memory update reminder..."
           }
         ]
       }
