@@ -71,6 +71,8 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [mode, setMode] = useState<"customer" | "owner">("customer");
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   // voiceMode = continuous STT loop; true when session was started via wake word
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(false);
@@ -82,7 +84,25 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   const chat = useCenaivaChat();
   const speech = useCenaivaSpeech();
 
-  const open = useCallback(() => setIsOpen(true), []);
+  // Request geolocation the first time the drawer opens (not on mount, to avoid
+  // a permission prompt before the user has interacted with Cenaiva).
+  const requestLocation = useCallback(() => {
+    if (userLocationRef.current || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        userLocationRef.current = loc;
+        setUserLocation(loc);
+      },
+      () => {}, // fail silently — location is optional
+      { timeout: 5000, maximumAge: 300_000 },
+    );
+  }, []);
+
+  const open = useCallback(() => {
+    setIsOpen(true);
+    requestLocation();
+  }, [requestLocation]);
   const close = useCallback(() => {
     speech.stopRecognition();
     speech.stopSpeaking();
@@ -110,6 +130,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
         restaurantId: restaurantId || undefined,
         language: "en",
         mode,
+        userLocation: userLocationRef.current || undefined,
       });
       // Speak the reply if TTS is on
       if (result?.reply && ttsEnabled) {

@@ -24,7 +24,12 @@ export function useCenaivaChat() {
   const sendMessage = useCallback(
     async (
       text: string,
-      opts?: { restaurantId?: string; language?: string; mode?: "customer" | "owner" },
+      opts?: {
+        restaurantId?: string;
+        language?: string;
+        mode?: "customer" | "owner";
+        userLocation?: { lat: number; lng: number };
+      },
     ): Promise<{ reply: string; actions: ActionTaken[] } | null> => {
       if (!text.trim() || !isSupabaseConfigured()) return null;
 
@@ -68,6 +73,8 @@ export function useCenaivaChat() {
               restaurant_id: opts?.restaurantId,
               language: opts?.language || "en",
               mode: opts?.mode || "customer",
+              user_lat: opts?.userLocation?.lat,
+              user_lng: opts?.userLocation?.lng,
             }),
             signal: controller.signal,
           },
