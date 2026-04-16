@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Plus, Trash2, CalendarDays } from "lucide-react";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -32,6 +32,15 @@ for (let h = 0; h < 24; h++) {
 
 type DayHours = { open: boolean; from: string; to: string };
 
+type SpecialDay = {
+  id: string;
+  date: string;    // "YYYY-MM-DD"
+  label: string;
+  closed: boolean;
+  from: string;
+  to: string;
+};
+
 function defaultHours(): DayHours[] {
   return DAYS.map((_, i) => ({
     open: true,
@@ -40,22 +49,46 @@ function defaultHours(): DayHours[] {
   }));
 }
 
-function hoursJsonToState(json: Record<string, { open: string; close: string } | null> | null): DayHours[] {
-  if (!json) return defaultHours();
-  return DAYS.map((day) => {
-    const val = json[day.toLowerCase()];
+function hoursJsonToState(
+  json: Record<string, unknown> | null,
+): { regular: DayHours[]; special: SpecialDay[] } {
+  if (!json) return { regular: defaultHours(), special: [] };
+
+  const regular = DAYS.map((day) => {
+    const val = json[day.toLowerCase()] as { open: string; close: string } | null | undefined;
     if (!val) return { open: false, from: "11:00 AM", to: "10:00 PM" };
     return { open: true, from: val.open, to: val.close };
   });
+
+  const rawSpecial = Array.isArray(json.special) ? json.special : [];
+  const special: SpecialDay[] = (rawSpecial as Record<string, unknown>[]).map((s) => ({
+    id: String(s.id ?? crypto.randomUUID()),
+    date: String(s.date ?? ""),
+    label: String(s.label ?? ""),
+    closed: Boolean(s.closed),
+    from: String(s.from ?? "12:00 PM"),
+    to: String(s.to ?? "10:00 PM"),
+  }));
+
+  return { regular, special };
 }
 
-function stateToHoursJson(hours: DayHours[]): Record<string, { open: string; close: string } | null> {
-  return Object.fromEntries(
+function stateToHoursJson(
+  hours: DayHours[],
+  special: SpecialDay[],
+): Record<string, unknown> {
+  const result: Record<string, unknown> = Object.fromEntries(
     DAYS.map((day, i) => [
       day.toLowerCase(),
       hours[i].open ? { open: hours[i].from, close: hours[i].to } : null,
     ]),
   );
+  if (special.length > 0) {
+    result.special = special.map(({ id, date, label, closed, from, to }) => ({
+      id, date, label, closed, from, to,
+    }));
+  }
+  return result;
 }
 
 function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -106,6 +139,7 @@ export default function SettingsPage() {
 
   // Hours state
   const [hours, setHours] = useState<DayHours[]>(defaultHours);
+  const [specialDays, setSpecialDays] = useState<SpecialDay[]>([]);
   const [savingHours, setSavingHours] = useState(false);
 
   // Theme state
@@ -138,7 +172,9 @@ export default function SettingsPage() {
         setCuisine(data.cuisine_type ?? "");
         setAddress(data.address ?? "");
         setDescription(data.description ?? "");
-        setHours(hoursJsonToState(data.hours_json as Record<string, { open: string; close: string } | null> | null));
+        const parsed = hoursJsonToState(data.hours_json as Record<string, unknown> | null);
+        setHours(parsed.regular);
+        setSpecialDays(parsed.special);
       });
   }, [selectedRestaurant?.id]);
 
@@ -187,7 +223,7 @@ export default function SettingsPage() {
     const client = getSupabaseBrowserClient();
     const { error } = await client
       .from("restaurants")
-      .update({ hours_json: stateToHoursJson(hours) })
+      .update({ hours_json: stateToHoursJson(hours, specialDays) })
       .eq("id", selectedRestaurant.id);
 
     setSavingHours(false);
@@ -333,7 +369,8 @@ export default function SettingsPage() {
           </SectionCard>
         </TabsContent>
 
-        <TabsContent value="hours" className="mt-6">
+        <TabsContent value="hours" className="mt-6 flex flex-col gap-4">
+          {/* Regular weekly hours */}
           <SectionCard title={t("dashboard.settings.hours")}>
             <div className="flex flex-col gap-1">
               {DAYS.map((day, i) => (
@@ -341,7 +378,6 @@ export default function SettingsPage() {
                   key={day}
                   className="flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-bg-elevated"
                 >
-                  {/* Toggle */}
                   <button
                     type="button"
                     onClick={() =>
@@ -356,32 +392,22 @@ export default function SettingsPage() {
                       style={{ left: hours[i].open ? "18px" : "2px" }}
                     />
                   </button>
-
-                  {/* Day name */}
-                  <span
-                    className={`w-24 text-sm font-medium ${hours[i].open ? "text-text-primary" : "text-text-muted"}`}
-                  >
+                  <span className={`w-24 text-sm font-medium ${hours[i].open ? "text-text-primary" : "text-text-muted"}`}>
                     {day}
                   </span>
-
-                  {/* Time selects or closed label */}
                   {hours[i].open ? (
                     <div className="flex flex-1 items-center gap-2">
                       <TimeSelect
                         value={hours[i].from}
                         onChange={(v) =>
-                          setHours((h) =>
-                            h.map((d, idx) => (idx === i ? { ...d, from: v } : d)),
-                          )
+                          setHours((h) => h.map((d, idx) => (idx === i ? { ...d, from: v } : d)))
                         }
                       />
                       <span className="text-xs text-text-muted">to</span>
                       <TimeSelect
                         value={hours[i].to}
                         onChange={(v) =>
-                          setHours((h) =>
-                            h.map((d, idx) => (idx === i ? { ...d, to: v } : d)),
-                          )
+                          setHours((h) => h.map((d, idx) => (idx === i ? { ...d, to: v } : d)))
                         }
                       />
                     </div>
@@ -391,15 +417,135 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 flex justify-end">
+          </SectionCard>
+
+          {/* Special / holiday hours */}
+          <SectionCard title="Special & Holiday Hours">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <CalendarDays className="size-4 text-gold" />
+                <p className="text-sm text-text-muted">
+                  Override regular hours for specific dates — holidays, special events, or closures.
+                </p>
+              </div>
+
+              {specialDays.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  {specialDays.map((sd) => (
+                    <div
+                      key={sd.id}
+                      className="grid grid-cols-[1fr_1fr] gap-2 rounded-xl border border-border bg-bg-elevated p-3 sm:grid-cols-[140px_1fr_auto_auto_auto_auto_auto]"
+                    >
+                      {/* Date */}
+                      <input
+                        type="date"
+                        value={sd.date}
+                        onChange={(e) =>
+                          setSpecialDays((days) =>
+                            days.map((d) => d.id === sd.id ? { ...d, date: e.target.value } : d),
+                          )
+                        }
+                        className="col-span-1 h-9 rounded-lg border border-border bg-bg-surface px-3 text-xs text-text-primary outline-none focus:border-gold/40"
+                      />
+                      {/* Label */}
+                      <input
+                        type="text"
+                        value={sd.label}
+                        placeholder="e.g. Christmas Day"
+                        onChange={(e) =>
+                          setSpecialDays((days) =>
+                            days.map((d) => d.id === sd.id ? { ...d, label: e.target.value } : d),
+                          )
+                        }
+                        className="col-span-1 h-9 rounded-lg border border-border bg-bg-surface px-3 text-xs text-text-primary outline-none focus:border-gold/40 sm:col-span-1"
+                      />
+                      {/* Closed toggle */}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSpecialDays((days) =>
+                            days.map((d) => d.id === sd.id ? { ...d, closed: !d.closed } : d),
+                          )
+                        }
+                        className={`relative flex h-5 w-9 shrink-0 cursor-pointer items-center self-center rounded-full transition-colors ${!sd.closed ? "bg-gold" : "bg-border"}`}
+                      >
+                        <span
+                          className="absolute size-3.5 rounded-full bg-white shadow-sm transition-all"
+                          style={{ left: !sd.closed ? "18px" : "2px" }}
+                        />
+                      </button>
+                      {/* Time selects */}
+                      {sd.closed ? (
+                        <span className="col-span-2 self-center text-xs text-text-muted sm:col-span-3">Closed all day</span>
+                      ) : (
+                        <>
+                          <TimeSelect
+                            value={sd.from}
+                            onChange={(v) =>
+                              setSpecialDays((days) =>
+                                days.map((d) => d.id === sd.id ? { ...d, from: v } : d),
+                              )
+                            }
+                          />
+                          <span className="self-center text-xs text-text-muted">to</span>
+                          <TimeSelect
+                            value={sd.to}
+                            onChange={(v) =>
+                              setSpecialDays((days) =>
+                                days.map((d) => d.id === sd.id ? { ...d, to: v } : d),
+                              )
+                            }
+                          />
+                        </>
+                      )}
+                      {/* Delete */}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSpecialDays((days) => days.filter((d) => d.id !== sd.id))
+                        }
+                        className="self-center rounded-md p-1 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
+                        aria-label="Remove"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <Button
-                disabled={savingHours || !selectedRestaurant}
-                onClick={() => void saveHours()}
+                variant="outline"
+                size="sm"
+                className="self-start gap-1.5"
+                onClick={() =>
+                  setSpecialDays((days) => [
+                    ...days,
+                    {
+                      id: crypto.randomUUID(),
+                      date: "",
+                      label: "",
+                      closed: false,
+                      from: "12:00 PM",
+                      to: "10:00 PM",
+                    },
+                  ])
+                }
               >
-                {savingHours ? t("routes.loading") : t("common.actions.save")}
+                <Plus className="size-3.5" />
+                Add special day
               </Button>
             </div>
           </SectionCard>
+
+          <div className="flex justify-end">
+            <Button
+              disabled={savingHours || !selectedRestaurant}
+              onClick={() => void saveHours()}
+            >
+              {savingHours ? t("routes.loading") : t("common.actions.save")}
+            </Button>
+          </div>
         </TabsContent>
 
         <TabsContent value="policy" className="mt-6">
