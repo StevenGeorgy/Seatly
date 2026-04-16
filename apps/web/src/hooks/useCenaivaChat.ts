@@ -24,7 +24,7 @@ export function useCenaivaChat() {
   const sendMessage = useCallback(
     async (
       text: string,
-      opts?: { restaurantId?: string; language?: string },
+      opts?: { restaurantId?: string; language?: string; mode?: "customer" | "owner" },
     ): Promise<{ reply: string; actions: ActionTaken[] } | null> => {
       if (!text.trim() || !isSupabaseConfigured()) return null;
 
@@ -67,6 +67,7 @@ export function useCenaivaChat() {
               conversation_id: conversationId,
               restaurant_id: opts?.restaurantId,
               language: opts?.language || "en",
+              mode: opts?.mode || "customer",
             }),
             signal: controller.signal,
           },

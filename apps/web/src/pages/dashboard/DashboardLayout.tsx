@@ -5,8 +5,32 @@ import { AnimatePresence, motion } from "framer-motion";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardTopBar } from "@/components/dashboard/DashboardTopBar";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useCenaiva } from "@/components/cenaiva/CenaivaProvider";
 import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
+
+// Syncs the dashboard's selected restaurant into CenaivaProvider and activates
+// owner mode. Resets both when the dashboard unmounts.
+function CenaivaDashboardSync() {
+  const { selectedRestaurantId } = useRestaurantScope();
+  const cenaiva = useCenaiva();
+
+  useEffect(() => {
+    if (!cenaiva) return;
+    cenaiva.setMode("owner");
+    cenaiva.setRestaurantId(selectedRestaurantId);
+  }, [selectedRestaurantId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!cenaiva) return;
+    return () => {
+      cenaiva.setMode("customer");
+      cenaiva.setRestaurantId(null);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null;
+}
 
 // Catches render errors in individual pages so the shell stays visible
 class PageErrorBoundary extends Component<
@@ -75,6 +99,7 @@ export default function DashboardLayout() {
         isFloorPlanRoute ? "bg-bg-surface" : "bg-background",
       )}
     >
+      <CenaivaDashboardSync />
       <DashboardSidebar />
       <div
         className={cn(

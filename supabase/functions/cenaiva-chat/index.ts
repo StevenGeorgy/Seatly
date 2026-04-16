@@ -66,7 +66,7 @@ function localToUTC(dateStr: string, timeStr: string, timezone: string): string 
   return new Date(tempDate.getTime() + offsetMinutes * 60_000).toISOString();
 }
 
-// ── OpenAI tools definition ──
+// ── Customer tools ──
 const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
@@ -208,11 +208,114 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   },
 ];
 
+// ── Owner / staff tools ──
+const OWNER_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_reservations",
+      description:
+        "List reservations for the restaurant. Defaults to today. By default shows only active (pending/confirmed/seated) reservations unless a specific status is requested.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description: "YYYY-MM-DD (defaults to today in the restaurant's timezone)",
+          },
+          status: {
+            type: "string",
+            enum: ["all", "pending", "confirmed", "seated", "completed", "cancelled", "no-show"],
+            description: "Filter by status. Omit to see active reservations only.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_reservation_status",
+      description:
+        "Update the status of a reservation (e.g. seat a guest, mark no-show, cancel).",
+      parameters: {
+        type: "object",
+        properties: {
+          reservation_id: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["confirmed", "seated", "completed", "cancelled", "no-show"],
+          },
+        },
+        required: ["reservation_id", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_orders",
+      description: "List orders for the restaurant. Defaults to today.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["all", "pending", "confirmed", "preparing", "ready", "completed", "cancelled"],
+            description: "Filter by order status.",
+          },
+          date: {
+            type: "string",
+            description: "YYYY-MM-DD (defaults to today)",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_order_status",
+      description:
+        "Update the status of an order (e.g. mark as preparing, ready, completed).",
+      parameters: {
+        type: "object",
+        properties: {
+          order_id: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["confirmed", "preparing", "ready", "completed", "cancelled"],
+          },
+        },
+        required: ["order_id", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_daily_summary",
+      description:
+        "Get a summary of today's reservations, active orders, and completed revenue for the restaurant.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description: "YYYY-MM-DD (defaults to today)",
+          },
+        },
+      },
+    },
+  },
+];
+
 // ── Tool execution ──
 async function executeTool(
   toolName: string,
   input: Record<string, any>,
   userProfileId: string,
+  ownerRestaurantId?: string,
 ): Promise<string> {
   switch (toolName) {
     case "search_restaurants": {
@@ -631,6 +734,182 @@ async function executeTool(
       return JSON.stringify({ reservations: result });
     }
 
+    // ── Owner / staff tools ──
+
+    case "list_reservations": {
+      const restaurantId = ownerRestaurantId!;
+      const { data: restRow } = await supabaseAdmin
+        .from("restaurants")
+        .select("timezone")
+        .eq("id", restaurantId)
+        .single();
+      const timezone = restRow?.timezone || "UTC";
+      const dateStr =
+        input.date ||
+        new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+      const dayStartUTC = localToUTC(dateStr, "00:00", timezone);
+      const dayEndUTC = localToUTC(dateStr, "23:59", timezone);
+
+      let query = supabaseAdmin
+        .from("reservations")
+        .select(
+          "id, reserved_at, party_size, status, confirmation_code, special_request, occasion, guests(full_name, phone)",
+        )
+        .eq("restaurant_id", restaurantId)
+        .gte("reserved_at", dayStartUTC)
+        .lte("reserved_at", dayEndUTC)
+        .order("reserved_at");
+
+      if (input.status && input.status !== "all") {
+        query = query.eq("status", input.status);
+      } else if (!input.status) {
+        // Default: active reservations only
+        query = query.in("status", ["pending", "confirmed", "seated"]);
+      }
+
+      const { data, error } = await query;
+      if (error) return JSON.stringify({ error: error.message });
+
+      const result = (data || []).map((r: any) => ({
+        id: r.id,
+        guest_name: (r.guests as any)?.full_name || "Unknown",
+        guest_phone: (r.guests as any)?.phone || "",
+        time: new Date(r.reserved_at).toLocaleTimeString("en-US", {
+          timeZone: timezone,
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        }),
+        party_size: r.party_size,
+        status: r.status,
+        confirmation_code: r.confirmation_code,
+        special_request: r.special_request || null,
+        occasion: r.occasion || null,
+      }));
+
+      return JSON.stringify({ date: dateStr, count: result.length, reservations: result });
+    }
+
+    case "update_reservation_status": {
+      const { data, error } = await supabaseAdmin
+        .from("reservations")
+        .update({ status: input.status })
+        .eq("id", input.reservation_id)
+        .eq("restaurant_id", ownerRestaurantId!)
+        .select("id, status, confirmation_code")
+        .single();
+      if (error) return JSON.stringify({ error: error.message });
+      return JSON.stringify({ success: true, reservation: data });
+    }
+
+    case "list_orders": {
+      const restaurantId = ownerRestaurantId!;
+      const { data: restRow } = await supabaseAdmin
+        .from("restaurants")
+        .select("timezone")
+        .eq("id", restaurantId)
+        .single();
+      const timezone = restRow?.timezone || "UTC";
+      const dateStr =
+        input.date ||
+        new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+      const dayStartUTC = localToUTC(dateStr, "00:00", timezone);
+      const dayEndUTC = localToUTC(dateStr, "23:59", timezone);
+
+      let query = supabaseAdmin
+        .from("orders")
+        .select(
+          "id, order_type, status, total_amount, confirmation_code, created_at, guests(full_name), order_items(name, quantity, unit_price, status)",
+        )
+        .eq("restaurant_id", restaurantId)
+        .gte("created_at", dayStartUTC)
+        .lte("created_at", dayEndUTC)
+        .order("created_at", { ascending: false });
+
+      if (input.status && input.status !== "all") {
+        query = query.eq("status", input.status);
+      }
+
+      const { data, error } = await query;
+      if (error) return JSON.stringify({ error: error.message });
+      return JSON.stringify({ date: dateStr, count: (data || []).length, orders: data || [] });
+    }
+
+    case "update_order_status": {
+      const { data, error } = await supabaseAdmin
+        .from("orders")
+        .update({ status: input.status })
+        .eq("id", input.order_id)
+        .eq("restaurant_id", ownerRestaurantId!)
+        .select("id, status, confirmation_code")
+        .single();
+      if (error) return JSON.stringify({ error: error.message });
+      return JSON.stringify({ success: true, order: data });
+    }
+
+    case "get_daily_summary": {
+      const restaurantId = ownerRestaurantId!;
+      const { data: restRow } = await supabaseAdmin
+        .from("restaurants")
+        .select("timezone, currency")
+        .eq("id", restaurantId)
+        .single();
+      const timezone = restRow?.timezone || "UTC";
+      const currency = restRow?.currency || "CAD";
+      const dateStr =
+        input.date ||
+        new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+      const dayStartUTC = localToUTC(dateStr, "00:00", timezone);
+      const dayEndUTC = localToUTC(dateStr, "23:59", timezone);
+
+      const [{ data: reservations }, { data: orders }] = await Promise.all([
+        supabaseAdmin
+          .from("reservations")
+          .select("id, party_size, status")
+          .eq("restaurant_id", restaurantId)
+          .gte("reserved_at", dayStartUTC)
+          .lte("reserved_at", dayEndUTC),
+        supabaseAdmin
+          .from("orders")
+          .select("id, status, total_amount")
+          .eq("restaurant_id", restaurantId)
+          .gte("created_at", dayStartUTC)
+          .lte("created_at", dayEndUTC),
+      ]);
+
+      const resvs = reservations || [];
+      const ords = orders || [];
+
+      const totalCovers = resvs
+        .filter((r: any) => !["cancelled", "no-show"].includes(r.status))
+        .reduce((sum: number, r: any) => sum + (r.party_size || 0), 0);
+
+      const completedRevenue = ords
+        .filter((o: any) => o.status === "completed")
+        .reduce((sum: number, o: any) => sum + (o.total_amount || 0), 0);
+
+      return JSON.stringify({
+        date: dateStr,
+        reservations: {
+          total: resvs.length,
+          pending: resvs.filter((r: any) => r.status === "pending").length,
+          confirmed: resvs.filter((r: any) => r.status === "confirmed").length,
+          seated: resvs.filter((r: any) => r.status === "seated").length,
+          total_covers: totalCovers,
+        },
+        orders: {
+          total: ords.length,
+          pending: ords.filter((o: any) =>
+            ["pending", "confirmed", "preparing"].includes(o.status),
+          ).length,
+          ready: ords.filter((o: any) => o.status === "ready").length,
+          completed: ords.filter((o: any) => o.status === "completed").length,
+          revenue: Math.round(completedRevenue * 100) / 100,
+          currency,
+        },
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${toolName}` });
   }
@@ -647,7 +926,7 @@ function fireWebhook(event: string, data: Record<string, any>) {
   }).catch(() => {});
 }
 
-// ── System prompt builder ──
+// ── Customer system prompt ──
 function buildSystemPrompt(
   profile: { full_name: string; allergies?: string[]; dietary_restrictions?: string[] },
   language: string,
@@ -693,6 +972,39 @@ Rules:
 9. If a restaurant name search returns no results (voice transcription may mispronounce names), retry with the cuisine type or a single distinctive word from the name rather than telling the user the restaurant doesn't exist.`;
 }
 
+// ── Owner / staff system prompt ──
+function buildOwnerSystemPrompt(
+  profile: { full_name: string },
+  restaurantName: string,
+  language: string,
+): string {
+  const now = new Date();
+  const lang = language === "fr" ? "French" : "English";
+
+  return `You are Cenaiva, the staff assistant for ${restaurantName} on the Seatly platform. You help owners and staff manage reservations, orders, and daily service operations.
+
+Personality:
+- Professional, direct, and concise
+- Operational focus — give quick answers that staff can act on immediately
+- Keep responses under 3 sentences unless showing a list
+- When listing reservations or orders, use clean formatting: guest name, time, party size, status
+
+Current context:
+- Date/Time: ${now.toISOString()}
+- Restaurant: ${restaurantName}
+- Staff member: ${profile.full_name || "Staff"}
+- Language: ${lang} (respond in ${lang})
+
+Rules:
+1. You have access to private restaurant data. Do NOT search for other restaurants or create customer bookings.
+2. When updating a reservation or order status, briefly confirm what you are about to change before calling the tool.
+3. For "today's reservations" or "what's coming up", call list_reservations (defaults to today, active only).
+4. For "any orders" or "current orders", call list_orders — use status "pending" or omit for all active.
+5. For a quick overview of the day, call get_daily_summary.
+6. If an ID is needed (e.g. to seat a specific guest), use the id from the list_reservations result.
+7. Never fabricate reservation or order data — always use tools.`;
+}
+
 // ── Main handler ──
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -722,9 +1034,33 @@ Deno.serve(async (req: Request) => {
     if (!apiKey) return jsonRes({ error: "OPENAI_API_KEY not configured" }, 500);
 
     const body = await req.json();
-    const { message, conversation_id, restaurant_id, language = "en" } = body;
+    const {
+      message,
+      conversation_id,
+      restaurant_id,
+      language = "en",
+      mode = "customer",
+    } = body;
     if (!message || typeof message !== "string")
       return jsonRes({ error: "message is required" }, 400);
+
+    // ── Owner mode: verify the user has a staff role for this restaurant ──
+    let ownerRestaurantId: string | undefined;
+    if (mode === "owner") {
+      if (!restaurant_id) {
+        return jsonRes({ error: "restaurant_id is required for owner mode" }, 400);
+      }
+      const { data: roleRow } = await supabaseAdmin
+        .from("user_restaurant_roles")
+        .select("role")
+        .eq("user_id", profile.id)
+        .eq("restaurant_id", restaurant_id)
+        .maybeSingle();
+      if (!roleRow) {
+        return jsonRes({ error: "Unauthorized: no staff role for this restaurant" }, 403);
+      }
+      ownerRestaurantId = restaurant_id;
+    }
 
     // Load restaurant context if provided
     let restaurantContext: { id: string; name: string; cuisine_type: string } | null = null;
@@ -799,9 +1135,19 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // Select tools and system prompt based on mode
+    const activeTools = mode === "owner" ? OWNER_TOOLS : TOOLS;
+    const systemPrompt =
+      mode === "owner"
+        ? buildOwnerSystemPrompt(
+            profile,
+            restaurantContext?.name || "Your Restaurant",
+            language,
+          )
+        : buildSystemPrompt(profile, language, restaurantContext);
+
     // Call OpenAI with tool-use loop
     const openai = new OpenAI({ apiKey });
-    const systemPrompt = buildSystemPrompt(profile, language, restaurantContext);
     const actionsTaken: { type: string; data: Record<string, any> }[] = [];
     let finalReply = "";
     let iterations = 0;
@@ -818,7 +1164,7 @@ Deno.serve(async (req: Request) => {
           { role: "system", content: systemPrompt },
           ...currentMessages,
         ],
-        tools: TOOLS,
+        tools: activeTools,
         tool_choice: "auto",
       });
 
@@ -849,7 +1195,12 @@ Deno.serve(async (req: Request) => {
           },
         });
 
-        const result = await executeTool(toolCall.function.name, input, profile.id);
+        const result = await executeTool(
+          toolCall.function.name,
+          input,
+          profile.id,
+          ownerRestaurantId,
+        );
 
         // Track successful actions
         const parsed = JSON.parse(result);

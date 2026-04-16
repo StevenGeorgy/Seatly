@@ -23,11 +23,18 @@ import { useCenaiva } from "./CenaivaProvider";
 import { CenaivaMessageBubble } from "./CenaivaMessageBubble";
 import { useTranslation } from "react-i18next";
 
-const SUGGESTED_PROMPTS = [
+const CUSTOMER_PROMPTS = [
   { key: "dateNight", text: "Best date night restaurants near me" },
   { key: "budget", text: "Where can I get sushi under $30?" },
   { key: "allergy", text: "I have a nut allergy, what's safe?" },
   { key: "birthday", text: "Plan a birthday dinner for 6" },
+];
+
+const OWNER_PROMPTS = [
+  { key: "reservationsToday", text: "What reservations do I have today?" },
+  { key: "pendingOrders", text: "Any pending orders right now?" },
+  { key: "dailySummary", text: "Give me today's summary" },
+  { key: "seatGuest", text: "Who's next to be seated?" },
 ];
 
 export function CenaivaDrawer() {
@@ -52,6 +59,9 @@ export function CenaivaDrawer() {
   const wakeWordEnabled = cenaiva?.wakeWordEnabled ?? false;
   const toggleWakeWord = cenaiva?.toggleWakeWord ?? (() => {});
   const isWakeWordSupported = cenaiva?.isWakeWordSupported ?? false;
+  const mode = cenaiva?.mode ?? "customer";
+
+  const suggestedPrompts = mode === "owner" ? OWNER_PROMPTS : CUSTOMER_PROMPTS;
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -203,14 +213,13 @@ export function CenaivaDrawer() {
                     <span className="text-2xl font-bold text-black">C</span>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {t(
-                      "cenaiva.subtitle",
-                      "Hi! I'm Cenaiva, your AI restaurant assistant. How can I help?",
-                    )}
+                    {mode === "owner"
+                      ? t("cenaiva.subtitleOwner", "Hi! I'm Cenaiva, your staff assistant. What do you need?")
+                      : t("cenaiva.subtitle", "Hi! I'm Cenaiva, your AI restaurant assistant. How can I help?")}
                   </p>
                 </div>
                 <div className="space-y-2">
-                  {SUGGESTED_PROMPTS.map((prompt) => (
+                  {suggestedPrompts.map((prompt) => (
                     <button
                       key={prompt.key}
                       className="w-full rounded-xl border border-[#2E2E2E] bg-[#1E1E1E] px-4 py-3 text-left text-sm text-gray-300 transition-colors hover:border-[#C8A951]/40 hover:bg-[#252525]"

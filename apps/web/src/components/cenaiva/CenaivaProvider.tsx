@@ -54,6 +54,9 @@ type CenaivaContextValue = {
   // Restaurant context
   restaurantId: string | null;
   setRestaurantId: (id: string | null) => void;
+  // Mode: "customer" (default) or "owner" (dashboard)
+  mode: "customer" | "owner";
+  setMode: (mode: "customer" | "owner") => void;
 };
 
 const CenaivaContext = createContext<CenaivaContextValue | null>(null);
@@ -67,6 +70,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // TTS off by default — user can enable via the speaker toggle in the drawer
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"customer" | "owner">("customer");
   // voiceMode = continuous STT loop; true when session was started via wake word
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(false);
@@ -105,6 +109,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       const result = await chat.sendMessage(text, {
         restaurantId: restaurantId || undefined,
         language: "en",
+        mode,
       });
       // Speak the reply if TTS is on
       if (result?.reply && ttsEnabled) {
@@ -237,6 +242,8 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       isWakeWordSupported: wakeWord.isSupported,
       restaurantId,
       setRestaurantId,
+      mode,
+      setMode,
     }),
     [
       isOpen, open, close, toggle, status,
@@ -246,7 +253,7 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       ttsEnabled, speech.isRecognitionSupported,
       voiceMode,
       wakeWord.enabled, wakeWord.toggle, wakeWord.isSupported,
-      restaurantId,
+      restaurantId, mode,
     ],
   );
 
