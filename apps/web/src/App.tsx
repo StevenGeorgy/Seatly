@@ -10,14 +10,14 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppRoutes } from "@/routes/AppRoutes";
 import { useUser } from "@/hooks/useUser";
 
-function CenaivaGate() {
+function AuthedCenaivaUI() {
   const { user } = useUser();
   if (!user) return null;
   return (
-    <CenaivaProvider>
+    <>
       <CenaivaButton />
       <CenaivaDrawer />
-    </CenaivaProvider>
+    </>
   );
 }
 
@@ -25,11 +25,12 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <TooltipProvider delayDuration={300}>
-          <DevSupabaseBanner />
-          <AppRoutes />
-          <CenaivaGate />
-          <Toaster
+        <CenaivaProvider>
+          <TooltipProvider delayDuration={300}>
+            <DevSupabaseBanner />
+            <AppRoutes />
+            <AuthedCenaivaUI />
+            <Toaster
               richColors
               position="top-center"
               toastOptions={{
@@ -41,6 +42,7 @@ export default function App() {
               }}
             />
           </TooltipProvider>
+        </CenaivaProvider>
       </AuthProvider>
     </BrowserRouter>
   );
