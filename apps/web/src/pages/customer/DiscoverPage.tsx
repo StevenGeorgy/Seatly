@@ -242,12 +242,10 @@ export default function DiscoverPage() {
           {restaurantRoles.length > 0 && (
             staffRestaurants.length > 1 ? (
               <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5">
-                    <LayoutDashboard className="size-4" />
-                    Dashboard
-                    <ChevronDown className="size-3.5" />
-                  </Button>
+                <DropdownMenuTrigger className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[0.8rem] font-medium text-foreground outline-none transition-colors hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-primary/30">
+                  <LayoutDashboard className="size-3.5" />
+                  Dashboard
+                  <ChevronDown className="size-3.5" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
                   {staffRestaurants.map((r) => (
