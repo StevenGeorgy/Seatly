@@ -1,4 +1,4 @@
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 
 import { AuthProvider } from "@/contexts/auth-context";
@@ -10,9 +10,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppRoutes } from "@/routes/AppRoutes";
 import { useUser } from "@/hooks/useUser";
 
+const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password"]);
+
 function AuthedCenaivaUI() {
   const { user } = useUser();
-  if (!user) return null;
+  const { pathname } = useLocation();
+  if (!user || PUBLIC_PATHS.has(pathname) || pathname.startsWith("/auth/")) return null;
   return (
     <>
       <CenaivaButton />
