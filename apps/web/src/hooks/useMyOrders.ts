@@ -17,7 +17,7 @@ export type MyOrderRow = {
   total_amount: number | null;
   created_at: string | null;
   confirmation_code: string | null;
-  restaurant: { id: string; name: string; slug: string } | null;
+  restaurant: { id: string; name: string; slug: string; currency: string } | null;
   order_items: MyOrderItemRow[];
 };
 
@@ -59,7 +59,7 @@ export function useMyOrders() {
     const { data, error: oErr } = await client
       .from("orders")
       .select(
-        "id, order_type, status, total_amount, created_at, confirmation_code, restaurant:restaurants(id, name, slug), order_items(id, name, quantity, unit_price)",
+        "id, order_type, status, total_amount, created_at, confirmation_code, restaurant:restaurants(id, name, slug, currency), order_items(id, name, quantity, unit_price)",
       )
       .in("guest_id", guestIds)
       .order("created_at", { ascending: false });

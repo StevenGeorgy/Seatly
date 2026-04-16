@@ -30,6 +30,7 @@ import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSecti
 import { useMyReservations } from "@/hooks/useMyReservations";
 import { useMyOrders, type MyOrderRow } from "@/hooks/useMyOrders";
 import { useUpdateProfile } from "@/hooks/useUpdateProfile";
+import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 // Form schema — dietary/allergy arrays handled via controlled CSV state
 const profileFormSchema = z.object({
@@ -62,7 +63,8 @@ function StatusPill({ status }: { status: string }) {
 
 // ─── Order card with expandable items ────────────────────────────────────────
 function OrderCard({ order }: { order: MyOrderRow }) {
-  const total = order.total_amount ? `$${(order.total_amount / 100).toFixed(2)}` : null;
+  const currency = order.restaurant?.currency ?? "CAD";
+  const total = order.total_amount != null ? formatCurrency(order.total_amount, currency) : null;
   const date = order.created_at ? format(new Date(order.created_at), "MMM d, yyyy") : null;
 
   return (
@@ -98,7 +100,7 @@ function OrderCard({ order }: { order: MyOrderRow }) {
             {order.order_items.map((item) => (
               <li key={item.id} className="flex justify-between text-sm text-text-secondary">
                 <span>{item.quantity}× {item.name}</span>
-                <span>${((item.unit_price * item.quantity) / 100).toFixed(2)}</span>
+                <span>{formatCurrency(item.unit_price * item.quantity, currency)}</span>
               </li>
             ))}
           </ul>
