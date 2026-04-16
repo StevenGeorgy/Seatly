@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { format, parse, isValid } from "date-fns";
 import { ChevronDown, Plus, Trash2, CalendarDays } from "lucide-react";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
@@ -11,6 +12,8 @@ import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
@@ -140,6 +143,7 @@ export default function SettingsPage() {
   // Hours state
   const [hours, setHours] = useState<DayHours[]>(defaultHours);
   const [specialDays, setSpecialDays] = useState<SpecialDay[]>([]);
+  const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
   // Theme state
@@ -434,19 +438,73 @@ export default function SettingsPage() {
                   {specialDays.map((sd) => (
                     <div
                       key={sd.id}
-                      className="grid grid-cols-[1fr_1fr] gap-2 rounded-xl border border-border bg-bg-elevated p-3 sm:grid-cols-[140px_1fr_auto_auto_auto_auto_auto]"
+                      className="grid grid-cols-[1fr_1fr] gap-2 rounded-xl border border-border bg-bg-elevated p-3 sm:grid-cols-[160px_1fr_auto_auto_auto_auto_auto]"
                     >
-                      {/* Date */}
-                      <input
-                        type="date"
-                        value={sd.date}
-                        onChange={(e) =>
-                          setSpecialDays((days) =>
-                            days.map((d) => d.id === sd.id ? { ...d, date: e.target.value } : d),
-                          )
-                        }
-                        className="col-span-1 h-9 rounded-lg border border-border bg-bg-surface px-3 text-xs text-text-primary outline-none focus:border-gold/40"
-                      />
+                      {/* Date — Popover + Calendar matching the booking flow */}
+                      <Popover
+                        open={openPopoverId === sd.id}
+                        onOpenChange={(o) => setOpenPopoverId(o ? sd.id : null)}
+                      >
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="relative flex h-9 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-surface pl-8 pr-2 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
+                          >
+                            <CalendarDays className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+                            <span className={`truncate text-xs leading-none ${sd.date ? "text-text-primary" : "text-text-muted"}`}>
+                              {sd.date
+                                ? new Date(`${sd.date}T12:00:00`).toLocaleDateString(undefined, {
+                                    weekday: "short",
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })
+                                : "Select date"}
+                            </span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="start"
+                          className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
+                        >
+                          <Calendar
+                            mode="single"
+                            required={false}
+                            selected={(() => {
+                              if (!sd.date) return undefined;
+                              const d = parse(sd.date, "yyyy-MM-dd", new Date());
+                              return isValid(d) ? d : undefined;
+                            })()}
+                            onSelect={(d) => {
+                              setSpecialDays((days) =>
+                                days.map((s) =>
+                                  s.id === sd.id ? { ...s, date: d ? format(d, "yyyy-MM-dd") : "" } : s,
+                                ),
+                              );
+                              if (d) setOpenPopoverId(null);
+                            }}
+                            className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                          />
+                          {sd.date && (
+                            <div className="border-t border-border p-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="w-full text-text-secondary hover:bg-bg-surface hover:text-text-primary"
+                                onClick={() => {
+                                  setSpecialDays((days) =>
+                                    days.map((s) => s.id === sd.id ? { ...s, date: "" } : s),
+                                  );
+                                  setOpenPopoverId(null);
+                                }}
+                              >
+                                Clear date
+                              </Button>
+                            </div>
+                          )}
+                        </PopoverContent>
+                      </Popover>
                       {/* Label */}
                       <input
                         type="text"
