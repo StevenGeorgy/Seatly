@@ -1,34 +1,76 @@
 import type { ChatMessage } from "@/hooks/useCenaivaChat";
 import { cn } from "@/lib/utils";
-import { Bot, CalendarCheck, ShoppingBag, User } from "lucide-react";
+import { Bot, CalendarCheck, CheckCircle, CreditCard, ExternalLink, ShoppingBag, User } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 function ActionCard({ action }: { action: { type: string; data: Record<string, any> } }) {
-  if (action.type === "create_reservation_completed") {
+  const navigate = useNavigate();
+
+  // ── Booking confirmed (dine-in reservation + order, or takeout/delivery order) ──
+  if (action.type === "complete_booking_completed") {
+    const isDineIn = action.data.order_type === "dine_in";
     return (
       <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm">
         <div className="flex items-center gap-2 font-medium text-emerald-400">
-          <CalendarCheck className="h-4 w-4" />
-          Reservation booked
+          {isDineIn ? <CalendarCheck className="h-4 w-4" /> : <ShoppingBag className="h-4 w-4" />}
+          {isDineIn ? "Reservation & order confirmed" : "Order confirmed"}
         </div>
-        {action.data.confirmation_code && (
-          <div className="mt-1 text-xs text-muted-foreground">
-            Confirmation: {action.data.confirmation_code}
-          </div>
+        <div className="mt-1 space-y-0.5 text-xs text-gray-400">
+          {action.data.confirmation_code && (
+            <div>Code: <span className="font-mono font-medium text-gray-200">{action.data.confirmation_code}</span></div>
+          )}
+          {action.data.items_ordered && <div>{action.data.items_ordered}</div>}
+          {action.data.total != null && (
+            <div>
+              Total: <span className="font-medium text-gray-200">
+                {action.data.currency || "CA$"}{action.data.total.toFixed(2)}
+              </span>
+              {" "}(before tip)
+            </div>
+          )}
+        </div>
+        {action.data.checkout_url && (
+          <button
+            onClick={() => navigate(action.data.checkout_url)}
+            className="mt-2 flex items-center gap-1 text-xs text-[#C8A951] hover:underline"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Go to checkout
+          </button>
         )}
       </div>
     );
   }
 
-  if (action.type === "place_order_completed") {
+  // ── Payment confirmed ──
+  if (action.type === "charge_saved_card_completed") {
     return (
-      <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
-        <div className="flex items-center gap-2 font-medium text-amber-400">
-          <ShoppingBag className="h-4 w-4" />
-          Order placed
+      <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm">
+        <div className="flex items-center gap-2 font-medium text-emerald-400">
+          <CheckCircle className="h-4 w-4" />
+          Payment confirmed
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">
-          {action.data.confirmation_code && <>Code: {action.data.confirmation_code} &middot; </>}
-          {action.data.total != null && <>Total: {action.data.currency || "CA$"}{action.data.total.toFixed(2)}</>}
+        <div className="mt-1 space-y-0.5 text-xs text-gray-400">
+          {action.data.total_charged != null && (
+            <div>
+              Charged:{" "}
+              <span className="font-medium text-gray-200">
+                {action.data.currency || "CA$"}{Number(action.data.total_charged).toFixed(2)}
+              </span>
+            </div>
+          )}
+          {action.data.card_brand && action.data.card_last4 && (
+            <div className="flex items-center gap-1">
+              <CreditCard className="h-3 w-3" />
+              {action.data.card_brand} ****{action.data.card_last4}
+              {action.data.mode === "test" && (
+                <span className="ml-1 rounded bg-amber-500/20 px-1 text-[10px] text-amber-400">test</span>
+              )}
+            </div>
+          )}
+          {action.data.tip_amount > 0 && (
+            <div>Tip: {action.data.currency || "CA$"}{Number(action.data.tip_amount).toFixed(2)}</div>
+          )}
         </div>
       </div>
     );

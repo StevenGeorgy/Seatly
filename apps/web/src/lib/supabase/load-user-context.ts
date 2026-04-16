@@ -7,7 +7,7 @@ import {
 } from "@/types/auth";
 
 const PROFILE_COLUMNS =
-  "id, auth_user_id, full_name, phone, email, avatar_url, role, restaurant_id, birthday, dietary_restrictions, allergies, seating_preference, noise_preference, preferred_language, notification_preferences_json, car_details_json, stripe_payment_method_id, created_at";
+  "id, auth_user_id, full_name, phone, email, avatar_url, role, restaurant_id, birthday, dietary_restrictions, allergies, seating_preference, noise_preference, preferred_language, notification_preferences_json, car_details_json, stripe_payment_method_id, stripe_customer_id, created_at";
 
 const ROLE_COLUMNS =
   "id, user_id, restaurant_id, role, is_primary, hourly_rate, employment_type, created_at";

@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, ShoppingBag, Gift, User, ArrowLeft } from "lucide-react";
+import { CalendarDays, ShoppingBag, Gift, User, ArrowLeft, CreditCard } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { useUser } from "@/hooks/useUser";
+import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
 
 export default function AccountPage() {
   const { t } = useTranslation();
@@ -93,6 +94,10 @@ export default function AccountPage() {
                 <Gift className="size-3.5" />
                 Loyalty
               </TabsTrigger>
+              <TabsTrigger value="payment" className="gap-1.5">
+                <CreditCard className="size-3.5" />
+                Payment
+              </TabsTrigger>
               <TabsTrigger value="profile" className="gap-1.5">
                 <User className="size-3.5" />
                 Profile
@@ -124,6 +129,12 @@ export default function AccountPage() {
                   <p className="text-3xl font-bold text-gold">0</p>
                   <p className="mt-1 text-sm text-text-muted">Points Balance</p>
                 </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="payment" className="mt-6">
+              <div className="rounded-xl border border-border bg-bg-surface p-6">
+                <PaymentMethodsSection />
               </div>
             </TabsContent>
 

@@ -41,6 +41,7 @@ export type UserProfile = {
   notification_preferences_json: Record<string, unknown> | null;
   car_details_json: Record<string, unknown> | null;
   stripe_payment_method_id: string | null;
+  stripe_customer_id: string | null;
   created_at: string | null;
 };
 

@@ -1,7 +1,7 @@
 import { useState, useMemo, useId, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { format, isValid, parse, startOfToday } from "date-fns";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Star,
@@ -321,6 +321,7 @@ function StepBar({
 export default function RestaurantPublicPage() {
   const { t } = useTranslation();
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
+  const [searchParams] = useSearchParams();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
@@ -401,6 +402,57 @@ export default function RestaurantPublicPage() {
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
+
+  // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
+  // When Cenaiva creates an order and the user wants to pay via the manual
+  // checkout (split bill, different card), it links here with the order_id.
+  // We fetch the order, populate cart state, and jump to the checkout step.
+  useEffect(() => {
+    const orderId = searchParams.get("order_id");
+    const targetStep = searchParams.get("step") as Step | null;
+    if (!orderId || targetStep !== "checkout" || !isSupabaseConfigured()) return;
+
+    const client = getSupabaseBrowserClient();
+    void (async () => {
+      const { data: order } = await client
+        .from("orders")
+        .select("id, order_type, notes, order_items(name, quantity, unit_price, modifications, menu_item_id)")
+        .eq("id", orderId)
+        .single();
+      if (!order) return;
+
+      const orderItems = (order.order_items || []) as {
+        name: string; quantity: number; unit_price: number;
+        modifications: string | null; menu_item_id: string | null;
+      }[];
+
+      // Populate cart from order items — build minimal MenuItem shells
+      const cartItems: CartItem[] = orderItems.map((item) => ({
+        id: item.menu_item_id || `item-${Math.random()}`,
+        name: item.name,
+        description: "",
+        price: item.unit_price,
+        category: "",
+        popular: false,
+        dietary: [],
+        emoji: "🍽️",
+        allergens: [],
+        ingredients: "",
+        qty: item.quantity,
+        note: item.modifications || undefined,
+      }));
+
+      setCart(cartItems);
+      setOrderType(
+        order.order_type === "dine_in" ? "dine_in"
+          : order.order_type === "delivery" ? "delivery"
+          : "pickup",
+      );
+      setStep("checkout");
+    })();
+  // Run once on mount — searchParams is stable for the initial URL
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [cardNumber, setCardNumber] = useState("");
   const [cardExpiry, setCardExpiry] = useState("");
