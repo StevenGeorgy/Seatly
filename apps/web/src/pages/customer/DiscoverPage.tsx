@@ -16,9 +16,11 @@ import {
   User,
   Settings,
   LayoutDashboard,
+  ChevronDown,
 } from "lucide-react";
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
+import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -131,7 +133,8 @@ function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
 export default function DiscoverPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { profile, signOut, canUseCustomerView, isCustomerView, switchToStaffView, restaurantRoles } = useUser();
+  const { profile, signOut, canUseCustomerView, isCustomerView, switchToCustomerView, switchToStaffView, restaurantRoles } = useUser();
+  const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
   const { restaurants, loading: restaurantsLoading } = usePublicRestaurants();
   const [search, setSearch] = useState("");
   const [activeCuisine, setActiveCuisine] = useState("All");
@@ -195,7 +198,10 @@ export default function DiscoverPage() {
             variant="outline"
             size="icon"
             className="shrink-0"
-            onClick={() => void navigate("/account")}
+            onClick={() => {
+              if (canUseCustomerView) switchToCustomerView();
+              void navigate("/account");
+            }}
             title="Settings"
           >
             <Settings className="size-4" />
@@ -234,19 +240,45 @@ export default function DiscoverPage() {
             </DropdownMenuContent>
           </DropdownMenu>
           {restaurantRoles.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5"
-              onClick={() => {
-                if (canUseCustomerView && isCustomerView) switchToStaffView();
-                void navigate("/dashboard");
-              }}
-              title="Dashboard"
-            >
-              <LayoutDashboard className="size-4" />
-              Dashboard
-            </Button>
+            staffRestaurants.length > 1 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5">
+                    <LayoutDashboard className="size-4" />
+                    Dashboard
+                    <ChevronDown className="size-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  {staffRestaurants.map((r) => (
+                    <DropdownMenuItem
+                      key={r.id}
+                      onClick={() => {
+                        localStorage.setItem("seatly.selectedRestaurantId", r.id);
+                        if (isCustomerView) switchToStaffView();
+                        void navigate("/dashboard");
+                      }}
+                    >
+                      <LayoutDashboard className="size-4" />
+                      {r.name ?? r.slug}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5"
+                onClick={() => {
+                  if (isCustomerView) switchToStaffView();
+                  void navigate("/dashboard");
+                }}
+              >
+                <LayoutDashboard className="size-4" />
+                Dashboard
+              </Button>
+            )
           )}
         </div>
       </header>
