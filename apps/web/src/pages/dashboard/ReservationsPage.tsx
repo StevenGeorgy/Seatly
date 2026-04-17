@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { format } from "date-fns";
-import { CalendarDays, Plus, Search, X, CalendarIcon } from "lucide-react";
+import { CalendarDays, Plus, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 
@@ -16,8 +16,6 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
 import { useReservations, type ReservationFilters, type ReservationRow } from "@/hooks/useReservations";
 import { SeatReservationDialog } from "@/components/dashboard/SeatReservationDialog";
 
@@ -62,23 +60,23 @@ export default function ReservationsPage() {
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
   const [partySize, setPartySize] = useState("2");
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [selectedDate, setSelectedDate] = useState("");
   const [selectedTime, setSelectedTime] = useState("7:00 PM");
   const [specialRequest, setSpecialRequest] = useState("");
-  const [calOpen, setCalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const resetForm = () => {
     setGuestName(""); setGuestEmail(""); setGuestPhone(""); setPartySize("2");
-    setSelectedDate(undefined); setSelectedTime("7:00 PM"); setSpecialRequest("");
+    setSelectedDate(""); setSelectedTime("7:00 PM"); setSpecialRequest("");
   };
 
   const handleCreate = async () => {
     if (!guestName.trim()) { toast.error("Guest name is required."); return; }
     if (!selectedDate) { toast.error("Please select a date."); return; }
     const { hours, minutes } = parseTime(selectedTime);
-    const dt = new Date(selectedDate);
-    dt.setHours(hours, minutes, 0, 0);
+    // selectedDate is "YYYY-MM-DD" from the native date input; parse as local date
+    const [y, mo, d] = selectedDate.split("-").map(Number);
+    const dt = new Date(y, mo - 1, d, hours, minutes, 0, 0);
 
     setSaving(true);
     try {
@@ -253,22 +251,13 @@ export default function ReservationsPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label>Date *</Label>
-                <Popover open={calOpen} onOpenChange={setCalOpen} modal={false}>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className="justify-start gap-2 text-left font-normal">
-                      <CalendarIcon className="size-4 shrink-0 text-text-muted" />
-                      {selectedDate ? format(selectedDate, "MMM d, yyyy") : "Pick a date"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-auto p-0">
-                    <Calendar
-                      mode="single"
-                      selected={selectedDate}
-                      onSelect={(d) => { setSelectedDate(d); setCalOpen(false); }}
-                      disabled={(d) => d < new Date(new Date().setHours(0, 0, 0, 0))}
-                    />
-                  </PopoverContent>
-                </Popover>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  min={new Date().toISOString().split("T")[0]}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [color-scheme:dark]"
+                />
               </div>
               <div className="flex flex-col gap-2">
                 <Label>Time</Label>
