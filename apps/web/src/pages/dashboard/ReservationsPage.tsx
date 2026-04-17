@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { format } from "date-fns";
+import { format, parse, startOfToday } from "date-fns";
 import { CalendarDays, Plus, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -11,8 +11,10 @@ import { SectionCard } from "@/components/dashboard/SectionCard";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -61,13 +63,20 @@ export default function ReservationsPage() {
   const [guestPhone, setGuestPhone] = useState("");
   const [partySize, setPartySize] = useState("2");
   const [selectedDate, setSelectedDate] = useState("");
+  const [calOpen, setCalOpen] = useState(false);
   const [selectedTime, setSelectedTime] = useState("7:00 PM");
   const [specialRequest, setSpecialRequest] = useState("");
   const [saving, setSaving] = useState(false);
 
+  const calSelectedDay = useMemo(() => {
+    if (!selectedDate) return undefined;
+    const d = parse(selectedDate, "yyyy-MM-dd", new Date());
+    return isNaN(d.getTime()) ? undefined : d;
+  }, [selectedDate]);
+
   const resetForm = () => {
     setGuestName(""); setGuestEmail(""); setGuestPhone(""); setPartySize("2");
-    setSelectedDate(""); setSelectedTime("7:00 PM"); setSpecialRequest("");
+    setSelectedDate(""); setCalOpen(false); setSelectedTime("7:00 PM"); setSpecialRequest("");
   };
 
   const handleCreate = async () => {
@@ -261,13 +270,49 @@ export default function ReservationsPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label>Date *</Label>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  min={new Date().toISOString().split("T")[0]}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [color-scheme:dark]"
-                />
+                <Popover open={calOpen} onOpenChange={setCalOpen} modal={false}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40"
+                    >
+                      <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+                      <span className={`truncate text-xs leading-none ${selectedDate ? "text-text-primary" : "text-text-muted"}`}>
+                        {selectedDate
+                          ? new Date(`${selectedDate}T12:00:00`).toLocaleDateString(undefined, {
+                              weekday: "short", month: "short", day: "numeric", year: "numeric",
+                            })
+                          : "Select date"}
+                      </span>
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl">
+                    <Calendar
+                      mode="single"
+                      required={false}
+                      selected={calSelectedDay}
+                      onSelect={(d) => {
+                        setSelectedDate(d ? format(d, "yyyy-MM-dd") : "");
+                        if (d) setCalOpen(false);
+                      }}
+                      disabled={{ before: startOfToday() }}
+                      className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                    />
+                    {selectedDate ? (
+                      <div className="border-t border-border p-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="w-full text-text-secondary hover:bg-bg-surface hover:text-text-primary"
+                          onClick={() => { setSelectedDate(""); setCalOpen(false); }}
+                        >
+                          Clear date
+                        </Button>
+                      </div>
+                    ) : null}
+                  </PopoverContent>
+                </Popover>
               </div>
               <div className="flex flex-col gap-2">
                 <Label>Time</Label>
