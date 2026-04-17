@@ -56,6 +56,8 @@ const common = {
       calendar: "Calendrier",
       searchPlaceholder: "Rechercher des clients\u2026",
       all: "Toutes",
+      pending: "En attente",
+      confirmed: "Confirmées",
       upcoming: "\u00c0 venir",
       seated: "Assis",
       completed: "Termin\u00e9es",

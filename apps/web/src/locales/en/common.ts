@@ -56,6 +56,8 @@ const common = {
       calendar: "Calendar",
       searchPlaceholder: "Search guests...",
       all: "All",
+      pending: "Pending",
+      confirmed: "Confirmed",
       upcoming: "Upcoming",
       seated: "Seated",
       completed: "Completed",
