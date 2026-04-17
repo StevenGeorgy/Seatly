@@ -105,7 +105,7 @@ export default function CrmPage() {
                       ) : null}
                     </div>
                     <span className="text-xs text-text-muted">
-                      {guest.total_visits} visits \u00b7 {formatCurrency(guest.total_spend, currency)}
+                      {guest.total_visits} visits · {formatCurrency(guest.total_spend, currency)}
                     </span>
                   </div>
                   <div className="hidden flex-wrap gap-1 sm:flex">
