@@ -124,7 +124,51 @@ export function useReservations(filters?: ReservationFilters) {
   const updateStatus = async (id: string, status: string) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
-    await client.from("reservations").update({ status }).eq("id", id);
+
+    const timestampField: Record<string, string> = {
+      completed: "completed_at",
+      cancelled: "cancelled_at",
+    };
+
+    const patch: Record<string, unknown> = { status };
+    if (timestampField[status]) patch[timestampField[status]] = new Date().toISOString();
+
+    await client.from("reservations").update(patch).eq("id", id);
+
+    // Auto-free the linked table when the reservation ends
+    if (status === "completed" || status === "cancelled" || status === "no_show") {
+      const { data: res } = await client
+        .from("reservations")
+        .select("table_id")
+        .eq("id", id)
+        .single();
+      if (res?.table_id) {
+        await client
+          .from("tables")
+          .update({ status: "empty", seated_count: 0 })
+          .eq("id", res.table_id);
+      }
+    }
+
+    void fetchReservations();
+  };
+
+  const seatReservation = async (
+    reservationId: string,
+    tableId: string,
+    partySize: number,
+  ) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    const now = new Date().toISOString();
+    await client
+      .from("reservations")
+      .update({ status: "seated", table_id: tableId, checked_in_at: now, seated_at: now })
+      .eq("id", reservationId);
+    await client
+      .from("tables")
+      .update({ status: "occupied", seated_count: partySize })
+      .eq("id", tableId);
     void fetchReservations();
   };
 
@@ -185,5 +229,5 @@ export function useReservations(filters?: ReservationFilters) {
     void fetchReservations();
   };
 
-  return { reservations, loading, error, refetch: fetchReservations, updateStatus, createReservation };
+  return { reservations, loading, error, refetch: fetchReservations, updateStatus, seatReservation, createReservation };
 }

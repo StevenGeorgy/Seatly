@@ -18,7 +18,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { useReservations, type ReservationFilters } from "@/hooks/useReservations";
+import { useReservations, type ReservationFilters, type ReservationRow } from "@/hooks/useReservations";
+import { SeatReservationDialog } from "@/components/dashboard/SeatReservationDialog";
 
 const STATUS_TABS = ["all", "pending", "confirmed", "seated", "completed", "cancelled"] as const;
 
@@ -53,7 +54,8 @@ export default function ReservationsPage() {
     search: search || undefined,
   }), [statusFilter, search]);
 
-  const { reservations, loading, updateStatus, createReservation } = useReservations(filters);
+  const { reservations, loading, updateStatus, seatReservation, createReservation } = useReservations(filters);
+  const [seatTarget, setSeatTarget] = useState<ReservationRow | null>(null);
 
   // New Reservation form state
   const [guestName, setGuestName] = useState("");
@@ -182,25 +184,16 @@ export default function ReservationsPage() {
                     ) : null}
                     <StatusBadge status={r.status} />
                     <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      {r.status === "confirmed" ? (
+                      {(r.status === "confirmed" || r.status === "pending") ? (
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => void updateStatus(r.id, "seated").then(() => toast.success("Checked in."))}
+                          onClick={() => setSeatTarget(r)}
                         >
                           {t("dashboard.reservations.checkIn")}
                         </Button>
                       ) : null}
-                      {r.status === "pending" ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => void updateStatus(r.id, "confirmed").then(() => toast.success("Confirmed."))}
-                        >
-                          {t("common.actions.confirm")}
-                        </Button>
-                      ) : null}
-                      {r.status !== "cancelled" && r.status !== "completed" ? (
+                      {r.status !== "cancelled" && r.status !== "completed" && r.status !== "seated" ? (
                         <Button
                           variant="ghost"
                           size="sm"
@@ -218,6 +211,19 @@ export default function ReservationsPage() {
           </div>
         )}
       </SectionCard>
+
+      {/* Seat Guest Dialog */}
+      <SeatReservationDialog
+        open={seatTarget !== null}
+        onOpenChange={(o) => { if (!o) setSeatTarget(null); }}
+        reservation={seatTarget}
+        onSeat={async (tableId) => {
+          if (!seatTarget) return;
+          await seatReservation(seatTarget.id, tableId, seatTarget.party_size);
+          toast.success("Guest seated.");
+          setSeatTarget(null);
+        }}
+      />
 
       {/* New Reservation Dialog */}
       <Dialog open={drawerOpen} onOpenChange={(o) => { setDrawerOpen(o); if (!o) resetForm(); }}>
