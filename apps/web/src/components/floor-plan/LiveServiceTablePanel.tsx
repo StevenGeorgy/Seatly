@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -8,7 +8,6 @@ import {
   Link2,
   MapPin,
   Pencil,
-  Sparkles,
   UserRound,
   Users,
 } from "lucide-react";
@@ -37,67 +36,7 @@ const STATUS_LABEL_KEYS: Record<string, string> = {
   blocked: "dashboard.floorPlan.statusBlocked",
 };
 
-function hash32(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
-type MockBundle = {
-  server: string;
-  guest: string;
-  reservationTimeKey: string;
-  minutesUntil: number;
-  mockParty: number;
-  preferenceKey: string;
-  turnDurationKey: string;
-};
-
-function useTableMockBundle(table: TableRow): MockBundle {
-  const { t } = useTranslation();
-  return useMemo(() => {
-    const h = hash32(table.id);
-    const serverKeys = [
-      "dashboard.floorPlan.mockServerAlex",
-      "dashboard.floorPlan.mockServerRiley",
-      "dashboard.floorPlan.mockServerMorgan",
-      "dashboard.floorPlan.mockServerSarah",
-    ] as const;
-    const guestKeys = [
-      "dashboard.floorPlan.mockGuestJordan",
-      "dashboard.floorPlan.mockGuestSam",
-      "dashboard.floorPlan.mockGuestTaylor",
-    ] as const;
-    const timeKeys = [
-      "dashboard.floorPlan.mockReservationSlot1",
-      "dashboard.floorPlan.mockReservationSlot2",
-      "dashboard.floorPlan.mockReservationSlot3",
-    ] as const;
-    const prefKeys = [
-      "dashboard.floorPlan.mockPrefAnniversary",
-      "dashboard.floorPlan.mockPrefAllergies",
-      "dashboard.floorPlan.mockPrefQuiet",
-    ] as const;
-    const turnKeys = [
-      "dashboard.floorPlan.mockTurnShort",
-      "dashboard.floorPlan.mockTurnMedium",
-      "dashboard.floorPlan.mockTurnLong",
-    ] as const;
-    const minutesPool = [15, 25, 40];
-    const partyPool = [3, 4, 6];
-    return {
-      server: t(serverKeys[h % 4]),
-      guest: t(guestKeys[(h >> 3) % 3]),
-      reservationTimeKey: timeKeys[(h >> 5) % 3],
-      minutesUntil: minutesPool[h % 3],
-      mockParty: partyPool[(h >> 2) % 3],
-      preferenceKey: prefKeys[h % 3],
-      turnDurationKey: turnKeys[(h >> 1) % 3],
-    };
-  }, [table.id, t]);
-}
+const EM_DASH = "—";
 
 export type LiveServiceTablePanelProps = {
   table: TableRow;
@@ -111,63 +50,6 @@ export type LiveServiceTablePanelProps = {
   /** Live = in-service; edit = floor plan edit session (draft updates) */
   variant?: "live" | "edit";
 };
-
-type InsightItem = { text: string };
-
-function buildInsights(
-  t: (k: string, o?: Record<string, string | number>) => string,
-  table: TableRow,
-  mock: MockBundle,
-  zoneLabel: string | null,
-): InsightItem[] {
-  const h = hash32(table.id);
-  const out: InsightItem[] = [];
-  const party =
-    table.status === "occupied"
-      ? table.seated_count ?? table.capacity
-      : mock.mockParty;
-
-  out.push({
-    text: t("dashboard.floorPlan.insightBestFit", { party }),
-  });
-
-  out.push({
-    text: t("dashboard.floorPlan.insightReservedInMinutes", { minutes: mock.minutesUntil }),
-  });
-
-  if (h % 5 === 2) {
-    out.push({
-      text: t("dashboard.floorPlan.insightOptimalServer", {
-        server: t("dashboard.floorPlan.mockServerSarah"),
-      }),
-    });
-  } else {
-    out.push({
-      text: t("dashboard.floorPlan.insightServerRotation", { server: mock.server }),
-    });
-  }
-
-  if (h % 4 === 0) {
-    out.push({ text: t("dashboard.floorPlan.insightReturningGuest") });
-  }
-
-  if (h % 3 === 0) {
-    out.push({
-      text: t("dashboard.floorPlan.insightCombine", {
-        a: t("dashboard.floorPlan.mockCombineTableA"),
-        b: t("dashboard.floorPlan.mockCombineTableB"),
-      }),
-    });
-  }
-
-  if (zoneLabel && h % 5 === 1) {
-    out.push({
-      text: t("dashboard.floorPlan.insightZoneCapacity", { zone: zoneLabel }),
-    });
-  }
-
-  return out.slice(0, 6);
-}
 
 const outlineAction =
   "h-10 w-full gap-2 border-gold/35 bg-bg-elevated/55 text-text-primary shadow-sm shadow-black/30 transition-all hover:border-gold/55 hover:bg-gold/[0.07] hover:shadow-gold/5";
@@ -214,9 +96,8 @@ export function LiveServiceTablePanel({
   const { t } = useTranslation();
   const [guestCount, setGuestCount] = useState<number | null>(null);
 
-  const mock = useTableMockBundle(table);
   const sectionName =
-    sections.find((s) => s.id === table.section_id)?.name ?? table.section ?? t("dashboard.floorPlan.fieldEmDash");
+    sections.find((s) => s.id === table.section_id)?.name ?? table.section ?? EM_DASH;
   const statusColor = getStatusColor(table.status);
   const effectiveGuestCount = guestCount ?? table.capacity ?? 1;
   const statusLabel = t(STATUS_LABEL_KEYS[table.status] ?? table.status);
@@ -225,28 +106,15 @@ export function LiveServiceTablePanel({
     table.status === "occupied"
       ? table.seated_count ?? 0
       : table.status === "reserved"
-        ? mock.mockParty
+        ? table.capacity
         : effectiveGuestCount;
 
-  const reservationTime = t(mock.reservationTimeKey);
-  const guestDisplay =
-    table.status === "occupied" || table.status === "reserved"
-      ? mock.guest
-      : t("dashboard.floorPlan.fieldEmDash");
   const notesText = table.notes?.trim() ? table.notes : t("dashboard.floorPlan.inspectorNotesEmpty");
-  const preferencesDisplay = t(mock.preferenceKey);
 
   const turnLine =
     table.status === "occupied"
-      ? t("dashboard.floorPlan.inspectorTurnOccupied", { duration: t(mock.turnDurationKey) })
-      : table.status === "reserved"
-        ? t("dashboard.floorPlan.inspectorTurnReserved", { minutes: mock.minutesUntil })
-        : t("dashboard.floorPlan.inspectorTurnAvailable");
-
-  const insights = useMemo(
-    () => buildInsights(t, table, mock, zoneLabel),
-    [t, table, mock, zoneLabel],
-  );
+      ? t("dashboard.floorPlan.inspectorTurnOccupied", { duration: EM_DASH })
+      : t("dashboard.floorPlan.inspectorTurnAvailable");
 
   const zoneDisplay = zoneLabel ?? t("dashboard.floorPlan.inspectorZoneUnplaced");
   const eyebrow =
@@ -300,10 +168,10 @@ export function LiveServiceTablePanel({
             <DetailRow
               icon={CalendarClock}
               label={t("dashboard.floorPlan.inspectorReservationTime")}
-              value={reservationTime}
+              value={EM_DASH}
               valueClassName="tabular-nums"
             />
-            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.guestName")} value={guestDisplay} />
+            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.guestName")} value={EM_DASH} />
             <DetailRow
               icon={Users}
               label={t("dashboard.floorPlan.inspectorPartySizeLabel")}
@@ -312,13 +180,7 @@ export function LiveServiceTablePanel({
             />
             <DetailRow icon={MapPin} label={t("dashboard.floorPlan.section")} value={sectionName} />
             <DetailRow icon={Armchair} label={t("dashboard.floorPlan.inspectorZoneLabel")} value={zoneDisplay} />
-            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.serverAssigned")} value={mock.server} />
-            <div className="py-2.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-                {t("dashboard.floorPlan.inspectorPreferencesTitle")}
-              </p>
-              <p className="mt-1.5 text-sm leading-relaxed text-text-secondary">{preferencesDisplay}</p>
-            </div>
+            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.serverAssigned")} value={EM_DASH} />
             <div className="py-2.5">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
                 {t("dashboard.floorPlan.notes")}
@@ -331,35 +193,6 @@ export function LiveServiceTablePanel({
               </p>
               <p className="mt-1.5 text-sm font-medium text-text-primary">{turnLine}</p>
             </div>
-          </CardContent>
-        </Card>
-
-        {/* INSIGHTS */}
-        <Card
-          size="sm"
-          className="border-gold/25 bg-bg-base/50 shadow-[inset_0_1px_0_0_rgba(201,168,76,0.14)]"
-        >
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="size-4 text-gold" aria-hidden />
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gold/90">
-                {t("dashboard.floorPlan.inspectorInsightsTitle")}
-              </CardTitle>
-            </div>
-            <CardDescription className="text-[11px] text-text-muted">
-              {t("dashboard.floorPlan.inspectorInsightsSubtitle")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 pt-0">
-            {insights.map((item, idx) => (
-              <div
-                key={`${idx}-${item.text.slice(0, 24)}`}
-                className="flex gap-2 rounded-lg border border-border/60 bg-bg-elevated/40 px-3 py-2 text-xs leading-snug text-text-secondary"
-              >
-                <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-gold/70" aria-hidden />
-                <span>{item.text}</span>
-              </div>
-            ))}
           </CardContent>
         </Card>
 
@@ -419,7 +252,7 @@ export function LiveServiceTablePanel({
                   onUpdateStatus(
                     table.id,
                     "occupied",
-                    table.status === "reserved" ? mock.mockParty : effectiveGuestCount,
+                    table.status === "reserved" ? table.capacity : effectiveGuestCount,
                   )
                 }
               >
