@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { MOCK_RESERVATIONS } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type ReservationRow = {
@@ -94,7 +93,7 @@ export function useReservations(filters?: ReservationFilters) {
             r.confirmation_code?.toLowerCase().includes(s),
         );
       }
-      setReservations(rows.length > 0 ? rows : MOCK_RESERVATIONS);
+      setReservations(rows);
     }
     setLoading(false);
   }, [selectedRestaurantId, filters?.status, filters?.date, filters?.search]);
