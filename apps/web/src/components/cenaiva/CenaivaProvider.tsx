@@ -11,6 +11,7 @@ import {
 import { useCenaivaChat, type ChatMessage, type ActionTaken } from "@/hooks/useCenaivaChat";
 import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
+import { useUser } from "@/hooks/useUser";
 
 // Regex that matches phonetic variants of "Cenaiva" (with or without "hey")
 // at the start of a captured STT command. Replaces them with "Cenaiva" so the
@@ -66,6 +67,7 @@ export function useCenaiva(): CenaivaContextValue | null {
 }
 
 export function CenaivaProvider({ children }: { children: ReactNode }) {
+  const { user } = useUser();
   const [isOpen, setIsOpen] = useState(false);
   // TTS off by default — user can enable via the speaker toggle in the drawer
   const [ttsEnabled, setTtsEnabled] = useState(false);
@@ -76,10 +78,15 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // voiceMode = continuous STT loop; true when session was started via wake word
   const [voiceMode, setVoiceMode] = useState(false);
   const voiceModeRef = useRef(false);
+  const userRef = useRef(user);
 
   useEffect(() => {
     voiceModeRef.current = voiceMode;
   }, [voiceMode]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   const chat = useCenaivaChat();
   const speech = useCenaivaSpeech();
@@ -205,6 +212,8 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   // start capturing the user's voice command.
   // Stable (deps = []) — all state access is via refs and React setters.
   const handleWakeWord = useCallback(() => {
+    // No-op if the user is not logged in — prevents pre-login activation.
+    if (!userRef.current) return;
     voiceModeRef.current = true; // sync ref immediately; state update is async
     setVoiceMode(true);
     setIsOpen(true);
@@ -225,12 +234,17 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
     };
   }, [wakeWord.setEnabled, wakeWord.forceStop, wakeWord.isSupported]);
 
-  // Auto-enable wake word as soon as the browser supports it.
+  // Auto-enable wake word only when logged in.
   useEffect(() => {
+    if (!user) {
+      wakeWord.forceStop();
+      if (wakeWord.enabled) wakeWord.setEnabled(false);
+      return;
+    }
     if (wakeWord.isSupported && !wakeWord.enabled) {
       wakeWord.setEnabled(true);
     }
-  }, [wakeWord.isSupported]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wakeWord.isSupported, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const status: CenaivaStatus = useMemo(() => {
     if (speech.isRecording) return "listening";
