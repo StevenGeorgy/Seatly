@@ -23,6 +23,7 @@ export type StaffRestaurantRow = {
   currency: string;
   timezone: string;
   settings_json: RestaurantSettings | null;
+  has_bar: boolean;
 };
 
 /**
@@ -65,7 +66,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         const { data, error: qErr } = await promiseWithTimeout(
           client
             .from("restaurants")
-            .select("id, name, slug, currency, timezone, settings_json")
+            .select("id, name, slug, currency, timezone, settings_json, has_bar")
             .in("id", ids),
           STAFF_RESTAURANTS_FETCH_TIMEOUT_MS,
           "Restaurants list",

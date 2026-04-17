@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -138,6 +139,7 @@ export default function SettingsPage() {
   const [address, setAddress] = useState("");
   const [description, setDescription] = useState("");
   const [currency, setCurrency] = useState(selectedRestaurant?.currency ?? "cad");
+  const [hasBar, setHasBar] = useState(selectedRestaurant?.has_bar ?? false);
   const [savingRestaurant, setSavingRestaurant] = useState(false);
 
   // Hours state
@@ -172,10 +174,11 @@ export default function SettingsPage() {
   useEffect(() => {
     setRestaurantName(selectedRestaurant?.name ?? "");
     setCurrency(selectedRestaurant?.currency ?? "cad");
+    setHasBar(selectedRestaurant?.has_bar ?? false);
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
     setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
-  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.currency, selectedRestaurant?.settings_json]);
+  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.has_bar]);
 
   // Fetch extended fields (cuisine_type, address, description, hours_json) — not in StaffRestaurantRow
   useEffect(() => {
@@ -233,6 +236,7 @@ export default function SettingsPage() {
         address: address.trim() || null,
         description: description.trim() || null,
         currency,
+        has_bar: hasBar,
       })
       .eq("id", selectedRestaurant.id);
 
@@ -432,6 +436,19 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <Label htmlFor="has-bar-toggle">Bar / Drinks Station</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enables the Bar Only filter on the Orders &amp; KDS page.
+                  </p>
+                </div>
+                <Switch
+                  id="has-bar-toggle"
+                  checked={hasBar}
+                  onCheckedChange={setHasBar}
+                />
               </div>
               <Button
                 className="self-end"

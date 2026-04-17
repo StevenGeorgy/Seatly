@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { UtensilsCrossed, Wine, Plus, Minus, X, Phone, User, Search, AlertTriangle, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -337,8 +337,14 @@ export default function OrdersPage() {
   const { t } = useTranslation();
   const [barOnly, setBarOnly] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const { orders, loading, refetch } = useOrders({ barOnly });
   const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
+
+  // Clear bar filter when switching to a restaurant that has no bar
+  useEffect(() => {
+    if (!selectedRestaurant?.has_bar) setBarOnly(false);
+  }, [selectedRestaurant?.id, selectedRestaurant?.has_bar]);
+
+  const { orders, loading, refetch } = useOrders({ barOnly });
   const currency = selectedRestaurant?.currency ?? "CAD";
 
   const columns = useMemo((): KdsColumn[] => {
@@ -387,15 +393,17 @@ export default function OrdersPage() {
               <Plus className="size-4" />
               New Order
             </Button>
-            <Button
-              variant={barOnly ? "default" : "outline"}
-              size="default"
-              className="gap-2"
-              onClick={() => setBarOnly(!barOnly)}
-            >
-              <Wine className="size-4" />
-              {barOnly ? t("dashboard.orders.allItems") : t("dashboard.orders.barOnly")}
-            </Button>
+            {selectedRestaurant?.has_bar && (
+              <Button
+                variant={barOnly ? "default" : "outline"}
+                size="default"
+                className="gap-2"
+                onClick={() => setBarOnly(!barOnly)}
+              >
+                <Wine className="size-4" />
+                {barOnly ? t("dashboard.orders.allItems") : t("dashboard.orders.barOnly")}
+              </Button>
+            )}
           </div>
         }
       />
