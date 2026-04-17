@@ -121,5 +121,69 @@ export function useReservations(filters?: ReservationFilters) {
     return () => { void client.removeChannel(channel); };
   }, [selectedRestaurantId, fetchReservations]);
 
-  return { reservations, loading, error, refetch: fetchReservations };
+  const updateStatus = async (id: string, status: string) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    await client.from("reservations").update({ status }).eq("id", id);
+    void fetchReservations();
+  };
+
+  const createReservation = async (payload: {
+    guest_name: string;
+    guest_email: string;
+    guest_phone: string;
+    party_size: number;
+    reserved_at: string;
+    table_id?: string | null;
+    special_request?: string;
+  }) => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+
+    // Upsert guest by phone or email
+    let guestId: string | null = null;
+    const { data: existingGuest } = await client
+      .from("guests")
+      .select("id")
+      .eq("restaurant_id", selectedRestaurantId)
+      .or(`phone.eq.${payload.guest_phone},email.eq.${payload.guest_email}`)
+      .maybeSingle();
+
+    if (existingGuest) {
+      guestId = existingGuest.id;
+    } else if (payload.guest_name || payload.guest_phone || payload.guest_email) {
+      const { data: newGuest } = await client
+        .from("guests")
+        .insert({
+          restaurant_id: selectedRestaurantId,
+          full_name: payload.guest_name,
+          phone: payload.guest_phone || null,
+          email: payload.guest_email || null,
+        })
+        .select("id")
+        .single();
+      guestId = newGuest?.id ?? null;
+    }
+
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    await client.from("reservations").insert({
+      restaurant_id: selectedRestaurantId,
+      guest_id: guestId,
+      guest_full_name: payload.guest_name,
+      guest_email: payload.guest_email || null,
+      guest_phone: payload.guest_phone || null,
+      party_size: payload.party_size,
+      reserved_at: payload.reserved_at,
+      table_id: payload.table_id ?? null,
+      special_request: payload.special_request || null,
+      status: "confirmed",
+      confirmation_code: code,
+      source: "dashboard",
+      is_guest_checkout: true,
+    });
+
+    void fetchReservations();
+  };
+
+  return { reservations, loading, error, refetch: fetchReservations, updateStatus, createReservation };
 }

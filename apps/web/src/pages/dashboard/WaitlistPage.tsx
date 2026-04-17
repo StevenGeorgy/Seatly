@@ -1,25 +1,73 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Clock, Plus, Bell, Armchair, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { SectionCard } from "@/components/dashboard/SectionCard";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useWaitlist } from "@/hooks/useWaitlist";
 
 export default function WaitlistPage() {
   const { t } = useTranslation();
-  const { entries, loading } = useWaitlist();
+  const { entries, loading, addEntry, notifyEntry, seatEntry, removeEntry } = useWaitlist();
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  // Add guest form
+  const [guestName, setGuestName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [partySize, setPartySize] = useState("2");
+  const [waitMinutes, setWaitMinutes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = () => { setGuestName(""); setPhone(""); setPartySize("2"); setWaitMinutes(""); };
+
+  const handleAdd = async () => {
+    if (!guestName.trim()) { toast.error("Guest name is required."); return; }
+    setSaving(true);
+    try {
+      await addEntry({
+        guest_name: guestName.trim(),
+        phone: phone.trim(),
+        party_size: Math.max(1, parseInt(partySize) || 1),
+        estimated_wait_minutes: waitMinutes ? parseInt(waitMinutes) : undefined,
+      });
+      toast.success("Guest added to waitlist.");
+      setAddOpen(false);
+      resetForm();
+    } catch {
+      toast.error("Failed to add guest.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async (id: string) => {
+    try {
+      await removeEntry(id);
+      toast.success("Removed from waitlist.");
+    } catch {
+      toast.error("Failed to remove.");
+    } finally {
+      setConfirmId(null);
+    }
+  };
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
       <PageHeader
         title={t("dashboard.waitlist.title")}
         actions={
-          <Button size="default" className="gap-2">
+          <Button size="default" className="gap-2" onClick={() => setAddOpen(true)}>
             <Plus className="size-4" />
             {t("dashboard.waitlist.addGuest")}
           </Button>
@@ -67,6 +115,12 @@ export default function WaitlistPage() {
                           <span>~{entry.estimated_wait_minutes} {t("dashboard.waitlist.minutes")}</span>
                         </>
                       ) : null}
+                      {entry.notified_at ? (
+                        <>
+                          <span>·</span>
+                          <span className="rounded bg-success/15 px-1.5 py-0.5 text-success">Notified</span>
+                        </>
+                      ) : null}
                       {entry.remote_join ? (
                         <>
                           <span>·</span>
@@ -78,13 +132,30 @@ export default function WaitlistPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                    <Button variant="ghost" size="icon-sm" title={t("dashboard.waitlist.notify")}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title={t("dashboard.waitlist.notify")}
+                      disabled={!!entry.notified_at}
+                      onClick={() => void notifyEntry(entry.id).then(() => toast.success("Guest notified."))}
+                    >
                       <Bell className="size-4" />
                     </Button>
-                    <Button variant="ghost" size="icon-sm" title={t("dashboard.waitlist.seatNow")}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title={t("dashboard.waitlist.seatNow")}
+                      onClick={() => void seatEntry(entry.id).then(() => toast.success("Guest seated."))}
+                    >
                       <Armchair className="size-4" />
                     </Button>
-                    <Button variant="ghost" size="icon-sm" className="text-danger hover:text-danger" title={t("dashboard.waitlist.remove")}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-danger hover:text-danger"
+                      title={t("dashboard.waitlist.remove")}
+                      onClick={() => setConfirmId(entry.id)}
+                    >
                       <X className="size-4" />
                     </Button>
                   </div>
@@ -94,6 +165,57 @@ export default function WaitlistPage() {
           </div>
         )}
       </SectionCard>
+
+      {/* Add Guest Dialog */}
+      <Dialog open={addOpen} onOpenChange={(o) => { setAddOpen(o); if (!o) resetForm(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("dashboard.waitlist.addGuest")}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label>Guest name *</Label>
+              <Input value={guestName} onChange={(e) => setGuestName(e.target.value)} placeholder="Jane Smith" />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
+                <Label>Phone</Label>
+                <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 000 0000" />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label>Party size</Label>
+                <Input type="number" min="1" value={partySize} onChange={(e) => setPartySize(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label>Est. wait (minutes)</Label>
+                <Input type="number" min="0" value={waitMinutes} onChange={(e) => setWaitMinutes(e.target.value)} placeholder="30" />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setAddOpen(false); resetForm(); }}>Cancel</Button>
+            <Button disabled={saving} onClick={() => void handleAdd()}>
+              {saving ? "Adding…" : "Add to Waitlist"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove Confirm Dialog */}
+      <Dialog open={!!confirmId} onOpenChange={(o) => { if (!o) setConfirmId(null); }}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Remove from waitlist?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-text-secondary">This guest will be removed from the waitlist. This cannot be undone.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmId(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => confirmId && void handleRemove(confirmId)}>
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AnimatedPage>
   );
 }

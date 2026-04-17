@@ -146,6 +146,21 @@ export default function SettingsPage() {
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
+  // Policy state
+  const [cancellationWindowHours, setCancellationWindowHours] = useState("24");
+  const [noShowFeeAmount, setNoShowFeeAmount] = useState("0");
+  const [depositEnabled, setDepositEnabled] = useState(false);
+  const [depositAmount, setDepositAmount] = useState("0");
+  const [savingPolicy, setSavingPolicy] = useState(false);
+
+  // Loyalty state
+  const [pointsPerDollar, setPointsPerDollar] = useState("1");
+  const [pointsRedemptionValue, setPointsRedemptionValue] = useState("0.01");
+  const [savingLoyalty, setSavingLoyalty] = useState(false);
+
+  // Billing state
+  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+
   // Theme state
   const existingTheme = selectedRestaurant?.settings_json?.theme;
   const [primaryColor, setPrimaryColor] = useState(existingTheme?.primaryColor ?? "#C9A84C");
@@ -168,7 +183,7 @@ export default function SettingsPage() {
     const client = getSupabaseBrowserClient();
     void client
       .from("restaurants")
-      .select("cuisine_type, address, description, hours_json")
+      .select("cuisine_type, address, description, hours_json, deposit_policy_json, loyalty_config_json, plan")
       .eq("id", selectedRestaurant.id)
       .single()
       .then(({ data }) => {
@@ -179,6 +194,22 @@ export default function SettingsPage() {
         const parsed = hoursJsonToState(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
         setSpecialDays(parsed.special);
+
+        const policy = data.deposit_policy_json as Record<string, unknown> | null;
+        if (policy) {
+          setDepositEnabled(Boolean(policy.enabled));
+          setDepositAmount(String(policy.amount ?? "0"));
+          setCancellationWindowHours(String(policy.cancellation_window_hours ?? "24"));
+          setNoShowFeeAmount(String(policy.no_show_fee ?? "0"));
+        }
+
+        const loyalty = data.loyalty_config_json as Record<string, unknown> | null;
+        if (loyalty) {
+          setPointsPerDollar(String(loyalty.points_per_dollar ?? "1"));
+          setPointsRedemptionValue(String(loyalty.redemption_value ?? "0.01"));
+        }
+
+        setCurrentPlan(data.plan ?? null);
       });
   }, [selectedRestaurant?.id]);
 
@@ -237,6 +268,46 @@ export default function SettingsPage() {
       return;
     }
 
+    toast.success(t("dashboard.settings.saved"));
+  };
+
+  const savePolicy = async () => {
+    if (!selectedRestaurant) return;
+    if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
+    setSavingPolicy(true);
+    const client = getSupabaseBrowserClient();
+    const { error } = await client
+      .from("restaurants")
+      .update({
+        deposit_policy_json: {
+          enabled: depositEnabled,
+          amount: parseFloat(depositAmount) || 0,
+          cancellation_window_hours: parseInt(cancellationWindowHours) || 24,
+          no_show_fee: parseFloat(noShowFeeAmount) || 0,
+        },
+      })
+      .eq("id", selectedRestaurant.id);
+    setSavingPolicy(false);
+    if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
+    toast.success(t("dashboard.settings.saved"));
+  };
+
+  const saveLoyalty = async () => {
+    if (!selectedRestaurant) return;
+    if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
+    setSavingLoyalty(true);
+    const client = getSupabaseBrowserClient();
+    const { error } = await client
+      .from("restaurants")
+      .update({
+        loyalty_config_json: {
+          points_per_dollar: parseFloat(pointsPerDollar) || 1,
+          redemption_value: parseFloat(pointsRedemptionValue) || 0.01,
+        },
+      })
+      .eq("id", selectedRestaurant.id);
+    setSavingLoyalty(false);
+    if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
     toast.success(t("dashboard.settings.saved"));
   };
 
@@ -609,17 +680,55 @@ export default function SettingsPage() {
         <TabsContent value="policy" className="mt-6">
           <SectionCard title={t("dashboard.settings.policy")}>
             <div className="flex flex-col gap-5">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="depositEnabled"
+                  checked={depositEnabled}
+                  onChange={(e) => setDepositEnabled(e.target.checked)}
+                  className="size-4 accent-gold"
+                />
+                <Label htmlFor="depositEnabled">Require deposit at booking</Label>
+              </div>
               <div className="grid gap-5 sm:grid-cols-2">
                 <div className="flex flex-col gap-2">
-                  <Label>{t("dashboard.settings.cancellationWindow")}</Label>
-                  <Input type="number" defaultValue="24" />
+                  <Label>Deposit amount ({currency.toUpperCase()})</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    disabled={!depositEnabled}
+                  />
                 </div>
                 <div className="flex flex-col gap-2">
-                  <Label>{t("dashboard.settings.noShowFee")}</Label>
-                  <Input type="number" defaultValue="0" />
+                  <Label>{t("dashboard.settings.noShowFee")} ({currency.toUpperCase()})</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={noShowFeeAmount}
+                    onChange={(e) => setNoShowFeeAmount(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label>{t("dashboard.settings.cancellationWindow")} (hours)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={cancellationWindowHours}
+                    onChange={(e) => setCancellationWindowHours(e.target.value)}
+                  />
                 </div>
               </div>
-              <Button className="self-end">{t("common.actions.save")}</Button>
+              <Button
+                className="self-end"
+                disabled={savingPolicy || !selectedRestaurant}
+                onClick={() => void savePolicy()}
+              >
+                {savingPolicy ? t("routes.loading") : t("common.actions.save")}
+              </Button>
             </div>
           </SectionCard>
         </TabsContent>
@@ -627,11 +736,35 @@ export default function SettingsPage() {
         <TabsContent value="loyalty" className="mt-6">
           <SectionCard title={t("dashboard.settings.loyalty")}>
             <div className="flex flex-col gap-5">
-              <div className="flex flex-col gap-2">
-                <Label>{t("dashboard.settings.pointsPerDollar")}</Label>
-                <Input type="number" defaultValue="1" />
+              <div className="grid gap-5 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <Label>{t("dashboard.settings.pointsPerDollar")}</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={pointsPerDollar}
+                    onChange={(e) => setPointsPerDollar(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label>Point redemption value ({currency.toUpperCase()} per point)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    value={pointsRedemptionValue}
+                    onChange={(e) => setPointsRedemptionValue(e.target.value)}
+                  />
+                </div>
               </div>
-              <Button className="self-end">{t("common.actions.save")}</Button>
+              <Button
+                className="self-end"
+                disabled={savingLoyalty || !selectedRestaurant}
+                onClick={() => void saveLoyalty()}
+              >
+                {savingLoyalty ? t("routes.loading") : t("common.actions.save")}
+              </Button>
             </div>
           </SectionCard>
         </TabsContent>
@@ -713,14 +846,20 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between rounded-lg border border-border bg-bg-elevated px-4 py-3">
                 <span className="text-sm text-text-secondary">{t("dashboard.settings.currentPlan")}</span>
                 <span className="text-sm font-medium capitalize text-gold">
-                  {selectedRestaurant?.name ? "active" : "\u2014"}
+                  {currentPlan ?? (selectedRestaurant ? "free" : "\u2014")}
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-lg border border-border bg-bg-elevated px-4 py-3">
                 <span className="text-sm text-text-secondary">{t("dashboard.settings.stripeStatus")}</span>
                 <span className="text-sm font-medium text-text-primary">
-                  {"\u2014"}
+                  {currentPlan && currentPlan !== "free" ? "active" : "—"}
                 </span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Button variant="outline" disabled className="self-start">
+                  Manage Billing
+                </Button>
+                <span className="text-xs text-text-muted">Contact support to change your plan.</span>
               </div>
             </div>
           </SectionCard>

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { UserCircle, Search, Star, Ban } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
+import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { PageHeader } from "@/components/dashboard/PageHeader";
@@ -11,10 +12,12 @@ import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useGuests, type GuestRow } from "@/hooks/useGuests";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 export default function CrmPage() {
@@ -22,8 +25,27 @@ export default function CrmPage() {
   const { selectedRestaurant } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
   const [search, setSearch] = useState("");
-  const { guests, loading } = useGuests({ search: search || undefined });
+  const { guests, loading, refetch } = useGuests({ search: search || undefined });
   const [selectedGuest, setSelectedGuest] = useState<GuestRow | null>(null);
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  const handleSaveNote = async () => {
+    if (!selectedGuest || !isSupabaseConfigured()) return;
+    setSavingNote(true);
+    const client = getSupabaseBrowserClient();
+    const { error } = await client
+      .from("guests")
+      .update({ internal_notes: noteText.trim() || null })
+      .eq("id", selectedGuest.id);
+    if (error) { toast.error("Could not save note."); setSavingNote(false); return; }
+    setSelectedGuest((prev) => prev ? { ...prev, internal_notes: noteText.trim() || null } : prev);
+    setEditingNote(false);
+    setSavingNote(false);
+    toast.success("Note saved.");
+    void refetch();
+  };
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
@@ -109,7 +131,7 @@ export default function CrmPage() {
       </SectionCard>
 
       {/* Guest Profile Drawer */}
-      <Sheet open={!!selectedGuest} onOpenChange={() => setSelectedGuest(null)}>
+      <Sheet open={!!selectedGuest} onOpenChange={() => { setSelectedGuest(null); setEditingNote(false); }}>
         <SheetContent className="w-full border-border bg-bg-surface sm:max-w-md">
           <SheetHeader>
             <SheetTitle className="text-text-primary">
@@ -175,18 +197,51 @@ export default function CrmPage() {
               ) : null}
 
               {/* Notes */}
-              {selectedGuest.internal_notes ? (
-                <div className="rounded-lg border border-border bg-bg-elevated p-3">
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-text-muted">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
                     {t("dashboard.crm.notes")}
                   </p>
-                  <p className="text-sm text-text-secondary">{selectedGuest.internal_notes}</p>
+                  {!editingNote && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => {
+                        setNoteText(selectedGuest.internal_notes ?? "");
+                        setEditingNote(true);
+                      }}
+                    >
+                      {selectedGuest.internal_notes ? "Edit" : t("dashboard.crm.addNote")}
+                    </Button>
+                  )}
                 </div>
-              ) : null}
-
-              <Button variant="outline" className="w-full">
-                {t("dashboard.crm.addNote")}
-              </Button>
+                {editingNote ? (
+                  <div className="flex flex-col gap-2">
+                    <Textarea
+                      rows={3}
+                      autoFocus
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      placeholder="Internal notes about this guest…"
+                    />
+                    <div className="flex gap-2">
+                      <Button size="sm" disabled={savingNote} onClick={() => void handleSaveNote()}>
+                        {savingNote ? "Saving…" : "Save"}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setEditingNote(false)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : selectedGuest.internal_notes ? (
+                  <div className="rounded-lg border border-border bg-bg-elevated p-3">
+                    <p className="text-sm text-text-secondary">{selectedGuest.internal_notes}</p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-muted">No notes yet.</p>
+                )}
+              </div>
             </div>
           ) : null}
         </SheetContent>

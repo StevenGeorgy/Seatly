@@ -73,5 +73,48 @@ export function useWaitlist() {
     return () => { void client.removeChannel(channel); };
   }, [selectedRestaurantId, fetchWaitlist]);
 
-  return { entries, loading, error, refetch: fetchWaitlist };
+  const addEntry = async (payload: {
+    guest_name: string;
+    phone: string;
+    party_size: number;
+    estimated_wait_minutes?: number;
+  }) => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    const maxPosition = entries.reduce((m, e) => Math.max(m, e.position), 0);
+    await client.from("waitlist").insert({
+      restaurant_id: selectedRestaurantId,
+      guest_name: payload.guest_name,
+      phone: payload.phone || null,
+      party_size: payload.party_size,
+      estimated_wait_minutes: payload.estimated_wait_minutes ?? null,
+      position: maxPosition + 1,
+      status: "waiting",
+      remote_join: false,
+    });
+    void fetchWaitlist();
+  };
+
+  const notifyEntry = async (id: string) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    await client.from("waitlist").update({ notified_at: new Date().toISOString() }).eq("id", id);
+    void fetchWaitlist();
+  };
+
+  const seatEntry = async (id: string) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    await client.from("waitlist").update({ status: "seated" }).eq("id", id);
+    void fetchWaitlist();
+  };
+
+  const removeEntry = async (id: string) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    await client.from("waitlist").delete().eq("id", id);
+    void fetchWaitlist();
+  };
+
+  return { entries, loading, error, refetch: fetchWaitlist, addEntry, notifyEntry, seatEntry, removeEntry };
 }
