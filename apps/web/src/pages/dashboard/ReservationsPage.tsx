@@ -191,6 +191,16 @@ export default function ReservationsPage() {
                           {t("dashboard.reservations.checkIn")}
                         </Button>
                       ) : null}
+                      {r.status === "seated" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-success hover:text-success"
+                          onClick={() => void updateStatus(r.id, "completed").then(() => toast.success("Experience completed."))}
+                        >
+                          Complete
+                        </Button>
+                      ) : null}
                       {r.status !== "cancelled" && r.status !== "completed" && r.status !== "seated" ? (
                         <Button
                           variant="ghost"

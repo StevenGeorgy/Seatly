@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { MOCK_ORDERS } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type OrderItemRow = {
@@ -82,7 +81,6 @@ export function useOrders(filters?: OrderFilters) {
       setOrders([]);
     } else {
       let rows = (data ?? []) as OrderRow[];
-      if (rows.length === 0) rows = MOCK_ORDERS;
       if (filters?.barOnly) {
         rows = rows.map((o) => ({
           ...o,
