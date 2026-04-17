@@ -253,7 +253,7 @@ export default function ReservationsPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label>Date *</Label>
-                <Popover open={calOpen} onOpenChange={setCalOpen}>
+                <Popover open={calOpen} onOpenChange={setCalOpen} modal={false}>
                   <PopoverTrigger asChild>
                     <Button variant="outline" className="justify-start gap-2 text-left font-normal">
                       <CalendarIcon className="size-4 shrink-0 text-text-muted" />
