@@ -67,6 +67,9 @@ export function useReservations(filters?: ReservationFilters) {
 
     if (filters?.status && filters.status !== "all") {
       query = query.eq("status", filters.status);
+    } else {
+      // "All" tab hides completed/cancelled — only show them on their own tabs
+      query = query.not("status", "in", '("completed","cancelled")');
     }
 
     if (filters?.date) {
