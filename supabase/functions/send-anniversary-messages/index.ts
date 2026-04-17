@@ -34,7 +34,7 @@ async function sendAnniversaryMessage(
   if (guest.email_opt_in !== false && guest.email && resend) {
     try {
       await resend.emails.send({
-        from: "Seatly <noreply@seatly.app>",
+        from: "Cenaiva <noreply@cenaiva.com>",
         to: guest.email,
         subject: `Happy Anniversary from ${restaurant.name}!`,
         text: `Hi ${firstName}, Happy Anniversary from the team at ${restaurant.name}! We'd love to help you celebrate — book a special table when you're ready.`,

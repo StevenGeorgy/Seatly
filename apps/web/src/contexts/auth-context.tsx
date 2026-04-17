@@ -13,7 +13,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import type { UserProfile, UserRestaurantRole } from "@/types/auth";
 
-const VIEW_MODE_STORAGE_KEY = "seatly:view-mode";
+const VIEW_MODE_STORAGE_KEY = "cenaiva:view-mode";
 type ViewMode = "staff" | "customer";
 
 export type AuthContextValue = {

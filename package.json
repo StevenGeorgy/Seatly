@@ -1,5 +1,5 @@
 {
-  "name": "seatly",
+  "name": "cenaiva",
   "private": true,
   "workspaces": ["apps/*", "packages/*"],
   "overrides": {

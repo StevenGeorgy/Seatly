@@ -1,7 +1,7 @@
 import type { StaffRole, UserRestaurantRole } from "@/types/auth";
 
 /**
- * Dashboard route → roles allowed (SEATLY-MASTER-BIBLE.md — Web Dashboard matrix).
+ * Dashboard route → roles allowed (CENAIVA-MASTER-BIBLE.md — Web Dashboard matrix).
  * `/dashboard/schedule` includes all staff roles for clock / hours (product rule).
  */
 export const DASHBOARD_PATH_ROLES: Record<string, readonly StaffRole[]> = {

@@ -1,9 +1,9 @@
 /**
- * Seatly React Native Theme
+ * Cenaiva React Native Theme
  * Production-ready design tokens for the Expo mobile app.
  *
  * Usage:
- *   import { theme } from '@seatly/tokens/theme.native';
+ *   import { theme } from '@cenaiva/tokens/theme.native';
  *   // or: import { theme } from '../../packages/tokens/theme.native';
  *
  *   <View style={{ backgroundColor: theme.colors.backgroundDark }}>

@@ -34,7 +34,7 @@ async function sendBirthdayMessage(
   if (guest.email_opt_in !== false && guest.email && resend) {
     try {
       await resend.emails.send({
-        from: "Seatly <noreply@seatly.app>",
+        from: "Cenaiva <noreply@cenaiva.com>",
         to: guest.email,
         subject: `Happy Birthday from ${restaurant.name}!`,
         text: `Hi ${firstName}, Happy Birthday from the team at ${restaurant.name}! We hope you have a wonderful day. We'd love to celebrate with you soon — book a table when you're ready!`,

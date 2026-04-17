@@ -245,7 +245,7 @@ export default function SetupPage() {
       {/* Header */}
       <header className="border-b border-border bg-bg-surface/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-2xl items-center justify-between px-6 py-4">
-          <span className="text-sm font-bold tracking-[0.2em] text-gold">SEATLY</span>
+          <span className="text-sm font-bold tracking-[0.2em] text-gold">CENAIVA</span>
           <span className="text-sm text-text-muted">Restaurant Setup</span>
         </div>
       </header>

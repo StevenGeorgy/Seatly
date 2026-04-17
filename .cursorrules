@@ -1,14 +1,14 @@
-# Seatly — Cursor Rules
-# Read SEATLY-MASTER-BIBLE.md before every single task. No exceptions.
+# Cenaiva — Cursor Rules
+# Read CENAIVA-MASTER-BIBLE.md before every single task. No exceptions.
 
-SEATLY-MASTER-BIBLE.md is the only spec document that exists. Ignore everything else.
+CENAIVA-MASTER-BIBLE.md is the only spec document that exists. Ignore everything else.
 
 ## Stack
 Vite + React 18 + TypeScript strict + Tailwind CSS + shadcn/ui
 NOT Next.js. NOT App Router. NOT server components.
 
 ## Before every task
-1. Read the relevant section of SEATLY-MASTER-BIBLE.md
+1. Read the relevant section of CENAIVA-MASTER-BIBLE.md
 2. Check if a Figma Make reference exists for this screen — match it exactly if so
 3. Use Plan mode — show plan, wait for approval, then build
 

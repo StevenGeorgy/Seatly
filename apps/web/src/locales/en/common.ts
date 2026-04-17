@@ -2,7 +2,7 @@
 const common = {
   app: {
     stub: {
-      tagline: "Seatly — Vite + shadcn (dark default)",
+      tagline: "Cenaiva — Vite + shadcn (dark default)",
       cta: "Button",
     },
     dev: {
@@ -13,7 +13,7 @@ const common = {
   marketing: {
     nav: {
       ariaLabel: "Marketing site sections",
-      homeAria: "Seatly home",
+      homeAria: "Cenaiva home",
     },
     home: {
       headline: "Run your restaurant from one place.",
@@ -509,7 +509,7 @@ const common = {
       hint: "That link does not exist or has moved.",
       backHome: "Back to home",
     },
-    home: { title: "Seatly" },
+    home: { title: "Cenaiva" },
     features: { title: "Features" },
     pricing: { title: "Pricing" },
     about: { title: "About" },

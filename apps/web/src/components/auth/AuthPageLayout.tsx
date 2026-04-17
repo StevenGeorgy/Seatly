@@ -27,7 +27,7 @@ export function AuthPageLayout({ titleKey, children }: AuthPageLayoutProps) {
           to="/"
           className="mb-8 block text-center text-sm font-bold tracking-[0.3em] text-primary transition-opacity hover:opacity-80"
         >
-          SEATLY
+          CENAIVA
         </Link>
 
         {/* Card */}

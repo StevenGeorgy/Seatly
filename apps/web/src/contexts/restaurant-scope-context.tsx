@@ -12,7 +12,7 @@ import { useUser } from "@/hooks/useUser";
 import { useStaffRestaurants, type StaffRestaurantRow } from "@/hooks/useStaffRestaurants";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 
-const STORAGE_KEY = "seatly.selectedRestaurantId";
+const STORAGE_KEY = "cenaiva.selectedRestaurantId";
 
 export type RestaurantScopeValue = {
   selectedRestaurantId: string | null;
@@ -90,7 +90,7 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
   );
 
   // Apply restaurant theme colors whenever the selected restaurant changes;
-  // reset to Seatly defaults on unmount so customer views aren't contaminated.
+  // reset to Cenaiva defaults on unmount so customer views aren't contaminated.
   useEffect(() => {
     applyRestaurantTheme(selectedRestaurant?.settings_json?.theme);
     return () => { resetTheme(); };

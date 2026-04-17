@@ -1,5 +1,5 @@
 /**
- * Seed test user accounts for Seatly.
+ * Seed test user accounts for Cenaiva.
  * Creates 4 users: owner1, host1 (La Maison), owner2, host2 (The Local)
  *
  * Run with: npm run seed:users
@@ -32,25 +32,25 @@ const TEST_PASSWORD = "TestPassword123!";
 
 const usersToCreate = [
   {
-    email: "owner1@seatly.test",
+    email: "owner1@cenaiva.test",
     fullName: "La Maison Owner",
     role: "owner" as const,
     restaurantSlug: "la-maison",
   },
   {
-    email: "host1@seatly.test",
+    email: "host1@cenaiva.test",
     fullName: "La Maison Host",
     role: "host" as const,
     restaurantSlug: "la-maison",
   },
   {
-    email: "owner2@seatly.test",
+    email: "owner2@cenaiva.test",
     fullName: "The Local Owner",
     role: "owner" as const,
     restaurantSlug: "the-local",
   },
   {
-    email: "host2@seatly.test",
+    email: "host2@cenaiva.test",
     fullName: "The Local Host",
     role: "host" as const,
     restaurantSlug: "the-local",

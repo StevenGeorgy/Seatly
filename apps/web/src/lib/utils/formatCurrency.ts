@@ -1,5 +1,5 @@
 /**
- * Seatly money display — SEATLY-MASTER-BIBLE.md (MONEY RULE).
+ * Cenaiva money display — CENAIVA-MASTER-BIBLE.md (MONEY RULE).
  * DB amounts are decimal dollars; never format money with template strings.
  *
  * Currency comes from restaurants.currency (ISO 4217) — never hardcode "cad".

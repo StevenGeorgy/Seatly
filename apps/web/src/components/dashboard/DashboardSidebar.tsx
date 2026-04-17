@@ -81,7 +81,7 @@ export function DashboardSidebar() {
     <div className="flex h-full flex-col">
       {/* Brand */}
       <div className="flex h-14 shrink-0 items-center px-5">
-        <span className="text-sm font-bold tracking-[0.25em] text-gold">SEATLY</span>
+        <span className="text-sm font-bold tracking-[0.25em] text-gold">CENAIVA</span>
       </div>
 
       {/* Restaurant switcher — only when multiple */}

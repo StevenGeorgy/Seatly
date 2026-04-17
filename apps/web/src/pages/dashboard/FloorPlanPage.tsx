@@ -687,7 +687,7 @@ export default function FloorPlanPage() {
     if (mode !== "live") return;
     let shouldRestore = false;
     try {
-      shouldRestore = sessionStorage.getItem(`seatly:floor-plan-edit-${selectedRestaurantId}`) === "1";
+      shouldRestore = sessionStorage.getItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`) === "1";
     } catch {
       return;
     }
@@ -716,7 +716,7 @@ export default function FloorPlanPage() {
     setSelectedZoneId(null);
     try {
       if (selectedRestaurantId) {
-        sessionStorage.setItem(`seatly:floor-plan-edit-${selectedRestaurantId}`, "1");
+        sessionStorage.setItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`, "1");
       }
     } catch {
       /* ignore */
@@ -726,7 +726,7 @@ export default function FloorPlanPage() {
   async function exitEditMode() {
     try {
       if (selectedRestaurantId) {
-        sessionStorage.removeItem(`seatly:floor-plan-edit-${selectedRestaurantId}`);
+        sessionStorage.removeItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`);
       }
     } catch {
       /* ignore */

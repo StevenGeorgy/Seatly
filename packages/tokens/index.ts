@@ -1,5 +1,5 @@
 /**
- * Seatly Design Tokens
+ * Cenaiva Design Tokens
  * All colours, spacing, fonts must be imported from here.
  * NEVER hardcode values in components.
  */

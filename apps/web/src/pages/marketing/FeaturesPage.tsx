@@ -87,7 +87,7 @@ const RESTAURANT_FEATURES = [
   {
     icon: PartyPopper,
     title: "Events & Tickets",
-    desc: "Create events, set capacity, sell tickets — managed entirely within Seatly.",
+    desc: "Create events, set capacity, sell tickets — managed entirely within Cenaiva.",
   },
   {
     icon: Tag,
@@ -171,8 +171,8 @@ export default function FeaturesPage() {
               transition={{ duration: 0.6, delay: 0.16, ease }}
               className="mx-auto mt-5 max-w-lg text-base leading-relaxed text-text-secondary lg:mx-0"
             >
-              One bilingual platform replacing every disconnected tool — with Cenaiva,
-              the AI concierge that books, orders, and answers questions for both
+              One bilingual platform replacing every disconnected tool — with Cenaiva AI,
+              the concierge that books, orders, and answers questions for both
               diners and staff.
             </motion.p>
           </div>
@@ -188,7 +188,7 @@ export default function FeaturesPage() {
               <div className="absolute left-1/2 top-2 z-10 h-5 w-20 -translate-x-1/2 rounded-full bg-bg-base" />
               <div className="flex h-full flex-col pt-10">
                 <div className="px-4 py-3">
-                  <span className="text-[10px] font-bold tracking-[0.2em] text-gold">SEATLY</span>
+                  <span className="text-[10px] font-bold tracking-[0.2em] text-gold">CENAIVA</span>
                 </div>
                 <div className="flex-1 space-y-2.5 px-4">
                   <div className="h-2 w-3/4 rounded-full bg-gold/30" />
@@ -214,7 +214,7 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      {/* ── Cenaiva highlight card ─────────────────────────── */}
+      {/* ── Cenaiva AI highlight card ─────────────────────────── */}
       <section className="border-b border-border bg-bg-surface/40 py-14">
         <div className="mx-auto max-w-5xl px-6">
           <motion.div
@@ -233,10 +233,10 @@ export default function FeaturesPage() {
                   Signature feature
                 </p>
                 <h2 className="text-2xl font-bold text-white">
-                  Cenaiva — AI concierge for diners and staff
+                  Cenaiva AI — concierge for diners and staff
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-relaxed text-text-secondary">
-                  Cenaiva is a bilingual, voice-enabled AI assistant. Diners use it to
+                  Cenaiva AI is a bilingual, voice-enabled assistant. Diners use it to
                   discover restaurants, book tables, browse allergen-filtered menus, place
                   orders, and pay with a saved card. Restaurant staff use it to seat guests,
                   update order status, and get a daily revenue summary — all by voice or text.

@@ -1,5 +1,5 @@
 /**
- * Seatly Shared Types
+ * Cenaiva Shared Types
  * All TypeScript types live here — never define the same type twice.
  */
 

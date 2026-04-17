@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "Seatly Web (Vite)",
+      "name": "Cenaiva Web (Vite)",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace=apps/web", "--", "--port", "5177"],
       "port": 5177,

@@ -233,7 +233,7 @@ export default function StaffPage() {
               <div className="flex flex-col gap-2">
                 <Label>Email address *</Label>
                 <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="staff@example.com" />
-                <p className="text-xs text-text-muted">The user must already have a Seatly account.</p>
+                <p className="text-xs text-text-muted">The user must already have a Cenaiva account.</p>
               </div>
             )}
             <div className="grid gap-4 sm:grid-cols-2">

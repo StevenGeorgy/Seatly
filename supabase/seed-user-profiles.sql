@@ -4,29 +4,29 @@
 -- Safe to re-run: skips users that already have a profile.
 
 INSERT INTO user_profiles (auth_user_id, full_name, email, role, restaurant_id)
-SELECT u.id, 'La Maison Owner', 'owner1@seatly.test', 'owner', r.id
+SELECT u.id, 'La Maison Owner', 'owner1@cenaiva.test', 'owner', r.id
 FROM auth.users u
 CROSS JOIN restaurants r
-WHERE u.email = 'owner1@seatly.test' AND r.slug = 'la-maison'
+WHERE u.email = 'owner1@cenaiva.test' AND r.slug = 'la-maison'
 ON CONFLICT (auth_user_id) DO NOTHING;
 
 INSERT INTO user_profiles (auth_user_id, full_name, email, role, restaurant_id)
-SELECT u.id, 'La Maison Host', 'host1@seatly.test', 'host', r.id
+SELECT u.id, 'La Maison Host', 'host1@cenaiva.test', 'host', r.id
 FROM auth.users u
 CROSS JOIN restaurants r
-WHERE u.email = 'host1@seatly.test' AND r.slug = 'la-maison'
+WHERE u.email = 'host1@cenaiva.test' AND r.slug = 'la-maison'
 ON CONFLICT (auth_user_id) DO NOTHING;
 
 INSERT INTO user_profiles (auth_user_id, full_name, email, role, restaurant_id)
-SELECT u.id, 'The Local Owner', 'owner2@seatly.test', 'owner', r.id
+SELECT u.id, 'The Local Owner', 'owner2@cenaiva.test', 'owner', r.id
 FROM auth.users u
 CROSS JOIN restaurants r
-WHERE u.email = 'owner2@seatly.test' AND r.slug = 'the-local'
+WHERE u.email = 'owner2@cenaiva.test' AND r.slug = 'the-local'
 ON CONFLICT (auth_user_id) DO NOTHING;
 
 INSERT INTO user_profiles (auth_user_id, full_name, email, role, restaurant_id)
-SELECT u.id, 'The Local Host', 'host2@seatly.test', 'host', r.id
+SELECT u.id, 'The Local Host', 'host2@cenaiva.test', 'host', r.id
 FROM auth.users u
 CROSS JOIN restaurants r
-WHERE u.email = 'host2@seatly.test' AND r.slug = 'the-local'
+WHERE u.email = 'host2@cenaiva.test' AND r.slug = 'the-local'
 ON CONFLICT (auth_user_id) DO NOTHING;

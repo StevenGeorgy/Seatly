@@ -2,7 +2,7 @@
 const common = {
   app: {
     stub: {
-      tagline: "Seatly — Vite + shadcn (th\u00e8me sombre par d\u00e9faut)",
+      tagline: "Cenaiva — Vite + shadcn (th\u00e8me sombre par d\u00e9faut)",
       cta: "Bouton",
     },
     dev: {
@@ -13,7 +13,7 @@ const common = {
   marketing: {
     nav: {
       ariaLabel: "Sections du site public",
-      homeAria: "Accueil Seatly",
+      homeAria: "Accueil Cenaiva",
     },
     home: {
       headline: "Pilotez votre restaurant au m\u00eame endroit.",
@@ -511,7 +511,7 @@ const common = {
       hint: "Ce lien n\u2019existe pas ou a \u00e9t\u00e9 d\u00e9plac\u00e9.",
       backHome: "Retour \u00e0 l\u2019accueil",
     },
-    home: { title: "Seatly" },
+    home: { title: "Cenaiva" },
     features: { title: "Fonctionnalit\u00e9s" },
     pricing: { title: "Tarifs" },
     about: { title: "\u00c0 propos" },

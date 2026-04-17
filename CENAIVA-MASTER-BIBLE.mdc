@@ -1,21 +1,21 @@
-# SEATLY — Master Product Bible
+# CENAIVA — Master Product Bible
 
 > **Web App · Mobile App · Backend · Design System**
 >
 > Drop this file into Cursor and tag it on every task.
-> This is the single source of truth for everything Seatly.
+> This is the single source of truth for everything Cenaiva.
 >
 > Last updated: March 2026
 
-## 01 — What Is Seatly
+## 01 — What Is Cenaiva
 
 ### Product Vision
 
-Seatly is a bilingual (English + French) marketplace platform that serves two audiences simultaneously: restaurant businesses and their customers. It operates on a marketplace model — restaurants pay to use the platform, and customers use it for free to discover, book, and order.
+Cenaiva is a bilingual (English + French) marketplace platform that serves two audiences simultaneously: restaurant businesses and their customers. It operates on a marketplace model — restaurants pay to use the platform, and customers use it for free to discover, book, and order.
 
 ### For Businesses
 
-Seatly is an all-in-one restaurant operating system that replaces every disconnected tool a restaurant currently uses. It handles:
+Cenaiva is an all-in-one restaurant operating system that replaces every disconnected tool a restaurant currently uses. It handles:
 
 -   Reservations, floor plan management, and waitlist
 
@@ -23,7 +23,7 @@ Seatly is an all-in-one restaurant operating system that replaces every disconne
 
 -   Staff scheduling optimised against busy/quiet hours and staff preferences
 
--   Menu management with AI-driven insights — e.g. if sardines are only ordered by 0.5% of customers and the cost of stocking them loses the restaurant money, Seatly flags it
+-   Menu management with AI-driven insights — e.g. if sardines are only ordered by 0.5% of customers and the cost of stocking them loses the restaurant money, Cenaiva flags it
 
 -   AI that identifies customer habits and recommends new menu items, deals, or events based on order history and preferences
 
@@ -37,7 +37,7 @@ Seatly is an all-in-one restaurant operating system that replaces every disconne
 
 ### For Customers
 
-Seatly is a personal dining planner. Customers use it to:
+Cenaiva is a personal dining planner. Customers use it to:
 
 -   Discover restaurants nearby with a map view, recommended lists, search, and AI chat
 
@@ -45,7 +45,7 @@ Seatly is a personal dining planner. Customers use it to:
 
 -   Plan dates, events, and outings — including a budget planner (e.g. "I have $100 for a date night, show me what's nearby")
 
--   Earn loyalty points the more they use Seatly — redeemable for free menu items, discounts off their bill, and free event tickets
+-   Earn loyalty points the more they use Cenaiva — redeemable for free menu items, discounts off their bill, and free event tickets
 
 -   Pay through the app with Stripe
 
@@ -58,7 +58,7 @@ Seatly is a personal dining planner. Customers use it to:
 
   Monthly software fee      SaaS subscription tiers for the restaurant dashboard — tiers TBD near launch
 
-  Platform fee (payments)   $1.00 flat fee per payment transaction processed through Seatly (restaurants keep the rest via Stripe Connect)
+  Platform fee (payments)   $1.00 flat fee per payment transaction processed through Cenaiva (restaurants keep the rest via Stripe Connect)
 
   Delivery (optional)       Restaurant opts in — restaurant uses their own drivers. No third-party courier. DB fields live in orders table.
   ------------------------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -80,7 +80,7 @@ The Supabase backend (database + edge functions) is fully built. The web UI exis
 
 ## 02 — Architecture Overview
 
-Seatly is two client apps sharing one Supabase backend. There is no separate API server — all backend logic lives in Supabase (PostgreSQL, RLS policies, and Edge Functions).
+Cenaiva is two client apps sharing one Supabase backend. There is no separate API server — all backend logic lives in Supabase (PostgreSQL, RLS policies, and Edge Functions).
 
   ---------------------- --------------------------------------------------------------------------------------
   **Layer**              **Technology**
@@ -211,7 +211,7 @@ One owner login can manage multiple restaurant locations. Each restaurant is a s
 
 ### Public / Marketing (no auth required)
 
--   / → Seatly landing page (same app — marketing + dashboard in one)
+-   / → Cenaiva landing page (same app — marketing + dashboard in one)
 
 -   /features → Features page
 
@@ -476,7 +476,7 @@ When a customer scans a QR code at a table (tables.qr_code_url), the mobile app 
 
 ### Loyalty Points
 
-Customers earn points on every transaction processed through Seatly. Points accumulate in the guests.loyalty_points_balance field and are tracked in loyalty_transactions. Customers can redeem points for:
+Customers earn points on every transaction processed through Cenaiva. Points accumulate in the guests.loyalty_points_balance field and are tracked in loyalty_transactions. Customers can redeem points for:
 
 -   Free menu items — redeem points to cover the cost of specific menu items
 
@@ -607,7 +607,7 @@ useWaitlist(restaurantId) // realtime waitlist
 
 ## 05 — Customer Ordering
 
-Customers can order food through Seatly in three distinct flows. The backend fully supports all three.
+Customers can order food through Cenaiva in three distinct flows. The backend fully supports all three.
 
 ### Flow 1 — Pre-Order with Reservation
 
@@ -623,13 +623,13 @@ Available on the /[restaurantSlug] web page and mobile. Requires the restaurant 
 
 ### Guest Checkout (No Account Required)
 
-Customers can book reservations and place orders without creating a Seatly account. This applies to all ordering flows. Here is what changes for guest checkout:
+Customers can book reservations and place orders without creating a Cenaiva account. This applies to all ordering flows. Here is what changes for guest checkout:
 
 -   reservations.is_guest_checkout = true — name, email, phone captured directly on the reservation
 
 -   orders.is_guest_checkout = true — set on any order placed without an account
 
--   No loyalty points earned — points require a Seatly account linked to a guests record
+-   No loyalty points earned — points require a Cenaiva account linked to a guests record
 
 -   Payment entered manually every time — no saved card, no Stripe customer on file
 
@@ -666,7 +666,7 @@ Customers can book reservations and place orders without creating a Seatly accou
 
 ### Delivery
 
-Delivery is optional and fully restaurant-controlled. When a restaurant opts in, they use their own drivers — there is no third-party courier integration. Seatly facilitates the order and payment flow; the restaurant manages fulfilment entirely.
+Delivery is optional and fully restaurant-controlled. When a restaurant opts in, they use their own drivers — there is no third-party courier integration. Cenaiva facilitates the order and payment flow; the restaurant manages fulfilment entirely.
 
 The following delivery fields are now live in the orders table:
 
@@ -743,7 +743,7 @@ Project ID: exbjodmnpdiayfzrdyux \| Region: ca-central-1 \| Postgres: 17.6
 
 ### user_profiles
 
-Every Seatly user — customers and staff alike. Created automatically on signup.
+Every Cenaiva user — customers and staff alike. Created automatically on signup.
 
   ---------------------------------------------- ----------------------------------------------------------------------------------------------
   **Column**                                     **Notes**
@@ -1018,7 +1018,7 @@ Named reservations — NOT bookings. Single reserved_at timestamptz — NOT spli
 
   cancellation_reason                                                                  text
 
-  is_guest_checkout                                                                    boolean default false — true = booked without Seatly account. No loyalty points. Manual payment.
+  is_guest_checkout                                                                    boolean default false — true = booked without Cenaiva account. No loyalty points. Manual payment.
 
   guest_email, guest_phone, guest_full_name                                            text — only set when is_guest_checkout = true. Used for confirmation + reminders.
   ------------------------------------------------------------------------------------ ----------------------------------------------------------------------------------------------------
@@ -1173,7 +1173,7 @@ Modifier groups for menu items (e.g. "Doneness": Rare, Medium, Well Done).
 
   order_type                                       text — dine_in \| preorder \| takeout \| delivery (null = legacy dine-in)
 
-  is_guest_checkout                                boolean default false — true = ordered without Seatly account, no points earned
+  is_guest_checkout                                boolean default false — true = ordered without Cenaiva account, no points earned
 
   delivery_address, delivery_notes                 text — only populated when order_type = delivery
 
@@ -1243,7 +1243,7 @@ Modifier groups for menu items (e.g. "Doneness": Rare, Medium, Well Done).
 
   amount                                     numeric — total charged to customer
 
-  platform_fee                               numeric default 1.00 — Seatly's $1.00 per transaction
+  platform_fee                               numeric default 1.00 — Cenaiva's $1.00 per transaction
 
   restaurant_payout                          numeric — amount - platform_fee
 
@@ -1857,7 +1857,7 @@ Powered by: ai-menu-suggestions Edge Function. Results stored in ai_menu_suggest
 
 ## 10 — Notifications
 
-Seatly supports four notification channels: push (mobile), in-app, email, and SMS. Every notification is stored in the notifications table and can trigger a push via Expo Push Notifications.
+Cenaiva supports four notification channels: push (mobile), in-app, email, and SMS. Every notification is stored in the notifications table and can trigger a push via Expo Push Notifications.
 
   ----------------------- ------------------------------------------------
   **Notification type**   **Trigger**
@@ -1903,7 +1903,7 @@ Seatly supports four notification channels: push (mobile), in-app, email, and SM
 
 ### Stripe Connect
 
-Seatly uses Stripe Connect. Restaurants onboard via the /setup wizard (signup-restaurant-owner edge function creates their Stripe Connect account). Payments split automatically: customer pays → Seatly takes $1.00 platform fee → restaurant receives the rest.
+Cenaiva uses Stripe Connect. Restaurants onboard via the /setup wizard (signup-restaurant-owner edge function creates their Stripe Connect account). Payments split automatically: customer pays → Cenaiva takes $1.00 platform fee → restaurant receives the rest.
 
   ------------------------------ ------------------------------------------------------------------------------
   **Field**                      **Where stored**
@@ -1960,7 +1960,7 @@ When service is complete, staff trigger the close-bill Edge Function. This calcu
 
 -   3\. Clone the repo and run the dev environment
 
--   4\. In Cursor: add both SEATLY-WEB-BIBLE.md and SEATLY-MOBILE-BIBLE.md (this file) to your context on every task
+-   4\. In Cursor: add both CENAIVA-WEB-BIBLE.md and CENAIVA-MOBILE-BIBLE.md (this file) to your context on every task
 
 -   5\. Never start building a screen without first checking: does this screen exist in Figma Make? If yes, match it exactly.
 
@@ -2040,7 +2040,7 @@ Create /lib/theme.ts in the mobile app with the same tokens as NativeWind/StyleS
 
 ### Logo & Brand Assets
 
-No Seatly logo or wordmark exists yet. Use a text-based "SEATLY" logotype in gold (#C9A84C) as the placeholder everywhere a logo would appear. Do not create a custom icon or symbol — text only until a real logo is provided.
+No Cenaiva logo or wordmark exists yet. Use a text-based "CENAIVA" logotype in gold (#C9A84C) as the placeholder everywhere a logo would appear. Do not create a custom icon or symbol — text only until a real logo is provided.
 
 ### Environment
 
@@ -2155,12 +2155,12 @@ Build in this order. Do not jump ahead — each phase depends on the previous.
 
 -   Delivery opt-in flow (schema update required first — add delivery fields to orders)
 
--   Subscription billing — Seatly plan management (tier pricing TBD)
+-   Subscription billing — Cenaiva plan management (tier pricing TBD)
 
 -   App Store + Google Play submission
 
 -   QA across all 7 staff roles on both platforms
 
-*End of Seatly Master Product Bible*
+*End of Cenaiva Master Product Bible*
 
 Version: March 2026 · Drop into Cursor on every task

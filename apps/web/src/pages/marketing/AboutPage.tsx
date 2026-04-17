@@ -37,12 +37,12 @@ export default function AboutPage() {
               <span className="text-gold">reimagined for Canada.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-text-secondary">
-              Seatly is a bilingual restaurant platform connecting diners with the
+              Cenaiva is a bilingual restaurant platform connecting diners with the
               best restaurants while giving owners everything they need to run their
               operation — in a single, beautifully designed product.
             </p>
             <p className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-text-secondary">
-              We built Seatly because the status quo is broken: restaurant owners pay
+              We built Cenaiva because the status quo is broken: restaurant owners pay
               for five separate tools that don&apos;t talk to each other, and diners
               still have to call ahead or use three apps to find a table. We think
               that&apos;s fixable.
@@ -72,7 +72,7 @@ export default function AboutPage() {
         </div>
       </section>
 
-      {/* ── Why Seatly (3 pillars) ────────────────────────── */}
+      {/* ── Why Cenaiva (3 pillars) ────────────────────────── */}
       <section className="border-t border-border py-20">
         <div className="mx-auto max-w-4xl px-6">
           <motion.div
@@ -83,7 +83,7 @@ export default function AboutPage() {
             className="mb-12 text-center"
           >
             <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-              Why <span className="text-gold">Seatly</span>
+              Why <span className="text-gold">Cenaiva</span>
             </h2>
           </motion.div>
           <div className="grid gap-6 sm:grid-cols-3">
@@ -154,7 +154,7 @@ export default function AboutPage() {
               </div>
               <p className="text-sm leading-relaxed text-text-secondary">
                 Discover restaurants by cuisine, rating, and city. Book a table, place
-                a takeout or delivery order, and pay — all in one app. Cenaiva, the AI
+                a takeout or delivery order, and pay — all in one app. Cenaiva AI, the
                 concierge, handles your booking by voice or text, knows your allergies,
                 and can split the bill between your whole table.
               </p>
@@ -180,7 +180,7 @@ export default function AboutPage() {
               <p className="text-sm leading-relaxed text-text-secondary">
                 Replace every disconnected tool with a single dashboard — reservations,
                 a live drag-and-drop floor plan, POS, staff roster, guest CRM,
-                analytics, expense tracking, events, and promotions. Cenaiva gives
+                analytics, expense tracking, events, and promotions. Cenaiva AI gives
                 your staff hands-free control over today&apos;s service.
               </p>
               <Button size="sm" className="mt-5" asChild>
@@ -222,7 +222,7 @@ export default function AboutPage() {
               {
                 icon: Sparkles,
                 title: "AI that earns its keep",
-                desc: "Cenaiva books, orders, and manages service. Claude-powered insights forecast demand and reduce no-shows. No AI fluff — only features that save real time.",
+                desc: "Cenaiva AI books, orders, and manages service. Claude-powered insights forecast demand and reduce no-shows. No AI fluff — only features that save real time.",
               },
               {
                 icon: Database,
@@ -264,11 +264,11 @@ export default function AboutPage() {
             Be part of what we&apos;re building.
           </h2>
           <p className="mt-3 text-sm text-text-secondary">
-            Join the restaurants and diners already on Seatly.
+            Join the restaurants and diners already on Cenaiva.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
             <Button size="lg" className="h-12 px-10 text-base" asChild>
-              <Link to="/register">Join Seatly</Link>
+              <Link to="/register">Join Cenaiva</Link>
             </Button>
             <Button size="lg" variant="outline" className="h-12 px-10 text-base" asChild>
               <Link to="/features">

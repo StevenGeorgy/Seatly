@@ -67,7 +67,7 @@ export function MarketingShell({ children }: MarketingShellProps) {
             className="shrink-0 text-sm font-bold tracking-[0.25em] text-gold"
             aria-label={t("marketing.nav.homeAria")}
           >
-            SEATLY
+            CENAIVA
           </Link>
 
           {/* Center: Nav (absolutely positioned for true centering) */}
@@ -138,9 +138,9 @@ export function MarketingShell({ children }: MarketingShellProps) {
       {/* Footer */}
       <footer className="border-t border-border/50 py-8">
         <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-3 px-4 sm:flex-row sm:justify-between lg:px-6">
-          <span className="text-xs font-bold tracking-[0.25em] text-gold/60">SEATLY</span>
+          <span className="text-xs font-bold tracking-[0.25em] text-gold/60">CENAIVA</span>
           <span className="text-xs text-text-muted">
-            &copy; {new Date().getFullYear()} Seatly. {t("marketing.footer.rights")}
+            &copy; {new Date().getFullYear()} Cenaiva. {t("marketing.footer.rights")}
           </span>
         </div>
       </footer>

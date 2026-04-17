@@ -1,6 +1,6 @@
 -- Seed data: 2 restaurants, tables, shifts, menu categories, menu items
 -- Test user accounts: Run `npx tsx scripts/seed-users.ts` after this migration.
--- Creates owner1@seatly.test, host1@seatly.test (La Maison), owner2@seatly.test, host2@seatly.test (The Local)
+-- Creates owner1@cenaiva.test, host1@cenaiva.test (La Maison), owner2@cenaiva.test, host2@cenaiva.test (The Local)
 
 -- Restaurant 1: La Maison
 INSERT INTO restaurants (

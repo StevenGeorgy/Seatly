@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Seatly design tokens — SEATLY-MASTER-BIBLE.md §08.
+ * Cenaiva design tokens — CENAIVA-MASTER-BIBLE.md §08.
  * Hex values live only here; UI references Tailwind utilities / CSS variables.
  *
  * Border-radius px in `src/index.css` `@theme inline` (`--radius-sm` … `--radius-4xl`) must stay

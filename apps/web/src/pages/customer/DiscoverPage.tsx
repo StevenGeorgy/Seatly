@@ -174,7 +174,7 @@ export default function DiscoverPage() {
       <header className="sticky top-0 z-30 border-b border-border bg-bg-base/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3 sm:px-6">
           <Link to="/" className="shrink-0 text-sm font-bold tracking-[0.2em] text-gold">
-            SEATLY
+            CENAIVA
           </Link>
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
@@ -252,7 +252,7 @@ export default function DiscoverPage() {
                     <DropdownMenuItem
                       key={r.id}
                       onClick={() => {
-                        localStorage.setItem("seatly.selectedRestaurantId", r.id);
+                        localStorage.setItem("cenaiva.selectedRestaurantId", r.id);
                         if (isCustomerView) switchToStaffView();
                         void navigate("/dashboard");
                       }}

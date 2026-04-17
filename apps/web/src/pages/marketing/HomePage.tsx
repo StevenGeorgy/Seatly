@@ -99,7 +99,7 @@ export default function HomePage() {
               transition={{ duration: 0.6, delay: 0.16, ease }}
               className="mt-6 max-w-xl text-base leading-relaxed text-text-secondary sm:text-lg"
             >
-              Seatly connects diners with the best restaurants and gives owners the
+              Cenaiva connects diners with the best restaurants and gives owners the
               complete platform they need — reservations, orders, staff, analytics,
               and AI — all in one place.
             </motion.p>
@@ -140,17 +140,17 @@ export default function HomePage() {
                   <Sparkles className="size-3" /> AI concierge
                 </span>
                 <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
-                  Meet Cenaiva, your AI concierge.
+                  Meet Cenaiva AI, your concierge.
                 </h2>
                 <p className="mt-4 max-w-md text-base leading-relaxed text-text-secondary">
-                  Just say — or type — what you need. Cenaiva books tables, browses menus
+                  Just say — or type — what you need. Cenaiva AI books tables, browses menus
                   with your allergies in mind, places orders, and charges your saved card.
                   No forms, no app-switching.
                 </p>
 
                 <ul className="mt-6 space-y-3">
                   {[
-                    "Book a reservation at any Seatly restaurant",
+                    "Book a reservation at any Cenaiva restaurant",
                     "Browse menus filtered by your dietary needs",
                     "Place dine-in, pickup, or delivery orders",
                     "Pay with a saved card — with tip included",
@@ -175,7 +175,7 @@ export default function HomePage() {
                 </div>
 
                 <p className="mt-5 text-xs text-text-muted">
-                  For restaurant staff: Cenaiva also manages today&apos;s service — seat
+                  For restaurant staff: Cenaiva AI also manages today&apos;s service — seat
                   guests, update order status, and get a daily revenue summary by voice.
                 </p>
               </motion.div>
@@ -195,7 +195,7 @@ export default function HomePage() {
                     <Sparkles className="size-4 text-black" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-text-primary">Cenaiva</p>
+                    <p className="text-sm font-semibold text-text-primary">Cenaiva AI</p>
                     <p className="text-xs text-text-muted">AI concierge &middot; always on</p>
                   </div>
                 </div>
@@ -222,7 +222,7 @@ export default function HomePage() {
                   ))}
                 </div>
                 <div className="mt-4 flex items-center gap-2 rounded-xl border border-border bg-bg-elevated px-3 py-2.5">
-                  <span className="flex-1 text-xs text-text-muted">Ask Cenaiva anything…</span>
+                  <span className="flex-1 text-xs text-text-muted">Ask Cenaiva AI anything…</span>
                   <Mic className="size-3.5 text-gold" />
                 </div>
               </div>
@@ -246,7 +246,7 @@ export default function HomePage() {
             </h2>
             <p className="mx-auto mt-4 max-w-lg text-base text-text-secondary">
               Whether you&apos;re looking for a great meal or running a restaurant,
-              Seatly was built for you.
+              Cenaiva was built for you.
             </p>
           </motion.div>
 
@@ -383,7 +383,7 @@ export default function HomePage() {
             Ready to stop juggling five tools?
           </h2>
           <p className="mt-3 text-sm text-text-secondary">
-            Join the restaurants already running on Seatly.
+            Join the restaurants already running on Cenaiva.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
             <Button size="lg" className="h-12 px-10 text-base" asChild>

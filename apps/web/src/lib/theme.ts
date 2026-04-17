@@ -1,6 +1,6 @@
 import type { RestaurantTheme } from "@/hooks/useStaffRestaurants";
 
-// Default Seatly theme
+// Default Cenaiva theme
 const DEFAULT_PRIMARY = "#C9A84C";
 const DEFAULT_BG = "#0A0A0A";
 
@@ -123,7 +123,7 @@ export function applyRestaurantTheme(theme: RestaurantTheme | null | undefined):
 }
 
 /**
- * Reset theme to Seatly defaults.
+ * Reset theme to Cenaiva defaults.
  */
 export function resetTheme(): void {
   applyRestaurantTheme(null);
