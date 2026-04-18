@@ -111,6 +111,7 @@ function SuggestionCard({
         ) : null}
 
         <Button
+          type="button"
           variant="outline"
           size="sm"
           className="mt-1 h-8 w-full gap-1.5 border-gold/30 text-xs text-gold hover:bg-gold/[0.07]"
@@ -137,6 +138,7 @@ export function MenuSuggestionsPanel({ onClose }: Props) {
         <span className="text-sm font-semibold text-text-primary">AI Suggestions</span>
         <div className="ml-auto flex items-center gap-2">
           <Button
+            type="button"
             variant="outline"
             size="sm"
             className="h-7 gap-1.5 border-gold/30 px-3 text-xs text-gold hover:bg-gold/[0.07]"
@@ -146,7 +148,7 @@ export function MenuSuggestionsPanel({ onClose }: Props) {
             <RefreshCw className={cn("size-3", generating && "animate-spin")} />
             {generating ? "Generating…" : suggestions.length > 0 ? "Refresh" : "Generate"}
           </Button>
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
@@ -167,6 +169,7 @@ export function MenuSuggestionsPanel({ onClose }: Props) {
             Generate AI suggestions based on your menu, upcoming holidays, and guest patterns.
           </p>
           <Button
+            type="button"
             variant="outline"
             size="sm"
             className="mt-1 gap-1.5 border-gold/30 text-xs text-gold hover:bg-gold/[0.07]"
