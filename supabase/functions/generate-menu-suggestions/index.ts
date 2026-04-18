@@ -239,9 +239,50 @@ Deno.serve(async (req: Request) => {
     }));
 
     const validItemIds = new Set(itemsWithCounts.map((i: any) => i.id));
+    const categoryById: Record<string, string> = {};
+    for (const c of categories ?? []) categoryById[c.id] = c.name;
+    const itemsForLookup = itemsWithCounts.map((i: any) => ({
+      id: i.id,
+      name: i.name,
+      price: i.price,
+      category: i.category_id ? (categoryById[i.category_id] ?? null) : null,
+    }));
+    const nameToId: Record<string, string> = {};
+    for (const i of itemsForLookup) nameToId[i.name.toLowerCase()] = i.id;
     const sorted = [...itemsWithCounts].sort((a, b) => b.orders_last_60_days - a.orders_last_60_days);
     const topSellers = sorted.slice(0, 5).map((i: any) => ({ id: i.id, name: i.name, price: i.price, orders: i.orders_last_60_days }));
     const slowMovers = sorted.slice(-5).filter((i: any) => i.orders_last_60_days < 5).map((i: any) => ({ id: i.id, name: i.name, price: i.price, orders: i.orders_last_60_days }));
+
+    // Resolve item ids from the AI payload, tolerating both UUIDs and item names.
+    function resolveItemIds(raw: unknown): string[] {
+      if (!Array.isArray(raw)) return [];
+      const out: string[] = [];
+      for (const v of raw) {
+        if (typeof v !== "string") continue;
+        if (UUID_RE.test(v) && validItemIds.has(v)) { out.push(v); continue; }
+        const byName = nameToId[v.toLowerCase()];
+        if (byName) out.push(byName);
+      }
+      // Dedupe preserving order.
+      return Array.from(new Set(out));
+    }
+    function resolveSingleItemId(raw: unknown): string | null {
+      if (typeof raw !== "string") return null;
+      if (UUID_RE.test(raw) && validItemIds.has(raw)) return raw;
+      return nameToId[raw.toLowerCase()] ?? null;
+    }
+    // Pick items from the menu whose name/category mentions any of the given keywords.
+    function pickItemsByKeywords(keywords: string[], limit = 4): string[] {
+      const kws = keywords.map((k) => k.toLowerCase()).filter(Boolean);
+      if (kws.length === 0) return [];
+      const matches: string[] = [];
+      for (const i of itemsForLookup) {
+        const hay = `${i.name} ${i.category ?? ""}`.toLowerCase();
+        if (kws.some((k) => hay.includes(k))) matches.push(i.id);
+        if (matches.length >= limit) break;
+      }
+      return matches;
+    }
 
     const { data: promotions } = await supabaseAdmin
       .from("promotions")
@@ -285,7 +326,10 @@ Deno.serve(async (req: Request) => {
     const today = new Date().toISOString().slice(0, 10);
     const categoryNames = (categories ?? []).map((c: any) => c.name);
 
-    const allItemsForPrompt = itemsWithCounts.slice(0, 30).map((i: any) => ({ id: i.id, name: i.name, price: i.price }));
+    // Send up to 100 items with category names so the AI can match promotions to the right items.
+    const allItemsForPrompt = itemsForLookup
+      .slice(0, 100)
+      .map((i) => ({ id: i.id, name: i.name, price: i.price, category: i.category }));
 
     const systemPrompt = `You are a restaurant business advisor for ${restaurant.name}, a ${restaurant.cuisine_type || "restaurant"} in ${restaurant.city || "Canada"}.
 
@@ -293,7 +337,7 @@ Today is ${today}. Currency: ${restaurant.currency?.toUpperCase() || "CAD"}.
 
 CURRENT MENU (${itemsWithCounts.length} items):
 Categories: ${categoryNames.join(", ") || "None"}
-All items (id, name, price): ${JSON.stringify(allItemsForPrompt)}
+All items (id, name, price, category): ${JSON.stringify(allItemsForPrompt)}
 Top sellers (last 60 days): ${JSON.stringify(topSellers)}
 Slow movers (< 5 orders in 60 days): ${JSON.stringify(slowMovers)}
 
@@ -313,10 +357,11 @@ Rules:
 - menu_item_update: target_entity_id MUST be one of the exact UUIDs from the slow movers list above. payload must contain ONLY the fields being changed (e.g. {"price": 12.00} or {"is_available": false}). Rationale MUST cite the order count.
 - menu_item: payload must include name, description, price (number), dietary_flags (array).
 - promotion: payload must include title, description, promo_type (one of: bogo, percentage, fixed, free_item), discount_value (number, use 0 for bogo/free_item), discount_unit (percent or dollar), starts_at (ISO date), ends_at (ISO date).
-  IMPORTANT for promotion item selection — you MUST choose specific items from the "All items" list above using their exact UUIDs:
-  - bogo: set bogo_item_ids to an array of item UUIDs the deal applies to (pick 2-6 relevant items; empty = all items). Set buy_quantity (default 1) and get_quantity (default 1).
+  CRITICAL for promotion item selection — you MUST pick specific menu items from the "All items" list above. Use the category field to match the promotion's intent (e.g. "Appetizer" category for an appetizer deal, "Dessert" for a dessert promo, etc.). Prefer the exact UUID from the "id" field; if you cannot, return the exact item name string. Never invent items that are not in the list.
+  - bogo: set bogo_item_ids to a NON-EMPTY array of 2-6 item UUIDs the deal applies to (must always include at least 2 items unless the promo literally applies to the whole menu). Set buy_quantity (default 1) and get_quantity (default 1).
   - free_item: set free_item_id to the UUID of the item being given free (pick one low-cost or slow-moving item).
-  - percentage or fixed: set eligible_item_ids to an array of item UUIDs the discount applies to (pick relevant items; empty = whole cart).
+  - percentage or fixed: set eligible_item_ids to an array of 2-6 item UUIDs the discount applies to (must match the promo title/description; empty ONLY if the promo literally applies to the whole cart).
+  ALWAYS include the item-selection key (bogo_item_ids / free_item_id / eligible_item_ids) appropriate for the promo_type, even if it ends up empty.
 - event: payload must include name, description, date (YYYY-MM-DD), start_time (HH:MM), end_time (HH:MM), price_per_person (number), capacity (number), theme.
 
 Respond in ${language}. Return valid JSON matching the schema: {"suggestions": [...]}`;
@@ -350,17 +395,51 @@ Respond in ${language}. Return valid JSON matching the schema: {"suggestions": [
             if (s.type === "menu_item_update" && !entityId) {
               return { ...s, type: "menu_item", target_entity_id: null };
             }
-            // Sanitize promotion item arrays — filter to only real menu item UUIDs
+            // Sanitize promotion item arrays — accept UUIDs OR item names, then
+            // guarantee the item-selection key exists on the payload so the UI can
+            // render its AI-assisted badge and pre-select rows. If the AI failed to
+            // pick items, fall back to keyword-matching the promo title/description
+            // against the menu, then to top sellers / slow movers.
             if (s.type === "promotion" && s.payload) {
-              const p = { ...s.payload };
-              if (Array.isArray(p.bogo_item_ids)) {
-                p.bogo_item_ids = p.bogo_item_ids.filter((id: any) => UUID_RE.test(String(id)) && validItemIds.has(id));
-              }
-              if (p.free_item_id && (!UUID_RE.test(String(p.free_item_id)) || !validItemIds.has(p.free_item_id))) {
-                p.free_item_id = null;
-              }
-              if (Array.isArray(p.eligible_item_ids)) {
-                p.eligible_item_ids = p.eligible_item_ids.filter((id: any) => UUID_RE.test(String(id)) && validItemIds.has(id));
+              const p: Record<string, any> = { ...s.payload };
+              const promoType = typeof p.promo_type === "string" ? p.promo_type : "";
+              const text = `${s.title ?? ""} ${p.title ?? ""} ${p.description ?? ""} ${s.summary ?? ""} ${s.rationale ?? ""}`;
+              const keywords = Array.from(new Set(
+                text.toLowerCase()
+                  .split(/[^a-z0-9]+/)
+                  .filter((w) => w.length >= 4 && !["with","this","that","from","when","your","menu","item","items","promo","offer","order","entree","course","based","selected","selection"].includes(w)),
+              ));
+
+              if (promoType === "bogo") {
+                let ids = resolveItemIds(p.bogo_item_ids);
+                if (ids.length < 2) {
+                  // Try to find items matching the promo's subject (e.g. "appetizer", "pizza")
+                  const keywordHits = pickItemsByKeywords(keywords, 4);
+                  ids = Array.from(new Set([...ids, ...keywordHits]));
+                }
+                if (ids.length < 2) {
+                  // Last resort: top sellers so the AI pick is never empty for BOGO.
+                  ids = Array.from(new Set([...ids, ...topSellers.slice(0, 3).map((i) => i.id)]));
+                }
+                p.bogo_item_ids = ids;
+              } else if (promoType === "free_item") {
+                let fid = resolveSingleItemId(p.free_item_id);
+                if (!fid) {
+                  const hits = pickItemsByKeywords(keywords, 1);
+                  fid = hits[0] ?? (slowMovers[0]?.id ?? topSellers[topSellers.length - 1]?.id ?? null);
+                }
+                p.free_item_id = fid;
+              } else if (promoType === "percentage" || promoType === "fixed") {
+                let ids = resolveItemIds(p.eligible_item_ids);
+                if (ids.length === 0) {
+                  const keywordHits = pickItemsByKeywords(keywords, 4);
+                  if (keywordHits.length > 0) ids = keywordHits;
+                }
+                if (ids.length === 0) {
+                  // Prefer slow movers for a discount; fall back to top sellers.
+                  ids = (slowMovers.length > 0 ? slowMovers : topSellers).slice(0, 3).map((i) => i.id);
+                }
+                p.eligible_item_ids = ids;
               }
               return { ...s, target_entity_id: entityId, payload: p };
             }
