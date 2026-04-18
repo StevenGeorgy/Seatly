@@ -106,8 +106,12 @@ function getMockSuggestions(today: string, sorted: any[], slowMovers: any[]) {
         title: "Date Night 2-for-1 Appetizers",
         description: "Order any entree and get two appetizers for the price of one. Every Tuesday.",
         promo_type: "bogo",
-        discount_value: 50,
+        discount_value: 0,
         discount_unit: "percent",
+        bogo_item_ids: sorted.slice(0, 3).map((i: any) => i.id).filter(Boolean),
+        buy_quantity: 1,
+        get_quantity: 1,
+        eligible_item_ids: [],
         starts_at: today,
         ends_at: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10),
       },
@@ -259,12 +263,15 @@ Deno.serve(async (req: Request) => {
     const today = new Date().toISOString().slice(0, 10);
     const categoryNames = (categories ?? []).map((c: any) => c.name);
 
+    const allItemsForPrompt = itemsWithCounts.slice(0, 30).map((i: any) => ({ id: i.id, name: i.name, price: i.price }));
+
     const systemPrompt = `You are a restaurant business advisor for ${restaurant.name}, a ${restaurant.cuisine_type || "restaurant"} in ${restaurant.city || "Canada"}.
 
 Today is ${today}. Currency: ${restaurant.currency?.toUpperCase() || "CAD"}.
 
 CURRENT MENU (${itemsWithCounts.length} items):
 Categories: ${categoryNames.join(", ") || "None"}
+All items (id, name, price): ${JSON.stringify(allItemsForPrompt)}
 Top sellers (last 60 days): ${JSON.stringify(topSellers)}
 Slow movers (< 5 orders in 60 days): ${JSON.stringify(slowMovers)}
 
@@ -283,7 +290,11 @@ Rules:
 - suggestion type MUST be exactly one of: menu_item, menu_item_update, promotion, event
 - menu_item_update: target_entity_id MUST be one of the exact UUIDs from the slow movers list above. payload must contain ONLY the fields being changed (e.g. {"price": 12.00} or {"is_available": false}). Rationale MUST cite the order count.
 - menu_item: payload must include name, description, price (number), dietary_flags (array).
-- promotion: payload must include title, description, promo_type (one of: bogo, percentage, fixed, free_item), discount_value (number), discount_unit (percent or dollar), starts_at (ISO date), ends_at (ISO date).
+- promotion: payload must include title, description, promo_type (one of: bogo, percentage, fixed, free_item), discount_value (number, use 0 for bogo/free_item), discount_unit (percent or dollar), starts_at (ISO date), ends_at (ISO date).
+  IMPORTANT for promotion item selection — you MUST choose specific items from the "All items" list above using their exact UUIDs:
+  - bogo: set bogo_item_ids to an array of item UUIDs the deal applies to (pick 2-6 relevant items; empty = all items). Set buy_quantity (default 1) and get_quantity (default 1).
+  - free_item: set free_item_id to the UUID of the item being given free (pick one low-cost or slow-moving item).
+  - percentage or fixed: set eligible_item_ids to an array of item UUIDs the discount applies to (pick relevant items; empty = whole cart).
 - event: payload must include name, description, date (YYYY-MM-DD), start_time (HH:MM), end_time (HH:MM), price_per_person (number), capacity (number), theme.
 
 Respond in ${language}. Return valid JSON matching the schema: {"suggestions": [...]}`;

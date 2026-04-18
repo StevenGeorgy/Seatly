@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { format, parse, isValid, startOfToday } from "date-fns";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useMenuCategories } from "@/hooks/useMenuItems";
+import { useMenuCategories, useMenuItems } from "@/hooks/useMenuItems";
 import type { SuggestionRow } from "@/hooks/useMenuSuggestions";
 import { useMenuSuggestions } from "@/hooks/useMenuSuggestions";
 import { type CreatePromotionPayload, usePromotions } from "@/hooks/usePromotions";
@@ -237,6 +238,54 @@ function MenuItemUpdateForm({
 
 // ── Promotion form ────────────────────────────────────────────────────────────
 
+const UUID_RE_PROMO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function ItemChecklist({
+  items,
+  loading,
+  selected,
+  onToggle,
+  emptyLabel,
+  aiHighlighted,
+}: {
+  items: { id: string; name: string; price: number }[];
+  loading: boolean;
+  selected: string[];
+  onToggle: (id: string) => void;
+  emptyLabel: string;
+  aiHighlighted: string[];
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {loading ? (
+        <div className="flex flex-col gap-1.5">{[1,2,3].map((i) => <Skeleton key={i} className="h-9 rounded-md" />)}</div>
+      ) : (
+        <div className="max-h-44 overflow-y-auto rounded-md border border-border bg-bg-elevated">
+          {items.map((m) => {
+            const checked = selected.includes(m.id);
+            const aiPicked = aiHighlighted.includes(m.id);
+            return (
+              <button key={m.id} type="button" onClick={() => onToggle(m.id)}
+                className={`flex w-full items-center gap-3 border-b border-border/50 px-3 py-2.5 text-left transition-colors last:border-0 hover:bg-bg-surface ${checked ? "bg-gold/5" : ""}`}
+              >
+                <div className={`flex size-4 shrink-0 items-center justify-center rounded border ${checked ? "border-gold bg-gold" : "border-border bg-transparent"}`}>
+                  {checked && <CheckCircle2 className="size-3 text-bg-base" />}
+                </div>
+                <span className="min-w-0 flex-1 truncate text-xs text-text-primary">{m.name}</span>
+                {aiPicked && <span className="shrink-0 rounded border border-gold/30 bg-gold/10 px-1 py-0 text-[9px] font-semibold uppercase text-gold">AI</span>}
+                <span className="shrink-0 text-xs text-text-muted">${m.price.toFixed(2)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {selected.length === 0 && !loading && (
+        <p className="text-[11px] text-text-muted">{emptyLabel}</p>
+      )}
+    </div>
+  );
+}
+
 function PromotionForm({
   payload,
   aiFields,
@@ -252,6 +301,12 @@ function PromotionForm({
   onDismiss: () => void;
   onCancel: () => void;
 }) {
+  const { items: allItems, loading: menuLoading } = useMenuItems();
+  const realMenuItems = useMemo(
+    () => allItems.filter((m) => UUID_RE_PROMO.test(m.id) && m.is_active),
+    [allItems],
+  );
+
   const [title, setTitle] = useState(payload.title ?? "");
   const [desc, setDesc] = useState(payload.description ?? "");
   const [promoType, setPromoType] = useState<string>(payload.promo_type ?? "percentage");
@@ -261,7 +316,28 @@ function PromotionForm({
   const [endsAt, setEndsAt] = useState((payload.ends_at ?? "").slice(0, 10));
   const [promoCode, setPromoCode] = useState(payload.promo_code ?? "");
 
+  // Item selections — seeded from AI payload
+  const [bogoItemIds, setBogoItemIds] = useState<string[]>(
+    Array.isArray(payload.bogo_item_ids)
+      ? payload.bogo_item_ids.filter((id: unknown) => typeof id === "string" && UUID_RE_PROMO.test(id))
+      : [],
+  );
+  const [freeItemId, setFreeItemId] = useState<string>(
+    typeof payload.free_item_id === "string" && UUID_RE_PROMO.test(payload.free_item_id) ? payload.free_item_id : "",
+  );
+  const [eligibleItemIds, setEligibleItemIds] = useState<string[]>(
+    Array.isArray(payload.eligible_item_ids)
+      ? payload.eligible_item_ids.filter((id: unknown) => typeof id === "string" && UUID_RE_PROMO.test(id))
+      : [],
+  );
+  const [buyQuantity, setBuyQuantity] = useState(String(payload.buy_quantity ?? "1"));
+  const [getQuantity, setGetQuantity] = useState(String(payload.get_quantity ?? "1"));
+
   const isAi = (f: string) => aiFields.includes(f);
+  const freeItem = realMenuItems.find((m) => m.id === freeItemId);
+
+  const toggleBogo = (id: string) => setBogoItemIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const toggleEligible = (id: string) => setEligibleItemIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -273,10 +349,14 @@ function PromotionForm({
         <Label className="flex items-center gap-1">Description {isAi("description") ? <AiBadge /> : null}</Label>
         <Textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} />
       </div>
+
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
           <Label className="flex items-center gap-1">Type {isAi("promo_type") ? <AiBadge /> : null}</Label>
-          <Select value={promoType} onValueChange={setPromoType}>
+          <Select value={promoType} onValueChange={(v) => {
+            setPromoType(v);
+            setBogoItemIds([]); setFreeItemId(""); setEligibleItemIds([]);
+          }}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="percentage">% Off</SelectItem>
@@ -286,7 +366,7 @@ function PromotionForm({
             </SelectContent>
           </Select>
         </div>
-        {promoType !== "bogo" ? (
+        {promoType !== "bogo" && promoType !== "free_item" ? (
           <div className="flex flex-col gap-2">
             <Label className="flex items-center gap-1">Value {isAi("discount_value") ? <AiBadge /> : null}</Label>
             <div className="flex gap-2">
@@ -309,11 +389,84 @@ function PromotionForm({
           <Label className="flex items-center gap-1">Ends {isAi("ends_at") ? <AiBadge /> : null}</Label>
           <DatePicker value={endsAt} onChange={setEndsAt} placeholder="No end date" disableBefore={startOfToday()} />
         </div>
-        <div className="flex flex-col gap-2 sm:col-span-2">
-          <Label>Promo code (optional)</Label>
-          <Input value={promoCode} onChange={(e) => setPromoCode(e.target.value)} placeholder="e.g. SUMMER20" className="uppercase" />
-        </div>
       </div>
+
+      {/* BOGO — item checklist + quantities */}
+      {promoType === "bogo" && (
+        <div className="flex flex-col gap-1.5">
+          <Label className="flex items-center gap-1">
+            Applies to which items? {isAi("bogo_item_ids") ? <AiBadge /> : null}
+          </Label>
+          <ItemChecklist
+            items={realMenuItems}
+            loading={menuLoading}
+            selected={bogoItemIds}
+            onToggle={toggleBogo}
+            emptyLabel="No items selected — BOGO applies to all items."
+            aiHighlighted={Array.isArray(payload.bogo_item_ids) ? payload.bogo_item_ids : []}
+          />
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="flex flex-col gap-1.5">
+              <Label>Buy quantity</Label>
+              <Input type="number" min={1} placeholder="1" value={buyQuantity} onChange={(e) => setBuyQuantity(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Get free</Label>
+              <Input type="number" min={1} placeholder="1" value={getQuantity} onChange={(e) => setGetQuantity(e.target.value)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Free item — single select */}
+      {promoType === "free_item" && (
+        <div className="flex flex-col gap-1.5">
+          <Label className="flex items-center gap-1">
+            Free item {isAi("free_item_id") ? <AiBadge /> : null}
+          </Label>
+          {menuLoading ? <Skeleton className="h-10 rounded-md" /> : (
+            <Select value={freeItemId} onValueChange={setFreeItemId}>
+              <SelectTrigger><SelectValue placeholder="Select the free item…" /></SelectTrigger>
+              <SelectContent>
+                {realMenuItems.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name} — ${m.price.toFixed(2)}
+                    {Array.isArray(payload.bogo_item_ids) ? null : (payload.free_item_id === m.id ? " · AI pick" : null)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {freeItem && (
+            <p className="text-[11px] text-text-muted">
+              Customers get one <span className="font-medium text-text-secondary">{freeItem.name}</span> (${freeItem.price.toFixed(2)}) free.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Percentage / Fixed — eligible item scope */}
+      {(promoType === "percentage" || promoType === "fixed") && (
+        <div className="flex flex-col gap-1.5">
+          <Label className="flex items-center gap-1">
+            Applies to which items? {isAi("eligible_item_ids") ? <AiBadge /> : null}
+          </Label>
+          <ItemChecklist
+            items={realMenuItems}
+            loading={menuLoading}
+            selected={eligibleItemIds}
+            onToggle={toggleEligible}
+            emptyLabel="No items selected — discount applies to the whole cart."
+            aiHighlighted={Array.isArray(payload.eligible_item_ids) ? payload.eligible_item_ids : []}
+          />
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2">
+        <Label>Promo code (optional)</Label>
+        <Input value={promoCode} onChange={(e) => setPromoCode(e.target.value)} placeholder="e.g. SUMMER20" className="uppercase" />
+      </div>
+
       <DialogFooter className="gap-2">
         <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onDismiss}>Dismiss suggestion</Button>
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
@@ -330,10 +483,13 @@ function PromotionForm({
           promo_code: promoCode.trim().toUpperCase() || null,
           max_uses: null,
           badge_color: "amber",
-          bogo_item_ids: [],
-          free_item_id: null,
-          free_item_name: null,
           min_order_amount: null,
+          bogo_item_ids: promoType === "bogo" ? bogoItemIds : [],
+          free_item_id: promoType === "free_item" && freeItemId ? freeItemId : null,
+          free_item_name: promoType === "free_item" && freeItem ? freeItem.name : null,
+          eligible_item_ids: (promoType === "percentage" || promoType === "fixed") ? eligibleItemIds : [],
+          buy_quantity: promoType === "bogo" ? (Number(buyQuantity) || 1) : 1,
+          get_quantity: promoType === "bogo" ? (Number(getQuantity) || 1) : 1,
         })}>
           {saving ? "Saving…" : "Create Promotion"}
         </Button>
