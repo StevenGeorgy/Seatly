@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChefHat, PencilLine, Tag, PartyPopper, Sparkles, RefreshCw, X, ChevronDown, ChevronUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useMenuItems } from "@/hooks/useMenuItems";
 import { useMenuSuggestions, type SuggestionRow, type SuggestionType } from "@/hooks/useMenuSuggestions";
 import { cn } from "@/lib/utils";
 
@@ -39,10 +40,12 @@ const TYPE_META: Record<SuggestionType, { label: string; icon: typeof ChefHat; c
 
 function SuggestionCard({
   suggestion,
+  itemById,
   onDismiss,
   onPreview,
 }: {
   suggestion: SuggestionRow;
+  itemById: Map<string, { id: string; name: string; price: number }>;
   onDismiss: () => void;
   onPreview: () => void;
 }) {
@@ -53,6 +56,18 @@ function SuggestionCard({
   const diffFields = suggestion.suggestion_type === "menu_item_update"
     ? Object.entries(suggestion.payload).filter(([k]) => k !== "id")
     : [];
+
+  const promoItems = useMemo(() => {
+    if (suggestion.suggestion_type !== "promotion") return null;
+    const p = suggestion.payload as Record<string, any>;
+    const type = p.promo_type as string | undefined;
+    let ids: string[] = [];
+    if (type === "bogo") ids = Array.isArray(p.bogo_item_ids) ? p.bogo_item_ids : [];
+    else if (type === "free_item") ids = typeof p.free_item_id === "string" ? [p.free_item_id] : [];
+    else if (type === "percentage" || type === "fixed") ids = Array.isArray(p.eligible_item_ids) ? p.eligible_item_ids : [];
+    const resolved = ids.map((id) => itemById.get(id)).filter(Boolean) as { id: string; name: string; price: number }[];
+    return { type, items: resolved, isWholeCart: (type === "percentage" || type === "fixed") && ids.length === 0 };
+  }, [suggestion, itemById]);
 
   return (
     <Card className="relative border-border/70 bg-bg-elevated/40 transition-colors hover:border-gold/25">
@@ -70,6 +85,29 @@ function SuggestionCard({
             <p className="text-sm font-semibold leading-snug text-text-primary">{suggestion.title}</p>
             {suggestion.summary ? (
               <p className="mt-0.5 text-xs text-text-muted">{suggestion.summary}</p>
+            ) : null}
+
+            {/* Promotion item preview */}
+            {promoItems && (promoItems.items.length > 0 || promoItems.isWholeCart) ? (
+              <div className="mt-2 flex flex-col gap-1">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                  {promoItems.isWholeCart ? "Applies to" : promoItems.type === "free_item" ? "Free item" : "AI-selected items"}
+                </span>
+                {promoItems.isWholeCart ? (
+                  <span className="text-[11px] text-text-secondary">Whole menu</span>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {promoItems.items.slice(0, 4).map((m) => (
+                      <span key={m.id} className="inline-flex items-center rounded-md border border-gold/20 bg-gold/5 px-1.5 py-0.5 text-[11px] text-text-secondary">
+                        {m.name}
+                      </span>
+                    ))}
+                    {promoItems.items.length > 4 ? (
+                      <span className="text-[11px] text-text-muted">+{promoItems.items.length - 4} more</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
             ) : null}
 
             {/* Diff preview for menu_item_update */}
@@ -129,6 +167,11 @@ type Props = { onClose: () => void };
 export function MenuSuggestionsPanel({ onClose }: Props) {
   const { suggestions, loading, generating, generate, dismiss } = useMenuSuggestions();
   const [previewTarget, setPreviewTarget] = useState<SuggestionRow | null>(null);
+  const { items: menuItems } = useMenuItems();
+  const itemById = useMemo(
+    () => new Map(menuItems.map((m) => [m.id, { id: m.id, name: m.name, price: m.price }])),
+    [menuItems],
+  );
 
   return (
     <div className="mb-6 rounded-lg border border-border bg-bg-surface p-5">
@@ -186,6 +229,7 @@ export function MenuSuggestionsPanel({ onClose }: Props) {
             <SuggestionCard
               key={s.id}
               suggestion={s}
+              itemById={itemById}
               onDismiss={() => void dismiss(s.id)}
               onPreview={() => setPreviewTarget(s)}
             />
