@@ -328,6 +328,20 @@ Respond in ${language}. Return valid JSON matching the schema: {"suggestions": [
             if (s.type === "menu_item_update" && !entityId) {
               return { ...s, type: "menu_item", target_entity_id: null };
             }
+            // Sanitize promotion item arrays — filter to only real menu item UUIDs
+            if (s.type === "promotion" && s.payload) {
+              const p = { ...s.payload };
+              if (Array.isArray(p.bogo_item_ids)) {
+                p.bogo_item_ids = p.bogo_item_ids.filter((id: any) => UUID_RE.test(String(id)) && validItemIds.has(id));
+              }
+              if (p.free_item_id && (!UUID_RE.test(String(p.free_item_id)) || !validItemIds.has(p.free_item_id))) {
+                p.free_item_id = null;
+              }
+              if (Array.isArray(p.eligible_item_ids)) {
+                p.eligible_item_ids = p.eligible_item_ids.filter((id: any) => UUID_RE.test(String(id)) && validItemIds.has(id));
+              }
+              return { ...s, target_entity_id: entityId, payload: p };
+            }
             return { ...s, target_entity_id: entityId };
           });
       }
