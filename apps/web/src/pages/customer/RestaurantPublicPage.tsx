@@ -40,6 +40,7 @@ import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
+import { computePromoDiscount } from "@/lib/computePromoDiscount";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type OrderType = "dine_in" | "pickup" | "delivery";
@@ -529,6 +530,15 @@ export default function RestaurantPublicPage() {
     return list;
   }, [activeCategory, activePromoId, menuItems, restaurantPromos]);
 
+  const eligiblePromoItemIds = useMemo<Set<string>>(() => {
+    if (!activePromoId) return new Set();
+    const promo = restaurantPromos.find((p) => p.id === activePromoId);
+    if (!promo) return new Set();
+    if (promo.promo_type === "bogo") return new Set(promo.bogo_item_ids);
+    if (promo.promo_type === "free_item") return promo.free_item_id ? new Set([promo.free_item_id]) : new Set();
+    return new Set(promo.eligible_item_ids);
+  }, [activePromoId, restaurantPromos]);
+
   // Parse the user's allergy text into individual keywords and find flagged items
   const { flaggedItems, allergenKeywords } = useMemo(() => {
     const raw = orderType === "dine_in" ? dineIn.allergies : "";
@@ -577,11 +587,14 @@ export default function RestaurantPublicPage() {
     return { flaggedItems: flagged, allergenKeywords: Array.from(matched) };
   }, [dineIn.allergies, orderType, menuItems]);
 
-  const cartTotal   = cart.reduce((s, i) => s + i.price * i.qty, 0);
-  const cartCount   = cart.reduce((s, i) => s + i.qty, 0);
-  const taxRate     = restaurant?.tax_rate ?? 0.13;
-  const tax         = cartTotal * taxRate;
-  const total       = cartTotal + tax;
+  const cartTotal          = cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const cartCount          = cart.reduce((s, i) => s + i.qty, 0);
+  const taxRate            = restaurant?.tax_rate ?? 0.13;
+  const activePromo        = activePromoId ? restaurantPromos.find((p) => p.id === activePromoId) ?? null : null;
+  const { discount }       = activePromo ? computePromoDiscount(cart, activePromo) : { discount: 0 };
+  const discountedSubtotal = Math.max(0, cartTotal - discount);
+  const tax                = discountedSubtotal * taxRate;
+  const total              = discountedSubtotal + tax;
   const deliveryFee = orderType === "delivery" ? 4.99 : 0;
   const parsedCustomTip = Number.parseFloat(customTipAmount);
   const tipAmount =
@@ -741,10 +754,13 @@ export default function RestaurantPublicPage() {
           is_preorder: orderType !== "dine_in",
           order_type: orderType === "pickup" ? "takeout" : orderType,
           status: "pending",
-          subtotal: roundMoney(cartTotal),
+          subtotal: roundMoney(discountedSubtotal),
           tax_amount: roundMoney(tax),
           tip_amount: roundMoney(tipAmount),
           total_amount: roundMoney(totalNow),
+          discount_amount: discount > 0 ? roundMoney(discount) : null,
+          discount_reason: activePromo?.title ?? null,
+          promotion_id: activePromo?.id ?? null,
           payment_method: paymentSplitMode === "split" ? "split" : "card",
           confirmation_code: code,
         })
@@ -765,7 +781,14 @@ export default function RestaurantPublicPage() {
       const { error: itemsErr } = await client.from("order_items").insert(items);
       if (itemsErr) throw new Error(`Order items: ${itemsErr.message}`);
 
-      // 5. Save phone to user profile if it changed (so it's remembered next time)
+      // 5. Increment promotion usage counter
+      if (activePromo) {
+        await client.from("promotions")
+          .update({ current_uses: activePromo.current_uses + 1 })
+          .eq("id", activePromo.id);
+      }
+
+      // 6. Save phone to user profile if it changed (so it's remembered next time)
       if (profile && contactPhone && contactPhone !== (profile.phone ?? "")) {
         await client
           .from("user_profiles")
@@ -780,7 +803,7 @@ export default function RestaurantPublicPage() {
     } finally {
       setPlacing(false);
     }
-  }, [restaurant, orderType, cart, profile, dineIn, pickup, delivery, cartTotal, tax, tipAmount, totalNow, paymentSplitMode]);
+  }, [restaurant, orderType, cart, profile, dineIn, pickup, delivery, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos]);
 
   if (loading) {
     return (
@@ -1248,9 +1271,19 @@ export default function RestaurantPublicPage() {
                       );
                     })}
                   </div>
+                  {activePromoId && eligiblePromoItemIds.size > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-text-muted">Included:</span>
+                      {menuItems.filter((m) => eligiblePromoItemIds.has(m.id)).map((m) => (
+                        <span key={m.id} className="rounded-full border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-text-secondary">
+                          {m.name} · {formatCurrency(m.price, currency)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {activePromoId && (
                     <p className="text-[11px] text-text-muted">
-                      Showing items included in this deal.{" "}
+                      {eligiblePromoItemIds.size > 0 ? "Showing items included in this deal." : "This deal applies to your entire cart."}{" "}
                       <button
                         type="button"
                         onClick={() => setActivePromoId(null)}
@@ -1312,6 +1345,11 @@ export default function RestaurantPublicPage() {
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <span className="text-sm font-bold text-text-primary">{formatCurrency(item.price, currency)}</span>
+                          {activePromo && eligiblePromoItemIds.has(item.id) && (
+                            <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-bold tracking-wide ${getPromoTypeBadgeClasses(activePromo.badge_color)}`}>
+                              {getPromotionLabel(activePromo)}
+                            </span>
+                          )}
                           {inCart ? (
                             <div className="flex items-center gap-1">
                               <button type="button" onClick={() => removeFromCart(item.id)} className="flex size-7 items-center justify-center rounded-lg border border-border text-text-secondary hover:border-gold/40 hover:text-gold transition-colors">
@@ -1380,6 +1418,12 @@ export default function RestaurantPublicPage() {
                     <span className="text-text-secondary">Subtotal</span>
                     <span className="text-text-primary">{formatCurrency(cartTotal, currency)}</span>
                   </div>
+                  {discount > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-green-400">Discount {activePromo ? `(${activePromo.title})` : ""}</span>
+                      <span className="text-green-400">- {formatCurrency(discount, currency)}</span>
+                    </div>
+                  )}
                   {orderType === "delivery" && (
                     <div className="flex justify-between text-sm">
                       <span className="text-text-secondary">Delivery fee</span>

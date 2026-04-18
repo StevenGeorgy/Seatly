@@ -27,6 +27,9 @@ export type PromotionRow = {
   bogo_item_ids: string[];
   free_item_id: string | null;
   free_item_name: string | null;
+  eligible_item_ids: string[];
+  buy_quantity: number;
+  get_quantity: number;
   created_at: string;
 };
 

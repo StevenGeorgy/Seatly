@@ -49,6 +49,9 @@ type FormState = {
   bogo_item_ids: string[];
   free_item_id: string;
   free_item_name: string;
+  eligible_item_ids: string[];
+  buy_quantity: string;
+  get_quantity: string;
 };
 
 const DEFAULT_FORM: FormState = {
@@ -68,6 +71,9 @@ const DEFAULT_FORM: FormState = {
   bogo_item_ids: [],
   free_item_id: "",
   free_item_name: "",
+  eligible_item_ids: [],
+  buy_quantity: "1",
+  get_quantity: "1",
 };
 
 function promoStatus(p: PromotionRow): "active" | "expired" | "scheduled" | "paused" {
@@ -191,7 +197,6 @@ function PromoFormDrawer({
     [menuItems],
   );
 
-  // Toggle a menu item in bogo_item_ids
   const toggleBogoItem = (id: string) => {
     set("bogo_item_ids",
       form.bogo_item_ids.includes(id)
@@ -200,7 +205,16 @@ function PromoFormDrawer({
     );
   };
 
+  const toggleEligibleItem = (id: string) => {
+    set("eligible_item_ids",
+      form.eligible_item_ids.includes(id)
+        ? form.eligible_item_ids.filter((x) => x !== id)
+        : [...form.eligible_item_ids, id]
+    );
+  };
+
   const allSelected = realMenuItems.length > 0 && form.bogo_item_ids.length === realMenuItems.length;
+  const allEligibleSelected = realMenuItems.length > 0 && form.eligible_item_ids.length === realMenuItems.length;
 
   return (
     <AnimatePresence>
@@ -268,6 +282,9 @@ function PromoFormDrawer({
                   set("bogo_item_ids", []);
                   set("free_item_id", "");
                   set("free_item_name", "");
+                  set("eligible_item_ids", []);
+                  set("buy_quantity", "1");
+                  set("get_quantity", "1");
                 }}>
                   <SelectTrigger>
                     <SelectValue />
@@ -327,6 +344,80 @@ function PromoFormDrawer({
                   )}
                   {form.bogo_item_ids.length === 0 && realMenuItems.length > 0 && (
                     <p className="text-[11px] text-text-muted">No items selected — BOGO applies to all items.</p>
+                  )}
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="bogo-buy">Buy Quantity</Label>
+                      <Input
+                        id="bogo-buy"
+                        type="number"
+                        min={1}
+                        placeholder="1"
+                        value={form.buy_quantity}
+                        onChange={(e) => set("buy_quantity", e.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="bogo-get">Get Free</Label>
+                      <Input
+                        id="bogo-get"
+                        type="number"
+                        min={1}
+                        placeholder="1"
+                        value={form.get_quantity}
+                        onChange={(e) => set("get_quantity", e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Percentage / Fixed — item scope checklist */}
+              {(form.promo_type === "percentage" || form.promo_type === "fixed") && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label>Applies to which items?</Label>
+                    {realMenuItems.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => set("eligible_item_ids", allEligibleSelected ? [] : realMenuItems.map((m) => m.id))}
+                        className="text-[11px] text-gold hover:underline"
+                      >
+                        {allEligibleSelected ? "Deselect all" : "Select all"}
+                      </button>
+                    )}
+                  </div>
+                  {menuLoading ? (
+                    <div className="flex flex-col gap-1.5">
+                      {[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 rounded-md" />)}
+                    </div>
+                  ) : realMenuItems.length === 0 ? (
+                    <p className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-text-muted">
+                      No menu items found. Add items in Menu first to enable item selection.
+                    </p>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto rounded-md border border-border bg-bg-elevated">
+                      {realMenuItems.map((m) => {
+                        const checked = form.eligible_item_ids.includes(m.id);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => toggleEligibleItem(m.id)}
+                            className={`flex w-full items-center gap-3 border-b border-border/50 px-3 py-2.5 text-left transition-colors last:border-0 hover:bg-bg-surface ${checked ? "bg-gold/5" : ""}`}
+                          >
+                            <div className={`flex size-4 shrink-0 items-center justify-center rounded border ${checked ? "border-gold bg-gold" : "border-border bg-transparent"}`}>
+                              {checked && <CheckCircle2 className="size-3 text-bg-base" />}
+                            </div>
+                            <span className="min-w-0 flex-1 truncate text-xs text-text-primary">{m.name}</span>
+                            <span className="shrink-0 text-xs text-text-muted">${m.price.toFixed(2)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {form.eligible_item_ids.length === 0 && realMenuItems.length > 0 && (
+                    <p className="text-[11px] text-text-muted">No items selected — discount applies to the whole cart.</p>
                   )}
                 </div>
               )}
@@ -555,6 +646,9 @@ export default function PromotionsPage() {
         bogo_item_ids: editTarget.bogo_item_ids ?? [],
         free_item_id: editTarget.free_item_id ?? "",
         free_item_name: editTarget.free_item_name ?? "",
+        eligible_item_ids: editTarget.eligible_item_ids ?? [],
+        buy_quantity: String(editTarget.buy_quantity ?? 1),
+        get_quantity: String(editTarget.get_quantity ?? 1),
       }
     : DEFAULT_FORM;
 
@@ -587,6 +681,11 @@ export default function PromotionsPage() {
         ? form.free_item_id
         : null,
       free_item_name: form.promo_type === "free_item" && form.free_item_name ? form.free_item_name : null,
+      eligible_item_ids: (form.promo_type === "percentage" || form.promo_type === "fixed")
+        ? form.eligible_item_ids.filter((id) => UUID_RE.test(id))
+        : [],
+      buy_quantity: form.promo_type === "bogo" ? (Number(form.buy_quantity) || 1) : 1,
+      get_quantity: form.promo_type === "bogo" ? (Number(form.get_quantity) || 1) : 1,
     };
 
     const err = editTarget
