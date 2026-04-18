@@ -668,10 +668,11 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-lg">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{TITLE_MAP[suggestion?.suggestion_type ?? "menu_item"] ?? "Preview"}</DialogTitle>
         </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
 
         {!suggestion ? null : suggestion.suggestion_type === "menu_item" ? (
           <MenuItemForm
@@ -709,6 +710,7 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
             onCancel={() => onOpenChange(false)}
           />
         ) : null}
+        </div>
       </DialogContent>
     </Dialog>
   );
