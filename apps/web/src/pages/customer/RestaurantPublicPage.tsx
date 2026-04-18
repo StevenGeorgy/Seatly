@@ -624,11 +624,11 @@ export default function RestaurantPublicPage() {
     return splitCardRows.every((row) => isCardFilled(row.number, row.expiry, row.cvc));
   }, [paymentSplitMode, splitPartyCount, splitEachShare, splitCardRows]);
 
-  function addToCart(item: MenuItem) {
+  function addToCart(item: MenuItem, qty = 1) {
     setCart((prev) => {
       const ex = prev.find((c) => c.id === item.id);
-      if (ex) return prev.map((c) => c.id === item.id ? { ...c, qty: c.qty + 1 } : c);
-      return [...prev, { ...item, qty: 1 }];
+      if (ex) return prev.map((c) => c.id === item.id ? { ...c, qty: c.qty + qty } : c);
+      return [...prev, { ...item, qty }];
     });
   }
   function removeFromCart(id: string) {
@@ -1353,7 +1353,17 @@ export default function RestaurantPublicPage() {
                               </button>
                             </div>
                           ) : (
-                            <button type="button" onClick={() => addToCart(item)} className="flex size-7 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 text-gold hover:bg-gold/20 transition-colors">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const isBogoEligible = activePromo?.promo_type === "bogo" && eligiblePromoItemIds.has(item.id);
+                                const bogoQty = isBogoEligible
+                                  ? (activePromo!.buy_quantity ?? 1) + (activePromo!.get_quantity ?? 1)
+                                  : 1;
+                                addToCart(item, bogoQty);
+                              }}
+                              className="flex size-7 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
+                            >
                               <Plus className="size-3.5" />
                             </button>
                           )}
