@@ -98,13 +98,13 @@ function getMockSuggestions(today: string, sorted: any[], slowMovers: any[]) {
     },
     {
       type: "promotion",
-      title: "Date Night: 2-for-1 Appetizers",
-      summary: "Buy any entree, get two appetizers for the price of one every Tuesday.",
-      rationale: "Tuesday is typically the slowest night. A BOGO appetizer promotion encourages table bookings on off-peak days.",
+      title: sorted.length >= 2 ? `BOGO on ${sorted[0].name} & ${sorted[1].name}` : "Date Night: 2-for-1 on Top Items",
+      summary: "Buy one of your best-sellers and get a second one free — drives higher table spend.",
+      rationale: "BOGO on top-sellers rewards repeat customers and increases average ticket size without discounting your whole menu.",
       target_entity_id: null,
       payload: {
-        title: "Date Night 2-for-1 Appetizers",
-        description: "Order any entree and get two appetizers for the price of one. Every Tuesday.",
+        title: sorted.length >= 2 ? `BOGO on ${sorted[0].name} & ${sorted[1].name}` : "Date Night 2-for-1",
+        description: "Buy one, get one free on selected items. Limited time offer.",
         promo_type: "bogo",
         discount_value: 0,
         discount_unit: "percent",
@@ -114,6 +114,28 @@ function getMockSuggestions(today: string, sorted: any[], slowMovers: any[]) {
         eligible_item_ids: [],
         starts_at: today,
         ends_at: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10),
+      },
+    },
+    {
+      type: "promotion",
+      title: slowMovers.length > 0 ? `20% Off ${slowMovers[0].name}` : "Weekend 20% Off Special",
+      summary: slowMovers.length > 0 ? `Discount slow-moving items to clear inventory and attract new customers.` : "A weekend discount on selected items to drive foot traffic.",
+      rationale: slowMovers.length > 0
+        ? `${slowMovers.slice(0, 3).map((i: any) => i.name).join(", ")} have fewer than 5 orders in the last 60 days. A 20% discount makes them more attractive without removing them from the menu.`
+        : "A targeted percentage discount on specific items is more cost-effective than a site-wide sale.",
+      target_entity_id: null,
+      payload: {
+        title: slowMovers.length > 0 ? `20% Off Selected Items` : "Weekend 20% Off",
+        description: "Get 20% off on selected menu items. This weekend only.",
+        promo_type: "percentage",
+        discount_value: 20,
+        discount_unit: "percent",
+        eligible_item_ids: (slowMovers.length > 0 ? slowMovers : sorted).slice(0, 3).map((i: any) => i.id).filter(Boolean),
+        bogo_item_ids: [],
+        buy_quantity: 1,
+        get_quantity: 1,
+        starts_at: today,
+        ends_at: new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10),
       },
     },
     {

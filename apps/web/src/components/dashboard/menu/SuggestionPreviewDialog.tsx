@@ -672,7 +672,7 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
         <DialogHeader className="shrink-0">
           <DialogTitle>{TITLE_MAP[suggestion?.suggestion_type ?? "menu_item"] ?? "Preview"}</DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1">
 
         {!suggestion ? null : suggestion.suggestion_type === "menu_item" ? (
           <MenuItemForm
