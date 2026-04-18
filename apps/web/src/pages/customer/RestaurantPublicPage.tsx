@@ -522,9 +522,11 @@ export default function RestaurantPublicPage() {
           list = list.filter((m) => ids.has(m.id));
         } else if (promo.promo_type === "free_item" && promo.free_item_id) {
           list = list.filter((m) => m.id === promo.free_item_id);
+        } else if ((promo.promo_type === "percentage" || promo.promo_type === "fixed") && promo.eligible_item_ids.length > 0) {
+          const ids = new Set(promo.eligible_item_ids);
+          list = list.filter((m) => ids.has(m.id));
         }
-        // bogo with empty bogo_item_ids = full menu — no item-level filter
-        // percentage / fixed — no item-level filter
+        // bogo/percentage/fixed with no item IDs = applies to full menu — no filter
       }
     }
     return list;
@@ -1271,16 +1273,6 @@ export default function RestaurantPublicPage() {
                       );
                     })}
                   </div>
-                  {activePromoId && eligiblePromoItemIds.size > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] font-semibold text-text-muted">Included:</span>
-                      {menuItems.filter((m) => eligiblePromoItemIds.has(m.id)).map((m) => (
-                        <span key={m.id} className="rounded-full border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-text-secondary">
-                          {m.name} · {formatCurrency(m.price, currency)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                   {activePromoId && (
                     <p className="text-[11px] text-text-muted">
                       {eligiblePromoItemIds.size > 0 ? "Showing items included in this deal." : "This deal applies to your entire cart."}{" "}
