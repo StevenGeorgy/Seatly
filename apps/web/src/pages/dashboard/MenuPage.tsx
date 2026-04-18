@@ -26,6 +26,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMenuCategories, useMenuItems, type MenuItemRow } from "@/hooks/useMenuItems";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { MenuSuggestionsPanel } from "@/components/dashboard/menu/MenuSuggestionsPanel";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -215,20 +216,7 @@ export default function MenuPage() {
         {/* Main content */}
         <div className="flex-1">
           {aiPanelOpen ? (
-            <div className="mb-6 rounded-lg border border-border bg-bg-surface p-5">
-              <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="size-4 text-gold" />
-                <span className="text-sm font-semibold text-text-primary">{t("dashboard.menu.aiSuggestions")}</span>
-                <Button variant="ghost" size="icon-sm" className="ml-auto" onClick={() => setAiPanelOpen(false)}>
-                  <span className="text-xs">✕</span>
-                </Button>
-              </div>
-              <EmptyState
-                icon={<Sparkles className="size-5" />}
-                title="AI menu suggestions coming soon"
-                description="Cenaiva will analyze your restaurant and suggest new menu items based on cuisine, trends, and guest preferences."
-              />
-            </div>
+            <MenuSuggestionsPanel onClose={() => setAiPanelOpen(false)} />
           ) : null}
 
           {loading ? (
