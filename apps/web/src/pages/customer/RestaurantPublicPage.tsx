@@ -536,10 +536,16 @@ export default function RestaurantPublicPage() {
     if (!activePromoId) return new Set();
     const promo = restaurantPromos.find((p) => p.id === activePromoId);
     if (!promo) return new Set();
-    if (promo.promo_type === "bogo") return new Set(promo.bogo_item_ids);
-    if (promo.promo_type === "free_item") return promo.free_item_id ? new Set([promo.free_item_id]) : new Set();
-    return new Set(promo.eligible_item_ids);
-  }, [activePromoId, restaurantPromos]);
+    const allIds = () => new Set(menuItems.map((m) => m.id));
+    if (promo.promo_type === "bogo") {
+      return promo.bogo_item_ids.length > 0 ? new Set(promo.bogo_item_ids) : allIds();
+    }
+    if (promo.promo_type === "free_item") {
+      return promo.free_item_id ? new Set([promo.free_item_id]) : new Set();
+    }
+    // percentage / fixed: empty eligible_item_ids = whole cart
+    return promo.eligible_item_ids.length > 0 ? new Set(promo.eligible_item_ids) : allIds();
+  }, [activePromoId, restaurantPromos, menuItems]);
 
   // Parse the user's allergy text into individual keywords and find flagged items
   const { flaggedItems, allergenKeywords } = useMemo(() => {
@@ -1356,11 +1362,8 @@ export default function RestaurantPublicPage() {
                             <button
                               type="button"
                               onClick={() => {
-                                const isBogoEligible = activePromo?.promo_type === "bogo" && eligiblePromoItemIds.has(item.id);
-                                const bogoQty = isBogoEligible
-                                  ? (activePromo!.buy_quantity ?? 1) + (activePromo!.get_quantity ?? 1)
-                                  : 1;
-                                addToCart(item, bogoQty);
+                                const isBogo = activePromo?.promo_type === "bogo" && eligiblePromoItemIds.has(item.id);
+                                addToCart(item, isBogo ? (activePromo!.buy_quantity + activePromo!.get_quantity) : 1);
                               }}
                               className="flex size-7 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
                             >
