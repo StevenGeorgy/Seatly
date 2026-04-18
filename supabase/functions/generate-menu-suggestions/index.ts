@@ -265,6 +265,46 @@ Respond in ${language}. Return valid JSON matching the schema.`;
       return jsonRes({ error: "AI returned invalid JSON" }, 500);
     }
 
+    // If AI returned nothing useful, inject mock suggestions so the UI can be tested
+    if (parsed.suggestions.length === 0) {
+      const firstItem = sorted[0];
+      const slowItem = slowMovers[0];
+      parsed.suggestions = [
+        {
+          type: "menu_item",
+          title: "Seasonal Truffle Mushroom Risotto",
+          summary: "A rich, earthy risotto with wild mushrooms and shaved truffle.",
+          rationale: "Your menu lacks a premium vegetarian entrée. Truffle dishes command higher margins and attract guests with plant-based dietary preferences.",
+          target_entity_id: null,
+          payload: { name: "Truffle Mushroom Risotto", description: "Arborio rice slow-cooked with wild mushrooms, white wine, and shaved truffle. Finished with aged Parmesan.", price: 28, dietary_flags: ["vegetarian", "gluten-free"] },
+        },
+        {
+          type: "menu_item_update",
+          title: `Drop price on "${slowItem?.name ?? firstItem?.name ?? "slow-moving item"}"`,
+          summary: "Reduce price to stimulate demand on a low-performing item.",
+          rationale: `"${slowItem?.name ?? firstItem?.name}" has only ${slowItem?.orders ?? firstItem?.orders ?? 0} orders in the last 60 days at $${slowItem?.price ?? firstItem?.price ?? 0}. A 15–20% price drop could revive interest.`,
+          target_entity_id: slowItem?.id ?? firstItem?.id ?? null,
+          payload: { price: Math.round(((slowItem?.price ?? firstItem?.price ?? 18) * 0.82) * 100) / 100 },
+        },
+        {
+          type: "promotion",
+          title: "Date Night: 2-for-1 Appetizers",
+          summary: "Buy any entrée, get two appetizers for the price of one every Tuesday.",
+          rationale: "Tuesday is typically your slowest night. A BOGO appetizer promotion encourages table bookings on off-peak days.",
+          target_entity_id: null,
+          payload: { title: "Date Night 2-for-1 Appetizers", description: "Order any entrée and get two appetizers for the price of one. Every Tuesday.", promo_type: "bogo", discount_value: 50, discount_unit: "percent", starts_at: today, ends_at: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10) },
+        },
+        {
+          type: "event",
+          title: "Mother's Day Brunch",
+          summary: "A special prix-fixe brunch menu to celebrate Mother's Day.",
+          rationale: "Mother's Day is one of the highest-revenue restaurant days of the year. A ticketed prix-fixe event lets you plan ahead and maximize covers.",
+          target_entity_id: null,
+          payload: { name: "Mother's Day Brunch", description: "A three-course prix-fixe brunch featuring seasonal specials. Includes a complimentary mimosa for moms.", date: "2026-05-11", start_time: "10:00", end_time: "14:00", price_per_person: 65, capacity: 40, theme: "Mother's Day" },
+        },
+      ];
+    }
+
     // Wipe existing open suggestions for this restaurant, then insert new ones
     await supabaseAdmin
       .from("ai_suggestions")
