@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -68,7 +69,9 @@ export function useMenuSuggestions() {
         },
       );
       const data = await res.json();
-      if (res.ok && Array.isArray(data.suggestions)) {
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not generate suggestions.");
+      } else if (Array.isArray(data.suggestions)) {
         setSuggestions(data.suggestions as SuggestionRow[]);
       }
     } finally {
