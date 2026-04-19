@@ -169,7 +169,19 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                   {state.voiceStatus === "speaking" && state.lastSpokenText}
                   {(state.voiceStatus === "idle" || state.voiceStatus === "interrupted") &&
                     'Tap the mic or say "Hey Cenaiva"'}
-                  {state.voiceStatus === "error" && "Mic unavailable — try typing"}
+                  {state.voiceStatus === "error" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.mediaDevices?.getUserMedia({ audio: true })
+                          .then((s) => { s.getTracks().forEach((t) => t.stop()); dispatch({ type: "SET_VOICE_STATUS", status: "idle" }); })
+                          .catch(() => {});
+                      }}
+                      className="text-[#C8A951] underline underline-offset-2"
+                    >
+                      Grant microphone access
+                    </button>
+                  )}
                 </p>
               </div>
             )}

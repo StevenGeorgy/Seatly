@@ -23,6 +23,27 @@ export function useAssistant(): AssistantContextValue | null {
   return useContext(AssistantCtx);
 }
 
+// ── Mic permission helper ─────────────────────────────────────────────────────
+
+async function checkMicPermission(): Promise<PermissionState | null> {
+  try {
+    const result = await navigator.permissions.query({ name: "microphone" as PermissionName });
+    return result.state;
+  } catch {
+    return null;
+  }
+}
+
+async function requestMicPermission(): Promise<boolean> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Inner provider (needs AssistantStore in tree) ─────────────────────────────
 
 function AssistantInner({ children }: { children: ReactNode }) {
@@ -34,17 +55,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const processingRef = useRef(false);
+  const micGrantedRef = useRef(false);
 
-  // Silent geolocation — only fetches if the user has already granted permission.
-  // Never triggers the browser permission dialog unexpectedly.
+  // Silent geolocation — only fetches if already granted, never prompts.
   const requestLocation = useCallback(() => {
     if (userLocationRef.current || !navigator.geolocation) return;
-    if (!navigator.permissions) {
-      // Permissions API unavailable — skip rather than surprise the user.
-      return;
-    }
     navigator.permissions
-      .query({ name: "geolocation" as PermissionName })
+      ?.query({ name: "geolocation" as PermissionName })
       .then((result) => {
         if (result.state === "granted") {
           navigator.geolocation.getCurrentPosition(
@@ -55,7 +72,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
             { timeout: 5000, maximumAge: 60_000 },
           );
         }
-        // "prompt" or "denied" → do nothing; orchestrator works fine without location.
       })
       .catch(() => {});
   }, []);
@@ -102,24 +118,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Apply the full response (deltas + ui_actions) to the store
       dispatch({ type: "APPLY_RESPONSE", response });
 
-      // Handle side-effects from ui_actions that need imperative calls
       for (const action of response.ui_actions) {
-        if (action.type === "toast") {
-          toast(action.message, { duration: 3000 });
-        }
-        if (action.type === "navigate") {
-          navigate(action.path);
-        }
+        if (action.type === "toast") toast(action.message, { duration: 3000 });
+        if (action.type === "navigate") navigate(action.path);
       }
 
-      // Speak the response
-      if (response.spoken_text) {
-        await voice.speak(response.spoken_text);
-      }
-
+      if (response.spoken_text) await voice.speak(response.spoken_text);
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
     },
     [state, dispatch, orchestrator, voice, navigate],
@@ -134,9 +140,53 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [voice, sendTranscript, dispatch]);
 
+  // Wake word → open + start listening.
+  // Delay 400 ms so Chrome fully tears down the wake recognizer before the
+  // command recognizer starts (Chrome only allows one active at a time).
+  const onWake = useCallback(() => {
+    if (!user) return;
+    open();
+    setTimeout(() => void startListening(), 400);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, startListening]);
+
+  const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
+    useCenaivaWakeWord(onWake);
+
+  // Enable the wake word listener. Only starts if mic is already permitted
+  // or after the user explicitly grants permission in open().
+  const enableWakeWord = useCallback(() => {
+    if (micGrantedRef.current) setWakeWordEnabled(true);
+  }, [setWakeWordEnabled]);
+
+  // On mount: if mic is already granted (returning visitor), auto-start wake word.
+  useEffect(() => {
+    if (!user) return;
+    checkMicPermission().then((state) => {
+      if (state === "granted") {
+        micGrantedRef.current = true;
+        setWakeWordEnabled(true);
+      }
+      // "prompt" or "denied" → wait for user to click "Hey Cenaiva" first.
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!user]);
+
   const open = useCallback(
     (restaurantId?: string, restaurantName?: string) => {
       requestLocation();
+
+      // Request mic in user-gesture context (button click) so Chrome shows
+      // a clear, expected dialog — not a background surprise on page load.
+      if (!micGrantedRef.current) {
+        requestMicPermission().then((granted) => {
+          if (granted) {
+            micGrantedRef.current = true;
+            // Wake word will re-enable when shell closes (via the isOpen effect).
+          }
+        });
+      }
+
       if (restaurantId && restaurantName) {
         dispatch({ type: "PRESELECT_RESTAURANT", restaurant_id: restaurantId, restaurant_name: restaurantName });
       } else {
@@ -152,41 +202,22 @@ function AssistantInner({ children }: { children: ReactNode }) {
     dispatch({ type: "CLOSE" });
   }, [dispatch, voice]);
 
-  // Wake word → open + start listening.
-  // Delay startListening by 350 ms so Chrome's previous recognizer fully tears
-  // down before we start a new one (Chrome only allows one active at a time).
-  const onWake = useCallback(() => {
-    if (!user) return;
-    open();
-    setTimeout(() => void startListening(), 350);
-  }, [user, open, startListening]);
-
-  const { toggle: toggleWakeWord, setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
-    useCenaivaWakeWord(onWake);
-
-  // Auto-enable wake word once on login
-  useEffect(() => {
-    if (user) toggleWakeWord();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!user]);
-
   // Stop wake word while shell is open (prevents mic conflict with command recognizer).
-  // Restart it 500 ms after shell closes so Chrome's recognizer slot is free.
+  // Restart 500 ms after shell closes so Chrome's recognizer slot is free.
   useEffect(() => {
     if (state.isOpen) {
       forceStopWakeWord();
     } else if (user) {
-      const t = setTimeout(() => setWakeWordEnabled(true), 500);
+      const t = setTimeout(() => enableWakeWord(), 500);
       return () => clearTimeout(t);
     }
-  }, [state.isOpen, user, forceStopWakeWord, setWakeWordEnabled]);
+  }, [state.isOpen, user, forceStopWakeWord, enableWakeWord]);
 
   const ctx: AssistantContextValue = { open, close, sendTranscript, startListening };
-
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }
 
-// ── Public wrapper — mounts the store then the inner layer ────────────────────
+// ── Public wrapper ────────────────────────────────────────────────────────────
 
 export function AssistantProvider({ children }: { children: ReactNode }) {
   return (
