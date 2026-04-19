@@ -28,9 +28,14 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const greetedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Fire initial greeting once
+  // Greet user every time the shell opens (reset on close so re-opens get a fresh greeting)
   useEffect(() => {
-    if (initialGreeting && state.isOpen && !greetedRef.current) {
+    if (!initialGreeting) return;
+    if (!state.isOpen) {
+      greetedRef.current = false;
+      return;
+    }
+    if (!greetedRef.current) {
       greetedRef.current = true;
       void assistant?.sendTranscript("hello");
     }

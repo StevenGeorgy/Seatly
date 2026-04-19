@@ -69,8 +69,8 @@ export default function App() {
               <DevSupabaseBanner />
               <AppRoutes />
               <AuthedCenaivaUI />
-              {/* Global voice shell (for non-discover pages) */}
-              <CenaivaVoiceShell />
+              {/* Global voice shell — greets user by name on every open */}
+              <CenaivaVoiceShell initialGreeting />
               <Toaster
                 richColors
                 position="top-center"
