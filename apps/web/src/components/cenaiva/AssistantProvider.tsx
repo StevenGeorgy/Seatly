@@ -140,15 +140,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [voice, sendTranscript, dispatch]);
 
-  // Wake word → open + start listening.
-  // Delay 400 ms so Chrome fully tears down the wake recognizer before the
-  // command recognizer starts (Chrome only allows one active at a time).
+  // Wake word → open the shell only. Voice input is manual (tap the orb).
   const onWake = useCallback(() => {
     if (!user) return;
     open();
-    setTimeout(() => void startListening(), 400);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, startListening]);
+  }, [user, open]);
 
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
     useCenaivaWakeWord(onWake);

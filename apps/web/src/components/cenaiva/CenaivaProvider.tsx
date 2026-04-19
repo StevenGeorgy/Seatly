@@ -234,15 +234,13 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
     };
   }, [wakeWord.setEnabled, wakeWord.forceStop, wakeWord.isSupported]);
 
-  // Auto-enable wake word only when logged in.
+  // Wake word is disabled in the legacy provider — customer routes use
+  // AssistantProvider's wake word listener. Running two recognizers simultaneously
+  // causes Chrome to abort one in a restart loop.
   useEffect(() => {
     if (!user) {
       wakeWord.forceStop();
       if (wakeWord.enabled) wakeWord.setEnabled(false);
-      return;
-    }
-    if (wakeWord.isSupported && !wakeWord.enabled) {
-      wakeWord.setEnabled(true);
     }
   }, [wakeWord.isSupported, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
