@@ -140,34 +140,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [voice, sendTranscript, dispatch]);
 
-  // Wake word → open the shell only. Voice input is manual (tap the orb).
-  const onWake = useCallback(() => {
-    if (!user) return;
-    open();
-  }, [user, open]);
-
-  const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
-    useCenaivaWakeWord(onWake);
-
-  // Enable the wake word listener. Only starts if mic is already permitted
-  // or after the user explicitly grants permission in open().
-  const enableWakeWord = useCallback(() => {
-    if (micGrantedRef.current) setWakeWordEnabled(true);
-  }, [setWakeWordEnabled]);
-
-  // On mount: if mic is already granted (returning visitor), auto-start wake word.
-  useEffect(() => {
-    if (!user) return;
-    checkMicPermission().then((state) => {
-      if (state === "granted") {
-        micGrantedRef.current = true;
-        setWakeWordEnabled(true);
-      }
-      // "prompt" or "denied" → wait for user to click "Hey Cenaiva" first.
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!user]);
-
   const open = useCallback(
     (restaurantId?: string, restaurantName?: string) => {
       requestLocation();
@@ -178,7 +150,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
         requestMicPermission().then((granted) => {
           if (granted) {
             micGrantedRef.current = true;
-            // Wake word will re-enable when shell closes (via the isOpen effect).
           }
         });
       }
@@ -197,6 +168,32 @@ function AssistantInner({ children }: { children: ReactNode }) {
     voice.stopListening();
     dispatch({ type: "CLOSE" });
   }, [dispatch, voice]);
+
+  // Wake word → open the shell only. Voice input is manual (tap the orb).
+  const onWake = useCallback(() => {
+    if (!user) return;
+    open();
+  }, [user, open]);
+
+  const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
+    useCenaivaWakeWord(onWake);
+
+  // Enable the wake word listener. Only starts if mic is already permitted.
+  const enableWakeWord = useCallback(() => {
+    if (micGrantedRef.current) setWakeWordEnabled(true);
+  }, [setWakeWordEnabled]);
+
+  // On mount: if mic is already granted (returning visitor), auto-start wake word.
+  useEffect(() => {
+    if (!user) return;
+    checkMicPermission().then((state) => {
+      if (state === "granted") {
+        micGrantedRef.current = true;
+        setWakeWordEnabled(true);
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!user]);
 
   // Stop wake word while shell is open (prevents mic conflict with command recognizer).
   // Restart 500 ms after shell closes so Chrome's recognizer slot is free.
