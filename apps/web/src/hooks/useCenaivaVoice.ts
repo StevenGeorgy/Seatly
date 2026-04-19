@@ -11,10 +11,12 @@ export function useCenaivaVoice() {
   // Track whether ElevenLabs is configured (non-null API key via edge function)
   const elEnabled = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
+  const manualStopRef = useRef(false);
 
-  const startListening = useCallback(async (): Promise<string> => {
-    if (listeningRef.current) return "";
+  const startListening = useCallback(async (): Promise<{ transcript: string; stopped: boolean }> => {
+    if (listeningRef.current) return { transcript: "", stopped: false };
     listeningRef.current = true;
+    manualStopRef.current = false;
 
     // Interrupt TTS if speaking
     if (elevenlabs.isSpeaking) {
@@ -27,17 +29,22 @@ export function useCenaivaVoice() {
 
     try {
       const transcript = await speech.startRecognition();
-      dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
-      return transcript;
-    } catch {
-      dispatch({ type: "SET_VOICE_STATUS", status: "error" });
-      return "";
+      if (!manualStopRef.current) {
+        dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
+      }
+      return { transcript, stopped: manualStopRef.current };
+    } catch (err) {
+      if (!manualStopRef.current) {
+        dispatch({ type: "SET_VOICE_STATUS", status: "error" });
+      }
+      throw err;
     } finally {
       listeningRef.current = false;
     }
   }, [dispatch, speech, elevenlabs]);
 
   const stopListening = useCallback(() => {
+    manualStopRef.current = true;
     listeningRef.current = false;
     speech.stopRecognition();
     dispatch({ type: "SET_VOICE_STATUS", status: "idle" });

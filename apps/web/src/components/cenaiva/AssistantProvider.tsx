@@ -56,6 +56,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const processingRef = useRef(false);
   const micGrantedRef = useRef(false);
+  const isOpenRef = useRef(false);
+  const startListeningRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    isOpenRef.current = state.isOpen;
+  }, [state.isOpen]);
 
   // Silent geolocation — only fetches if already granted, never prompts.
   const requestLocation = useCallback(() => {
@@ -127,18 +133,39 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
       if (response.spoken_text) await voice.speak(response.spoken_text);
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+
+      // Auto-listen after AI speaks — keeps the conversation hands-free
+      if (isOpenRef.current) {
+        void startListeningRef.current();
+      }
     },
     [state, dispatch, orchestrator, voice, navigate],
   );
 
   const startListening = useCallback(async () => {
-    const transcript = await voice.startListening();
-    if (transcript.trim()) {
-      await sendTranscript(transcript);
-    } else {
-      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+    try {
+      const { transcript, stopped } = await voice.startListening();
+      if (stopped) {
+        // User explicitly tapped stop — break the auto-listen loop
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        return;
+      }
+      if (transcript.trim()) {
+        await sendTranscript(transcript);
+        // sendTranscript auto-listens at end; nothing more to do here
+      } else if (isOpenRef.current) {
+        // Silence / no-speech — keep listening
+        void startListeningRef.current();
+      }
+    } catch {
+      // Mic error — voice status already set to "error" by useCenaivaVoice
     }
   }, [voice, sendTranscript, dispatch]);
+
+  // Keep ref current so sendTranscript can call startListening without circular dep
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
 
   const open = useCallback(
     (restaurantId?: string, restaurantName?: string) => {
@@ -164,6 +191,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   );
 
   const close = useCallback(() => {
+    isOpenRef.current = false; // synchronously kill auto-listen loop before dispatch
     voice.stopSpeaking();
     voice.stopListening();
     dispatch({ type: "CLOSE" });

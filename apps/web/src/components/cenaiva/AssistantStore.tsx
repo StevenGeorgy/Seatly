@@ -220,7 +220,8 @@ export function assistantReducer(
       return { ...state, isOpen: true };
 
     case "CLOSE":
-      return { ...state, isOpen: false, voiceStatus: "idle", showExitX: false };
+      // Full reset — next open starts a completely fresh session
+      return { ...initialState };
 
     case "SET_VOICE_STATUS":
       return { ...state, voiceStatus: localAction.status };
