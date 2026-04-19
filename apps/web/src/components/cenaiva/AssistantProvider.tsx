@@ -63,23 +63,22 @@ function AssistantInner({ children }: { children: ReactNode }) {
     isOpenRef.current = state.isOpen;
   }, [state.isOpen]);
 
+  const locationRequestedRef = useRef(false);
+
   const requestLocation = useCallback(() => {
-    if (userLocationRef.current || !navigator.geolocation) return;
+    if (locationRequestedRef.current || !navigator.geolocation) return;
+    locationRequestedRef.current = true;
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
       },
-      () => {}, // denied — stays null, AI works without it
-      { timeout: 10_000, maximumAge: 300_000 },
+      () => {
+        // Denied or failed — reset flag so next open can try again
+        locationRequestedRef.current = false;
+      },
+      { timeout: 15_000, maximumAge: 300_000 },
     );
   }, []);
-
-  // Start location fetch as soon as the user is authenticated so it's
-  // ready before they open the shell and speak their first command.
-  useEffect(() => {
-    if (user) requestLocation();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!user]);
 
   const sendTranscript = useCallback(
     async (transcript: string) => {
