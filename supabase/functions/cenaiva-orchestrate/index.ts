@@ -191,10 +191,16 @@ function buildSystemPrompt(opts: {
   currentScreen: string;
   hasSavedCard: boolean;
 }) {
+  const cart = (opts.bookingState.cart as Array<{ menu_item_id: string; name: string; qty: number; unit_price: number }>) ?? [];
+  const cartSummary = cart.length
+    ? cart.map((i) => `${i.qty}× ${i.name} @$${i.unit_price}`).join(", ")
+    : "empty";
+
   return `You are Cenaiva, a voice-first dine-in table reservation assistant.
 Today: ${opts.now}. User: ${opts.userName} (first name: ${opts.firstName}). City: ${opts.userCity || "unknown"}. Screen: ${opts.currentScreen}.
 Has saved card on file: ${opts.hasSavedCard}.
 Current booking state: ${JSON.stringify(opts.bookingState)}.
+Current cart (${cart.length} items): ${cartSummary}.
 
 Cenaiva handles DINE-IN RESERVATIONS AND PRE-ORDER PAYMENT ONLY.
 Never mention pickup, delivery, or takeout. If asked, say: "I only handle dine-in table bookings."
@@ -208,17 +214,17 @@ FLOW — follow exactly in this order:
 5. Call complete_booking → emit show_confirmation + show_exit_x.
 6. Then emit offer_preorder and ask: "Want to pre-order from the menu?" (≤ 10 words).
    a. If no: emit show_post_booking_questions. DONE.
-   b. If yes: call get_menu, emit show_menu. Track items via add_menu_item as user names them.
-      When user says "done" / "that's it":
-      i.  Call create_preorder_order with all cart items. Store order_id.
-      ii. Emit set_tip_choice with choice="now" or "after" based on user preference.
-          Ask: "Tip now or after your meal?" (wait for answer).
-      iii. If "after": emit show_payment_success with amount_charged=0. Spoken: "You're set — pay at the table." DONE.
-      iv. If "now": ask tip amount. Parse response: "twenty percent" → percent=20; "ten dollars" → amount=10.
-          Emit set_tip with parsed values.
-      v.  Ask: "Single card or split?" Emit set_payment_split with choice.
-          - "split" → emit navigate_to_checkout with order_id and path="/r/{restaurant_slug}?order_id={order_id}&step=checkout". DONE.
-          - "single" AND hasSavedCard=true → call charge_saved_card, emit show_payment_success. DONE.
+   b. If yes: call get_menu, emit show_menu. Use current cart (shown above) + add_menu_item actions.
+      When user says "done" / "that's it" / "that's all":
+      i.  Call create_preorder_order with ALL items from the current cart. Use reservation_id from booking_state.
+      ii. Ask: "Tip now or after your meal?" (spoken only, no action yet).
+      iii. When user answers:
+          - "after" → emit set_tip_choice with choice="after", then show_payment_success with amount_charged=0. Spoken: "You're set — pay at the table." DONE.
+          - "now" → emit set_tip_choice with choice="now". Ask: "How much? Percent or dollar amount."
+      iv. When user gives tip: parse "twenty percent"→percent=20, "ten dollars"→amount=10. Emit set_tip.
+      v.  Ask: "Single card or split?" When user answers, emit set_payment_split with choice.
+          - "split" → emit navigate_to_checkout with order_id from create_preorder_order result, path="/r/{slug}?order_id={order_id}&step=checkout". DONE.
+          - "single" AND hasSavedCard=true → call charge_saved_card with order_id and tip. Emit show_payment_success. DONE.
           - "single" AND hasSavedCard=false → emit navigate_to_checkout. DONE.
 
 RULES:
@@ -369,6 +375,9 @@ Deno.serve(async (req) => {
     let iterations = 0;
     let lastReservationId: string | null = (booking_state.reservation_id as string) ?? null;
     let lastGuestId: string | null = null;
+    // Track the most recent search_restaurants result so we can inject map markers
+    // even if the model forgets to emit update_map_markers in its final JSON.
+    let lastSearchIds: string[] = [];
 
     while (iterations < MAX_ITER) {
       iterations++;
@@ -417,6 +426,9 @@ Deno.serve(async (req) => {
               }
             }
             const { data, error } = await query;
+            if (!error && data) {
+              lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
+            }
             toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
           }
 
@@ -764,6 +776,30 @@ Deno.serve(async (req) => {
     }
 
     parsed.conversation_id = conversationId;
+
+    // Guarantee map filtering: if search_restaurants ran and the model omitted
+    // update_map_markers from ui_actions, inject it now so the client always
+    // filters the map and rail to matching restaurants.
+    if (lastSearchIds.length > 0) {
+      const actions = (parsed.ui_actions as Array<{ type: string }>) ?? [];
+      const hasMarkerAction = actions.some(
+        (a) => a.type === "update_map_markers" || a.type === "show_restaurant_cards",
+      );
+      if (!hasMarkerAction) {
+        parsed.ui_actions = [
+          { type: "update_map_markers", restaurant_ids: lastSearchIds },
+          { type: "show_restaurant_cards", restaurant_ids: lastSearchIds },
+          ...actions,
+        ];
+      }
+      // Also patch the map delta so marker_restaurant_ids is always present.
+      const mapDelta = (parsed.map ?? {}) as Record<string, unknown>;
+      mapDelta.visible = true;
+      if (!mapDelta.marker_restaurant_ids) {
+        mapDelta.marker_restaurant_ids = lastSearchIds;
+      }
+      parsed.map = mapDelta;
+    }
 
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: conversationId,

@@ -150,6 +150,13 @@ export const BookingDeltaSchema = z.object({
   tip_choice: z.enum(["now", "after"]).nullable().optional(),
   payment_split: z.enum(["single", "split"]).nullable().optional(),
   cart_subtotal: z.number().optional(),
+  cart: z.array(z.object({
+    menu_item_id: z.string(),
+    name: z.string(),
+    qty: z.number(),
+    unit_price: z.number(),
+    note: z.string().nullable().optional(),
+  })).optional(),
 });
 
 export const MapDeltaSchema = z.object({

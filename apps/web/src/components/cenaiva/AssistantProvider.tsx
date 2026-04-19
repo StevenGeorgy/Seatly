@@ -115,6 +115,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           payment_split: state.booking.payment_split,
           payment_status: state.booking.payment_status,
           cart_subtotal: state.booking.cart_subtotal,
+          cart: state.booking.cart,
         },
         map_state: {
           visible: state.map.visible,
@@ -158,9 +159,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (response.spoken_text) await voice.speak(response.spoken_text);
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
-      // Auto-listen after AI speaks — only in voice mode (not when user is typing)
+      // Give Chrome 200 ms to release the audio session after TTS before opening
+      // the microphone — prevents "audio-capture" / "service-not-allowed" errors.
       if (isOpenRef.current && !textModeRef.current) {
-        void startListeningRef.current();
+        setTimeout(() => {
+          if (isOpenRef.current && !textModeRef.current) {
+            void startListeningRef.current();
+          }
+        }, 200);
       }
     },
     [state, dispatch, orchestrator, voice, navigate, hasCard],
@@ -180,7 +186,18 @@ function AssistantInner({ children }: { children: ReactNode }) {
         void startListeningRef.current();
       }
     } catch {
-      // Mic error — voice status already set to "error" by useCenaivaVoice
+      // Recognition threw a fatal error (e.g. "not-allowed").
+      // Reset to idle and retry once after a short delay — if it was a transient
+      // audio-capture hiccup the retry succeeds; if the mic is truly denied the
+      // user will see the grant-access prompt on the next attempt.
+      if (isOpenRef.current && !textModeRef.current) {
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        setTimeout(() => {
+          if (isOpenRef.current && !textModeRef.current) {
+            void startListeningRef.current();
+          }
+        }, 500);
+      }
     }
   }, [voice, sendTranscript, dispatch]);
 

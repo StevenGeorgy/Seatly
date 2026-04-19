@@ -79,7 +79,11 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       };
 
       recognition.onerror = (event: any) => {
-        if (event.error === "no-speech" || event.error === "aborted") {
+        // Treat transient / retriable errors as safe completions so the caller
+        // can silently re-try rather than showing the red-mic error state.
+        // "not-allowed" is the only fatal one (user denied permission).
+        const transient = ["no-speech", "aborted", "audio-capture", "service-not-allowed"];
+        if (transient.includes(event.error)) {
           finish(accumulatedTranscript);
         } else if (!settled) {
           settled = true;
