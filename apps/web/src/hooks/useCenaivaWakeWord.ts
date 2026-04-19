@@ -68,7 +68,10 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
   // Used by CenaivaProvider to free the mic before starting the command
   // recognizer — avoids the Chrome "one active recognizer" race condition.
   const forceStop = useCallback(() => {
+    // Update both the ref AND the state so setEnabled(true) later will
+    // actually trigger the useEffect and restart the recognizer.
     enabledRef.current = false;
+    setEnabled(false);
     const rec = recognitionRef.current;
     recognitionRef.current = null;
     if (rec) {
@@ -129,6 +132,7 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
       };
 
       recognition.start();
+      console.log("[CenaivaWakeWord] recognizer started");
     } catch (err) {
       console.warn("[CenaivaWakeWord] Failed to start recognition:", err);
     }

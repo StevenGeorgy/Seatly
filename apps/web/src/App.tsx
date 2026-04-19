@@ -19,13 +19,13 @@ import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password"]);
 
 function AuthedCenaivaUI() {
-  const { user, isStaff } = useUser();
+  const { user } = useUser();
   const { pathname } = useLocation();
 
   if (!user || PUBLIC_PATHS.has(pathname) || pathname.startsWith("/auth/")) return null;
 
-  if (isStaff) {
-    // Staff / owner mode — legacy typed chat for dashboard
+  // Dashboard routes — legacy side chat for restaurant management only
+  if (pathname.startsWith("/dashboard")) {
     return (
       <>
         <CenaivaButton />
@@ -34,7 +34,8 @@ function AuthedCenaivaUI() {
     );
   }
 
-  // Customer mode — voice-first orb (shell is rendered inline on DiscoverPage)
+  // All other routes (customer-facing) — voice-first orb FAB
+  // Shown for both pure customers and staff browsing in customer view
   return <CustomerVoiceOrbFAB />;
 }
 
@@ -43,9 +44,9 @@ function CustomerVoiceOrbFAB() {
   const { state } = useAssistantStore();
   const { pathname } = useLocation();
 
-  // Don't show FAB on discover page (shell is embedded there)
+  // /discover has a "Hey Cenaiva" button in the header — no floating FAB needed
   if (pathname === "/discover") return null;
-  // Don't show when shell is open
+  // Hide FAB while shell is open
   if (state.isOpen) return null;
 
   return (
