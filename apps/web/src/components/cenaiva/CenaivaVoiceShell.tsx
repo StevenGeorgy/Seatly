@@ -168,7 +168,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                   {state.voiceStatus === "processing" && "Thinking…"}
                   {state.voiceStatus === "speaking" && state.lastSpokenText}
                   {(state.voiceStatus === "idle" || state.voiceStatus === "interrupted") &&
-                    "Tap the mic or say "Hey Cenaiva""}
+                    'Tap the mic or say "Hey Cenaiva"'}
                   {state.voiceStatus === "error" && "Mic unavailable — try typing"}
                 </p>
               </div>
