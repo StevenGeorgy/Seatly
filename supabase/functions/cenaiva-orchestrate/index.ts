@@ -776,6 +776,8 @@ Deno.serve(async (req) => {
     }
 
     parsed.conversation_id = conversationId;
+    // Ensure ui_actions is always an array — model occasionally returns null.
+    if (!Array.isArray(parsed.ui_actions)) parsed.ui_actions = [];
 
     // Guarantee map filtering: if search_restaurants ran and the model omitted
     // update_map_markers from ui_actions, inject it now so the client always

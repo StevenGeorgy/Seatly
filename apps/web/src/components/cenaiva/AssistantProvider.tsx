@@ -143,7 +143,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
       dispatch({ type: "APPLY_RESPONSE", response });
 
-      for (const action of response.ui_actions) {
+      for (const action of (response.ui_actions ?? [])) {
         if (action.type === "toast") toast(action.message, { duration: 3000 });
         if (action.type === "navigate") navigate(action.path);
         if (action.type === "navigate_to_checkout") {

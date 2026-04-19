@@ -365,7 +365,7 @@ export function assistantReducer(
         next = { ...next, filters: { ...next.filters, ...response.filters } };
       }
 
-      for (const uiAction of response.ui_actions) {
+      for (const uiAction of (response.ui_actions ?? [])) {
         next = applyUIAction(next, uiAction);
       }
 
