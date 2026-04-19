@@ -1538,7 +1538,7 @@ Deno.serve(async (req: Request) => {
     while (iterations < MAX_ITERATIONS) {
       iterations++;
       const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-5.4-mini",
         max_tokens: 1024,
         messages: [
           { role: "system", content: systemPrompt },
