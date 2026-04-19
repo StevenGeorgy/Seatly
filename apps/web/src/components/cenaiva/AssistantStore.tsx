@@ -122,7 +122,7 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
     case "update_map_markers":
       return {
         ...state,
-        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids, visible: true },
+        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids ?? [], visible: true },
       };
 
     case "highlight_restaurant":
@@ -134,7 +134,7 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
     case "show_restaurant_cards":
       return {
         ...state,
-        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids, visible: true },
+        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids ?? [], visible: true },
       };
 
     case "open_restaurant_preview":
@@ -358,7 +358,11 @@ export function assistantReducer(
       }
 
       if (response.map) {
-        next = { ...next, map: { ...next.map, ...response.map } };
+        const mapPatch = { ...response.map };
+        if (!Array.isArray(mapPatch.marker_restaurant_ids)) {
+          mapPatch.marker_restaurant_ids = next.map.marker_restaurant_ids;
+        }
+        next = { ...next, map: { ...next.map, ...mapPatch } };
       }
 
       if (response.filters) {
@@ -366,7 +370,12 @@ export function assistantReducer(
       }
 
       for (const uiAction of (response.ui_actions ?? [])) {
-        next = applyUIAction(next, uiAction);
+        if (!uiAction || typeof (uiAction as { type?: unknown }).type !== "string") continue;
+        try {
+          next = applyUIAction(next, uiAction);
+        } catch {
+          // Malformed action — skip rather than crash
+        }
       }
 
       return next;

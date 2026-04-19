@@ -23,8 +23,9 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
 
   const { map, booking } = state;
 
-  const visible = map.marker_restaurant_ids.length > 0
-    ? restaurants.filter((r) => map.marker_restaurant_ids.includes(r.id))
+  const markerIds = map.marker_restaurant_ids ?? [];
+  const visible = markerIds.length > 0
+    ? restaurants.filter((r) => markerIds.includes(r.id))
     : restaurants;
 
   if (!visible.length) return null;

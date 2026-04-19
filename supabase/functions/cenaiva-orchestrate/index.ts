@@ -382,12 +382,14 @@ Deno.serve(async (req) => {
     while (iterations < MAX_ITER) {
       iterations++;
 
-      // Force a tool call on the first turn when no restaurant has been selected yet
-      // — prevents the model from skipping search_restaurants and hallucinating a response.
+      // Only force search_restaurants on the very first message of a fresh conversation.
+      // Once there is history the model already has context and must decide on its own.
       const isFirstTurnNoRestaurant =
         iterations === 1 &&
         !selected_restaurant_id &&
-        (!booking_state.status || booking_state.status === "idle");
+        !booking_state.restaurant_id &&
+        (!booking_state.status || booking_state.status === "idle") &&
+        (history?.length ?? 0) === 0;
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
@@ -798,8 +800,11 @@ Deno.serve(async (req) => {
     }
 
     parsed.conversation_id = conversationId;
-    // Ensure ui_actions is always an array — model occasionally returns null.
+    // Ensure ui_actions is always a clean array — model occasionally returns null or nulls inside.
     if (!Array.isArray(parsed.ui_actions)) parsed.ui_actions = [];
+    parsed.ui_actions = (parsed.ui_actions as Array<unknown>).filter(
+      (a): a is Record<string, unknown> => a != null && typeof (a as Record<string, unknown>).type === "string",
+    );
 
     // Guarantee map filtering: if search_restaurants ran and the model omitted
     // update_map_markers from ui_actions, inject it now so the client always

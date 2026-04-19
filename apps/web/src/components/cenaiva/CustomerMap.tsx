@@ -27,10 +27,9 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
     }
   }, [map.center, map.zoom]);
 
+  const markerIds = map.marker_restaurant_ids ?? [];
   const visibleRestaurants = restaurants.filter((r) =>
-    map.marker_restaurant_ids.length > 0
-      ? map.marker_restaurant_ids.includes(r.id)
-      : true,
+    markerIds.length > 0 ? markerIds.includes(r.id) : true,
   );
 
   const handleMarkerClick = useCallback(

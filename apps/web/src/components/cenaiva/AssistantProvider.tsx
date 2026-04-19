@@ -133,40 +133,44 @@ function AssistantInner({ children }: { children: ReactNode }) {
         reservation_id: state.booking.reservation_id,
       };
 
-      const response = await orchestrator.send(req);
-      processingRef.current = false;
+      try {
+        const response = await orchestrator.send(req);
+        processingRef.current = false;
 
-      if (!response) {
-        dispatch({ type: "SET_VOICE_STATUS", status: "error" });
-        return;
-      }
-
-      dispatch({ type: "APPLY_RESPONSE", response });
-
-      for (const action of (response.ui_actions ?? [])) {
-        if (action.type === "toast") toast(action.message, { duration: 3000 });
-        if (action.type === "navigate") navigate(action.path);
-        if (action.type === "navigate_to_checkout") {
-          // Close the voice shell and open the checkout page
-          isOpenRef.current = false;
-          voice.stopSpeaking();
-          voice.stopListening();
-          dispatch({ type: "CLOSE" });
-          navigate(action.path);
+        if (!response) {
+          dispatch({ type: "SET_VOICE_STATUS", status: "error" });
+          return;
         }
-      }
 
-      if (response.spoken_text) await voice.speak(response.spoken_text);
-      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        dispatch({ type: "APPLY_RESPONSE", response });
 
-      // Give Chrome 200 ms to release the audio session after TTS before opening
-      // the microphone — prevents "audio-capture" / "service-not-allowed" errors.
-      if (isOpenRef.current && !textModeRef.current) {
-        setTimeout(() => {
-          if (isOpenRef.current && !textModeRef.current) {
-            void startListeningRef.current();
+        for (const action of (response.ui_actions ?? [])) {
+          if (!action || typeof action.type !== "string") continue;
+          if (action.type === "toast") toast(action.message, { duration: 3000 });
+          if (action.type === "navigate") navigate(action.path);
+          if (action.type === "navigate_to_checkout") {
+            isOpenRef.current = false;
+            voice.stopSpeaking();
+            voice.stopListening();
+            dispatch({ type: "CLOSE" });
+            navigate(action.path);
           }
-        }, 200);
+        }
+
+        if (response.spoken_text) await voice.speak(response.spoken_text);
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+
+        if (isOpenRef.current && !textModeRef.current) {
+          setTimeout(() => {
+            if (isOpenRef.current && !textModeRef.current) {
+              void startListeningRef.current();
+            }
+          }, 200);
+        }
+      } catch (err) {
+        processingRef.current = false;
+        console.error("sendTranscript error:", err);
+        dispatch({ type: "SET_VOICE_STATUS", status: "error" });
       }
     },
     [state, dispatch, orchestrator, voice, navigate, hasCard],
