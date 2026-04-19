@@ -63,24 +63,23 @@ function AssistantInner({ children }: { children: ReactNode }) {
     isOpenRef.current = state.isOpen;
   }, [state.isOpen]);
 
-  // Silent geolocation — only fetches if already granted, never prompts.
   const requestLocation = useCallback(() => {
     if (userLocationRef.current || !navigator.geolocation) return;
-    navigator.permissions
-      ?.query({ name: "geolocation" as PermissionName })
-      .then((result) => {
-        if (result.state === "granted") {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-            },
-            () => {},
-            { timeout: 5000, maximumAge: 60_000 },
-          );
-        }
-      })
-      .catch(() => {});
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      },
+      () => {}, // denied — stays null, AI works without it
+      { timeout: 10_000, maximumAge: 300_000 },
+    );
   }, []);
+
+  // Start location fetch as soon as the user is authenticated so it's
+  // ready before they open the shell and speak their first command.
+  useEffect(() => {
+    if (user) requestLocation();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!user]);
 
   const sendTranscript = useCallback(
     async (transcript: string) => {
