@@ -402,6 +402,8 @@ Deno.serve(async (req) => {
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
         messages.push(choice.message as OpenAI.Chat.ChatCompletionMessageParam);
 
+        let didSearch = false;
+
         for (const tc of choice.message.tool_calls) {
           const toolName = tc.function.name;
           const toolInput = JSON.parse(tc.function.arguments);
@@ -430,16 +432,24 @@ Deno.serve(async (req) => {
               lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
             }
             toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
+            didSearch = true; // force break after — prevents eager check_availability calls
           }
 
           // ── check_availability ────────────────────────────────────────────
           else if (toolName === "check_availability") {
-            const result = await getAvailability(
-              toolInput.restaurant_id,
-              toolInput.date,
-              toolInput.party_size,
-            );
-            toolResult = JSON.stringify(result);
+            // Require all three fields — missing any means the model is guessing
+            if (!toolInput.restaurant_id || !toolInput.date || toolInput.party_size == null) {
+              toolResult = JSON.stringify({
+                error: "Cannot check availability: restaurant_id, date (YYYY-MM-DD), and party_size are all required. Ask the user for any that are missing.",
+              });
+            } else {
+              const result = await getAvailability(
+                toolInput.restaurant_id,
+                toolInput.date,
+                toolInput.party_size,
+              );
+              toolResult = JSON.stringify(result);
+            }
           }
 
           // ── complete_booking ──────────────────────────────────────────────
@@ -737,6 +747,9 @@ Deno.serve(async (req) => {
 
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
         }
+        // After search_restaurants, go straight to the final JSON turn.
+        // Prevents the model from eagerly calling check_availability without date/party_size.
+        if (didSearch) break;
       } else {
         break;
       }
@@ -751,7 +764,7 @@ Deno.serve(async (req) => {
         ...messages,
         {
           role: "user",
-          content: `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.`,
+          content: `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.${lastSearchIds.length > 0 ? " IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations." : ""}`,
         },
       ],
       response_format: { type: "json_object" },
