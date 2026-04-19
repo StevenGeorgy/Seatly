@@ -14,7 +14,7 @@ import type { OrchestratorRequestType } from "@cenaiva/assistant";
 interface AssistantContextValue {
   open: (restaurantId?: string, restaurantName?: string) => void;
   close: () => void;
-  sendTranscript: (transcript: string) => Promise<void>;
+  sendTranscript: (transcript: string, opts?: { restaurantId?: string }) => Promise<void>;
   startListening: () => Promise<void>;
   setTextMode: (active: boolean) => void;
 }
@@ -89,7 +89,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, []);
 
   const sendTranscript = useCallback(
-    async (transcript: string) => {
+    async (transcript: string, opts?: { restaurantId?: string }) => {
       if (processingRef.current) return;
       processingRef.current = true;
 
@@ -125,7 +125,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         },
         filters: state.filters,
         visible_restaurant_ids: state.map.marker_restaurant_ids,
-        selected_restaurant_id: state.booking.restaurant_id,
+        selected_restaurant_id: opts?.restaurantId ?? state.booking.restaurant_id,
         user_location: userLocationRef.current,
         conversation_id: state.conversationId ?? undefined,
         has_saved_card: hasCard,

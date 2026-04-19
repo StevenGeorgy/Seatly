@@ -31,7 +31,7 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
 
   const handleSelect = (r: Restaurant) => {
     dispatch({ type: "highlight_restaurant", restaurant_id: r.id });
-    void assistant?.sendTranscript(`I want to book at ${r.name}`);
+    void assistant?.sendTranscript(`I want to book at ${r.name}`, { restaurantId: r.id });
   };
 
   return (

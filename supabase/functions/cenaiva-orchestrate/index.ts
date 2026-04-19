@@ -764,7 +764,16 @@ Deno.serve(async (req) => {
         ...messages,
         {
           role: "user",
-          content: `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.${lastSearchIds.length > 0 ? " IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations." : ""}`,
+          content: (() => {
+            const base = `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.`;
+            const restaurantHint = selected_restaurant_id && !booking_state.party_size && !booking_state.date
+              ? ` IMPORTANT: user selected restaurant ID "${selected_restaurant_id}". You MUST emit start_booking (restaurant_id="${selected_restaurant_id}") and highlight_restaurant actions. spoken_text must ask for party size and date — do NOT mention availability.`
+              : "";
+            const searchHint = lastSearchIds.length > 0
+              ? ` IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations.`
+              : "";
+            return base + restaurantHint + searchHint;
+          })(),
         },
       ],
       response_format: { type: "json_object" },
