@@ -141,6 +141,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   );
 
   const startListening = useCallback(async () => {
+    if (!isOpenRef.current) return; // shell closed — don't start a new recognizer
     try {
       const { transcript, stopped } = await voice.startListening();
       if (stopped) {
