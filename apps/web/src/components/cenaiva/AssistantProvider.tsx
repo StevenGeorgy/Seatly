@@ -6,6 +6,7 @@ import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
 import { useUser } from "@/hooks/useUser";
+import { useSavedCards } from "@/hooks/useSavedCards";
 import type { OrchestratorRequestType } from "@cenaiva/assistant";
 
 // ── Context exposed to child components ───────────────────────────────────────
@@ -49,6 +50,7 @@ async function requestMicPermission(): Promise<boolean> {
 function AssistantInner({ children }: { children: ReactNode }) {
   const { state, dispatch } = useAssistantStore();
   const { user } = useUser();
+  const { hasCard } = useSavedCards();
   const orchestrator = useCenaivaOrchestrator();
   const voice = useCenaivaVoice();
   const navigate = useNavigate();
@@ -58,6 +60,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const micGrantedRef = useRef(false);
   const isOpenRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+
+  // Sync hasCard into booking state so components and orchestrator requests can use it
+  useEffect(() => {
+    dispatch({ type: "SET_HAS_SAVED_CARD", value: hasCard });
+  }, [hasCard, dispatch]);
 
   useEffect(() => {
     isOpenRef.current = state.isOpen;
@@ -73,7 +80,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
         userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
       },
       () => {
-        // Denied or failed — reset flag so next open can try again
         locationRequestedRef.current = false;
       },
       { timeout: 15_000, maximumAge: 300_000 },
@@ -100,6 +106,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
           status: state.booking.status,
           confirmation_code: state.booking.confirmation_code,
           reservation_id: state.booking.reservation_id,
+          order_id: state.booking.order_id,
+          tip_choice: state.booking.tip_choice,
+          tip_amount: state.booking.tip_amount,
+          tip_percent: state.booking.tip_percent,
+          payment_split: state.booking.payment_split,
+          payment_status: state.booking.payment_status,
+          cart_subtotal: state.booking.cart_subtotal,
         },
         map_state: {
           visible: state.map.visible,
@@ -112,6 +125,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
         selected_restaurant_id: state.booking.restaurant_id,
         user_location: userLocationRef.current,
         conversation_id: state.conversationId ?? undefined,
+        has_saved_card: hasCard,
+        guest_id: null,
+        reservation_id: state.booking.reservation_id,
       };
 
       const response = await orchestrator.send(req);
@@ -127,6 +143,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
       for (const action of response.ui_actions) {
         if (action.type === "toast") toast(action.message, { duration: 3000 });
         if (action.type === "navigate") navigate(action.path);
+        if (action.type === "navigate_to_checkout") {
+          // Close the voice shell and open the checkout page
+          isOpenRef.current = false;
+          voice.stopSpeaking();
+          voice.stopListening();
+          dispatch({ type: "CLOSE" });
+          navigate(action.path);
+        }
       }
 
       if (response.spoken_text) await voice.speak(response.spoken_text);
@@ -137,23 +161,20 @@ function AssistantInner({ children }: { children: ReactNode }) {
         void startListeningRef.current();
       }
     },
-    [state, dispatch, orchestrator, voice, navigate],
+    [state, dispatch, orchestrator, voice, navigate, hasCard],
   );
 
   const startListening = useCallback(async () => {
-    if (!isOpenRef.current) return; // shell closed — don't start a new recognizer
+    if (!isOpenRef.current) return;
     try {
       const { transcript, stopped } = await voice.startListening();
       if (stopped) {
-        // User explicitly tapped stop — break the auto-listen loop
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         return;
       }
       if (transcript.trim()) {
         await sendTranscript(transcript);
-        // sendTranscript auto-listens at end; nothing more to do here
       } else if (isOpenRef.current) {
-        // Silence / no-speech — keep listening
         void startListeningRef.current();
       }
     } catch {
@@ -161,7 +182,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [voice, sendTranscript, dispatch]);
 
-  // Keep ref current so sendTranscript can call startListening without circular dep
   useEffect(() => {
     startListeningRef.current = startListening;
   }, [startListening]);
@@ -170,8 +190,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
     (restaurantId?: string, restaurantName?: string) => {
       requestLocation();
 
-      // Request mic in user-gesture context (button click) so Chrome shows
-      // a clear, expected dialog — not a background surprise on page load.
       if (!micGrantedRef.current) {
         requestMicPermission().then((granted) => {
           if (granted) {
@@ -190,13 +208,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   );
 
   const close = useCallback(() => {
-    isOpenRef.current = false; // synchronously kill auto-listen loop before dispatch
+    isOpenRef.current = false;
     voice.stopSpeaking();
     voice.stopListening();
     dispatch({ type: "CLOSE" });
   }, [dispatch, voice]);
 
-  // Wake word → open the shell only. Voice input is manual (tap the orb).
   const onWake = useCallback(() => {
     if (!user) return;
     open();
@@ -205,12 +222,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
     useCenaivaWakeWord(onWake);
 
-  // Enable the wake word listener. Only starts if mic is already permitted.
   const enableWakeWord = useCallback(() => {
     if (micGrantedRef.current) setWakeWordEnabled(true);
   }, [setWakeWordEnabled]);
 
-  // On mount: if mic is already granted (returning visitor), auto-start wake word.
   useEffect(() => {
     if (!user) return;
     checkMicPermission().then((state) => {
@@ -222,8 +237,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!user]);
 
-  // Stop wake word while shell is open (prevents mic conflict with command recognizer).
-  // Restart 500 ms after shell closes so Chrome's recognizer slot is free.
   useEffect(() => {
     if (state.isOpen) {
       forceStopWakeWord();

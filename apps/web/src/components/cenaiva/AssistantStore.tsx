@@ -8,6 +8,7 @@ import {
 import type {
   AssistantResponseType,
   BookingState,
+  CartItem,
   FiltersDelta,
   MapState,
   UIActionType,
@@ -42,6 +43,16 @@ const initialBooking: BookingState = {
   status: "idle",
   confirmation_code: null,
   reservation_id: null,
+  want_preorder: null,
+  cart: [],
+  cart_subtotal: 0,
+  tip_choice: null,
+  tip_amount: null,
+  tip_percent: null,
+  payment_split: null,
+  order_id: null,
+  payment_status: "idle",
+  has_saved_card: false,
 };
 
 const initialMap: MapState = {
@@ -75,11 +86,16 @@ type LocalAction =
   | { type: "APPLY_RESPONSE"; response: AssistantResponseType }
   | { type: "RESET_BOOKING" }
   | { type: "SET_AVAILABILITY_OPEN"; open: boolean }
+  | { type: "SET_HAS_SAVED_CARD"; value: boolean }
   | { type: "PRESELECT_RESTAURANT"; restaurant_id: string; restaurant_name: string };
 
 export type AssistantAction = UIActionType | LocalAction;
 
 // ── Reducer ───────────────────────────────────────────────────────────────────
+
+function computeCartSubtotal(cart: CartItem[]): number {
+  return Math.round(cart.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
+}
 
 function applyUIAction(state: AssistantState, action: UIActionType): AssistantState {
   switch (action.type) {
@@ -128,7 +144,7 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
       };
 
     case "set_filters":
-      return state; // Filters are applied via APPLY_RESPONSE delta
+      return state;
 
     case "clear_filters":
       return { ...state, filters: {} };
@@ -193,15 +209,114 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
       return { ...state, showExitX: true };
 
     case "toast":
-      // Handled by component level (sonner toast call)
       return state;
 
     case "navigate":
-      // Navigation handled by component
       return state;
 
     case "fallback_to_manual":
       return state;
+
+    // ── Pre-order actions ───────────────────────────────────────────────────
+
+    case "offer_preorder":
+      return { ...state, booking: { ...state.booking, status: "offering_preorder" } };
+
+    case "show_menu":
+      return { ...state, booking: { ...state.booking, status: "browsing_menu" } };
+
+    case "add_menu_item": {
+      const existing = state.booking.cart.find((c) => c.menu_item_id === action.menu_item_id);
+      let newCart: CartItem[];
+      if (existing) {
+        newCart = state.booking.cart.map((c) =>
+          c.menu_item_id === action.menu_item_id
+            ? { ...c, qty: c.qty + (action.qty ?? 1) }
+            : c
+        );
+      } else {
+        newCart = [
+          ...state.booking.cart,
+          {
+            menu_item_id: action.menu_item_id,
+            name: action.name,
+            qty: action.qty ?? 1,
+            unit_price: action.unit_price,
+            note: action.note ?? null,
+          },
+        ];
+      }
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          cart: newCart,
+          cart_subtotal: computeCartSubtotal(newCart),
+        },
+      };
+    }
+
+    case "remove_menu_item": {
+      const newCart = state.booking.cart.filter((c) => c.menu_item_id !== action.menu_item_id);
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          cart: newCart,
+          cart_subtotal: computeCartSubtotal(newCart),
+        },
+      };
+    }
+
+    case "clear_cart":
+      return {
+        ...state,
+        booking: { ...state.booking, cart: [], cart_subtotal: 0 },
+      };
+
+    case "set_tip_choice":
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          tip_choice: action.choice,
+          status: action.choice === "now" ? "choosing_tip_amount" : "choosing_tip_timing",
+        },
+      };
+
+    case "set_tip":
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          tip_amount: action.amount ?? null,
+          tip_percent: action.percent ?? null,
+          status: "choosing_payment_split",
+        },
+      };
+
+    case "set_payment_split":
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          payment_split: action.choice,
+          status: action.choice === "single" ? "charging" : state.booking.status,
+        },
+      };
+
+    case "navigate_to_checkout":
+      return state;
+
+    case "show_payment_success":
+      return {
+        ...state,
+        booking: {
+          ...state.booking,
+          status: "paid",
+          payment_status: "paid",
+        },
+      };
 
     default:
       return state;
@@ -212,7 +327,6 @@ export function assistantReducer(
   state: AssistantState,
   action: AssistantAction,
 ): AssistantState {
-  // Handle local actions first
   const localAction = action as LocalAction;
 
   switch (localAction.type) {
@@ -220,7 +334,6 @@ export function assistantReducer(
       return { ...state, isOpen: true };
 
     case "CLOSE":
-      // Full reset — next open starts a completely fresh session
       return { ...initialState };
 
     case "SET_VOICE_STATUS":
@@ -229,31 +342,29 @@ export function assistantReducer(
     case "SET_CONVERSATION_ID":
       return { ...state, conversationId: localAction.id };
 
+    case "SET_HAS_SAVED_CARD":
+      return { ...state, booking: { ...state.booking, has_saved_card: localAction.value } };
+
     case "APPLY_RESPONSE": {
       const { response } = localAction;
       let next = { ...state, lastSpokenText: response.spoken_text };
 
-      // Apply conversationId
       if (response.conversation_id) {
         next = { ...next, conversationId: response.conversation_id };
       }
 
-      // Apply booking delta
       if (response.booking) {
         next = { ...next, booking: { ...next.booking, ...response.booking } };
       }
 
-      // Apply map delta
       if (response.map) {
         next = { ...next, map: { ...next.map, ...response.map } };
       }
 
-      // Apply filters delta
       if (response.filters) {
         next = { ...next, filters: { ...next.filters, ...response.filters } };
       }
 
-      // Apply UI actions
       for (const uiAction of response.ui_actions) {
         next = applyUIAction(next, uiAction);
       }
@@ -286,7 +397,6 @@ export function assistantReducer(
       };
   }
 
-  // Otherwise treat as UIAction
   return applyUIAction(state, action as UIActionType);
 }
 

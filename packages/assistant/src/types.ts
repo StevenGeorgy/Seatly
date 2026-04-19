@@ -3,6 +3,14 @@ export interface LatLng {
   lng: number;
 }
 
+export interface CartItem {
+  menu_item_id: string;
+  name: string;
+  qty: number;
+  unit_price: number; // dollars
+  note: string | null;
+}
+
 export interface BookingState {
   restaurant_id: string | null;
   restaurant_name: string | null;
@@ -20,9 +28,28 @@ export interface BookingState {
     | "awaiting_time_selection"
     | "confirming"
     | "confirmed"
-    | "post_booking";
+    | "post_booking"
+    | "offering_preorder"
+    | "browsing_menu"
+    | "reviewing_cart"
+    | "choosing_tip_timing"
+    | "choosing_tip_amount"
+    | "choosing_payment_split"
+    | "charging"
+    | "paid";
   confirmation_code: string | null;
   reservation_id: string | null;
+  // Pre-order / payment fields
+  want_preorder: boolean | null;
+  cart: CartItem[];
+  cart_subtotal: number; // dollars
+  tip_choice: "now" | "after" | null;
+  tip_amount: number | null; // dollars
+  tip_percent: number | null; // 0–100
+  payment_split: "single" | "split" | null;
+  order_id: string | null;
+  payment_status: "idle" | "pending" | "paid" | "failed";
+  has_saved_card: boolean;
 }
 
 export interface MapState {
@@ -52,6 +79,16 @@ export interface BookingDelta {
   status?: BookingState["status"];
   confirmation_code?: string | null;
   reservation_id?: string | null;
+  want_preorder?: boolean | null;
+  cart?: CartItem[];
+  cart_subtotal?: number;
+  tip_choice?: "now" | "after" | null;
+  tip_amount?: number | null;
+  tip_percent?: number | null;
+  payment_split?: "single" | "split" | null;
+  order_id?: string | null;
+  payment_status?: BookingState["payment_status"];
+  has_saved_card?: boolean;
 }
 
 export interface MapDelta {

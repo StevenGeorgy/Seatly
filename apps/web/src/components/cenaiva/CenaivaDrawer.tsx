@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCenaiva } from "./CenaivaProvider";
-import { CenaivaMessageBubble } from "./CenaivaMessageBubble";
+import { CenaivaMessageBubble } from "./CenaivaMessageBubble.legacy";
 import { useTranslation } from "react-i18next";
 
 const CUSTOMER_PROMPTS = [

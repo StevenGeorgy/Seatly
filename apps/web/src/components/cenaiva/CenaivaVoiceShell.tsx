@@ -6,6 +6,7 @@ import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { usePublicRestaurants } from "@/hooks/useRestaurant";
+import { useUser } from "@/hooks/useUser";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
 import { CustomerMap } from "@/components/cenaiva/CustomerMap";
 import { RestaurantRail } from "@/components/cenaiva/RestaurantRail";
@@ -13,7 +14,7 @@ import { BookingSheet } from "@/components/cenaiva/BookingSheet";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 
 interface CenaivaVoiceShellProps {
-  /** When true, sends an opening greeting as soon as the shell mounts */
+  /** When true, plays a hard-coded opening greeting as soon as the shell opens */
   initialGreeting?: boolean;
 }
 
@@ -21,25 +22,40 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const { state, dispatch } = useAssistantStore();
   const assistant = useAssistant();
   const voice = useCenaivaVoice();
+  const { profile } = useUser();
   const { restaurants } = usePublicRestaurants();
 
   const [textInput, setTextInput] = useState("");
   const [showTextInput, setShowTextInput] = useState(false);
   const greetedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isOpenRef = useRef(state.isOpen);
 
-  // Greet user every time the shell opens (reset on close so re-opens get a fresh greeting)
+  // Keep isOpenRef current for post-greeting auto-listen check
+  useEffect(() => {
+    isOpenRef.current = state.isOpen;
+  }, [state.isOpen]);
+
+  // Client-side greeting — no LLM roundtrip, instant playback
   useEffect(() => {
     if (!initialGreeting) return;
     if (!state.isOpen) {
       greetedRef.current = false;
       return;
     }
-    if (!greetedRef.current) {
-      greetedRef.current = true;
-      void assistant?.sendTranscript("hello");
-    }
-  }, [initialGreeting, state.isOpen, assistant]);
+    if (greetedRef.current) return;
+    greetedRef.current = true;
+
+    const firstName = profile?.full_name?.split(" ")[0] ?? "there";
+    void (async () => {
+      await voice.speak(`Hey, ${firstName}! How can I help you?`);
+      // After greeting, start listening automatically
+      if (isOpenRef.current) {
+        void assistant?.startListening();
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialGreeting, state.isOpen]);
 
   const handleOrbClick = () => {
     if (state.voiceStatus === "listening") {
@@ -66,7 +82,15 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     state.booking.status !== "idle" && state.booking.status !== "collecting_minimum_fields";
   const showConfirmationOrPostBooking =
     state.booking.status === "confirmed" ||
-    state.booking.status === "post_booking";
+    state.booking.status === "post_booking" ||
+    state.booking.status === "offering_preorder" ||
+    state.booking.status === "browsing_menu" ||
+    state.booking.status === "reviewing_cart" ||
+    state.booking.status === "choosing_tip_timing" ||
+    state.booking.status === "choosing_tip_amount" ||
+    state.booking.status === "choosing_payment_split" ||
+    state.booking.status === "charging" ||
+    state.booking.status === "paid";
 
   return (
     <AnimatePresence>
@@ -79,7 +103,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           transition={{ duration: 0.25 }}
           className="fixed inset-0 z-50 bg-[#0A0A0A] flex flex-col overflow-hidden"
         >
-          {/* Close button — always visible top-left UNLESS ExitButton takes over post-booking */}
+          {/* Close button — hidden once ExitButton takes over */}
           {!showConfirmationOrPostBooking && (
             <button
               onClick={handleClose}
@@ -92,10 +116,9 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
 
           {/* Map layer */}
           <div className={cn("flex-1 relative", bookingActive && "h-[45%] flex-none")}>
-            {state.map.visible || true /* always show map in shell */ ? (
+            {state.map.visible || true ? (
               <CustomerMap restaurants={restaurants} />
             ) : (
-              /* Placeholder when map not yet triggered */
               <div className="w-full h-full flex items-center justify-center bg-[#111]">
                 <div className="text-center">
                   <p className="text-5xl mb-3">🗺️</p>
@@ -123,7 +146,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             </AnimatePresence>
           </div>
 
-          {/* Restaurant rail */}
+          {/* Restaurant rail — hidden during advanced booking/payment steps */}
           {!showConfirmationOrPostBooking && (
             <div className="bg-[#0D0D0D] border-t border-white/5 py-2">
               <RestaurantRail restaurants={restaurants} />
