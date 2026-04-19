@@ -41,6 +41,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
+import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type OrderType = "dine_in" | "pickup" | "delivery";
@@ -326,6 +327,7 @@ export default function RestaurantPublicPage() {
   const [searchParams] = useSearchParams();
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
+  const assistant = useAssistant();
   const { promotions: allPromos } = useAllActivePromotions();
   const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
@@ -886,14 +888,21 @@ export default function RestaurantPublicPage() {
               <h2 className="mb-5 text-lg font-bold text-white">How would you like to order?</h2>
               <div className="flex flex-col gap-3">
                 {([
-                  { key: "dine_in",  icon: UtensilsCrossed, label: "Dine In",  sub: "Book a table and order at the restaurant" },
-                  { key: "pickup",   icon: Package,          label: "Pickup",   sub: "Order ahead and pick up when ready"       },
-                  { key: "delivery", icon: Bike,             label: "Delivery", sub: "Get it delivered to your door"            },
+                  { key: "dine_in",  icon: UtensilsCrossed, label: "Dine In",  sub: "Voice-guided table reservation via Cenaiva" },
+                  { key: "pickup",   icon: Package,          label: "Pickup",   sub: "Order ahead and pick up when ready"         },
+                  { key: "delivery", icon: Bike,             label: "Delivery", sub: "Get it delivered to your door"              },
                 ] as const).map(({ key, icon: Icon, label, sub }) => (
                   <button
                     key={key}
                     type="button"
-                    onClick={() => { setOrderType(key); setStep("menu"); }}
+                    onClick={() => {
+                      if (key === "dine_in") {
+                        assistant?.open(restaurant?.id ?? undefined, restaurant?.name ?? undefined);
+                      } else {
+                        setOrderType(key);
+                        setStep("menu");
+                      }
+                    }}
                     className="flex items-center gap-4 rounded-2xl border border-border bg-bg-surface p-5 text-left transition-all hover:border-gold/40 hover:bg-bg-elevated group"
                   >
                     <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-gold/10 transition-colors group-hover:bg-gold/20">

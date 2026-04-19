@@ -1,0 +1,132 @@
+import { supabaseAdmin } from "./supabase.ts";
+import { localToUTC, localDayOfWeek } from "./time.ts";
+
+export interface AvailabilitySlot {
+  shift_id: string;
+  shift_name: string;
+  date_time: string;   // UTC ISO — pass directly to complete_booking
+  display_time: string; // Local time shown to user
+}
+
+export interface AvailabilityResult {
+  slots: AvailabilitySlot[];
+  message?: string;
+}
+
+export async function getAvailability(
+  restaurant_id: string,
+  date: string, // YYYY-MM-DD
+  party_size: number,
+): Promise<AvailabilityResult> {
+  const dateOnly = date.slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Fetch restaurant timezone
+  const { data: restaurantRow } = await supabaseAdmin
+    .from("restaurants")
+    .select("timezone")
+    .eq("id", restaurant_id)
+    .single();
+  const timezone = restaurantRow?.timezone || "UTC";
+
+  const dayOfWeek = localDayOfWeek(dateOnly, timezone);
+
+  // Fetch matching shifts — also select blackout_dates and advance_booking_days
+  const { data: shifts } = await supabaseAdmin
+    .from("shifts")
+    .select(
+      "id, name, start_time, end_time, slot_duration_minutes, turn_time_minutes, min_party_size, max_party_size, max_covers, blackout_dates, advance_booking_days",
+    )
+    .eq("restaurant_id", restaurant_id)
+    .eq("is_active", true)
+    .contains("days_of_week", [dayOfWeek]);
+
+  if (!shifts?.length) {
+    return { slots: [], message: "No shifts available on this date." };
+  }
+
+  // Query reservations using UTC bounds for the restaurant's local day
+  const dayStartUTC = localToUTC(dateOnly, "00:00", timezone);
+  const dayEndUTC = localToUTC(dateOnly, "23:59", timezone);
+
+  const { data: reservations } = await supabaseAdmin
+    .from("reservations")
+    .select("shift_id, reserved_at, party_size")
+    .eq("restaurant_id", restaurant_id)
+    .in("status", ["pending", "confirmed", "seated"])
+    .gte("reserved_at", dayStartUTC)
+    .lte("reserved_at", dayEndUTC);
+
+  const slots: AvailabilitySlot[] = [];
+  const todayDate = new Date(today);
+  const requestDate = new Date(dateOnly);
+
+  for (const shift of shifts) {
+    // Enforce party size bounds
+    if (party_size < (shift.min_party_size ?? 1) || party_size > (shift.max_party_size ?? 20)) {
+      continue;
+    }
+
+    // Enforce advance_booking_days — don't show if booking window hasn't opened
+    const advanceDays = shift.advance_booking_days ?? 30;
+    const maxBookingDate = new Date(todayDate.getTime() + advanceDays * 86_400_000);
+    if (requestDate > maxBookingDate) continue;
+
+    // Enforce blackout_dates
+    const blackouts: string[] = shift.blackout_dates ?? [];
+    if (blackouts.includes(dateOnly)) continue;
+
+    const [sH, sM] = (shift.start_time ?? "17:00").split(":").map(Number);
+    const [eH, eM] = (shift.end_time ?? "23:00").split(":").map(Number);
+    const slotMins = shift.slot_duration_minutes ?? 30;
+    const turnMins = shift.turn_time_minutes ?? 90;
+    const maxCovers = shift.max_covers ?? 100;
+
+    let slotMin = sH * 60 + sM;
+    const endMin = eH * 60 + eM;
+
+    while (slotMin + slotMins <= endMin) {
+      const slotHour = Math.floor(slotMin / 60);
+      const slotMinute = slotMin % 60;
+      const timeStr = `${String(slotHour).padStart(2, "0")}:${String(slotMinute).padStart(2, "0")}`;
+
+      const slotDateTimeUTC = localToUTC(dateOnly, timeStr, timezone);
+      const slotStart = new Date(slotDateTimeUTC);
+      const slotEnd = new Date(slotStart.getTime() + turnMins * 60_000);
+
+      const shiftResvs = (reservations ?? []).filter((r: any) => r.shift_id === shift.id);
+      let totalCovers = party_size;
+      let available = true;
+
+      for (const r of shiftResvs) {
+        const resvStart = new Date(r.reserved_at);
+        const resvEnd = new Date(resvStart.getTime() + turnMins * 60_000);
+        if (slotStart < resvEnd && slotEnd > resvStart) {
+          totalCovers += r.party_size ?? 0;
+          if (totalCovers > maxCovers) {
+            available = false;
+            break;
+          }
+        }
+      }
+
+      if (available) {
+        slots.push({
+          shift_id: shift.id,
+          shift_name: shift.name ?? "Shift",
+          date_time: slotStart.toISOString(),
+          display_time: slotStart.toLocaleTimeString("en-US", {
+            timeZone: timezone,
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+          }),
+        });
+      }
+
+      slotMin += slotMins;
+    }
+  }
+
+  return { slots: slots.slice(0, 15) };
+}

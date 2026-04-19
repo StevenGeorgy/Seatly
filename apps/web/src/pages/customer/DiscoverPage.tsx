@@ -5,12 +5,10 @@ import {
   Search,
   Star,
   MapPin,
-  Clock,
   Flame,
-  ChevronRight,
   Tag,
   SlidersHorizontal,
-  X,
+  Mic,
   LogOut,
   Plus,
   User,
@@ -21,11 +19,10 @@ import {
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,6 +31,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
@@ -60,7 +58,7 @@ const CUISINE_EMOJI: Record<string, string> = {
 
 const CUISINES = ["All", "Italian", "Japanese", "Mexican", "French", "Indian", "Thai", "Seafood", "BBQ"];
 
-function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
+function RestaurantCard({ r, index, onBookWithCenaiva }: { r: Restaurant; index: number; onBookWithCenaiva: (r: Restaurant) => void }) {
   const gradient = CUISINE_GRADIENT[r.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-800";
   const emoji = CUISINE_EMOJI[r.cuisine_type ?? ""] ?? "🍽️";
   return (
@@ -122,7 +120,14 @@ function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
             <span className="text-xs text-text-muted">
               {r.total_reviews != null ? `${r.total_reviews} reviews` : ""}
             </span>
-            <span className="text-xs font-medium text-success">Book a table</span>
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); onBookWithCenaiva(r); }}
+              className="flex items-center gap-1 text-xs font-medium text-[#C8A951] hover:text-[#E6C060] transition-colors"
+            >
+              <Mic className="size-3" />
+              Book with Cenaiva
+            </button>
           </div>
         </div>
       </Link>
@@ -138,7 +143,7 @@ export default function DiscoverPage() {
   const { restaurants, loading: restaurantsLoading } = usePublicRestaurants();
   const [search, setSearch] = useState("");
   const [activeCuisine, setActiveCuisine] = useState("All");
-  const [chatOpen, setChatOpen] = useState(false);
+  const assistant = useAssistant();
 
   const filtered = useMemo(() => {
     let list = restaurants;
@@ -186,14 +191,14 @@ export default function DiscoverPage() {
               className="h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-4 text-sm text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-gold/40"
             />
           </div>
-          <Button
-            variant="outline"
-            size="icon"
-            className="shrink-0"
-            title="Filters"
+          <button
+            type="button"
+            onClick={() => assistant?.open()}
+            className="shrink-0 flex items-center gap-1.5 rounded-full border border-[#C8A951]/60 bg-[#C8A951]/10 px-3 py-1.5 text-xs font-semibold text-[#C8A951] transition-colors hover:bg-[#C8A951]/20 whitespace-nowrap"
           >
-            <SlidersHorizontal className="size-4" />
-          </Button>
+            <Mic className="size-3" />
+            Hey Cenaiva
+          </button>
           <Button
             variant="outline"
             size="icon"
@@ -331,7 +336,7 @@ export default function DiscoverPage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((r, i) => (
-                  <RestaurantCard key={r.id} r={r} index={i} />
+                  <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
                 ))}
               </div>
             )}
@@ -349,7 +354,7 @@ export default function DiscoverPage() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {featured.map((r, i) => (
-                    <RestaurantCard key={r.id} r={r} index={i} />
+                    <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
                   ))}
                 </div>
               </section>
@@ -366,7 +371,7 @@ export default function DiscoverPage() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {others.map((r, i) => (
-                    <RestaurantCard key={r.id} r={r} index={i} />
+                    <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
                   ))}
                 </div>
               </section>
@@ -382,75 +387,6 @@ export default function DiscoverPage() {
         )}
       </main>
 
-      {/* AI Chat panel */}
-      <AnimatePresence>
-        {chatOpen && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
-              onClick={() => setChatOpen(false)}
-            />
-            <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="fixed inset-y-0 right-0 z-50 flex w-full max-w-sm flex-col border-l border-border bg-bg-surface shadow-2xl"
-            >
-              <div className="flex items-center justify-between border-b border-border px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <div className="flex size-7 items-center justify-center rounded-lg bg-gold/15">
-                    <MessageCircle className="size-3.5 text-gold" />
-                  </div>
-                  <h2 className="text-sm font-semibold text-text-primary">AI Assistant</h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setChatOpen(false)}
-                  className="flex size-7 items-center justify-center rounded-lg text-text-muted hover:text-white transition-colors"
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-
-              {/* Suggested prompts */}
-              <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-5">
-                <p className="text-xs font-medium text-text-muted">Suggested</p>
-                {[
-                  "Best date night restaurants near me",
-                  "Where can I get sushi under $30?",
-                  "I have a nut allergy, what's safe?",
-                  "Plan a birthday dinner for 6",
-                ].map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    className="rounded-xl border border-border bg-bg-elevated p-3 text-left text-xs font-medium text-text-secondary transition-all hover:border-gold/30 hover:text-text-primary"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-
-              <div className="border-t border-border p-4">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="Ask anything about restaurants..."
-                    className="h-10 flex-1 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary placeholder:text-text-muted outline-none focus:border-gold/40"
-                  />
-                  <Button size="sm" className="h-10 px-4">
-                    Send
-                  </Button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

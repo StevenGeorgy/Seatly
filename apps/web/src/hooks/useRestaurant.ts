@@ -174,7 +174,7 @@ export function usePublicRestaurants() {
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("restaurants")
-        .select("id, name, slug, cover_photo_url, cuisine_type, avg_rating, total_reviews, price_range, city, address, is_active")
+        .select("id, name, slug, cover_photo_url, cuisine_type, avg_rating, total_reviews, price_range, city, address, lat, lng, is_active")
         .eq("is_active", true)
         .order("avg_rating", { ascending: false, nullsFirst: false });
 
