@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X, Keyboard } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -67,12 +67,33 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     }
   };
 
-  const handleTextSend = () => {
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const handleTextSend = useCallback(async () => {
     const t = textInput.trim();
     if (!t) return;
     setTextInput("");
-    void assistant?.sendTranscript(t);
-  };
+    setSendError(null);
+    try {
+      await assistant?.sendTranscript(t);
+    } catch {
+      setSendError("Something went wrong. Try again.");
+    }
+  }, [textInput, assistant]);
+
+  const handleKeyboardToggle = useCallback(() => {
+    const entering = !showTextInput;
+    if (entering) {
+      // Stop mic before showing keyboard — prevents Chrome from firing a recognition error
+      voice.stopListening();
+      assistant?.setTextMode(true);
+    } else {
+      assistant?.setTextMode(false);
+      setSendError(null);
+    }
+    setShowTextInput(entering);
+    if (entering) setTimeout(() => inputRef.current?.focus(), 50);
+  }, [showTextInput, voice, assistant]);
 
   const handleClose = () => {
     assistant?.close();
@@ -171,23 +192,28 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             />
 
             {showTextInput ? (
-              <div className="flex-1 flex items-center gap-2">
-                <input
-                  ref={inputRef}
-                  value={textInput}
-                  onChange={(e) => setTextInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleTextSend()}
-                  placeholder="Type a message…"
-                  className="flex-1 bg-white/5 border border-white/15 rounded-full px-4 py-2.5 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#C8A951]"
-                  autoFocus
-                />
-                <button
-                  onClick={handleTextSend}
-                  disabled={!textInput.trim()}
-                  className="px-4 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium disabled:opacity-40 hover:bg-[#E6C060] transition-colors"
-                >
-                  Send
-                </button>
+              <div className="flex-1 flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={inputRef}
+                    value={textInput}
+                    onChange={(e) => { setTextInput(e.target.value); setSendError(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") void handleTextSend(); }}
+                    placeholder="Type a message…"
+                    className="flex-1 bg-white/5 border border-white/15 rounded-full px-4 py-2.5 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#C8A951]"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => void handleTextSend()}
+                    disabled={!textInput.trim() || state.voiceStatus === "processing"}
+                    className="px-4 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium disabled:opacity-40 hover:bg-[#E6C060] transition-colors"
+                  >
+                    {state.voiceStatus === "processing" ? "…" : "Send"}
+                  </button>
+                </div>
+                {sendError && (
+                  <p className="text-red-400 text-xs px-2">{sendError}</p>
+                )}
               </div>
             ) : (
               <div className="flex-1">
@@ -215,10 +241,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             )}
 
             <button
-              onClick={() => {
-                setShowTextInput((v) => !v);
-                if (!showTextInput) setTimeout(() => inputRef.current?.focus(), 50);
-              }}
+              onClick={handleKeyboardToggle}
               className={cn(
                 "p-2.5 rounded-full border transition-colors",
                 showTextInput

@@ -16,6 +16,7 @@ interface AssistantContextValue {
   close: () => void;
   sendTranscript: (transcript: string) => Promise<void>;
   startListening: () => Promise<void>;
+  setTextMode: (active: boolean) => void;
 }
 
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
@@ -59,6 +60,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const processingRef = useRef(false);
   const micGrantedRef = useRef(false);
   const isOpenRef = useRef(false);
+  const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
 
   // Sync hasCard into booking state so components and orchestrator requests can use it
@@ -156,8 +158,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (response.spoken_text) await voice.speak(response.spoken_text);
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
-      // Auto-listen after AI speaks — keeps the conversation hands-free
-      if (isOpenRef.current) {
+      // Auto-listen after AI speaks — only in voice mode (not when user is typing)
+      if (isOpenRef.current && !textModeRef.current) {
         void startListeningRef.current();
       }
     },
@@ -174,7 +176,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       }
       if (transcript.trim()) {
         await sendTranscript(transcript);
-      } else if (isOpenRef.current) {
+      } else if (isOpenRef.current && !textModeRef.current) {
         void startListeningRef.current();
       }
     } catch {
@@ -209,10 +211,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const close = useCallback(() => {
     isOpenRef.current = false;
+    textModeRef.current = false;
     voice.stopSpeaking();
     voice.stopListening();
     dispatch({ type: "CLOSE" });
   }, [dispatch, voice]);
+
+  const setTextMode = useCallback((active: boolean) => {
+    textModeRef.current = active;
+  }, []);
 
   const onWake = useCallback(() => {
     if (!user) return;
@@ -246,7 +253,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [state.isOpen, user, forceStopWakeWord, enableWakeWord]);
 
-  const ctx: AssistantContextValue = { open, close, sendTranscript, startListening };
+  const ctx: AssistantContextValue = { open, close, sendTranscript, startListening, setTextMode };
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }
 

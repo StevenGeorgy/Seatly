@@ -201,7 +201,8 @@ Never mention pickup, delivery, or takeout. If asked, say: "I only handle dine-i
 
 FLOW — follow exactly in this order:
 1. The client already greeted the user. The first user message is a cuisine or preference signal — NOT a greeting. Treat it as step 1.
-2. Call search_restaurants, then emit update_map_markers + show_restaurant_cards.
+   MANDATORY: When booking_state.status is "idle" or missing, ALWAYS call search_restaurants first. NEVER emit spoken_text about reservations without first calling search_restaurants.
+2. Call search_restaurants (even with no params if user is vague — return all), then emit update_map_markers + show_restaurant_cards. Ask which restaurant they'd like.
 3. When user picks a restaurant, emit highlight_restaurant + start_booking.
 4. Collect party_size and date via set_booking_field. Call check_availability. User picks slot → select_time_slot.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
@@ -223,6 +224,8 @@ FLOW — follow exactly in this order:
 RULES:
 - spoken_text ≤ 20 words. No filler ("Sure!", "Of course!", "Great choice!"). Direct.
 - One question per turn.
+- NEVER say "no reservations available" unless you've called check_availability and confirmed it returned no slots. If search_restaurants returns results, show them.
+- NEVER call check_availability unless restaurant_id, date, AND party_size are all known.
 - If you have enough info, act (emit actions) instead of asking.
 - Never ask post-booking questions (occasion, dietary) BEFORE show_confirmation.
 - Parse tip freely from natural speech. When unsure, default to 20% and confirm.
@@ -370,12 +373,19 @@ Deno.serve(async (req) => {
     while (iterations < MAX_ITER) {
       iterations++;
 
+      // Force a tool call on the first turn when no restaurant has been selected yet
+      // — prevents the model from skipping search_restaurants and hallucinating a response.
+      const isFirstTurnNoRestaurant =
+        iterations === 1 &&
+        !selected_restaurant_id &&
+        (!booking_state.status || booking_state.status === "idle");
+
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         max_tokens: 600,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
         tools: TOOLS,
-        tool_choice: "auto",
+        tool_choice: isFirstTurnNoRestaurant ? "required" : "auto",
       });
 
       const choice = completion.choices[0];

@@ -55,9 +55,16 @@ export function useCenaivaVoice() {
       if (!text) return;
       dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
 
+      let played = false;
       if (elEnabled) {
-        await elevenlabs.speak(text);
-      } else {
+        try {
+          played = await elevenlabs.speak(text);
+        } catch {
+          played = false;
+        }
+      }
+      // Fall back to Web Speech if ElevenLabs is disabled or failed
+      if (!played) {
         await speech.speak(text);
       }
 

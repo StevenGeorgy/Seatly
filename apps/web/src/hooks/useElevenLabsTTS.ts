@@ -31,11 +31,11 @@ export function useElevenLabsTTS() {
   }, []);
 
   const speak = useCallback(
-    async (text: string, voiceId?: string): Promise<void> => {
+    async (text: string, voiceId?: string): Promise<boolean> => {
       stop();
 
       const token = await getBearerToken();
-      if (!token) return;
+      if (!token) return false;
 
       try {
         const res = await fetch(TTS_ENDPOINT, {
@@ -47,7 +47,7 @@ export function useElevenLabsTTS() {
           body: JSON.stringify({ text, voice_id: voiceId }),
         });
 
-        if (!res.ok) return;
+        if (!res.ok) return false;
 
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
@@ -58,8 +58,10 @@ export function useElevenLabsTTS() {
 
         setIsSpeaking(true);
 
+        let played = false;
         await new Promise<void>((resolve) => {
           audio.onended = () => {
+            played = true;
             setIsSpeaking(false);
             URL.revokeObjectURL(url);
             blobUrlRef.current = null;
@@ -76,8 +78,10 @@ export function useElevenLabsTTS() {
             resolve();
           });
         });
+        return played;
       } catch {
         setIsSpeaking(false);
+        return false;
       }
     },
     [stop],
