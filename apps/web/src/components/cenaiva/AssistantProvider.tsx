@@ -152,20 +152,34 @@ function AssistantInner({ children }: { children: ReactNode }) {
     dispatch({ type: "CLOSE" });
   }, [dispatch, voice]);
 
-  // Wake word → open + start listening
+  // Wake word → open + start listening.
+  // Delay startListening by 350 ms so Chrome's previous recognizer fully tears
+  // down before we start a new one (Chrome only allows one active at a time).
   const onWake = useCallback(() => {
     if (!user) return;
     open();
-    void startListening();
+    setTimeout(() => void startListening(), 350);
   }, [user, open, startListening]);
 
-  const { toggle: toggleWakeWord } = useCenaivaWakeWord(onWake);
+  const { toggle: toggleWakeWord, setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
+    useCenaivaWakeWord(onWake);
 
-  // Auto-enable wake word when user is logged in
+  // Auto-enable wake word once on login
   useEffect(() => {
     if (user) toggleWakeWord();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!user]);
+
+  // Stop wake word while shell is open (prevents mic conflict with command recognizer).
+  // Restart it 500 ms after shell closes so Chrome's recognizer slot is free.
+  useEffect(() => {
+    if (state.isOpen) {
+      forceStopWakeWord();
+    } else if (user) {
+      const t = setTimeout(() => setWakeWordEnabled(true), 500);
+      return () => clearTimeout(t);
+    }
+  }, [state.isOpen, user, forceStopWakeWord, setWakeWordEnabled]);
 
   const ctx: AssistantContextValue = { open, close, sendTranscript, startListening };
 
