@@ -1,5 +1,5 @@
-import { useCallback } from "react";
-import Map, { Marker, NavigationControl } from "react-map-gl/maplibre";
+import { useCallback, useEffect, useRef } from "react";
+import Map, { Marker, NavigationControl, type MapRef } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
@@ -14,6 +14,18 @@ interface CustomerMapProps {
 export function CustomerMap({ restaurants }: CustomerMapProps) {
   const { state, dispatch } = useAssistantStore();
   const { map, booking } = state;
+  const mapRef = useRef<MapRef>(null);
+
+  // Fly to new center whenever the orchestrator updates map.center
+  useEffect(() => {
+    if (map.center && mapRef.current) {
+      mapRef.current.flyTo({
+        center: [map.center.lng, map.center.lat],
+        zoom: map.zoom ?? 13,
+        duration: 1200,
+      });
+    }
+  }, [map.center, map.zoom]);
 
   const visibleRestaurants = restaurants.filter((r) =>
     map.marker_restaurant_ids.length > 0
@@ -28,18 +40,14 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
     [dispatch],
   );
 
-  const defaultCenter = map.center ?? { lat: 43.6532, lng: -79.3832 }; // Toronto fallback
-
   return (
     <Map
+      ref={mapRef}
       initialViewState={{
-        latitude: defaultCenter.lat,
-        longitude: defaultCenter.lng,
-        zoom: map.zoom,
+        latitude: 43.6532,
+        longitude: -79.3832,
+        zoom: 11,
       }}
-      latitude={map.center?.lat}
-      longitude={map.center?.lng}
-      zoom={map.zoom}
       style={{ width: "100%", height: "100%" }}
       mapStyle={MAP_STYLE}
       attributionControl={false}

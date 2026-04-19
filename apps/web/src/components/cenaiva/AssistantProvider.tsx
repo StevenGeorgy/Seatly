@@ -35,16 +35,29 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const processingRef = useRef(false);
 
-  // Lazy geolocation — requested once when shell opens
+  // Silent geolocation — only fetches if the user has already granted permission.
+  // Never triggers the browser permission dialog unexpectedly.
   const requestLocation = useCallback(() => {
     if (userLocationRef.current || !navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      },
-      () => {},
-      { timeout: 5000, maximumAge: 60_000 },
-    );
+    if (!navigator.permissions) {
+      // Permissions API unavailable — skip rather than surprise the user.
+      return;
+    }
+    navigator.permissions
+      .query({ name: "geolocation" as PermissionName })
+      .then((result) => {
+        if (result.state === "granted") {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            },
+            () => {},
+            { timeout: 5000, maximumAge: 60_000 },
+          );
+        }
+        // "prompt" or "denied" → do nothing; orchestrator works fine without location.
+      })
+      .catch(() => {});
   }, []);
 
   const sendTranscript = useCallback(
