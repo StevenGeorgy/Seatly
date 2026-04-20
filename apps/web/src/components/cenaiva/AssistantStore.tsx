@@ -82,6 +82,7 @@ type LocalAction =
   | { type: "OPEN" }
   | { type: "CLOSE" }
   | { type: "SET_VOICE_STATUS"; status: VoiceStatus }
+  | { type: "SET_LAST_SPOKEN_TEXT"; text: string }
   | { type: "SET_CONVERSATION_ID"; id: string }
   | { type: "APPLY_RESPONSE"; response: AssistantResponseType }
   | { type: "RESET_BOOKING" }
@@ -338,6 +339,9 @@ export function assistantReducer(
 
     case "SET_VOICE_STATUS":
       return { ...state, voiceStatus: localAction.status };
+
+    case "SET_LAST_SPOKEN_TEXT":
+      return { ...state, lastSpokenText: localAction.text };
 
     case "SET_CONVERSATION_ID":
       return { ...state, conversationId: localAction.id };

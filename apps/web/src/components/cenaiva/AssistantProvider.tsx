@@ -161,11 +161,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         if (isOpenRef.current && !textModeRef.current) {
+          // 400ms grace: lets Chrome's audio stack release the mic after TTS
+          // ends, avoiding InvalidStateError on recognition.start().
           setTimeout(() => {
             if (isOpenRef.current && !textModeRef.current) {
               void startListeningRef.current();
             }
-          }, 200);
+          }, 400);
         }
       } catch (err) {
         processingRef.current = false;
@@ -189,11 +191,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
       } else if (isOpenRef.current && !textModeRef.current) {
         void startListeningRef.current();
       }
-    } catch {
-      // Recognition threw a fatal error (e.g. "not-allowed").
-      // Reset to idle and retry once after a short delay — if it was a transient
-      // audio-capture hiccup the retry succeeds; if the mic is truly denied the
-      // user will see the grant-access prompt on the next attempt.
+    } catch (err) {
+      // Transient errors (InvalidStateError, recognition-start-failed,
+      // audio-capture hiccups) — retry once. "not-allowed" already flipped
+      // voiceStatus to "error" in useCenaivaVoice; leave that UI alone so the
+      // user sees the grant-access prompt and tapping it re-requests perms.
+      const msg = (err as Error)?.message ?? "";
+      const isPermDenied = msg === "not-allowed" || msg.includes("not-allowed");
+      if (isPermDenied) return;
       if (isOpenRef.current && !textModeRef.current) {
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         setTimeout(() => {

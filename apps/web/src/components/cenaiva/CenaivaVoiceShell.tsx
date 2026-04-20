@@ -47,8 +47,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     greetedRef.current = true;
 
     const firstName = profile?.full_name?.split(" ")[0] ?? "there";
+    const greeting = `Hey, ${firstName}! How can I help you?`;
+    dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
     void (async () => {
-      await voice.speak(`Hey, ${firstName}! How can I help you?`);
+      await voice.speak(greeting);
       // After greeting, start listening automatically
       if (isOpenRef.current) {
         void assistant?.startListening();

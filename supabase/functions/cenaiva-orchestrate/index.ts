@@ -207,9 +207,9 @@ Never mention pickup, delivery, or takeout. If asked, say: "I only handle dine-i
 
 FLOW — follow exactly in this order:
 1. The client already greeted the user. The first user message is a cuisine or preference signal — NOT a greeting. Treat it as step 1.
-   MANDATORY: When booking_state.status is "idle" or missing, ALWAYS call search_restaurants first. NEVER emit spoken_text about reservations without first calling search_restaurants.
-2. Call search_restaurants (even with no params if user is vague — return all), then emit update_map_markers + show_restaurant_cards. Ask which restaurant they'd like.
-3. When user picks a restaurant, emit highlight_restaurant + start_booking.
+   If booking_state.status is "idle" or missing AND no search_restaurants call has happened in this conversation yet, call search_restaurants ONCE. Emit update_map_markers + show_restaurant_cards and ask which restaurant they'd like.
+2. If search_restaurants has ALREADY been called in this conversation (visible in the message history), DO NOT call it again. Use the "Visible restaurant IDs" from the user message as the current candidate set. If the user refines ("actually show me Italian only"), emit set_filters + update_map_markers using those IDs — do NOT re-run search_restaurants.
+3. When the user names a specific restaurant OR the user message contains "Selected restaurant ID: <uuid>", that restaurant is CONFIRMED. Immediately emit highlight_restaurant + start_booking with that ID and move to step 4 — do NOT ask "which one?" again.
 4. Collect party_size and date via set_booking_field. Call check_availability. User picks slot → select_time_slot.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
 6. Then emit offer_preorder and ask: "Want to pre-order from the menu?" (≤ 10 words).
@@ -345,7 +345,9 @@ Deno.serve(async (req) => {
 
     const userContent = [
       transcript ? `User said: "${transcript}"` : "User opened the assistant.",
-      selected_restaurant_id ? `Selected restaurant ID: ${selected_restaurant_id}` : "",
+      selected_restaurant_id
+        ? `⚠️ User has explicitly selected restaurant ID: ${selected_restaurant_id}. This selection is CONFIRMED — emit start_booking + highlight_restaurant and move to party_size. Do NOT ask which restaurant again.`
+        : "",
       visible_restaurant_ids.length
         ? `Visible restaurant IDs: ${visible_restaurant_ids.slice(0, 8).join(", ")}`
         : "",
@@ -379,17 +381,26 @@ Deno.serve(async (req) => {
     // even if the model forgets to emit update_map_markers in its final JSON.
     let lastSearchIds: string[] = [];
 
+    // Detect whether search_restaurants has already run in this conversation.
+    // When true, the model must NOT re-search — it should use visible_restaurant_ids
+    // from the client instead. This prevents the "asks which restaurant twice" bug.
+    const alreadySearched = (history ?? []).some(
+      (m) => m.role === "tool_call" &&
+        ((m.metadata as Record<string, unknown>)?.tool_name as string | undefined) === "search_restaurants"
+    );
+
     while (iterations < MAX_ITER) {
       iterations++;
 
-      // Only force search_restaurants on the very first message of a fresh conversation.
-      // Once there is history the model already has context and must decide on its own.
+      // Only force search_restaurants on the very first message of a fresh conversation
+      // that has no prior search. Once any turn has searched, the model decides on its own.
       const isFirstTurnNoRestaurant =
         iterations === 1 &&
         !selected_restaurant_id &&
         !booking_state.restaurant_id &&
         (!booking_state.status || booking_state.status === "idle") &&
-        (history?.length ?? 0) === 0;
+        (history?.length ?? 0) === 0 &&
+        !alreadySearched;
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",

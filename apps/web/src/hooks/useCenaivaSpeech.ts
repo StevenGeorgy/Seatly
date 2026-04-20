@@ -34,6 +34,13 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
         return;
       }
 
+      // Defensive: tear down any lingering recognition before starting a new one.
+      // Chrome throws InvalidStateError if start() is called with a stale instance.
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch { /* ignore */ }
+        recognitionRef.current = null;
+      }
+
       let settled = false;
       let accumulatedTranscript = "";
       let silenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,7 +107,13 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       };
 
       setIsRecording(true);
-      recognition.start();
+      try {
+        recognition.start();
+      } catch (e) {
+        setIsRecording(false);
+        recognitionRef.current = null;
+        reject(new Error("recognition-start-failed:" + ((e as Error)?.message ?? "")));
+      }
     });
   }, [lang]);
 

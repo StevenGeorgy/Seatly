@@ -35,7 +35,16 @@ export function useCenaivaVoice() {
       return { transcript, stopped: manualStopRef.current };
     } catch (err) {
       if (!manualStopRef.current) {
-        dispatch({ type: "SET_VOICE_STATUS", status: "error" });
+        // Only show the red "Grant microphone access" state when the user has
+        // actually denied permission. Transient errors (InvalidStateError,
+        // recognition-start-failed, audio-capture races, etc.) fall back to idle
+        // so the provider's retry path can silently try again.
+        const msg = (err as Error)?.message ?? "";
+        const isPermDenied = msg === "not-allowed" || msg.includes("not-allowed");
+        dispatch({
+          type: "SET_VOICE_STATUS",
+          status: isPermDenied ? "error" : "idle",
+        });
       }
       throw err;
     } finally {
