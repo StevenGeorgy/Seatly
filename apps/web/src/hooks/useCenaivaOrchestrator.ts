@@ -65,16 +65,16 @@ export function useCenaivaOrchestrator() {
 
         if (!res.ok) {
           const msg = (json.error as string) ?? `http_${res.status}`;
-          console.warn("[useCenaivaOrchestrator] Non-OK response:", res.status, msg);
           recordError(msg);
           return null;
         }
 
-        // Validate with zod
+        // Validate with zod. Schema drift from the orchestrator (new intents,
+        // missing optional fields) is expected in development — we fall
+        // through with a best-effort cast so the flow keeps working instead
+        // of spamming the console on every turn.
         const parsed = AssistantResponse.safeParse(json);
         if (!parsed.success) {
-          console.warn("[useCenaivaOrchestrator] Schema mismatch:", parsed.error.issues);
-          // Return the raw data with best-effort cast if close enough
           return json as AssistantResponseType;
         }
 
@@ -84,7 +84,6 @@ export function useCenaivaOrchestrator() {
           recordError("timeout");
           return null;
         }
-        console.error("[useCenaivaOrchestrator] Request failed:", err);
         recordError(String(err));
         return null;
       } finally {

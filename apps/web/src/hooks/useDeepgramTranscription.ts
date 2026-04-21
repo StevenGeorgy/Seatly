@@ -60,7 +60,8 @@ async function fetchDeepgramToken(): Promise<string | null> {
     },
   });
   if (!res.ok) {
-    console.warn("[useDeepgramTranscription] token fetch failed", res.status);
+    // Silent — caller converts a null token into a graceful Web Speech fallback
+    // so there's no value in console-warning on every mic press.
     return null;
   }
   const json = (await res.json()) as { access_token?: string };
@@ -196,7 +197,9 @@ export function useDeepgramTranscription() {
     const url = `${DEEPGRAM_LISTEN_URL}?${qs}`;
     // Browsers can't attach arbitrary headers to WebSocket, but Deepgram
     // accepts the token via the `Sec-WebSocket-Protocol` sub-protocol list.
-    const socket = new WebSocket(url, ["token", token]);
+    // Short-lived tokens minted by /v1/auth/grant use the `bearer` scheme;
+    // long-lived project API keys use `token` — we're on the short-lived flow.
+    const socket = new WebSocket(url, ["bearer", token]);
     socketRef.current = socket;
     socket.binaryType = "arraybuffer";
 

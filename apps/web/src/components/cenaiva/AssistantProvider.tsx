@@ -16,11 +16,11 @@ interface AssistantContextValue {
   open: (restaurantId?: string, restaurantName?: string) => void;
   close: () => void;
   /**
-   * Speak a farewell line, then tear down the voice stack and navigate back
-   * to /discover. Used at the natural end of the flow (declined preorder,
-   * post-payment) so Cenaiva always signs off before the shell disappears.
+   * Speak a farewell line, then tear down the voice stack and navigate.
+   * Defaults to /discover when not already there. Pass `redirectAfter` to
+   * land elsewhere (e.g. public menu after accepting pre-order).
    */
-  sayGoodbyeAndClose: (message?: string) => Promise<void>;
+  sayGoodbyeAndClose: (message?: string, redirectAfter?: string) => Promise<void>;
   sendTranscript: (transcript: string, opts?: { restaurantId?: string }) => Promise<void>;
   startListening: () => Promise<void>;
   setTextMode: (active: boolean) => void;
@@ -84,6 +84,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+  // Mirror state in a ref so sendTranscript always reads the *latest* booking
+  // fields — not the snapshot from when the callback was defined. This was
+  // the root cause of "AI keeps asking for party_size even after I answered":
+  // the state had updated but sendTranscript's closure still saw party_size=null.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   // Consecutive relisten attempts that returned an empty transcript. If this
   // climbs, something is blocking mic capture (another recognizer has the
   // stream, permission glitched, InvalidStateError looping, etc.). Without a
@@ -99,6 +105,32 @@ function AssistantInner({ children }: { children: ReactNode }) {
   useEffect(() => {
     isOpenRef.current = state.isOpen;
   }, [state.isOpen]);
+
+  // Prime the Web Speech audio pipeline on the FIRST user gesture anywhere on
+  // the page. Chrome's autoplay policy blocks speechSynthesis until there's
+  // been a user gesture in the tab — wake-word fires don't count. This
+  // one-shot listener guarantees TTS works the moment the user clicks, taps,
+  // or presses any key. Without it, the very first assistant reply is silent.
+  const ttsPrimedRef = useRef(false);
+  useEffect(() => {
+    if (ttsPrimedRef.current) return;
+    const prime = () => {
+      if (ttsPrimedRef.current) return;
+      ttsPrimedRef.current = true;
+      try { voice.primeTTS(); } catch { /* noop */ }
+      window.removeEventListener("pointerdown", prime, true);
+      window.removeEventListener("keydown", prime, true);
+      window.removeEventListener("touchstart", prime, true);
+    };
+    window.addEventListener("pointerdown", prime, true);
+    window.addEventListener("keydown", prime, true);
+    window.addEventListener("touchstart", prime, true);
+    return () => {
+      window.removeEventListener("pointerdown", prime, true);
+      window.removeEventListener("keydown", prime, true);
+      window.removeEventListener("touchstart", prime, true);
+    };
+  }, [voice]);
 
   const locationRequestedRef = useRef(false);
 
@@ -130,42 +162,43 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
       dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
 
+      const current = stateRef.current;
       const req: OrchestratorRequestType = {
         transcript,
         screen: "discover",
         booking_state: {
-          restaurant_id: state.booking.restaurant_id,
-          party_size: state.booking.party_size,
-          date: state.booking.date,
-          time: state.booking.time,
-          shift_id: state.booking.shift_id,
-          slot_iso: state.booking.slot_iso,
-          status: state.booking.status,
-          confirmation_code: state.booking.confirmation_code,
-          reservation_id: state.booking.reservation_id,
-          order_id: state.booking.order_id,
-          tip_choice: state.booking.tip_choice,
-          tip_amount: state.booking.tip_amount,
-          tip_percent: state.booking.tip_percent,
-          payment_split: state.booking.payment_split,
-          payment_status: state.booking.payment_status,
-          cart_subtotal: state.booking.cart_subtotal,
-          cart: state.booking.cart,
+          restaurant_id: current.booking.restaurant_id,
+          party_size: current.booking.party_size,
+          date: current.booking.date,
+          time: current.booking.time,
+          shift_id: current.booking.shift_id,
+          slot_iso: current.booking.slot_iso,
+          status: current.booking.status,
+          confirmation_code: current.booking.confirmation_code,
+          reservation_id: current.booking.reservation_id,
+          order_id: current.booking.order_id,
+          tip_choice: current.booking.tip_choice,
+          tip_amount: current.booking.tip_amount,
+          tip_percent: current.booking.tip_percent,
+          payment_split: current.booking.payment_split,
+          payment_status: current.booking.payment_status,
+          cart_subtotal: current.booking.cart_subtotal,
+          cart: current.booking.cart,
         },
         map_state: {
-          visible: state.map.visible,
-          center: state.map.center,
-          zoom: state.map.zoom,
-          marker_restaurant_ids: state.map.marker_restaurant_ids,
+          visible: current.map.visible,
+          center: current.map.center,
+          zoom: current.map.zoom,
+          marker_restaurant_ids: current.map.marker_restaurant_ids,
         },
-        filters: state.filters,
-        visible_restaurant_ids: state.map.marker_restaurant_ids,
-        selected_restaurant_id: opts?.restaurantId ?? state.booking.restaurant_id,
+        filters: current.filters,
+        visible_restaurant_ids: current.map.marker_restaurant_ids,
+        selected_restaurant_id: opts?.restaurantId ?? current.booking.restaurant_id,
         user_location: userLocationRef.current,
-        conversation_id: state.conversationId ?? undefined,
+        conversation_id: current.conversationId ?? undefined,
         has_saved_card: hasCard,
         guest_id: null,
-        reservation_id: state.booking.reservation_id,
+        reservation_id: current.booking.reservation_id,
       };
 
       try {
@@ -223,7 +256,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           .filter((t): t is string => typeof t === "string");
         const freshlyBooked =
           uiTypes.includes("show_confirmation") ||
-          (!!response.booking?.reservation_id && !state.booking.reservation_id);
+          (!!response.booking?.reservation_id && !stateRef.current.booking.reservation_id);
         const asksPreorder = /pre-?order|menu/i.test(spokenText);
         if (freshlyBooked && !asksPreorder) {
           const base = spokenText.trim().replace(/[.!?]*$/, "");
@@ -261,7 +294,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         }
       }
     },
-    [state, dispatch, orchestrator, voice, navigate, hasCard],
+    [dispatch, orchestrator, voice, navigate, hasCard],
   );
 
   const startListening = useCallback(async () => {
@@ -372,7 +405,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [dispatch, navigate]);
 
   const sayGoodbyeAndClose = useCallback(
-    async (message = "Enjoy your meal. Bye!") => {
+    async (message = "Enjoy your meal. Bye!", redirectAfter?: string) => {
       // Stop the mic so the farewell actually plays without fighting the
       // recognizer for the audio stream.
       isOpenRef.current = false;
@@ -386,7 +419,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
         // Speech can fail (autoplay policy, no voices) — we still close.
       }
       dispatch({ type: "CLOSE" });
-      if (pathnameRef.current !== "/discover") navigate("/discover");
+      if (redirectAfter) {
+        navigate(redirectAfter);
+      } else if (pathnameRef.current !== "/discover") {
+        navigate("/discover");
+      }
     },
     [dispatch, navigate],
   );
@@ -414,8 +451,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const onWake = useCallback(() => {
     if (!user) return;
+    // Prime the audio pipeline again on wake so the greeting reliably plays.
+    try { voice.primeTTS(); } catch { /* noop */ }
     open();
-  }, [user, open]);
+  }, [user, open, voice]);
 
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
     useCenaivaWakeWord(onWake);

@@ -25,14 +25,20 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get("Authorization") ?? "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const payload = decodeJwtPayload(token);
-    if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401);
+    if (!payload?.sub) {
+      console.warn("[deepgram-live-token] JWT decode failed or missing sub");
+      return jsonRes({ error: "Unauthorized", reason: "jwt_decode" }, 401);
+    }
 
     const { error: profileErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id")
       .eq("auth_user_id", payload.sub as string)
       .single();
-    if (profileErr) return jsonRes({ error: "Unauthorized" }, 401);
+    if (profileErr) {
+      console.warn("[deepgram-live-token] profile lookup failed for sub:", payload.sub, profileErr.message);
+      return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401);
+    }
 
     const dgRes = await fetch(DEEPGRAM_TOKEN_ENDPOINT, {
       method: "POST",

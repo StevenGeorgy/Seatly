@@ -8,6 +8,7 @@ import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useAvailability } from "@/hooks/useAvailability";
 import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItems";
+import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 
 interface BookingSheetProps {
@@ -22,6 +23,7 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
   const { state, dispatch } = useAssistantStore();
   const assistant = useAssistant();
   const availability = useAvailability();
+  const { restaurants } = usePublicRestaurants();
   const { booking, showExitX } = state;
 
   // Only fetch menu data once the booking actually reaches a menu-relevant
@@ -280,7 +282,20 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
               <p className="text-white/40 text-xs">Pay before you arrive — skip the wait.</p>
               <div className="flex gap-3 justify-center">
                 <button
-                  onClick={() => void assistant?.sendTranscript("yes, I'd like to pre-order")}
+                  onClick={() => {
+                    // "Yes" hands the user off to the restaurant's public page so
+                    // they can browse and add items manually. We close the
+                    // assistant so TTS / mic don't keep running in the
+                    // background while they shop.
+                    const slug = restaurants.find(
+                      (r) => r.id === booking.restaurant_id,
+                    )?.slug;
+                    const menuPath = slug ? `/${slug}?step=menu` : undefined;
+                    void assistant?.sayGoodbyeAndClose(
+                      "Opening the menu now. Enjoy!",
+                      menuPath,
+                    );
+                  }}
                   className="px-6 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors"
                 >
                   Yes, pre-order
@@ -550,36 +565,15 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
           )}
 
           {/* ── Collect minimum fields via voice ─────────────────────────────── */}
-          {booking.status === "collecting_minimum_fields" && (
-            <div className="space-y-3">
-              <p className="text-white/70 text-sm text-center">Tell the assistant the details, or tap below:</p>
-
-              <div className="flex gap-2 flex-wrap justify-center">
-                {!booking.party_size && (
-                  <button
-                    onClick={() => assistant?.sendTranscript("party size")}
-                    className="px-3 py-1.5 rounded-full text-sm border border-white/20 text-white/60 hover:border-[#C8A951] hover:text-white transition-colors"
-                  >
-                    👥 Party size?
-                  </button>
-                )}
-                {!booking.date && (
-                  <button
-                    onClick={() => assistant?.sendTranscript("today")}
-                    className="px-3 py-1.5 rounded-full text-sm border border-white/20 text-white/60 hover:border-[#C8A951] hover:text-white transition-colors"
-                  >
-                    📅 Date?
-                  </button>
-                )}
-                {booking.restaurant_id && booking.date && booking.party_size && (
-                  <Button
-                    className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
-                    onClick={handleLoadAvailability}
-                  >
-                    See available times
-                  </Button>
-                )}
-              </div>
+          {booking.status === "collecting_minimum_fields" &&
+            booking.restaurant_id && booking.date && booking.party_size && (
+            <div className="flex justify-center">
+              <Button
+                className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
+                onClick={handleLoadAvailability}
+              >
+                See available times
+              </Button>
             </div>
           )}
         </div>

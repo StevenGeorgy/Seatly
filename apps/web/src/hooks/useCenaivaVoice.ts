@@ -15,9 +15,19 @@ export function useCenaivaVoice() {
   const deepgram = useDeepgramTranscription();
   const elevenlabs = useElevenLabsTTS();
 
-  const elEnabled = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
+  const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
   const manualStopRef = useRef(false);
+  // Once Deepgram has failed once in this session (bad token scope, bad
+  // WebSocket handshake, etc.) we stop trying it for the rest of the session.
+  // This prevents every subsequent listen from triggering a fresh round of
+  // "WebSocket connection failed" browser errors + fallback log noise.
+  const deepgramDisabledRef = useRef(false);
+  // Same pattern for ElevenLabs: if the edge function 503s (no key / quota /
+  // misconfigured) once, skip it for the rest of the session and go straight
+  // to Web Speech. Keeps TTS responsive instead of adding 2 network round-trips
+  // of latency before every utterance.
+  const elevenDisabledRef = useRef(false);
 
   const startListening = useCallback(async (): Promise<{ transcript: string; stopped: boolean }> => {
     if (listeningRef.current) return { transcript: "", stopped: false };
@@ -34,7 +44,7 @@ export function useCenaivaVoice() {
 
     try {
       let transcript: string;
-      if (DEEPGRAM_ENABLED && deepgram.isSupported) {
+      if (DEEPGRAM_ENABLED && deepgram.isSupported && !deepgramDisabledRef.current) {
         try {
           transcript = await deepgram.startRecognition();
         } catch (err) {
@@ -44,7 +54,7 @@ export function useCenaivaVoice() {
           // access UI.
           const msg = (err as Error)?.message ?? "";
           if (msg === "not-allowed" || msg.includes("not-allowed")) throw err;
-          console.warn("[useCenaivaVoice] Deepgram failed, falling back to Web Speech:", msg);
+          deepgramDisabledRef.current = true;
           transcript = await speech.startRecognition();
         }
       } else {
@@ -90,21 +100,36 @@ export function useCenaivaVoice() {
       dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
 
       let played = false;
-      if (elEnabled) {
+      if (elEnabledFlag && !elevenDisabledRef.current) {
         try {
           played = await elevenlabs.speak(text);
         } catch {
           played = false;
         }
+        // Retry ElevenLabs once on transient failure before falling back to
+        // Web Speech — keeps the voice consistent across turns instead of
+        // randomly swapping to the OS voice when a single request blips.
+        if (!played) {
+          try {
+            played = await elevenlabs.speak(text);
+          } catch {
+            played = false;
+          }
+        }
+        // Two failures in a row → treat ElevenLabs as unavailable for the rest
+        // of the session (no API key, quota exhausted, etc.) and skip straight
+        // to Web Speech on subsequent turns.
+        if (!played) {
+          elevenDisabledRef.current = true;
+        }
       }
-      // Fall back to Web Speech if ElevenLabs is disabled or failed
       if (!played) {
         await speech.speak(text);
       }
 
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
     },
-    [dispatch, elevenlabs, speech, elEnabled],
+    [dispatch, elevenlabs, speech, elEnabledFlag],
   );
 
   const stopSpeaking = useCallback(() => {

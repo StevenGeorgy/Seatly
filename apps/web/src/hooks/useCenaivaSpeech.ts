@@ -161,51 +161,87 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       // silently swallows the audio.
       await waitForVoices();
 
-      // Chrome bug: speechSynthesis can freeze in a "paused" state after a
-      // period of inactivity. resume() then cancel() kick it back to life.
-      window.speechSynthesis.resume();
-      window.speechSynthesis.cancel();
+      // Chrome bug: speechSynthesis can freeze in a "paused" state after ~15s
+      // of inactivity — the next speak() queues an utterance that never fires
+      // onstart. Cancel any pending + resume kicks the engine back to life.
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      try { window.speechSynthesis.resume(); } catch { /* ignore */ }
 
-      await new Promise<void>((resolve) => {
-        const utterance = new SpeechSynthesisUtterance(applyPronunciation(text));
-        utterance.lang = lang;
-        utterance.rate = 1;
-        utterance.pitch = 1;
+      // Pick the best available English voice. Without this Chrome will pick
+      // a default that occasionally is set to a non-audible voice in some
+      // OS/profile combinations, causing silent TTS.
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice =
+        voices.find((v) => v.lang?.toLowerCase().startsWith(lang.toLowerCase())) ||
+        voices.find((v) => v.lang?.toLowerCase().startsWith("en")) ||
+        voices[0];
 
-        // Timeout fallback: Chrome sometimes silently fails to fire onend.
-        // Estimate duration as ~65 ms/word + a 3 s buffer.
-        const wordCount = text.split(/\s+/).length;
-        let resolvedFlag = false;
-        const timeoutId = setTimeout(() => {
-          if (!resolvedFlag) {
-            resolvedFlag = true;
+      const phoneticText = applyPronunciation(text);
+      const wordCount = text.split(/\s+/).length;
+      const estimatedDurationMs = wordCount * 65 + 3000;
+
+      const speakOnce = (): Promise<"ok" | "silent" | "error"> =>
+        new Promise((resolve) => {
+          const utterance = new SpeechSynthesisUtterance(phoneticText);
+          utterance.lang = lang;
+          utterance.rate = 1;
+          utterance.pitch = 1;
+          if (preferredVoice) utterance.voice = preferredVoice;
+
+          let settled = false;
+          let started = false;
+
+          const finalTimeout = setTimeout(() => {
+            if (settled) return;
+            settled = true;
             setIsSpeaking(false);
-            resolve();
-          }
-        }, wordCount * 65 + 3000);
+            resolve(started ? "ok" : "silent");
+          }, estimatedDurationMs);
 
-        utterance.onstart = () => setIsSpeaking(true);
-
-        utterance.onend = () => {
-          if (!resolvedFlag) {
-            resolvedFlag = true;
-            clearTimeout(timeoutId);
+          utterance.onstart = () => {
+            started = true;
+            setIsSpeaking(true);
+          };
+          utterance.onend = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(finalTimeout);
             setIsSpeaking(false);
-            resolve();
-          }
-        };
-
-        utterance.onerror = () => {
-          if (!resolvedFlag) {
-            resolvedFlag = true;
-            clearTimeout(timeoutId);
+            resolve("ok");
+          };
+          utterance.onerror = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(finalTimeout);
             setIsSpeaking(false);
-            resolve();
-          }
-        };
+            resolve(started ? "ok" : "error");
+          };
 
-        window.speechSynthesis.speak(utterance);
-      });
+          // Start watchdog: if neither onstart nor speaking state flips true
+          // within 400 ms, Chrome swallowed the utterance — resolve "silent"
+          // so the caller can retry.
+          setTimeout(() => {
+            if (settled || started) return;
+            if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+              settled = true;
+              clearTimeout(finalTimeout);
+              setIsSpeaking(false);
+              resolve("silent");
+            }
+          }, 400);
+
+          window.speechSynthesis.speak(utterance);
+        });
+
+      let result = await speakOnce();
+      if (result === "silent" || result === "error") {
+        // One retry with a fresh engine state. Chrome often recovers on the
+        // second attempt after we cancel+resume a second time.
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+        try { window.speechSynthesis.resume(); } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 80));
+        result = await speakOnce();
+      }
     },
     [lang, isSynthesisSupported],
   );

@@ -36,6 +36,7 @@ export interface CompleteBookingResult {
   order_type: string;
   reservation_id: string | null;
   order_id: string | null;
+  guest_id: string | null;
   subtotal: number;
   tax: number;
   total: number;
@@ -77,6 +78,7 @@ export async function completeBooking(
       order_type,
       reservation_id: null,
       order_id: null,
+      guest_id: null,
       subtotal: 0,
       tax: 0,
       total: 0,
@@ -131,6 +133,7 @@ export async function completeBooking(
         order_type,
         reservation_id: null,
         order_id: null,
+        guest_id: null,
         subtotal: 0,
         tax: 0,
         total: 0,
@@ -172,6 +175,7 @@ export async function completeBooking(
         order_type,
         reservation_id: null,
         order_id: null,
+        guest_id: guestId ?? null,
         subtotal: 0,
         tax: 0,
         total: 0,
@@ -228,6 +232,7 @@ export async function completeBooking(
         order_type,
         reservation_id: reservationId,
         order_id: null,
+        guest_id: guestId ?? null,
         subtotal: n2(subtotal),
         tax: taxAmount,
         total,
@@ -259,6 +264,7 @@ export async function completeBooking(
     order_type,
     reservation_id: reservationId,
     order_id: orderId,
+    guest_id: guestId ?? null,
     subtotal: n2(subtotal),
     tax: taxAmount,
     total,

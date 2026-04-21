@@ -46,19 +46,35 @@ Deno.serve(async (req) => {
     const text = applyPronunciation(rawText);
     const voiceId = body.voice_id ?? DEFAULT_VOICE_ID;
 
-    const elRes = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}/stream`, {
-      method: "POST",
-      headers: {
-        "xi-api-key": apiKey,
-        "Content-Type": "application/json",
-        Accept: "audio/mpeg",
-      },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_turbo_v2_5",
-        voice_settings: { stability: 0.4, similarity_boost: 0.8, speed: 1.1 },
-      }),
-    });
+    // Call ElevenLabs with one automatic retry on transient failures. Without
+    // this, any 5xx / network blip drops us to Web Speech for that single turn,
+    // which is the main cause of the "voice randomly changes every few turns"
+    // inconsistency reported by users. Stability bumped to 0.5 for more
+    // consistent prosody across turns.
+    const callEleven = () =>
+      fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}/stream`, {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_turbo_v2_5",
+          voice_settings: { stability: 0.5, similarity_boost: 0.8, speed: 1.1 },
+        }),
+      });
+
+    let elRes: Response;
+    try {
+      elRes = await callEleven();
+      if (!elRes.ok && elRes.status >= 500) {
+        elRes = await callEleven();
+      }
+    } catch {
+      elRes = await callEleven();
+    }
 
     if (!elRes.ok) {
       const errText = await elRes.text();

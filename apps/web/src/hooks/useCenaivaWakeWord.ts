@@ -6,42 +6,49 @@ const SpeechRecognitionAPI =
     : null;
 
 // Phonetic variants of "Cenaiva" (pronounced "sin-eye-vuh") that speech
-// recognition engines may return. Add new entries here if you see something
-// unexpected in the console log "[CenaivaWakeWord] heard: …".
+// recognition engines may return when the user says "hey Cenaiva". Every
+// entry MUST start with "hey " — bare forms like "cenaiva" no longer wake
+// the assistant (avoids spurious wakes when the name is mentioned in passing).
 const WAKE_PHRASES = [
-  // Direct spellings
-  "cenaiva", "senaiva", "seneva", "ceneva", "soneva", "caniva", "ceniva", "cenefa",
-  // Phonetic: "sin-eye-vuh" broken up
-  "sin iva", "sin eva", "sine iva", "sine eva",
-  "sin eye va", "sine eye va", "sin i va",
-  "sinai va", "sinai vuh",
-  "seen a va", "seen eva", "see neva", "seena va",
-  // As one word
-  "siniva", "sineva", "sinaiva", "syneva", "syniva",
-  // Partial root matches (long enough to avoid accidental hits)
-  "senai", "cenai", "sinai",
-  // Explicit "hey <name>" forms
+  // Direct spellings after "hey"
   "hey cenaiva", "hey senaiva", "hey seneva", "hey ceneva", "hey ceniva",
-  "hey sinai", "hey sin eye", "hey sine eye", "hey sinaiva", "hey siniva",
-  "hey sin eva", "hey sin iva", "hey seen a va",
-  // ── Observed Chrome transcripts (from live console logs) ──
-  // Session 1: "hey saniva", "hey sonaiva", "hey synova", "case naiva", "hasten ivor"
-  "saniva", "sonaiva", "naiva", "synova",
-  "son iva", "son eva", "son either", "son over",
+  "hey soneva", "hey caniva", "hey cenefa",
+  // Phonetic "sin-eye-vuh" breakdowns
+  "hey sin iva", "hey sin eva", "hey sine iva", "hey sine eva",
+  "hey sin eye va", "hey sine eye va", "hey sin i va",
+  "hey sinai va", "hey sinai vuh", "hey sinai", "hey sinaiva", "hey siniva",
+  "hey sin eye", "hey sine eye",
+  // Observed Chrome transcripts from live console logs
   "hey saniva", "hey sonaiva", "hey synova",
   "hey son iva", "hey son eva", "hey son either", "hey son over",
-  "case naiva", "hasten ivor", "hasten iv",
-  // Session 2: "hastenova", "hey geneva", "hey chennai*", "hey canova", "hey sana/sene"
-  "hastenova", "hasten over",
-  "hey geneva", "geneva",
-  "hey chennai", "hey chennaiwa", "hey cheniva", "chennaiwa", "cheniva",
-  "hey canova", "canova",
-  "hey sana", "hey sene",
-  "hey seneva",
+  "hey geneva", "hey chennai", "hey chennaiwa", "hey cheniva",
+  "hey canova", "hey sana", "hey sene",
+  "hey seen a va", "hey see neva", "hey seena va", "hey seen eva",
+  // Chrome often SLURS "hey cenaiva" into a single word — these ARE
+  // valid wakes even though "hey" isn't a separate token.
+  "hasanova", "hasanov", "hastenova", "hasen over", "hason over",
+  "hasen ova", "hason ova", "hason", "hasen", "hasenov",
+  "hasanova", "hasanovo", "hasanave", "hasenova",
+  "hastenov", "hasten over", "hasten ova", "hasten iv", "hasten ivor",
+  "a son over", "a sin over", "a son ova", "a sen ova",
+  "payson over", "payson ova", "payson",
 ];
 
+// Loose phonetic catch-alls:
+//  1. "hey <word>" where the word sounds like "cenaiva".
+//  2. Slurred single-token forms like "hasanova" / "hastenova" that Chrome
+//     emits when "hey cenaiva" is said quickly as one breath.
+const WAKE_HEY_REGEX =
+  /\bhey[\s,\.!\?\-]+[csk][a-z]*[aeiouy][a-z]*[vfwb][a-z]*\b/i;
+const WAKE_SLURRED_REGEX =
+  /\bh[ae]s(?:[aeiou]n|ten|in)[a-z]*(?:ov|iv|av|ef|eff)[a-z]*\b/i;
+
 function isWakePhrase(transcript: string): boolean {
-  return WAKE_PHRASES.some((phrase) => transcript.includes(phrase));
+  const cleaned = transcript.toLowerCase().replace(/[.,!?]/g, "");
+  if (WAKE_PHRASES.some((phrase) => cleaned.includes(phrase))) return true;
+  if (WAKE_HEY_REGEX.test(cleaned)) return true;
+  if (WAKE_SLURRED_REGEX.test(cleaned)) return true;
+  return false;
 }
 
 // Guard rails for the Chrome SpeechRecognition restart loop.
@@ -114,6 +121,9 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
       recognition.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript.toLowerCase().trim();
+          if (import.meta.env.DEV) {
+            console.log("[WakeWord] heard:", transcript);
+          }
           if (isWakePhrase(transcript)) {
             // Disable BEFORE calling onWake so the onend handler won't
             // schedule an auto-restart and race the command recognizer.

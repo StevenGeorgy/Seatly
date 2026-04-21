@@ -32,7 +32,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "search_restaurants",
       description:
-        "Search dine-in restaurants. Call with no params to show all. Add cuisine_type/city/query when user specifies. Never pass 'near me' as query — use city from context.",
+        "Search dine-in restaurants across ALL cities. Pass ONLY the parameters the user explicitly named. Do NOT default city to the user's detected city — leave city blank unless the user says a specific city like 'in Montreal' / 'Toronto restaurants' / 'near my parents in Calgary'. Pass cuisine_type when user names a cuisine. Pass query for a free-text name or vibe. Never pass 'near me' as query — that is NOT a city and not a name.",
       parameters: {
         type: "object",
         properties: {
@@ -165,6 +165,88 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   },
 ];
 
+// ── Natural-language booking field parsers ───────────────────────────────────
+// Last-resort safety net: if the user clearly said a party size or a date but
+// the model forgot to emit set_booking_field, we inject it ourselves so the
+// next turn sees the field as SET and stops re-asking.
+
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12,
+  a: 1, solo: 1, myself: 1, single: 1,
+  couple: 2, duo: 2, pair: 2,
+};
+
+function parsePartySize(raw: string): number | null {
+  const t = raw.toLowerCase();
+  // "just me" / "solo" / "for one"
+  if (/\b(just\s+me|solo|alone|by\s+myself)\b/.test(t)) return 1;
+  if (/\b(me\s+and\s+my\s+(wife|husband|partner|boyfriend|girlfriend|friend|kid|date))\b/.test(t)) return 2;
+  // "party of N" / "table for N" / "N people" / "N of us"
+  const numMatch = t.match(
+    /\b(?:party of|table for|for|just|group of|we are|we're|make it)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|couple|duo|pair)\b/,
+  );
+  if (numMatch) {
+    const token = numMatch[1];
+    if (/^\d+$/.test(token)) {
+      const n = parseInt(token, 10);
+      if (n >= 1 && n <= 20) return n;
+    }
+    const w = NUMBER_WORDS[token];
+    if (w) return w;
+  }
+  // "N people" / "N guests"
+  const peopleMatch = t.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(people|guests|adults|pax|persons?|of us)\b/);
+  if (peopleMatch) {
+    const token = peopleMatch[1];
+    if (/^\d+$/.test(token)) {
+      const n = parseInt(token, 10);
+      if (n >= 1 && n <= 20) return n;
+    }
+    const w = NUMBER_WORDS[token];
+    if (w) return w;
+  }
+  // Bare "two" / "3" when the assistant just asked party size — last resort.
+  const bare = t.trim().match(/^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/);
+  if (bare) {
+    const token = bare[1];
+    if (/^\d+$/.test(token)) {
+      const n = parseInt(token, 10);
+      if (n >= 1 && n <= 20) return n;
+    }
+    const w = NUMBER_WORDS[token];
+    if (w) return w;
+  }
+  return null;
+}
+
+function parseDate(raw: string): string | null {
+  const t = raw.toLowerCase();
+  const now = new Date();
+  const toISO = (d: Date) => d.toISOString().slice(0, 10);
+  if (/\b(today|tonight|this\s+evening)\b/.test(t)) return toISO(now);
+  if (/\btomorrow\b/.test(t)) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return toISO(d);
+  }
+  const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  for (let i = 0; i < 7; i++) {
+    const re = new RegExp(`\\b(?:this|next|on)?\\s*${weekdays[i]}\\b`);
+    if (re.test(t)) {
+      const d = new Date(now);
+      const diff = (i - d.getDay() + 7) % 7 || 7;
+      d.setDate(d.getDate() + diff);
+      return toISO(d);
+    }
+  }
+  // YYYY-MM-DD literal
+  const iso = raw.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (iso) return iso[1];
+  return null;
+}
+
 // ── Nominatim city lookup ─────────────────────────────────────────────────────
 
 async function resolveCity(lat: number, lng: number): Promise<string> {
@@ -196,21 +278,69 @@ function buildSystemPrompt(opts: {
     ? cart.map((i) => `${i.qty}× ${i.name} @$${i.unit_price}`).join(", ")
     : "empty";
 
+  // Present booking state as an explicit SET/MISSING checklist so the model
+  // can't "forget" that a field has already been collected and re-ask for it.
+  const bs = opts.bookingState as Record<string, unknown>;
+  const fmtField = (label: string, value: unknown) =>
+    value == null || value === ""
+      ? `  - ${label}: MISSING — ask the user for this.`
+      : `  - ${label}: ${JSON.stringify(value)} (SET — DO NOT ask again).`;
+  const bookingChecklist = [
+    fmtField("restaurant_id", bs.restaurant_id),
+    fmtField("party_size", bs.party_size),
+    fmtField("date", bs.date),
+    fmtField("time", bs.time),
+    fmtField("shift_id", bs.shift_id),
+    fmtField("slot_iso", bs.slot_iso),
+    `  - status: ${JSON.stringify(bs.status ?? "idle")}`,
+    `  - reservation_id: ${JSON.stringify(bs.reservation_id ?? null)}`,
+    `  - confirmation_code: ${JSON.stringify(bs.confirmation_code ?? null)}`,
+  ].join("\n");
+
   return `You are Cenaiva, a voice-first dine-in table reservation assistant.
-Today: ${opts.now}. User: ${opts.userName} (first name: ${opts.firstName}). City: ${opts.userCity || "unknown"}. Screen: ${opts.currentScreen}.
+Today: ${opts.now}. User: ${opts.userName} (first name: ${opts.firstName}). Screen: ${opts.currentScreen}.
+User's detected city (MAP ANCHOR ONLY — not a search filter): ${opts.userCity || "unknown"}.
 Has saved card on file: ${opts.hasSavedCard}.
-Current booking state: ${JSON.stringify(opts.bookingState)}.
+
+GEOGRAPHY — restaurants exist in many cities nationwide.
+- The user's detected city is ONLY for centering the map on startup. It is NOT a search filter.
+- Default search is nationwide (pass no city to search_restaurants).
+- Pass city to search_restaurants ONLY when the user explicitly names one ("in Montreal", "Toronto restaurants", "places in Calgary", "my parents' town — Edmonton").
+- Treat phrases like "out of town", "in another city", "somewhere else" as signals to ask which city they want — then re-run search_restaurants with that city.
+- If the user names a city different from their detected city, ALWAYS re-run search_restaurants with the named city — do not refuse or say "I only show local results".
+
+BOOKING STATE (authoritative — trust these values exactly, never re-ask a SET field):
+${bookingChecklist}
 Current cart (${cart.length} items): ${cartSummary}.
 
+PERSPECTIVE — You are the ASSISTANT. You are NEVER the guest.
+- NEVER use first-person singular for ordering, eating, or booking. Forbidden phrasings: "I'd like...", "I'll have...", "I want...", "Let's get...", "I'm craving...", "for me".
+- ALWAYS speak to the user in second person: "You've added X", "Your table is booked", "Would you like to pre-order?".
+- The ONLY valid first-person uses are assistant actions ("Checking availability now.") or clarifications ("Didn't catch that — one more time?").
+- Don't parrot the user's phrasing back as your own intent. If they say "I want sushi", you respond "Looking for sushi now." — not "I want sushi too."
+
 Cenaiva handles DINE-IN RESERVATIONS AND PRE-ORDER PAYMENT ONLY.
-Never mention pickup, delivery, or takeout. If asked, say: "I only handle dine-in table bookings."
+Natural phrases like "I want food from X", "I feel like X", "I'm craving Italian", "let's grab dinner at X" are DINE-IN intents — treat them as restaurant discovery/booking and proceed normally. Do NOT say "I only handle dine-in bookings" for any of these.
+Only deflect with "I only handle dine-in table bookings." when the user EXPLICITLY uses the words "pickup", "delivery", "takeout", "to-go", "drive-thru", or clearly asks for the food to be brought/delivered somewhere else.
 
 FLOW — follow exactly in this order:
 1. The client already greeted the user. The first user message is a cuisine or preference signal — NOT a greeting. Treat it as step 1.
    If booking_state.status is "idle" or missing AND no search_restaurants call has happened in this conversation yet, call search_restaurants ONCE. Emit update_map_markers + show_restaurant_cards and ask which restaurant they'd like.
-2. If search_restaurants has ALREADY been called in this conversation (visible in the message history), DO NOT call it again. Use the "Visible restaurant IDs" from the user message as the current candidate set. If the user refines ("actually show me Italian only"), emit set_filters + update_map_markers using those IDs — do NOT re-run search_restaurants.
+2. If search_restaurants has ALREADY been called in this conversation, DO NOT call it again UNLESS the user changes the search geography or cuisine meaningfully. Re-run search_restaurants when the user:
+   - names a new city ("actually in Montreal", "show me Calgary"),
+   - says "out of town" / "somewhere else" / "a different city" (ask which city first, then re-search),
+   - asks for a cuisine not in the current visible set ("any Korean places?" when the visible candidates are all Italian).
+   Otherwise, if the user just refines an already-visible set ("only Italian", "cheaper ones"), emit set_filters + update_map_markers using the Visible restaurant IDs — do NOT re-run search_restaurants.
 3. When the user names a specific restaurant OR the user message contains "Selected restaurant ID: <uuid>", that restaurant is CONFIRMED. Immediately emit highlight_restaurant + start_booking with that ID and move to step 4 — do NOT ask "which one?" again.
-4. Collect party_size and date via set_booking_field. Call check_availability. User picks slot → select_time_slot.
+   3a. FUZZY NAME MATCHING: the user is talking to a speech recognizer, so their pronunciation of a restaurant name will be approximate ("steven gorgey" / "steve georgy" / "georges inc" / "gorgi inc"). When "Visible restaurant candidates" are listed in the user message, score the user's reply against each candidate name (phonetic + token overlap). If ONE candidate clearly wins, treat it as CONFIRMED and emit highlight_restaurant + start_booking on it — do not ask again. If TWO candidates are close, emit highlight_restaurant on your best guess and say "Did you mean <name>?" — then next_expected_input='confirmation'.
+   3b. NEVER ask the same disambiguation question more than twice in a row. If you've already asked "which restaurant?" twice, the next turn MUST commit to a best-guess confirmation ("Did you mean X?") — not another "which one?".
+4. Collect party_size and date via set_booking_field. Ask ONLY for fields marked MISSING in the BOOKING STATE checklist above — never re-ask a field that is already SET.
+   4a. Parse natural-language answers from voice users into structured values and emit set_booking_field immediately:
+       - party_size: "two" / "for 2" / "party of three" / "me and my wife" → 2/3/2. "a couple" → 2. "solo" / "just me" → 1.
+       - date: "tonight" / "today" → today's YYYY-MM-DD. "tomorrow" → today+1. "Friday" / "next Saturday" → the next occurrence of that weekday in YYYY-MM-DD.
+       - time: "7pm" → "19:00". "seven thirty" → "19:30". "noon" → "12:00".
+   4b. If the BOOKING STATE checklist shows party_size SET and date SET, DO NOT ask for them again — call check_availability straight away.
+   Call check_availability only once all three of restaurant_id, date, and party_size are SET. User picks slot → select_time_slot.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
 6. Then emit offer_preorder and ask: "Want to pre-order from the menu?" (≤ 10 words).
    a. If no: emit show_post_booking_questions. DONE.
@@ -230,6 +360,8 @@ FLOW — follow exactly in this order:
 RULES:
 - spoken_text ≤ 20 words. No filler ("Sure!", "Of course!", "Great choice!"). Direct.
 - One question per turn.
+- NEVER re-ask for a booking field that is already SET in the BOOKING STATE checklist — read the checklist first every turn.
+- NEVER speak as if YOU are the guest (see PERSPECTIVE above).
 - NEVER say "no reservations available" unless you've called check_availability and confirmed it returned no slots. If search_restaurants returns results, show them.
 - NEVER call check_availability unless restaurant_id, date, AND party_size are all known.
 - If you have enough info, act (emit actions) instead of asking.
@@ -296,6 +428,27 @@ Deno.serve(async (req) => {
       ? await resolveCity(user_location.lat, user_location.lng)
       : "";
 
+    // Pre-fill booking_state from the current transcript so the system prompt
+    // sees party_size/date as SET. Without this the model was ignoring its own
+    // set_booking_field action across turns and re-asking the same questions.
+    const preFilled: { party_size?: number; date?: string } = {};
+    if (transcript) {
+      if (booking_state.party_size == null) {
+        const n = parsePartySize(transcript);
+        if (n != null) {
+          booking_state.party_size = n;
+          preFilled.party_size = n;
+        }
+      }
+      if (booking_state.date == null) {
+        const d = parseDate(transcript);
+        if (d) {
+          booking_state.date = d;
+          preFilled.date = d;
+        }
+      }
+    }
+
     // Conversation persistence
     let conversationId = incomingConvId;
     if (!conversationId) {
@@ -307,24 +460,26 @@ Deno.serve(async (req) => {
       conversationId = conv?.id ?? crypto.randomUUID();
     }
 
-    // Load last 10 messages
+    // Load last 40 messages. 10 was too small — a single restaurant-picking
+    // flow with 2-3 tool calls per turn would push the party_size/date answer
+    // out of the window within a few turns, making the model re-ask for it.
     const { data: history } = await supabaseAdmin
       .from("chat_messages")
       .select("role, content, metadata")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(40);
 
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    const rawMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
     for (const msg of (history ?? []).reverse()) {
       if (msg.role === "user") {
-        messages.push({ role: "user", content: msg.content });
+        rawMessages.push({ role: "user", content: msg.content });
       } else if (msg.role === "assistant") {
-        messages.push({ role: "assistant", content: msg.content });
+        rawMessages.push({ role: "assistant", content: msg.content });
       } else if (msg.role === "tool_call") {
         const meta = msg.metadata as Record<string, unknown>;
-        messages.push({
+        rawMessages.push({
           role: "assistant",
           content: null,
           tool_calls: [{
@@ -335,7 +490,7 @@ Deno.serve(async (req) => {
         });
       } else if (msg.role === "tool_result") {
         const meta = msg.metadata as Record<string, unknown>;
-        messages.push({
+        rawMessages.push({
           role: "tool",
           tool_call_id: meta.tool_use_id as string,
           content: msg.content,
@@ -343,13 +498,113 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Also scan every prior user transcript in this conversation — the user
+    // may have said "for 4 tomorrow" 5 turns ago and the model still hasn't
+    // emitted set_booking_field. Don't let that field stay MISSING any longer.
+    if (booking_state.party_size == null || booking_state.date == null) {
+      for (const msg of (history ?? [])) {
+        if (msg.role !== "user" || !msg.content) continue;
+        if (booking_state.party_size == null) {
+          const n = parsePartySize(msg.content);
+          if (n != null) {
+            booking_state.party_size = n;
+            preFilled.party_size = n;
+          }
+        }
+        if (booking_state.date == null) {
+          const d = parseDate(msg.content);
+          if (d) {
+            booking_state.date = d;
+            preFilled.date = d;
+          }
+        }
+        if (booking_state.party_size != null && booking_state.date != null) break;
+      }
+    }
+
+    // Sanitize the reconstructed history for OpenAI:
+    // 1. Tool messages MUST directly follow the assistant message that
+    //    emitted their tool_call. If ordering is wrong (same-timestamp
+    //    inserts) we fix it by indexing calls → results first.
+    // 2. Drop orphan tool messages AND tool_calls whose results are missing.
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    // Build a map of tool_call_id → tool message so we can re-attach them in
+    // the correct position even if they appeared early in the history.
+    const toolResultById = new Map<string, OpenAI.Chat.ChatCompletionMessageParam>();
+    for (const m of rawMessages) {
+      if (m.role === "tool") {
+        const id = (m as { tool_call_id?: string }).tool_call_id;
+        if (id) toolResultById.set(id, m);
+      }
+    }
+
+    for (const m of rawMessages) {
+      if (m.role === "assistant" && "tool_calls" in m && m.tool_calls?.length) {
+        // Keep only tool_calls that have a corresponding tool_result.
+        const resolved = m.tool_calls.filter((tc) => toolResultById.has(tc.id));
+        if (resolved.length) {
+          messages.push({ ...m, tool_calls: resolved });
+          // Immediately follow with the matching tool result messages so the
+          // assistant ↔ tool pairing is airtight, regardless of original order.
+          for (const tc of resolved) {
+            const res = toolResultById.get(tc.id);
+            if (res) messages.push(res);
+          }
+        } else if (m.content) {
+          messages.push({ role: "assistant", content: m.content as string });
+        }
+        // Drop fully-orphaned tool_calls (no text, no resolved results).
+        continue;
+      }
+      if (m.role === "tool") {
+        // Already emitted right after its parent assistant above — skip here.
+        continue;
+      }
+      messages.push(m);
+    }
+
+    // Fetch names for the visible restaurants so the LLM has something to
+    // fuzzy-match spoken transcripts against. Without names, STT jitter on a
+    // proper noun (e.g. "Steven Georgy" → "steven gorgey") leaves the model
+    // with no way to connect the user's reply to a candidate and it loops
+    // "which restaurant?" forever.
+    let visibleRestaurantsLine = "";
+    if (visible_restaurant_ids.length) {
+      const { data: visRows } = await supabaseAdmin
+        .from("restaurants")
+        .select("id, name, cuisine_type")
+        .in("id", visible_restaurant_ids.slice(0, 8));
+      if (visRows?.length) {
+        visibleRestaurantsLine =
+          "Visible restaurant candidates (match user's spoken reply against these names — spelling/pronunciation will be approximate):\n" +
+          (visRows as Array<{ id: string; name: string; cuisine_type: string | null }>)
+            .map((r) => `  - "${r.name}"${r.cuisine_type ? ` (${r.cuisine_type})` : ""} → id=${r.id}`)
+            .join("\n");
+      } else {
+        visibleRestaurantsLine = `Visible restaurant IDs: ${visible_restaurant_ids.slice(0, 8).join(", ")}`;
+      }
+    }
+
+    // Count how many turns in a row we've already asked the user to pick a
+    // restaurant. If the last 2 assistant messages both asked "which one?",
+    // the next turn MUST commit to a best-guess confirmation instead of
+    // asking yet again.
+    const recentAssistant = (history ?? [])
+      .filter((m) => m.role === "assistant")
+      .slice(0, 2)
+      .map((m) => (m.content ?? "").toLowerCase());
+    const repeatedWhichAsk = recentAssistant.filter((c) =>
+      /which|would you like|pick one|choose/.test(c)
+    ).length >= 2;
+
     const userContent = [
       transcript ? `User said: "${transcript}"` : "User opened the assistant.",
       selected_restaurant_id
         ? `⚠️ User has explicitly selected restaurant ID: ${selected_restaurant_id}. This selection is CONFIRMED — emit start_booking + highlight_restaurant and move to party_size. Do NOT ask which restaurant again.`
         : "",
-      visible_restaurant_ids.length
-        ? `Visible restaurant IDs: ${visible_restaurant_ids.slice(0, 8).join(", ")}`
+      visibleRestaurantsLine,
+      repeatedWhichAsk && !selected_restaurant_id
+        ? "⚠️ You have already asked 'which restaurant?' at least twice. Do NOT ask it again. Take the closest-sounding candidate from the list above and emit highlight_restaurant on its id + spoken_text 'Did you mean <name>?' Set next_expected_input='confirmation'."
         : "",
     ].filter(Boolean).join("\n");
 
@@ -373,17 +628,25 @@ Deno.serve(async (req) => {
     });
 
     // ── Tool-use loop ─────────────────────────────────────────────────────────
+    // The model calls tools to gather data and perform actions. During the
+    // loop we record every tool execution into `derivedActions` / booking+map
+    // deltas so the final JSON-turn response is reinforced server-side even
+    // if the model drops an action from its output.
     const MAX_ITER = 5;
     let iterations = 0;
     let lastReservationId: string | null = (booking_state.reservation_id as string) ?? null;
     let lastGuestId: string | null = null;
-    // Track the most recent search_restaurants result so we can inject map markers
-    // even if the model forgets to emit update_map_markers in its final JSON.
     let lastSearchIds: string[] = [];
+    let lastOrderId: string | null = (booking_state.order_id as string) ?? null;
+    let lastTextReply = "";
 
-    // Detect whether search_restaurants has already run in this conversation.
-    // When true, the model must NOT re-search — it should use visible_restaurant_ids
-    // from the client instead. This prevents the "asks which restaurant twice" bug.
+    // Derived UI actions + deltas accumulated during tool execution.
+    const derivedActions: Array<Record<string, unknown>> = [];
+    const bookingDelta: Record<string, unknown> = {};
+    const mapDelta: Record<string, unknown> = {};
+    const toolsExecuted: string[] = [];
+    let lastCheckoutPath: string | null = null;
+
     const alreadySearched = (history ?? []).some(
       (m) => m.role === "tool_call" &&
         ((m.metadata as Record<string, unknown>)?.tool_name as string | undefined) === "search_restaurants"
@@ -412,6 +675,12 @@ Deno.serve(async (req) => {
 
       const choice = completion.choices[0];
 
+      // Capture any plain text on this turn — the model sometimes returns
+      // both text AND tool_calls. The last non-empty text is our spoken_text.
+      if (choice.message.content && typeof choice.message.content === "string") {
+        lastTextReply = choice.message.content;
+      }
+
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
         messages.push(choice.message as OpenAI.Chat.ChatCompletionMessageParam);
 
@@ -419,8 +688,20 @@ Deno.serve(async (req) => {
 
         for (const tc of choice.message.tool_calls) {
           const toolName = tc.function.name;
-          const toolInput = JSON.parse(tc.function.arguments);
+          // Model occasionally emits empty / malformed JSON for args. Don't
+          // let that crash the whole handler — log and continue with {} args,
+          // then the tool's own "required field missing" branch will reject
+          // cleanly and the model will retry.
+          // deno-lint-ignore no-explicit-any
+          let toolInput: any = {};
+          try {
+            toolInput = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+          } catch (parseErr) {
+            console.warn(`Bad tool args for ${toolName}:`, tc.function.arguments, parseErr);
+            toolInput = {};
+          }
           let toolResult = "";
+          toolsExecuted.push(toolName);
 
           // ── search_restaurants ────────────────────────────────────────────
           if (toolName === "search_restaurants") {
@@ -443,9 +724,13 @@ Deno.serve(async (req) => {
             const { data, error } = await query;
             if (!error && data) {
               lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
+              derivedActions.push({ type: "update_map_markers", restaurant_ids: lastSearchIds });
+              derivedActions.push({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
+              mapDelta.visible = true;
+              mapDelta.marker_restaurant_ids = lastSearchIds;
             }
             toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
-            didSearch = true; // force break after — prevents eager check_availability calls
+            didSearch = true; // break after — don't eagerly chain check_availability without date/party_size
           }
 
           // ── check_availability ────────────────────────────────────────────
@@ -462,6 +747,7 @@ Deno.serve(async (req) => {
                 toolInput.party_size,
               );
               toolResult = JSON.stringify(result);
+              derivedActions.push({ type: "load_availability" });
             }
           }
 
@@ -481,6 +767,12 @@ Deno.serve(async (req) => {
             if (result.reservation_id) lastReservationId = result.reservation_id;
             if (result.guest_id) lastGuestId = result.guest_id;
             toolResult = JSON.stringify(result);
+            if (result.reservation_id && result.confirmation_code) {
+              derivedActions.push({ type: "show_confirmation", confirmation_code: result.confirmation_code });
+              derivedActions.push({ type: "show_exit_x" });
+              bookingDelta.reservation_id = result.reservation_id;
+              bookingDelta.confirmation_code = result.confirmation_code;
+            }
           }
 
           // ── patch_post_booking ────────────────────────────────────────────
@@ -520,6 +812,9 @@ Deno.serve(async (req) => {
                 ...(i.dietary_flags ? { dietary_flags: i.dietary_flags } : {}),
               }));
               toolResult = JSON.stringify({ items: compactItems });
+              if (toolInput.restaurant_id) {
+                derivedActions.push({ type: "show_menu", restaurant_id: toolInput.restaurant_id });
+              }
             }
           }
 
@@ -603,6 +898,10 @@ Deno.serve(async (req) => {
                 const checkoutPath = rest?.slug
                   ? `/r/${rest.slug}?order_id=${order.id}&step=checkout`
                   : null;
+
+                lastOrderId = order.id;
+                lastCheckoutPath = checkoutPath;
+                bookingDelta.order_id = order.id;
 
                 toolResult = JSON.stringify({
                   success: true,
@@ -704,6 +1003,7 @@ Deno.serve(async (req) => {
                           currency: rest?.currency || "CAD", paid_at: paidAt,
                           card_brand: savedCard.brand, card_last4: savedCard.last4, mode: "live",
                         });
+                        derivedActions.push({ type: "show_payment_success", amount_charged: total });
                       } catch (stripeErr: unknown) {
                         const msg = (stripeErr as { code?: string; message?: string });
                         toolResult = JSON.stringify({
@@ -736,27 +1036,30 @@ Deno.serve(async (req) => {
                       currency: "CAD", paid_at: paidAt,
                       card_brand: savedCard.brand, card_last4: savedCard.last4, mode: "test",
                     });
+                    derivedActions.push({ type: "show_payment_success", amount_charged: total });
                   }
                 }
               }
             }
           }
 
-          // Persist tool call + result
-          await supabaseAdmin.from("chat_messages").insert([
-            {
-              conversation_id: conversationId,
-              role: "tool_call",
-              content: JSON.stringify(toolInput),
-              metadata: { kind: "orchestrator", tool_use_id: tc.id, tool_name: toolName, input: toolInput },
-            },
-            {
-              conversation_id: conversationId,
-              role: "tool_result",
-              content: toolResult,
-              metadata: { kind: "orchestrator", tool_use_id: tc.id },
-            },
-          ]);
+          // Persist tool call + result. Split into two sequential inserts so
+          // the DB assigns DISTINCT created_at values — a single batched
+          // insert gives both rows the same timestamp, and when we later
+          // reload history the `tool` message can land BEFORE its
+          // parent `tool_call`, which OpenAI rejects with a 400.
+          await supabaseAdmin.from("chat_messages").insert({
+            conversation_id: conversationId,
+            role: "tool_call",
+            content: JSON.stringify(toolInput),
+            metadata: { kind: "orchestrator", tool_use_id: tc.id, tool_name: toolName, input: toolInput },
+          });
+          await supabaseAdmin.from("chat_messages").insert({
+            conversation_id: conversationId,
+            role: "tool_result",
+            content: toolResult,
+            metadata: { kind: "orchestrator", tool_use_id: tc.id },
+          });
 
           messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
         }
@@ -769,6 +1072,11 @@ Deno.serve(async (req) => {
     }
 
     // ── Final structured JSON turn ────────────────────────────────────────────
+    // Ask the model to produce the full structured response. This is the core
+    // JSON contract the web app consumes. Server-derived actions (from tool
+    // execution above) and transcript parsers below are layered on top as
+    // belt-and-suspenders so the UI always advances even when the model drops
+    // an action.
     const jsonCompletion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       max_tokens: 500,
@@ -810,6 +1118,19 @@ Deno.serve(async (req) => {
       };
     }
 
+    // Hard-override spoken_text when a restaurant was just selected but we
+    // still need party_size or date. The model often says "Booking X in Y."
+    // instead of asking — which gives the user no prompt to continue.
+    const bsPartyAfter = (booking_state.party_size as number | null | undefined) ?? null;
+    const bsDateAfter = (booking_state.date as string | null | undefined) ?? null;
+    if (selected_restaurant_id && bsPartyAfter == null && !bsDateAfter) {
+      parsed.spoken_text = "How many guests, and what date?";
+    } else if (selected_restaurant_id && bsPartyAfter == null) {
+      parsed.spoken_text = "How many guests?";
+    } else if (selected_restaurant_id && !bsDateAfter) {
+      parsed.spoken_text = "What date?";
+    }
+
     parsed.conversation_id = conversationId;
     // Ensure ui_actions is always a clean array — model occasionally returns null or nulls inside.
     if (!Array.isArray(parsed.ui_actions)) parsed.ui_actions = [];
@@ -817,29 +1138,107 @@ Deno.serve(async (req) => {
       (a): a is Record<string, unknown> => a != null && typeof (a as Record<string, unknown>).type === "string",
     );
 
-    // Guarantee map filtering: if search_restaurants ran and the model omitted
-    // update_map_markers from ui_actions, inject it now so the client always
-    // filters the map and rail to matching restaurants.
+    // ── Merge server-derived actions (from tool execution) ───────────────────
+    // Prepend actions the server observed from tool calls. If the model
+    // already emitted the same action type, we skip the duplicate to keep
+    // the client reducer idempotent.
+    const responseActions = parsed.ui_actions as Array<Record<string, unknown>>;
+    const hasActionWith = (type: string, matchKey?: string, matchVal?: unknown) =>
+      responseActions.some((a) =>
+        a.type === type && (matchKey == null || a[matchKey] === matchVal),
+      );
+    for (const d of derivedActions) {
+      const type = d.type as string;
+      // Match on the distinguishing field for ids, so we don't collapse two
+      // different set_booking_field actions into one.
+      if (type === "set_booking_field") {
+        if (hasActionWith("set_booking_field", "field", d.field)) continue;
+      } else if (type === "highlight_restaurant" || type === "start_booking" || type === "show_menu") {
+        if (hasActionWith(type, "restaurant_id", d.restaurant_id)) continue;
+      } else if (hasActionWith(type)) {
+        continue;
+      }
+      responseActions.unshift(d);
+    }
+
+    // Merge server booking delta (tool execution) into parsed.booking.
+    if (Object.keys(bookingDelta).length > 0) {
+      parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), ...bookingDelta };
+    }
+    // Merge server map delta.
+    if (Object.keys(mapDelta).length > 0) {
+      parsed.map = { ...((parsed.map as Record<string, unknown>) ?? {}), ...mapDelta };
+    }
+
+    // ── Safety-net: transcript parsers (party_size / date) ────────────────────
+    const responseBooking = (parsed.booking as Record<string, unknown> | null) ?? null;
+    const currentPartySize =
+      (responseBooking?.party_size as number | null | undefined) ??
+      (booking_state.party_size as number | null | undefined) ??
+      null;
+    const currentDate =
+      (responseBooking?.date as string | null | undefined) ??
+      (booking_state.date as string | null | undefined) ??
+      null;
+
+    const alreadySetsField = (field: string) =>
+      responseActions.some(
+        (a) => a.type === "set_booking_field" && a.field === field,
+      );
+
+    // Emit set_booking_field for anything we pre-filled at the top of the
+    // handler (from transcript / history). This guarantees the client state
+    // syncs so the NEXT request sees the field as SET.
+    if (preFilled.party_size != null && !alreadySetsField("party_size")) {
+      responseActions.push({ type: "set_booking_field", field: "party_size", value: preFilled.party_size });
+      parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), party_size: preFilled.party_size };
+    }
+    if (preFilled.date && !alreadySetsField("date")) {
+      responseActions.push({ type: "set_booking_field", field: "date", value: preFilled.date });
+      parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), date: preFilled.date };
+    }
+
+    if (transcript) {
+      if (currentPartySize == null && !alreadySetsField("party_size")) {
+        const parsedSize = parsePartySize(transcript);
+        if (parsedSize != null) {
+          responseActions.push({ type: "set_booking_field", field: "party_size", value: parsedSize });
+          parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), party_size: parsedSize };
+        }
+      }
+      if (currentDate == null && !alreadySetsField("date")) {
+        const parsedDate = parseDate(transcript);
+        if (parsedDate) {
+          responseActions.push({ type: "set_booking_field", field: "date", value: parsedDate });
+          parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), date: parsedDate };
+        }
+      }
+    }
+
+    // ── Guarantee map filtering on a fresh search ─────────────────────────────
     if (lastSearchIds.length > 0) {
-      const actions = (parsed.ui_actions as Array<{ type: string }>) ?? [];
-      const hasMarkerAction = actions.some(
+      const hasMarkerAction = responseActions.some(
         (a) => a.type === "update_map_markers" || a.type === "show_restaurant_cards",
       );
       if (!hasMarkerAction) {
-        parsed.ui_actions = [
-          { type: "update_map_markers", restaurant_ids: lastSearchIds },
-          { type: "show_restaurant_cards", restaurant_ids: lastSearchIds },
-          ...actions,
-        ];
+        responseActions.unshift({ type: "update_map_markers", restaurant_ids: lastSearchIds });
+        responseActions.unshift({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
       }
-      // Also patch the map delta so marker_restaurant_ids is always present.
-      const mapDelta = (parsed.map ?? {}) as Record<string, unknown>;
-      mapDelta.visible = true;
-      if (!mapDelta.marker_restaurant_ids) {
-        mapDelta.marker_restaurant_ids = lastSearchIds;
+      const mapPatch = ((parsed.map as Record<string, unknown> | null) ?? {}) as Record<string, unknown>;
+      mapPatch.visible = true;
+      if (!mapPatch.marker_restaurant_ids) {
+        mapPatch.marker_restaurant_ids = lastSearchIds;
       }
-      parsed.map = mapDelta;
+      parsed.map = mapPatch;
     }
+
+    // Prevent unused-var warnings for state we track for downstream observability.
+    void lastOrderId;
+    void lastCheckoutPath;
+    void lastGuestId;
+    void lastReservationId;
+    void lastTextReply;
+    void toolsExecuted;
 
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: conversationId,
@@ -850,7 +1249,15 @@ Deno.serve(async (req) => {
 
     return jsonRes(parsed);
   } catch (err) {
-    console.error("cenaiva-orchestrate error:", err);
-    return jsonRes({ error: String(err) }, 500);
+    const e = err as { message?: string; stack?: string; status?: number; code?: string };
+    console.error("cenaiva-orchestrate error:", e?.message, e?.stack);
+    return jsonRes(
+      {
+        error: e?.message ?? String(err),
+        code: e?.code ?? null,
+        kind: e?.status ? `upstream_${e.status}` : "unhandled",
+      },
+      500,
+    );
   }
 });

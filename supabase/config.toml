@@ -1,0 +1,32 @@
+# Supabase project config for Edge Functions.
+#
+# Every function below that performs its own JWT decoding must set
+# verify_jwt = false — otherwise the gateway rejects ES256-signed session
+# tokens (from the migrated JWT Signing Keys) with
+# "UNSUPPORTED_TOKEN_ALGORITHM" before our code ever runs.
+
+project_id = "exbjodmnpdiayfzrdyux"
+
+[functions.cenaiva-orchestrate]
+verify_jwt = false
+
+[functions.cenaiva-chat]
+verify_jwt = false
+
+[functions.deepgram-live-token]
+verify_jwt = false
+
+[functions.elevenlabs-tts]
+verify_jwt = false
+
+[functions.stripe-charge-order]
+verify_jwt = false
+
+[functions.stripe-setup-intent]
+verify_jwt = false
+
+[functions.stripe-list-methods]
+verify_jwt = false
+
+[functions.generate-menu-suggestions]
+verify_jwt = false
