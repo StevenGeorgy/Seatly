@@ -123,7 +123,16 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
     case "update_map_markers":
       return {
         ...state,
-        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids ?? [], visible: true },
+        map: {
+          ...state.map,
+          // Preserve existing filter when the action omits restaurant_ids —
+          // clobbering to [] would silently drop the cuisine filter and show
+          // every restaurant again.
+          marker_restaurant_ids: Array.isArray(action.restaurant_ids)
+            ? action.restaurant_ids
+            : state.map.marker_restaurant_ids,
+          visible: true,
+        },
       };
 
     case "highlight_restaurant":
@@ -135,7 +144,13 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
     case "show_restaurant_cards":
       return {
         ...state,
-        map: { ...state.map, marker_restaurant_ids: action.restaurant_ids ?? [], visible: true },
+        map: {
+          ...state.map,
+          marker_restaurant_ids: Array.isArray(action.restaurant_ids)
+            ? action.restaurant_ids
+            : state.map.marker_restaurant_ids,
+          visible: true,
+        },
       };
 
     case "open_restaurant_preview":
@@ -193,11 +208,16 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
       };
 
     case "show_confirmation":
+      // Land directly in `offering_preorder` so the BookingSheet renders the
+      // "Would you like to pre-order from the menu?" prompt next to the
+      // confirmation card. Previously the LLM was expected to emit
+      // `offer_preorder` in the same response, which was unreliable — this
+      // makes the preorder question deterministic after every booking.
       return {
         ...state,
         booking: {
           ...state.booking,
-          status: "confirmed",
+          status: "offering_preorder",
           confirmation_code: action.confirmation_code,
         },
         customerAccepted: true,
@@ -380,6 +400,35 @@ export function assistantReducer(
         } catch {
           // Malformed action — skip rather than crash
         }
+      }
+
+      // ── Safety net: a reservation was just created but the LLM didn't emit
+      // show_confirmation (or emitted something that skipped straight past the
+      // preorder offer). Force the booking into `offering_preorder` so the
+      // Y/N preorder prompt always appears after a successful booking.
+      const wasNotBooked = !state.booking.reservation_id;
+      const isNowBooked = !!next.booking.reservation_id;
+      const alreadyPastPreorder: BookingState["status"][] = [
+        "browsing_menu",
+        "reviewing_cart",
+        "choosing_tip_timing",
+        "choosing_tip_amount",
+        "choosing_payment_split",
+        "charging",
+        "paid",
+        "post_booking",
+      ];
+      if (
+        wasNotBooked &&
+        isNowBooked &&
+        !alreadyPastPreorder.includes(next.booking.status) &&
+        next.booking.status !== "offering_preorder"
+      ) {
+        next = {
+          ...next,
+          booking: { ...next.booking, status: "offering_preorder" },
+          customerAccepted: true,
+        };
       }
 
       return next;

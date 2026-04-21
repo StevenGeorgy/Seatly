@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
+import { NOISE_ROBUST_AUDIO_CONSTRAINTS } from "@/hooks/useDeepgramTranscription";
 import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
@@ -36,6 +37,20 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     isOpenRef.current = state.isOpen;
   }, [state.isOpen]);
 
+  // On unmount (route change away from the customer app) cancel any queued
+  // speech + stop any active recognition. Without this, utterances keep
+  // playing into the next page and the mic stream is held open.
+  useEffect(() => {
+    return () => {
+      voice.stopSpeaking();
+      voice.stopListening();
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Client-side greeting — no LLM roundtrip, instant playback
   useEffect(() => {
     if (!initialGreeting) return;
@@ -65,6 +80,9 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     } else if (state.voiceStatus === "speaking") {
       voice.stopSpeaking();
     } else {
+      // Prime the Web Speech audio pipeline inside this user-gesture callback
+      // so the browser unlocks audio output before the first greeting/TTS call.
+      voice.primeTTS();
       void assistant?.startListening();
     }
   };
@@ -137,18 +155,9 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             </button>
           )}
 
-          {/* Map layer */}
+          {/* Map layer — always visible while the shell is open. */}
           <div className={cn("flex-1 relative", bookingActive && "h-[45%] flex-none")}>
-            {state.map.visible || true ? (
-              <CustomerMap restaurants={restaurants} />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-[#111]">
-                <div className="text-center">
-                  <p className="text-5xl mb-3">🗺️</p>
-                  <p className="text-white/30 text-sm">Ask for a restaurant to see the map</p>
-                </div>
-              </div>
-            )}
+            <CustomerMap restaurants={restaurants} />
 
             {/* Spoken text overlay */}
             <AnimatePresence>
@@ -229,7 +238,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                     <button
                       type="button"
                       onClick={() => {
-                        navigator.mediaDevices?.getUserMedia({ audio: true })
+                        navigator.mediaDevices?.getUserMedia({ audio: NOISE_ROBUST_AUDIO_CONSTRAINTS })
                           .then((s) => { s.getTracks().forEach((t) => t.stop()); dispatch({ type: "SET_VOICE_STATUS", status: "idle" }); })
                           .catch(() => {});
                       }}

@@ -31,6 +31,11 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
   if (!visible.length) return null;
 
   const handleSelect = (r: Restaurant) => {
+    // Guard: ignore taps while the orchestrator is already processing a request.
+    // The active mic is stopped inside AssistantProvider.sendTranscript — calling
+    // voice.stopListening() from here would target a different hook instance's
+    // refs and leave Chrome's actual SpeechRecognition running.
+    if (state.voiceStatus === "processing") return;
     dispatch({ type: "highlight_restaurant", restaurant_id: r.id });
     void assistant?.sendTranscript(`I want to book at ${r.name}`, { restaurantId: r.id });
   };

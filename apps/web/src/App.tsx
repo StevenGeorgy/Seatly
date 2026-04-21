@@ -2,10 +2,6 @@ import { BrowserRouter, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 
 import { AuthProvider } from "@/contexts/auth-context";
-// Legacy staff chat (owner mode on /dashboard) — kept untouched
-import { CenaivaProvider } from "@/components/cenaiva/CenaivaProvider";
-import { CenaivaButton } from "@/components/cenaiva/CenaivaButton";
-import { CenaivaDrawer } from "@/components/cenaiva/CenaivaDrawer";
 // New voice-first customer assistant
 import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { CenaivaVoiceShell } from "@/components/cenaiva/CenaivaVoiceShell";
@@ -24,19 +20,20 @@ function AuthedCenaivaUI() {
 
   if (!user || PUBLIC_PATHS.has(pathname) || pathname.startsWith("/auth/")) return null;
 
-  // Dashboard routes — legacy side chat for restaurant management only
-  if (pathname.startsWith("/dashboard")) {
-    return (
-      <>
-        <CenaivaButton />
-        <CenaivaDrawer />
-      </>
-    );
-  }
+  // Dashboard mounts its own legacy CenaivaProvider + drawer inside DashboardLayout.
+  // Hide the customer voice FAB and shell for dashboard routes.
+  if (pathname.startsWith("/dashboard")) return null;
 
-  // All other routes (customer-facing) — voice-first orb FAB
-  // Shown for both pure customers and staff browsing in customer view
-  return <CustomerVoiceOrbFAB />;
+  // All other routes (customer-facing) — voice-first orb FAB + voice shell.
+  // Mounting the shell here (instead of at the app root) keeps usePublicRestaurants,
+  // useCenaivaVoice, and MapLibre GL contexts from living on /, /login, /dashboard/*
+  // — the biggest source of idle memory growth.
+  return (
+    <>
+      <CustomerVoiceOrbFAB />
+      <CenaivaVoiceShell initialGreeting />
+    </>
+  );
 }
 
 function CustomerVoiceOrbFAB() {
@@ -63,28 +60,24 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <CenaivaProvider>
-          <AssistantProvider>
-            <TooltipProvider delayDuration={300}>
-              <DevSupabaseBanner />
-              <AppRoutes />
-              <AuthedCenaivaUI />
-              {/* Global voice shell — greets user by name on every open */}
-              <CenaivaVoiceShell initialGreeting />
-              <Toaster
-                richColors
-                position="top-center"
-                toastOptions={{
-                  style: {
-                    background: "#1A1A1A",
-                    border: "1px solid #2E2E2E",
-                    color: "#FFFFFF",
-                  },
-                }}
-              />
-            </TooltipProvider>
-          </AssistantProvider>
-        </CenaivaProvider>
+        <AssistantProvider>
+          <TooltipProvider delayDuration={300}>
+            <DevSupabaseBanner />
+            <AppRoutes />
+            <AuthedCenaivaUI />
+            <Toaster
+              richColors
+              position="top-center"
+              toastOptions={{
+                style: {
+                  background: "#1A1A1A",
+                  border: "1px solid #2E2E2E",
+                  color: "#FFFFFF",
+                },
+              }}
+            />
+          </TooltipProvider>
+        </AssistantProvider>
       </AuthProvider>
     </BrowserRouter>
   );

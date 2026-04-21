@@ -5,7 +5,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardTopBar } from "@/components/dashboard/DashboardTopBar";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { useCenaiva } from "@/components/cenaiva/CenaivaProvider";
+import { CenaivaProvider, useCenaiva } from "@/components/cenaiva/CenaivaProvider";
+import { CenaivaButton } from "@/components/cenaiva/CenaivaButton";
+import { CenaivaDrawer } from "@/components/cenaiva/CenaivaDrawer";
 import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +81,17 @@ function PageSkeleton() {
 }
 
 export default function DashboardLayout() {
+  /** Legacy staff chat stack is scoped here so customer routes don't mount it. */
+  return (
+    <CenaivaProvider>
+      <DashboardShell />
+      <CenaivaButton />
+      <CenaivaDrawer />
+    </CenaivaProvider>
+  );
+}
+
+function DashboardShell() {
   const { pathname } = useLocation();
   const { selectedRestaurantId } = useRestaurantScope();
 

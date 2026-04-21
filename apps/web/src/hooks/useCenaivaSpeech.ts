@@ -18,6 +18,22 @@ function applyPronunciation(text: string): string {
 // Gives the user time to pause mid-sentence without being cut off.
 const SILENCE_TIMEOUT_MS = 1500;
 
+/**
+ * Chrome loads voices asynchronously. The first speechSynthesis.speak() call
+ * silently fails if getVoices() is still empty. This helper waits up to 2 s
+ * for the voices list to populate before proceeding.
+ */
+function waitForVoices(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) { resolve(); return; }
+    if (window.speechSynthesis.getVoices().length > 0) { resolve(); return; }
+    const handler = () => { resolve(); window.speechSynthesis.removeEventListener("voiceschanged", handler); };
+    window.speechSynthesis.addEventListener("voiceschanged", handler);
+    // Fallback: resolve anyway after 2 s even if the event never fires
+    setTimeout(resolve, 2000);
+  });
+}
+
 export function useCenaivaSpeech(lang: string = "en-CA") {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -123,19 +139,34 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
     setIsRecording(false);
   }, []);
 
+  /**
+   * Prime Web Speech synthesis inside a user-gesture callback so Chrome
+   * unlocks audio output before the first real TTS utterance is queued.
+   * Call this from any onClick handler that will later trigger speak().
+   */
+  const primeTTS = useCallback(() => {
+    if (!isSynthesisSupported) return;
+    window.speechSynthesis.resume();
+    // Queue a zero-length utterance to warm up the audio pipeline
+    const warm = new SpeechSynthesisUtterance("");
+    window.speechSynthesis.speak(warm);
+  }, [isSynthesisSupported]);
+
   const speak = useCallback(
-    (text: string): Promise<void> => {
-      return new Promise((resolve) => {
-        if (!isSynthesisSupported) {
-          resolve();
-          return;
-        }
+    async (text: string): Promise<void> => {
+      if (!isSynthesisSupported) return;
 
-        // Chrome bug: speechSynthesis can freeze in a "paused" state after a
-        // period of inactivity. resume() then cancel() kick it back to life.
-        window.speechSynthesis.resume();
-        window.speechSynthesis.cancel();
+      // Wait for Chrome to populate the voices list before queuing an utterance.
+      // getVoices() returns [] on the first call; speaking into an empty list
+      // silently swallows the audio.
+      await waitForVoices();
 
+      // Chrome bug: speechSynthesis can freeze in a "paused" state after a
+      // period of inactivity. resume() then cancel() kick it back to life.
+      window.speechSynthesis.resume();
+      window.speechSynthesis.cancel();
+
+      await new Promise<void>((resolve) => {
         const utterance = new SpeechSynthesisUtterance(applyPronunciation(text));
         utterance.lang = lang;
         utterance.rate = 1;
@@ -195,5 +226,6 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
     stopRecognition,
     speak,
     stopSpeaking,
+    primeTTS,
   };
 }

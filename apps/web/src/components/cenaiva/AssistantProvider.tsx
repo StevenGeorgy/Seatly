@@ -1,9 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
+import { NOISE_ROBUST_AUDIO_CONSTRAINTS } from "@/hooks/useDeepgramTranscription";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
 import { useUser } from "@/hooks/useUser";
 import { useSavedCards } from "@/hooks/useSavedCards";
@@ -14,6 +15,12 @@ import type { OrchestratorRequestType } from "@cenaiva/assistant";
 interface AssistantContextValue {
   open: (restaurantId?: string, restaurantName?: string) => void;
   close: () => void;
+  /**
+   * Speak a farewell line, then tear down the voice stack and navigate back
+   * to /discover. Used at the natural end of the flow (declined preorder,
+   * post-payment) so Cenaiva always signs off before the shell disappears.
+   */
+  sayGoodbyeAndClose: (message?: string) => Promise<void>;
   sendTranscript: (transcript: string, opts?: { restaurantId?: string }) => Promise<void>;
   startListening: () => Promise<void>;
   setTextMode: (active: boolean) => void;
@@ -38,7 +45,12 @@ async function checkMicPermission(): Promise<PermissionState | null> {
 
 async function requestMicPermission(): Promise<boolean> {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Request with the same noise-robust constraints we'll use for
+    // transcription so the browser surfaces a single permission prompt and
+    // consistent DSP (echo cancellation, noise suppression, AGC).
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: NOISE_ROBUST_AUDIO_CONSTRAINTS,
+    });
     stream.getTracks().forEach((t) => t.stop());
     return true;
   } catch {
@@ -55,6 +67,16 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const orchestrator = useCenaivaOrchestrator();
   const voice = useCenaivaVoice();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+
+  // Customer voice stack (wake word, mic stream) only runs on authed customer routes.
+  // Dashboard, landing, and auth routes skip all mic-related effects to keep memory flat.
+  const VOICE_PUBLIC_PATHS = ["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password"];
+  const isCustomerRoute =
+    !!user &&
+    !VOICE_PUBLIC_PATHS.includes(pathname) &&
+    !pathname.startsWith("/auth/") &&
+    !pathname.startsWith("/dashboard");
 
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const processingRef = useRef(false);
@@ -62,6 +84,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+  // Consecutive relisten attempts that returned an empty transcript. If this
+  // climbs, something is blocking mic capture (another recognizer has the
+  // stream, permission glitched, InvalidStateError looping, etc.). Without a
+  // cap the .then-chain can starve the main thread via microtasks → page hang.
+  const emptyRelistenStreakRef = useRef(0);
+  const MAX_EMPTY_RELISTENS = 3;
 
   // Sync hasCard into booking state so components and orchestrator requests can use it
   useEffect(() => {
@@ -92,6 +120,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
     async (transcript: string, opts?: { restaurantId?: string }) => {
       if (processingRef.current) return;
       processingRef.current = true;
+
+      // Hard-stop any active recognition before processing. This must happen on
+      // THIS voice hook instance (the same one that started the recognizer) —
+      // calling voice.stopListening() from child components targets a different
+      // per-hook ref and leaves Chrome's SpeechRecognition running, which then
+      // wedges the next listen cycle after the orchestrator replies.
+      voice.stopListening();
 
       dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
 
@@ -138,7 +173,28 @@ function AssistantInner({ children }: { children: ReactNode }) {
         processingRef.current = false;
 
         if (!response) {
-          dispatch({ type: "SET_VOICE_STATUS", status: "error" });
+          // Orchestrator returned null (network / timeout / 500). Handle text
+          // mode and voice mode differently: chat users can see a banner + toast,
+          // voice users need an audible retry cue.
+          const cause = orchestrator.lastErrorRef.current ?? "unknown";
+          const friendly =
+            cause === "timeout"
+              ? "The assistant is taking a while. Try again."
+              : cause === "not_authenticated"
+                ? "Please sign in again to continue."
+                : "Something went wrong. Try again.";
+          if (textModeRef.current) {
+            dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
+            toast.error(friendly, { duration: 3000 });
+          } else {
+            await voice.speak("Sorry, I didn't catch that. Try again.");
+          }
+          dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+          if (isOpenRef.current && !textModeRef.current) {
+            setTimeout(() => {
+              if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+            }, 400);
+          }
           return;
         }
 
@@ -157,7 +213,23 @@ function AssistantInner({ children }: { children: ReactNode }) {
           }
         }
 
-        if (response.spoken_text) await voice.speak(response.spoken_text);
+        // Guarantee the preorder question gets spoken after a successful
+        // booking. The LLM sometimes emits show_confirmation without the
+        // "Want to pre-order?" follow-up — when that happens we append it so
+        // the user flow never stalls at the confirmation card.
+        let spokenText = response.spoken_text ?? "";
+        const uiTypes = (response.ui_actions ?? [])
+          .map((a) => (a as { type?: string } | null)?.type)
+          .filter((t): t is string => typeof t === "string");
+        const freshlyBooked =
+          uiTypes.includes("show_confirmation") ||
+          (!!response.booking?.reservation_id && !state.booking.reservation_id);
+        const asksPreorder = /pre-?order|menu/i.test(spokenText);
+        if (freshlyBooked && !asksPreorder) {
+          const base = spokenText.trim().replace(/[.!?]*$/, "");
+          spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
+        }
+        if (spokenText) await voice.speak(spokenText);
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         if (isOpenRef.current && !textModeRef.current) {
@@ -172,7 +244,21 @@ function AssistantInner({ children }: { children: ReactNode }) {
       } catch (err) {
         processingRef.current = false;
         console.error("sendTranscript error:", err);
-        dispatch({ type: "SET_VOICE_STATUS", status: "error" });
+        // Speak the retry prompt (voice mode) OR surface a banner + toast (text
+        // mode). The red "error" voice status is reserved for mic-permission-denied.
+        if (textModeRef.current) {
+          const friendly = "Something went wrong. Try again.";
+          dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
+          toast.error(friendly, { duration: 3000 });
+        } else {
+          await voice.speak("Sorry, I didn't catch that. Try again.");
+        }
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        if (isOpenRef.current && !textModeRef.current) {
+          setTimeout(() => {
+            if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+          }, 400);
+        }
       }
     },
     [state, dispatch, orchestrator, voice, navigate, hasCard],
@@ -183,13 +269,29 @@ function AssistantInner({ children }: { children: ReactNode }) {
     try {
       const { transcript, stopped } = await voice.startListening();
       if (stopped) {
+        emptyRelistenStreakRef.current = 0;
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         return;
       }
       if (transcript.trim()) {
+        emptyRelistenStreakRef.current = 0;
         await sendTranscript(transcript);
       } else if (isOpenRef.current && !textModeRef.current) {
-        void startListeningRef.current();
+        // Empty transcript → relisten, but ALWAYS via setTimeout and capped
+        // at MAX_EMPTY_RELISTENS. A sync `void startListeningRef.current()`
+        // recursion here starves the microtask queue and hangs the tab when
+        // the recognizer repeatedly resolves without capturing audio.
+        emptyRelistenStreakRef.current += 1;
+        if (emptyRelistenStreakRef.current >= MAX_EMPTY_RELISTENS) {
+          emptyRelistenStreakRef.current = 0;
+          dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+          return;
+        }
+        setTimeout(() => {
+          if (isOpenRef.current && !textModeRef.current) {
+            void startListeningRef.current();
+          }
+        }, 400);
       }
     } catch (err) {
       // Transient errors (InvalidStateError, recognition-start-failed,
@@ -199,6 +301,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
       const msg = (err as Error)?.message ?? "";
       const isPermDenied = msg === "not-allowed" || msg.includes("not-allowed");
       if (isPermDenied) return;
+      emptyRelistenStreakRef.current += 1;
+      if (emptyRelistenStreakRef.current >= MAX_EMPTY_RELISTENS) {
+        emptyRelistenStreakRef.current = 0;
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        return;
+      }
       if (isOpenRef.current && !textModeRef.current) {
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         setTimeout(() => {
@@ -235,17 +343,74 @@ function AssistantInner({ children }: { children: ReactNode }) {
     [dispatch, requestLocation],
   );
 
+  // voice is a fresh object literal every render of useCenaivaVoice, so any
+  // callback that lists it as a dep would change identity every render. We
+  // route through refs to give `close` a stable identity — otherwise the
+  // paid-auto-close effect below would re-clear its own timeout every render
+  // and never actually fire.
+  const voiceRef = useRef(voice);
+  useEffect(() => {
+    voiceRef.current = voice;
+  });
+
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
+
   const close = useCallback(() => {
     isOpenRef.current = false;
     textModeRef.current = false;
-    voice.stopSpeaking();
-    voice.stopListening();
+    emptyRelistenStreakRef.current = 0;
+    voiceRef.current.stopSpeaking();
+    voiceRef.current.stopListening();
     dispatch({ type: "CLOSE" });
-  }, [dispatch, voice]);
+    // Always return the user to the discovery page when the Cenaiva flow ends
+    // (post-booking save, decline preorder, payment success, manual close).
+    // navigate() is a no-op if they are already on /discover.
+    if (pathnameRef.current !== "/discover") navigate("/discover");
+  }, [dispatch, navigate]);
+
+  const sayGoodbyeAndClose = useCallback(
+    async (message = "Enjoy your meal. Bye!") => {
+      // Stop the mic so the farewell actually plays without fighting the
+      // recognizer for the audio stream.
+      isOpenRef.current = false;
+      textModeRef.current = false;
+      emptyRelistenStreakRef.current = 0;
+      voiceRef.current.stopListening();
+      dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: message });
+      try {
+        await voiceRef.current.speak(message);
+      } catch {
+        // Speech can fail (autoplay policy, no voices) — we still close.
+      }
+      dispatch({ type: "CLOSE" });
+      if (pathnameRef.current !== "/discover") navigate("/discover");
+    },
+    [dispatch, navigate],
+  );
 
   const setTextMode = useCallback((active: boolean) => {
     textModeRef.current = active;
   }, []);
+
+  // After a successful payment the "You're all set!" confirmation renders
+  // briefly. We speak a short farewell, then tear down the shell and navigate
+  // back to /discover so the user isn't stranded on a paid receipt.
+  const paidAckRef = useRef(false);
+  useEffect(() => {
+    if (state.booking.status !== "paid") {
+      paidAckRef.current = false;
+      return;
+    }
+    if (paidAckRef.current) return;
+    paidAckRef.current = true;
+    const t = setTimeout(() => {
+      void sayGoodbyeAndClose("You're all set. Enjoy your meal. Bye!");
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [state.booking.status, sayGoodbyeAndClose]);
 
   const onWake = useCallback(() => {
     if (!user) return;
@@ -260,7 +425,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [setWakeWordEnabled]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!isCustomerRoute) return;
     checkMicPermission().then((state) => {
       if (state === "granted") {
         micGrantedRef.current = true;
@@ -268,18 +433,32 @@ function AssistantInner({ children }: { children: ReactNode }) {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!user]);
+  }, [isCustomerRoute]);
 
   useEffect(() => {
+    // Off-route: hard-stop the recognizer so the mic stream is released on
+    // /login, /dashboard, etc. This is the single biggest idle-memory win.
+    if (!isCustomerRoute) {
+      forceStopWakeWord();
+      return;
+    }
     if (state.isOpen) {
       forceStopWakeWord();
-    } else if (user) {
+    } else {
       const t = setTimeout(() => enableWakeWord(), 500);
       return () => clearTimeout(t);
     }
-  }, [state.isOpen, user, forceStopWakeWord, enableWakeWord]);
+  }, [isCustomerRoute, state.isOpen, forceStopWakeWord, enableWakeWord]);
 
-  const ctx: AssistantContextValue = { open, close, sendTranscript, startListening, setTextMode };
+  // Memoize the context value so every consumer of useAssistant() doesn't
+  // re-render on every state dispatch. Without this, the shell, rail, map,
+  // and booking sheet all re-run on every tick of speech status / spoken
+  // text / booking delta — the biggest contributor to the collecting_minimum_fields
+  // render storm that was triggering "Page Unresponsive".
+  const ctx = useMemo<AssistantContextValue>(
+    () => ({ open, close, sayGoodbyeAndClose, sendTranscript, startListening, setTextMode }),
+    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, setTextMode],
+  );
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }
 

@@ -44,6 +44,12 @@ function isWakePhrase(transcript: string): boolean {
   return WAKE_PHRASES.some((phrase) => transcript.includes(phrase));
 }
 
+// Guard rails for the Chrome SpeechRecognition restart loop.
+// Without these, a tight retry loop leaks mic buffers and burns RAM.
+const RESTART_BASE_MS = 400;       // first retry delay
+const RESTART_MAX_MS = 10_000;     // cap on exponential backoff
+const MAX_CONSECUTIVE_ERRORS = 4;  // stop after 4 errors in a row, wait for user action
+
 export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
   const [enabled, setEnabled] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -52,6 +58,9 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
   // This prevents the useEffect from tearing down / recreating the recognizer
   // on every provider render (the #1 cause of the wake word appearing "dead").
   const onWakeRef = useRef(onWake);
+  const restartTimerRef = useRef<number | null>(null);
+  const consecutiveErrorsRef = useRef(0);
+  const restartDelayRef = useRef(RESTART_BASE_MS);
 
   const isSupported = !!SpeechRecognitionAPI;
 
@@ -72,6 +81,12 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
     // actually trigger the useEffect and restart the recognizer.
     enabledRef.current = false;
     setEnabled(false);
+    if (restartTimerRef.current !== null) {
+      window.clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    consecutiveErrorsRef.current = 0;
+    restartDelayRef.current = RESTART_BASE_MS;
     const rec = recognitionRef.current;
     recognitionRef.current = null;
     if (rec) {
@@ -99,54 +114,92 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
       recognition.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript.toLowerCase().trim();
-          // Log every transcript so you can see what Chrome is hearing
-          // and add new phrases to WAKE_PHRASES if needed.
-          console.log("[CenaivaWakeWord] heard:", transcript);
           if (isWakePhrase(transcript)) {
             // Disable BEFORE calling onWake so the onend handler won't
-            // schedule a 300ms auto-restart and race the command recognizer.
+            // schedule an auto-restart and race the command recognizer.
             enabledRef.current = false;
-            recognition.stop();
+            consecutiveErrorsRef.current = 0;
+            restartDelayRef.current = RESTART_BASE_MS;
+            try { recognition.stop(); } catch {}
             onWakeRef.current();
             return;
           }
         }
+        // Any audio activity resets the error backoff — we're healthy.
+        if (consecutiveErrorsRef.current > 0) {
+          consecutiveErrorsRef.current = 0;
+          restartDelayRef.current = RESTART_BASE_MS;
+        }
       };
 
       recognition.onend = () => {
-        // Auto-restart only if still enabled (wake-triggered stops have
-        // already set enabledRef.current = false above).
-        if (enabledRef.current) {
-          setTimeout(() => startListening(), 300);
+        if (!enabledRef.current) return;
+        if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
+          // Too many failures in a row — stop the loop entirely. User can
+          // re-enable via the toggle; avoids a runaway mic-stream leak.
+          enabledRef.current = false;
+          setEnabled(false);
+          return;
         }
+        if (restartTimerRef.current !== null) {
+          window.clearTimeout(restartTimerRef.current);
+        }
+        restartTimerRef.current = window.setTimeout(() => {
+          restartTimerRef.current = null;
+          startListening();
+        }, restartDelayRef.current);
       };
 
       recognition.onerror = (event: any) => {
         if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-          console.warn("[CenaivaWakeWord] Microphone permission denied:", event.error);
+          enabledRef.current = false;
           setEnabled(false);
-        } else if (event.error !== "no-speech" && event.error !== "aborted") {
-          // no-speech / aborted are normal; onend handles the restart
-          console.warn("[CenaivaWakeWord] Recognition error:", event.error);
+          return;
         }
+        if (event.error === "no-speech" || event.error === "aborted") return;
+        // Real error — bump the backoff. onend will schedule the delayed restart.
+        consecutiveErrorsRef.current += 1;
+        restartDelayRef.current = Math.min(
+          restartDelayRef.current * 2,
+          RESTART_MAX_MS,
+        );
       };
 
-      recognition.start();
-      console.log("[CenaivaWakeWord] recognizer started");
-    } catch (err) {
-      console.warn("[CenaivaWakeWord] Failed to start recognition:", err);
+      try {
+        recognition.start();
+      } catch {
+        // start() can throw InvalidStateError if another recognizer holds the mic.
+        // Count it as an error so backoff kicks in.
+        consecutiveErrorsRef.current += 1;
+        restartDelayRef.current = Math.min(
+          restartDelayRef.current * 2,
+          RESTART_MAX_MS,
+        );
+      }
+    } catch {
+      // Constructor threw — nothing to clean up; retry on next enable toggle.
     }
   }, [lang]); // onWake intentionally omitted — accessed via onWakeRef
 
   useEffect(() => {
     if (enabled) {
+      consecutiveErrorsRef.current = 0;
+      restartDelayRef.current = RESTART_BASE_MS;
       startListening();
     } else {
+      if (restartTimerRef.current !== null) {
+        window.clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       try { recognitionRef.current?.stop(); } catch {}
       recognitionRef.current = null;
     }
 
     return () => {
+      if (restartTimerRef.current !== null) {
+        window.clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       try { recognitionRef.current?.stop(); } catch {}
       recognitionRef.current = null;
     };

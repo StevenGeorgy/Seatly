@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Calendar, Clock, Users, CheckCircle2, Plus, Minus, ShoppingCart } from "lucide-react";
 import { format } from "date-fns";
@@ -24,15 +24,31 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
   const availability = useAvailability();
   const { booking, showExitX } = state;
 
-  const { items: menuItems } = usePublicMenuItems(booking.restaurant_id);
-  const { categories } = usePublicMenuCategories(booking.restaurant_id);
+  // Only fetch menu data once the booking actually reaches a menu-relevant
+  // stage. Fetching + grouping a full restaurant menu while the user is still
+  // at "collecting_minimum_fields" is pure render waste — and combined with
+  // the AnimatePresence/ctx churn it was enough to trigger "Page Unresponsive".
+  const needsMenu =
+    booking.status === "offering_preorder" ||
+    booking.status === "browsing_menu" ||
+    booking.status === "post_booking" ||
+    booking.status === "collecting_payment" ||
+    booking.status === "paid";
+  const menuRestaurantId = needsMenu ? booking.restaurant_id : null;
+  const { items: menuItems } = usePublicMenuItems(menuRestaurantId);
+  const { categories } = usePublicMenuCategories(menuRestaurantId);
 
   const [specialRequest, setSpecialRequest] = useState("");
   const [occasion, setOccasion] = useState("");
   const [customTipInput, setCustomTipInput] = useState("");
   const [showCustomTip, setShowCustomTip] = useState(false);
 
-  const isConfirmed = booking.status === "confirmed" || booking.status === "post_booking";
+  // `offering_preorder` keeps the confirmation card visible while the preorder
+  // Yes/No buttons are shown underneath — see the offer_preorder branch below.
+  const isConfirmed =
+    booking.status === "confirmed" ||
+    booking.status === "offering_preorder" ||
+    booking.status === "post_booking";
   const isPostBooking = booking.status === "post_booking";
   const isPaid = booking.status === "paid";
 
@@ -56,15 +72,19 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
     if (specialRequest.trim()) parts.push(`special request: ${specialRequest}`);
     if (occasion.trim()) parts.push(`occasion: ${occasion}`);
     if (parts.length) {
+      // Fire-and-forget: orchestrator patches post-booking in the background
+      // while we close the shell immediately.
       void assistant?.sendTranscript(parts.join(", "));
-    } else {
-      onExit();
     }
+    onExit();
   };
 
   // ── Menu item helpers ────────────────────────────────────────────────────────
 
-  const cartMap = new Map(booking.cart.map((c) => [c.menu_item_id, c.qty]));
+  const cartMap = useMemo(
+    () => new Map(booking.cart.map((c) => [c.menu_item_id, c.qty])),
+    [booking.cart],
+  );
 
   const addItem = (item: { id: string; name: string; price: number }) => {
     dispatch({ type: "add_menu_item", menu_item_id: item.id, name: item.name, unit_price: item.price });
@@ -108,19 +128,28 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
     }
   };
 
+  // Preorderable items grouped by category — memoized because every render
+  // would otherwise re-filter + re-reduce the entire menu list. Computed
+  // BEFORE the early-return so hook order stays stable across renders.
+  const grouped = useMemo<Record<string, typeof menuItems>>(() => {
+    if (!menuItems.length) return {};
+    const preorderable = menuItems.filter((i) => i.is_preorderable && i.is_available);
+    const catMap = new Map(categories.map((c) => [c.id, c.name]));
+    return preorderable.reduce<Record<string, typeof menuItems>>((acc, item) => {
+      const key = item.category_id
+        ? (catMap.get(item.category_id) ?? item.category ?? "Other")
+        : (item.category ?? "Other");
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(item);
+      return acc;
+    }, {});
+  }, [menuItems, categories]);
+
   // ── Guard: nothing to show until booking is started ──────────────────────────
+  // "collecting_minimum_fields" is a valid rendered state — the branch at the
+  // bottom of this component shows the party-size/date chips for that status.
 
-  if (booking.status === "idle" || booking.status === "collecting_minimum_fields") return null;
-
-  // Preorderable items with category grouping
-  const preorderableItems = menuItems.filter((i) => i.is_preorderable && i.is_available);
-  const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
-  const grouped = preorderableItems.reduce<Record<string, typeof preorderableItems>>((acc, item) => {
-    const key = item.category_id ? (categoryMap.get(item.category_id) ?? item.category ?? "Other") : (item.category ?? "Other");
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(item);
-    return acc;
-  }, {});
+  if (booking.status === "idle") return null;
 
   // Computed tip for display
   const tipDisplay = booking.tip_percent != null
@@ -257,7 +286,11 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
                   Yes, pre-order
                 </button>
                 <button
-                  onClick={() => void assistant?.sendTranscript("no thanks")}
+                  onClick={() => {
+                    // "No" ends the flow right here — no orchestrator round-trip.
+                    // Cenaiva says bye, the shell closes, and we land on /discover.
+                    void assistant?.sayGoodbyeAndClose("You're all set. Enjoy your meal. Bye!");
+                  }}
                   className="px-6 py-2.5 rounded-full border border-white/20 text-white/60 text-sm hover:border-white/40 transition-colors"
                 >
                   No thanks
