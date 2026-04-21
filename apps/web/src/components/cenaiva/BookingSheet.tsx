@@ -546,13 +546,81 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
                   </button>
                 ))}
               </div>
+
+              {/* Compact Confirm Booking card — appears once a slot is chosen.
+                  Shows restaurant + date + time + party size so the user can
+                  review at a glance, with Confirm / Change on the same row. */}
               {booking.slot_iso && (
-                <Button
-                  className="w-full mt-3 bg-[#C8A951] text-black hover:bg-[#E6C060]"
-                  onClick={handleConfirm}
+                <motion.div
+                  key="confirm-card"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="mt-3 rounded-xl border border-[#C8A951]/40 bg-[#C8A951]/5 px-3 py-3"
                 >
-                  Confirm booking
-                </Button>
+                  <p className="text-white/50 text-xs uppercase tracking-wide mb-2">
+                    Review booking
+                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      {booking.restaurant_name && (
+                        <p className="text-white text-sm font-medium truncate">
+                          {booking.restaurant_name}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-3 mt-1 text-white/60 text-xs">
+                        {booking.party_size && (
+                          <span className="flex items-center gap-1">
+                            <Users className="w-3 h-3" />{booking.party_size}
+                          </span>
+                        )}
+                        {booking.date && (
+                          <span className="flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            {(() => {
+                              try { return format(new Date(booking.date), "MMM d"); } catch { return booking.date; }
+                            })()}
+                          </span>
+                        )}
+                        {(() => {
+                          const slot = availability.slots.find(
+                            (s) => s.date_time === booking.slot_iso,
+                          );
+                          const label = slot?.display_time ?? booking.time;
+                          return label ? (
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3 h-3" />{label}
+                            </span>
+                          ) : null;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => {
+                        // "Change" clears the chosen slot so the user can
+                        // pick a different time without going back through
+                        // the orchestrator. We don't reset shift_id because
+                        // the slot grid is still the same shift.
+                        dispatch({
+                          type: "select_time_slot",
+                          slot_iso: "",
+                          shift_id: booking.shift_id ?? "",
+                        });
+                      }}
+                      className="flex-1 py-2 rounded-lg border border-white/20 text-white/60 text-sm hover:border-white/40 transition-colors"
+                    >
+                      Change
+                    </button>
+                    <button
+                      onClick={handleConfirm}
+                      className="flex-1 py-2 rounded-lg bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors"
+                    >
+                      Confirm
+                    </button>
+                  </div>
+                </motion.div>
               )}
             </div>
           )}

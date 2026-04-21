@@ -49,7 +49,17 @@ async function getBearerToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+// Module-level cache so rapid successive listens don't each pay the token
+// round-trip. Deepgram short-lived tokens TTL is 30s; we expire ours at 25s
+// to keep a safety margin for the WebSocket handshake.
+const TOKEN_TTL_MS = 25_000;
+let cachedToken: { value: string; expiresAt: number } | null = null;
+
 async function fetchDeepgramToken(): Promise<string | null> {
+  const now = Date.now();
+  if (cachedToken && cachedToken.expiresAt > now) {
+    return cachedToken.value;
+  }
   const bearer = await getBearerToken();
   if (!bearer) return null;
   const res = await fetch(TOKEN_ENDPOINT, {
@@ -62,10 +72,15 @@ async function fetchDeepgramToken(): Promise<string | null> {
   if (!res.ok) {
     // Silent — caller converts a null token into a graceful Web Speech fallback
     // so there's no value in console-warning on every mic press.
+    cachedToken = null;
     return null;
   }
   const json = (await res.json()) as { access_token?: string };
-  return json.access_token ?? null;
+  const token = json.access_token ?? null;
+  if (token) {
+    cachedToken = { value: token, expiresAt: now + TOKEN_TTL_MS };
+  }
+  return token;
 }
 
 interface DeepgramTranscriptPayload {

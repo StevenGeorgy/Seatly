@@ -666,7 +666,7 @@ Deno.serve(async (req) => {
         !alreadySearched;
 
       const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         max_tokens: 600,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
         tools: TOOLS,
@@ -1078,7 +1078,7 @@ Deno.serve(async (req) => {
     // belt-and-suspenders so the UI always advances even when the model drops
     // an action.
     const jsonCompletion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4-mini",
       max_tokens: 500,
       messages: [
         { role: "system", content: systemPrompt },
@@ -1230,6 +1230,32 @@ Deno.serve(async (req) => {
         mapPatch.marker_restaurant_ids = lastSearchIds;
       }
       parsed.map = mapPatch;
+    }
+
+    // ── Preorder-append safety net (moved from client) ────────────────────────
+    // If the booking was just confirmed this turn but the model's spoken_text
+    // didn't ask about pre-ordering, append the follow-up question so the
+    // flow never stalls on the confirmation card. Doing this server-side
+    // guarantees the mutation is applied consistently across voice and text
+    // paths and keeps the client from rewriting LLM output.
+    {
+      const parsedBooking = (parsed.booking as Record<string, unknown> | null) ?? null;
+      const freshReservationId =
+        (parsedBooking?.reservation_id as string | null | undefined) ?? null;
+      const prevReservationId =
+        (booking_state.reservation_id as string | null | undefined) ?? null;
+      const uiTypes = responseActions
+        .map((a) => a.type as string)
+        .filter((t): t is string => typeof t === "string");
+      const freshlyBooked =
+        uiTypes.includes("show_confirmation") ||
+        (!!freshReservationId && freshReservationId !== prevReservationId);
+      const spoken = (parsed.spoken_text as string | null | undefined) ?? "";
+      const asksPreorder = /pre-?order|menu/i.test(spoken);
+      if (freshlyBooked && !asksPreorder) {
+        const base = spoken.trim().replace(/[.!?]*$/, "");
+        parsed.spoken_text = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
+      }
     }
 
     // Prevent unused-var warnings for state we track for downstream observability.
