@@ -27,6 +27,13 @@ export interface AssistantState {
   customerAccepted: boolean;
   conversationId: string | null;
   lastSpokenText: string;
+  /**
+   * Live partial transcript from the STT provider while the user is speaking.
+   * Cleared when a final transcript arrives or the turn is processed. Populated
+   * only on providers that stream partials (Vapi today; Deepgram partials are
+   * available but not wired through on the legacy path).
+   */
+  interimTranscript: string;
   availabilityOpen: boolean;
 }
 
@@ -73,6 +80,7 @@ export const initialState: AssistantState = {
   customerAccepted: false,
   conversationId: null,
   lastSpokenText: "",
+  interimTranscript: "",
   availabilityOpen: false,
 };
 
@@ -83,6 +91,7 @@ type LocalAction =
   | { type: "CLOSE" }
   | { type: "SET_VOICE_STATUS"; status: VoiceStatus }
   | { type: "SET_LAST_SPOKEN_TEXT"; text: string }
+  | { type: "SET_INTERIM_TRANSCRIPT"; text: string }
   | { type: "SET_CONVERSATION_ID"; id: string }
   | { type: "APPLY_RESPONSE"; response: AssistantResponseType }
   | { type: "RESET_BOOKING" }
@@ -361,7 +370,13 @@ export function assistantReducer(
       return { ...state, voiceStatus: localAction.status };
 
     case "SET_LAST_SPOKEN_TEXT":
-      return { ...state, lastSpokenText: localAction.text };
+      // Final spoken text arrives with the assistant's reply; the user's
+      // live partial is no longer relevant, so clear it in the same tick to
+      // avoid a brief flash of stale transcript under the new bubble.
+      return { ...state, lastSpokenText: localAction.text, interimTranscript: "" };
+
+    case "SET_INTERIM_TRANSCRIPT":
+      return { ...state, interimTranscript: localAction.text };
 
     case "SET_CONVERSATION_ID":
       return { ...state, conversationId: localAction.id };

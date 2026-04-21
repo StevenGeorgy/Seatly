@@ -176,6 +176,26 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Interim transcript chip — shows what the user is currently
+                saying so they know the mic heard them. Sits just above the
+                spoken text bubble so both can be visible simultaneously. */}
+            <AnimatePresence>
+              {state.interimTranscript && state.voiceStatus === "listening" && (
+                <motion.div
+                  key="interim-chip"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute bottom-16 left-1/2 -translate-x-1/2 w-[85%] max-w-sm"
+                >
+                  <div className="bg-[#C8A951]/15 backdrop-blur-sm rounded-2xl px-4 py-2 text-white/70 text-xs text-center italic border border-[#C8A951]/30">
+                    {state.interimTranscript}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Restaurant rail — hidden during advanced booking/payment steps */}

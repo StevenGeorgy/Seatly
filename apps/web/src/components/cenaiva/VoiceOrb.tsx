@@ -24,7 +24,7 @@ export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
       onClick={onClick}
       className={cn(
         "relative flex items-center justify-center w-16 h-16 rounded-full",
-        "transition-all duration-300 cursor-pointer select-none",
+        "transition-all duration-200 cursor-pointer select-none",
         STATUS_STYLES[status],
         className,
       )}
@@ -32,16 +32,38 @@ export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
       whileTap={{ scale: 0.95 }}
       aria-label={status === "listening" ? "Stop listening" : "Start listening"}
     >
-      {/* Pulse ring when listening */}
+      {/* Idle: soft heartbeat so the orb never looks dead */}
+      {status === "idle" && (
+        <motion.span
+          className="absolute inset-0 rounded-full bg-[#C8A951]/25"
+          animate={{ scale: [1, 1.08, 1], opacity: [0.2, 0.35, 0.2] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+        />
+      )}
+
+      {/* Listening: scan ring */}
       {status === "listening" && (
         <motion.span
           className="absolute inset-0 rounded-full border-2 border-[#C8A951]"
           animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
-          transition={{ duration: 1.5, repeat: Infinity }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: "easeOut" }}
         />
       )}
 
-      {/* Speaking wave rings */}
+      {/* Processing: shimmer ring to signal ongoing work */}
+      {status === "processing" && (
+        <motion.span
+          className="absolute inset-0 rounded-full border-2 border-[#E8C87A]/80"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+          style={{
+            borderTopColor: "transparent",
+            borderRightColor: "transparent",
+          }}
+        />
+      )}
+
+      {/* Speaking: wave rings */}
       {status === "speaking" && (
         <>
           {[1.3, 1.6].map((s, i) => (
@@ -49,7 +71,7 @@ export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
               key={s}
               className="absolute inset-0 rounded-full border border-[#E8C87A]/40"
               animate={{ scale: [1, s], opacity: [0.4, 0] }}
-              transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.3 }}
+              transition={{ duration: 1.1, repeat: Infinity, delay: i * 0.28 }}
             />
           ))}
         </>

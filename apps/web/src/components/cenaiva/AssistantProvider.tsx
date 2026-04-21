@@ -3,12 +3,21 @@ import { toast } from "sonner";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
+import { useVapiVoice } from "@/hooks/useVapiVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
 import { NOISE_ROBUST_AUDIO_CONSTRAINTS } from "@/hooks/useDeepgramTranscription";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
 import { useUser } from "@/hooks/useUser";
 import { useSavedCards } from "@/hooks/useSavedCards";
-import type { OrchestratorRequestType } from "@cenaiva/assistant";
+import type { AssistantResponseType, OrchestratorRequestType } from "@cenaiva/assistant";
+
+// Opt into the Vapi pipeline (WebRTC + Deepgram + 11labs + barge-in) when
+// both the public key and the assistant id are set. Falls back to the
+// hand-rolled legacy loop if either is missing or the flag is off.
+const VAPI_ENABLED =
+  (import.meta.env.VITE_VOICE_PROVIDER ?? "vapi") === "vapi" &&
+  !!import.meta.env.VITE_VAPI_PUBLIC_KEY &&
+  !!import.meta.env.VITE_VAPI_ASSISTANT_ID;
 
 // ── Context exposed to child components ───────────────────────────────────────
 
@@ -68,6 +77,27 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const voice = useCenaivaVoice();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+
+  // Handler the Vapi hook invokes when the assistant's trailing
+  // `apply_ui_response` tool call arrives — same dispatch path the legacy
+  // sendTranscript uses below, minus the speak() step (Vapi handles TTS).
+  const applyVapiResponse = useCallback(
+    (response: AssistantResponseType) => {
+      dispatch({ type: "APPLY_RESPONSE", response });
+      for (const action of response.ui_actions ?? []) {
+        if (!action || typeof action.type !== "string") continue;
+        if (action.type === "toast") toast(action.message, { duration: 3000 });
+        if (action.type === "navigate") navigate(action.path);
+        if (action.type === "navigate_to_checkout") {
+          dispatch({ type: "CLOSE" });
+          navigate(action.path);
+        }
+      }
+    },
+    [dispatch, navigate],
+  );
+
+  const vapi = useVapiVoice({ onResponse: applyVapiResponse });
 
   // Customer voice stack (wake word, mic stream) only runs on authed customer routes.
   // Dashboard, landing, and auth routes skip all mic-related effects to keep memory flat.
@@ -151,6 +181,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const sendTranscript = useCallback(
     async (transcript: string, opts?: { restaurantId?: string }) => {
       if (processingRef.current) return;
+
+      // On the Vapi path, keyboard-mode text is pushed straight into the live
+      // call as an `add-message` client→server frame. Vapi handles the rest
+      // (LLM call → TTS → continued listening), so we early-return here.
+      if (VAPI_ENABLED && vapi.isAvailable && vapi.isActive()) {
+        vapi.sendText(transcript);
+        return;
+      }
+
       processingRef.current = true;
 
       // Hard-stop any active recognition before processing. This must happen on
@@ -226,7 +265,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           if (isOpenRef.current && !textModeRef.current) {
             setTimeout(() => {
               if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
-            }, 400);
+            }, 150);
           }
           return;
         }
@@ -246,33 +285,25 @@ function AssistantInner({ children }: { children: ReactNode }) {
           }
         }
 
-        // Guarantee the preorder question gets spoken after a successful
-        // booking. The LLM sometimes emits show_confirmation without the
-        // "Want to pre-order?" follow-up — when that happens we append it so
-        // the user flow never stalls at the confirmation card.
-        let spokenText = response.spoken_text ?? "";
-        const uiTypes = (response.ui_actions ?? [])
-          .map((a) => (a as { type?: string } | null)?.type)
-          .filter((t): t is string => typeof t === "string");
-        const freshlyBooked =
-          uiTypes.includes("show_confirmation") ||
-          (!!response.booking?.reservation_id && !stateRef.current.booking.reservation_id);
-        const asksPreorder = /pre-?order|menu/i.test(spokenText);
-        if (freshlyBooked && !asksPreorder) {
-          const base = spokenText.trim().replace(/[.!?]*$/, "");
-          spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
-        }
+        // The orchestrator is the single source of truth for spoken_text —
+        // including the "Want to pre-order?" follow-up after a confirmation.
+        // Don't rewrite what the LLM/server produced; just speak it.
+        const spokenText = response.spoken_text ?? "";
         if (spokenText) await voice.speak(spokenText);
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         if (isOpenRef.current && !textModeRef.current) {
-          // 400ms grace: lets Chrome's audio stack release the mic after TTS
-          // ends, avoiding InvalidStateError on recognition.start().
+          // `await voice.speak()` already unblocks on the audio element's
+          // `onended` event, so playback has finished by the time we reach
+          // here. Use a tiny 150ms micro-grace only to let Chrome release the
+          // audio stack lock before the next recognition.start() — any longer
+          // and users notice a silent gap that breaks the "always listening"
+          // feel.
           setTimeout(() => {
             if (isOpenRef.current && !textModeRef.current) {
               void startListeningRef.current();
             }
-          }, 400);
+          }, 150);
         }
       } catch (err) {
         processingRef.current = false;
@@ -290,15 +321,21 @@ function AssistantInner({ children }: { children: ReactNode }) {
         if (isOpenRef.current && !textModeRef.current) {
           setTimeout(() => {
             if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
-          }, 400);
+          }, 150);
         }
       }
     },
-    [dispatch, orchestrator, voice, navigate, hasCard],
+    [dispatch, orchestrator, voice, navigate, hasCard, vapi],
   );
 
   const startListening = useCallback(async () => {
     if (!isOpenRef.current) return;
+    // On the Vapi path, the WebRTC call is already owning the mic +
+    // listen-speak cycle — no manual relisten loop needed.
+    if (VAPI_ENABLED && vapi.isAvailable) {
+      if (!vapi.isActive()) await vapi.start();
+      return;
+    }
     try {
       const { transcript, stopped } = await voice.startListening();
       if (stopped) {
@@ -349,7 +386,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         }, 500);
       }
     }
-  }, [voice, sendTranscript, dispatch]);
+  }, [voice, sendTranscript, dispatch, vapi]);
 
   useEffect(() => {
     startListeningRef.current = startListening;
@@ -386,6 +423,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
     voiceRef.current = voice;
   });
 
+  // Same pattern for the Vapi hook — keeps `close` / `sayGoodbyeAndClose`
+  // callback identities stable while still calling into the latest hook.
+  const vapiRef = useRef(vapi);
+  useEffect(() => {
+    vapiRef.current = vapi;
+  });
+
   const pathnameRef = useRef(pathname);
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -397,6 +441,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
     emptyRelistenStreakRef.current = 0;
     voiceRef.current.stopSpeaking();
     voiceRef.current.stopListening();
+    if (VAPI_ENABLED) {
+      void vapiRef.current.stop();
+    }
     dispatch({ type: "CLOSE" });
     // Always return the user to the discovery page when the Cenaiva flow ends
     // (post-booking save, decline preorder, payment success, manual close).
