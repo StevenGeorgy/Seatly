@@ -10,6 +10,7 @@ import { AuthPageLayout } from "@/components/auth/AuthPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { signInErrorTranslationKey } from "@/lib/auth/map-sign-in-error";
 import { resolvePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { loadUserContext } from "@/lib/supabase/load-user-context";
@@ -49,7 +50,7 @@ export default function LoginPage() {
       });
 
       if (error) {
-        toast.error(t("auth.errors.signInFailed"));
+        toast.error(t(signInErrorTranslationKey(error)));
         return;
       }
 
@@ -60,7 +61,9 @@ export default function LoginPage() {
 
       const ctx = await loadUserContext(client, data.session);
       if (!ctx.ok) {
-        toast.error(t("auth.errors.loadProfileFailed"));
+        toast.error(
+          t("auth.errors.loadProfileFailedDetail", { message: ctx.error.message }),
+        );
         return;
       }
 

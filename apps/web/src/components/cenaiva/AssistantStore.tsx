@@ -88,6 +88,7 @@ type LocalAction =
   | { type: "RESET_BOOKING" }
   | { type: "SET_AVAILABILITY_OPEN"; open: boolean }
   | { type: "SET_HAS_SAVED_CARD"; value: boolean }
+  | { type: "SET_BOOKING_STATUS"; status: BookingState["status"] }
   | { type: "PRESELECT_RESTAURANT"; restaurant_id: string; restaurant_name: string };
 
 export type AssistantAction = UIActionType | LocalAction;
@@ -368,6 +369,12 @@ export function assistantReducer(
 
     case "SET_HAS_SAVED_CARD":
       return { ...state, booking: { ...state.booking, has_saved_card: localAction.value } };
+
+    case "SET_BOOKING_STATUS":
+      return {
+        ...state,
+        booking: { ...state.booking, status: localAction.status },
+      };
 
     case "APPLY_RESPONSE": {
       const { response } = localAction;

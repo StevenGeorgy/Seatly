@@ -1,9 +1,10 @@
 import { useCallback, useRef, useState } from "react";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const TTS_ENDPOINT = `${SUPABASE_URL}/functions/v1/elevenlabs-tts`;
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 async function getBearerToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
@@ -52,11 +53,12 @@ export function useElevenLabsTTS() {
       if (!token) return false;
 
       try {
-        const res = await fetch(TTS_ENDPOINT, {
+        const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/elevenlabs-tts`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
+            apikey: getSupabaseAnonKey(),
           },
           body: JSON.stringify({ text, voice_id: voiceId }),
         });

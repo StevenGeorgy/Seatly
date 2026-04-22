@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const TOKEN_ENDPOINT = `${SUPABASE_URL}/functions/v1/deepgram-live-token`;
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
 
@@ -52,11 +53,12 @@ async function getBearerToken(): Promise<string | null> {
 async function fetchDeepgramToken(): Promise<string | null> {
   const bearer = await getBearerToken();
   if (!bearer) return null;
-  const res = await fetch(TOKEN_ENDPOINT, {
+  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/deepgram-live-token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${bearer}`,
       "Content-Type": "application/json",
+      apikey: getSupabaseAnonKey(),
     },
   });
   if (!res.ok) {

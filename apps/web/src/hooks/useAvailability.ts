@@ -1,8 +1,10 @@
 import { useState, useCallback } from "react";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || "";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 export interface AvailabilitySlot {
   shift_id: string;
@@ -23,7 +25,7 @@ export function useAvailability() {
       setSlots([]);
 
       try {
-        const url = `${SUPABASE_URL}/functions/v1/get-availability?restaurant_id=${restaurantId}&date=${date}&party_size=${partySize}`;
+        const url = `${getSupabaseProjectUrl()}/functions/v1/get-availability?restaurant_id=${restaurantId}&date=${date}&party_size=${partySize}`;
 
         let token: string | null = null;
         if (isSupabaseConfigured()) {
@@ -33,7 +35,10 @@ export function useAvailability() {
         }
 
         const res = await fetch(url, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          headers: {
+            apikey: getSupabaseAnonKey(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
         });
 
         const json = await res.json() as { slots?: AvailabilitySlot[]; error?: string };

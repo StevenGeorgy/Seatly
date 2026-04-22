@@ -1,5 +1,10 @@
 import { useCallback, useRef, useState } from "react";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 export type ChatMessage = {
   id: string;
@@ -59,13 +64,13 @@ export function useCenaivaChat() {
         abortRef.current = controller;
 
         const res = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cenaiva-chat`,
+          `${getSupabaseProjectUrl()}/functions/v1/cenaiva-chat`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${session.access_token}`,
-              apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+              apikey: getSupabaseAnonKey(),
             },
             body: JSON.stringify({
               message: text.trim(),

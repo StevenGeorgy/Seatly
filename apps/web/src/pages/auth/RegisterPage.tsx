@@ -63,7 +63,9 @@ export default function RegisterPage() {
       if (data.session) {
         const ctx = await loadUserContext(client, data.session);
         if (!ctx.ok) {
-          toast.error(t("auth.errors.loadProfileFailed"));
+          toast.error(
+            t("auth.errors.loadProfileFailedDetail", { message: ctx.error.message }),
+          );
           return;
         }
         navigate(resolvePostLoginPath(undefined, ctx), { replace: true });

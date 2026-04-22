@@ -8,23 +8,37 @@ import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useAvailability } from "@/hooks/useAvailability";
 import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItems";
-import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 
 interface BookingSheetProps {
   onExit: () => void;
+  /** When true, the sheet fills the full available screen (used for the
+   *  manual menu / prepay flow where map + rail are hidden). */
+  fullScreen?: boolean;
 }
+
+/** Statuses where the BookingSheet is driving a fully manual, button-only
+ *  menu + prepay UI. No orchestrator calls, no auto-listen. Kept here next
+ *  to the component so the shell can import the same check. */
+export const MANUAL_MENU_STATUSES = new Set([
+  "offering_preorder",
+  "browsing_menu",
+]);
 
 function formatCurrency(amount: number) {
   return `$${amount.toFixed(2)}`;
 }
 
-export function BookingSheet({ onExit }: BookingSheetProps) {
+export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const { state, dispatch } = useAssistantStore();
   const assistant = useAssistant();
   const availability = useAvailability();
-  const { restaurants } = usePublicRestaurants();
   const { booking, showExitX } = state;
+
+  // Local-only review/prepay flow — no orchestrator involvement. Once the
+  // user is done picking items in `browsing_menu`, the "Review order" button
+  // switches to "review" which shows the cart + optional prepay prompt.
+  const [menuStep, setMenuStep] = useState<"browsing" | "review">("browsing");
 
   // Only fetch menu data once the booking actually reaches a menu-relevant
   // stage. Fetching + grouping a full restaurant menu while the user is still
@@ -174,11 +188,21 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: "100%", opacity: 0 }}
         transition={{ type: "spring", damping: 28, stiffness: 280 }}
-        className="absolute bottom-0 left-0 right-0 z-40 bg-[#111] border-t border-white/10 rounded-t-2xl overflow-hidden"
+        className={cn(
+          "z-40 bg-[#111] border-t border-white/10 overflow-hidden",
+          fullScreen
+            ? "absolute inset-0 rounded-none"
+            : "absolute bottom-0 left-0 right-0 rounded-t-2xl",
+        )}
       >
         {showExitX && <ExitButton onExit={onExit} />}
 
-        <div className="p-4 max-h-[65vh] overflow-y-auto">
+        <div
+          className={cn(
+            "p-4 overflow-y-auto",
+            fullScreen ? "h-full" : "max-h-[65vh]",
+          )}
+        >
 
           {/* ── Confirmation screen ──────────────────────────────────────────── */}
           {(isConfirmed || isPaid) && booking.confirmation_code && (
@@ -278,33 +302,29 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
           {booking.status === "offering_preorder" && (
             <div className="py-4 text-center space-y-4">
               <ShoppingCart className="w-10 h-10 text-[#C8A951] mx-auto" />
-              <p className="text-white text-sm">Would you like to pre-order from the menu?</p>
-              <p className="text-white/40 text-xs">Pay before you arrive — skip the wait.</p>
+              <p className="text-white text-sm">Would you like to browse the menu?</p>
+              <p className="text-white/40 text-xs">Pre-order is optional — you can also just pay at the table.</p>
               <div className="flex gap-3 justify-center">
                 <button
                   onClick={() => {
-                    // "Yes" hands the user off to the restaurant's public page so
-                    // they can browse and add items manually. We close the
-                    // assistant so TTS / mic don't keep running in the
-                    // background while they shop.
-                    const slug = restaurants.find(
-                      (r) => r.id === booking.restaurant_id,
-                    )?.slug;
-                    const menuPath = slug ? `/${slug}?step=menu` : undefined;
-                    void assistant?.sayGoodbyeAndClose(
-                      "Opening the menu now. Enjoy!",
-                      menuPath,
-                    );
+                    // Manual flow: stay inside the Cenaiva shell and advance
+                    // the booking status locally so BookingSheet renders the
+                    // menu. No orchestrator round-trip, no TTS prompt.
+                    setMenuStep("browsing");
+                    dispatch({ type: "SET_BOOKING_STATUS", status: "browsing_menu" });
                   }}
                   className="px-6 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors"
                 >
-                  Yes, pre-order
+                  Yes, show menu
                 </button>
                 <button
                   onClick={() => {
                     // "No" ends the flow right here — no orchestrator round-trip.
-                    // Cenaiva says bye, the shell closes, and we land on /discover.
-                    void assistant?.sayGoodbyeAndClose("You're all set. Enjoy your meal. Bye!");
+                    // Cenaiva says bye, the shell closes, and we land on /account.
+                    void assistant?.sayGoodbyeAndClose(
+                      "You're all set. Enjoy your meal. Bye!",
+                      "/account",
+                    );
                   }}
                   className="px-6 py-2.5 rounded-full border border-white/20 text-white/60 text-sm hover:border-white/40 transition-colors"
                 >
@@ -314,19 +334,12 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
             </div>
           )}
 
-          {/* ── Browse menu ──────────────────────────────────────────────────── */}
-          {booking.status === "browsing_menu" && (
-            <div className="space-y-4">
+          {/* ── Browse menu (manual, button-driven) ──────────────────────────── */}
+          {booking.status === "browsing_menu" && menuStep === "browsing" && (
+            <div className="space-y-4 pb-2">
               <div className="flex items-center justify-between">
-                <p className="text-white text-sm font-medium">Menu</p>
-                {booking.cart.length > 0 && (
-                  <button
-                    onClick={() => void assistant?.sendTranscript("that's it, I'm done")}
-                    className="px-4 py-1.5 rounded-full bg-[#C8A951] text-black text-xs font-medium"
-                  >
-                    Done ({booking.cart.length} items)
-                  </button>
-                )}
+                <p className="text-white text-base font-medium">Menu</p>
+                <p className="text-white/40 text-xs">Add items, then review</p>
               </div>
 
               {Object.keys(grouped).length === 0 && (
@@ -377,19 +390,85 @@ export function BookingSheet({ onExit }: BookingSheetProps) {
               ))}
 
               {booking.cart.length > 0 && (
-                <div className="border-t border-white/10 pt-3 space-y-2">
+                <div className="sticky bottom-0 -mx-4 -mb-4 px-4 pt-3 pb-4 bg-[#111] border-t border-white/10 space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-white/60">Subtotal</span>
                     <span className="text-white">{formatCurrency(booking.cart_subtotal)}</span>
                   </div>
                   <Button
                     className="w-full bg-[#C8A951] text-black hover:bg-[#E6C060]"
-                    onClick={() => void assistant?.sendTranscript("that's it, I'm done ordering")}
+                    onClick={() => setMenuStep("review")}
                   >
                     Review order
                   </Button>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ── Review order + optional prepay (manual) ──────────────────────── */}
+          {booking.status === "browsing_menu" && menuStep === "review" && (
+            <div className="space-y-4">
+              <p className="text-white text-base font-medium">Review your order</p>
+
+              <div className="space-y-2">
+                {booking.cart.map((item) => (
+                  <div
+                    key={item.menu_item_id}
+                    className="flex justify-between bg-white/5 rounded-xl px-3 py-2.5 text-sm"
+                  >
+                    <span className="text-white/80">{item.qty}× {item.name}</span>
+                    <span className="text-white/60">
+                      {formatCurrency(item.unit_price * item.qty)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-white/10 pt-3 flex justify-between text-sm font-medium">
+                <span className="text-white/60">Subtotal</span>
+                <span className="text-white">{formatCurrency(booking.cart_subtotal)}</span>
+              </div>
+
+              <button
+                onClick={() => setMenuStep("browsing")}
+                className="w-full py-2 rounded-lg border border-white/15 text-white/60 text-xs hover:border-white/30 transition-colors"
+              >
+                ← Edit items
+              </button>
+
+              <div className="pt-2 text-center space-y-3">
+                <p className="text-white text-sm">Would you like to prepay now?</p>
+                <p className="text-white/40 text-xs">
+                  Optional — skip if you'd rather pay at the table.
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={() => {
+                      // Yes prepay: hand the cart to the orchestrator so it
+                      // can create a real order and return a checkout URL.
+                      // The shell auto-closes via navigate_to_checkout.
+                      void assistant?.sendTranscript(
+                        "Yes, please create the prepaid order and take me to checkout now.",
+                      );
+                    }}
+                    className="px-5 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors"
+                  >
+                    Yes, prepay
+                  </button>
+                  <button
+                    onClick={() => {
+                      void assistant?.sayGoodbyeAndClose(
+                        "Great, you can pay at the table. See you soon. Bye!",
+                        "/account",
+                      );
+                    }}
+                    className="px-5 py-2.5 rounded-full border border-white/20 text-white/60 text-sm hover:border-white/40 transition-colors"
+                  >
+                    No, pay at table
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

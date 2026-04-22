@@ -334,6 +334,7 @@ FLOW — follow exactly in this order:
 3. When the user names a specific restaurant OR the user message contains "Selected restaurant ID: <uuid>", that restaurant is CONFIRMED. Immediately emit highlight_restaurant + start_booking with that ID and move to step 4 — do NOT ask "which one?" again.
    3a. FUZZY NAME MATCHING: the user is talking to a speech recognizer, so their pronunciation of a restaurant name will be approximate ("steven gorgey" / "steve georgy" / "georges inc" / "gorgi inc"). When "Visible restaurant candidates" are listed in the user message, score the user's reply against each candidate name (phonetic + token overlap). If ONE candidate clearly wins, treat it as CONFIRMED and emit highlight_restaurant + start_booking on it — do not ask again. If TWO candidates are close, emit highlight_restaurant on your best guess and say "Did you mean <name>?" — then next_expected_input='confirmation'.
    3b. NEVER ask the same disambiguation question more than twice in a row. If you've already asked "which restaurant?" twice, the next turn MUST commit to a best-guess confirmation ("Did you mean X?") — not another "which one?".
+   3c. SINGLE-RESULT YES: if only ONE restaurant is visible AND the user replies with an affirmative ("yes", "yeah", "sure", "ok", "book it", "do it"), treat that one restaurant as CONFIRMED — emit highlight_restaurant + start_booking with its id and go to step 4 (ask party_size + date). DO NOT call get_menu, emit show_menu, or emit offer_preorder — those belong to step 6, AFTER the reservation is confirmed.
 4. Collect party_size and date via set_booking_field. Ask ONLY for fields marked MISSING in the BOOKING STATE checklist above — never re-ask a field that is already SET.
    4a. Parse natural-language answers from voice users into structured values and emit set_booking_field immediately:
        - party_size: "two" / "for 2" / "party of three" / "me and my wife" → 2/3/2. "a couple" → 2. "solo" / "just me" → 1.
@@ -342,7 +343,7 @@ FLOW — follow exactly in this order:
    4b. If the BOOKING STATE checklist shows party_size SET and date SET, DO NOT ask for them again — call check_availability straight away.
    Call check_availability only once all three of restaurant_id, date, and party_size are SET. User picks slot → select_time_slot.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
-6. Then emit offer_preorder and ask: "Want to pre-order from the menu?" (≤ 10 words).
+6. ONLY AFTER you have emitted show_confirmation in a PRIOR turn AND booking_state.status is one of {"confirmed","offering_preorder","browsing_menu","post_booking"}: emit offer_preorder and ask "Want to pre-order from the menu?" (≤ 10 words). Do NOT enter step 6 while booking_state.status is "idle" or "collecting_minimum_fields" — those are still steps 1-4.
    a. If no: emit show_post_booking_questions. DONE.
    b. If yes: call get_menu, emit show_menu. Use current cart (shown above) + add_menu_item actions.
       When user says "done" / "that's it" / "that's all":
@@ -353,7 +354,7 @@ FLOW — follow exactly in this order:
           - "now" → emit set_tip_choice with choice="now". Ask: "How much? Percent or dollar amount."
       iv. When user gives tip: parse "twenty percent"→percent=20, "ten dollars"→amount=10. Emit set_tip.
       v.  Ask: "Single card or split?" When user answers, emit set_payment_split with choice.
-          - "split" → emit navigate_to_checkout with order_id from create_preorder_order result, path="/r/{slug}?order_id={order_id}&step=checkout". DONE.
+          - "split" → emit navigate_to_checkout with order_id from create_preorder_order result, path="/{slug}?order_id={order_id}&step=checkout". DONE.
           - "single" AND hasSavedCard=true → call charge_saved_card with order_id and tip. Emit show_payment_success. DONE.
           - "single" AND hasSavedCard=false → emit navigate_to_checkout. DONE.
 
@@ -417,11 +418,33 @@ Deno.serve(async (req) => {
       screen = "discover",
       booking_state = {},
       visible_restaurant_ids = [],
-      selected_restaurant_id = null,
+      selected_restaurant_id: bodySelectedRestaurantId = null,
       user_location = null,
       conversation_id: incomingConvId,
       has_saved_card = false,
     } = body;
+
+    // Mutable selection — the server may promote a voice "yes" into an
+    // explicit selection when the map is already narrowed to one restaurant.
+    let selected_restaurant_id: string | null = bodySelectedRestaurantId;
+
+    // When the user confirms a single-result search with "yes" / "yeah" / etc.,
+    // treat it as explicit selection of that one restaurant so the LLM doesn't
+    // have to infer it (and, crucially, doesn't mistake the "yes" for yes-to-
+    // preorder and jump straight to the menu).
+    const currentStatus = (booking_state.status as string | null | undefined) ?? "idle";
+    const isAffirmative =
+      /^\s*(yes|yeah|yep|yup|sure|ok|okay|alright|fine|please|yes please|yeah please|sounds good|go ahead|book it|do it|confirm|let's do it)[\s.!,]*$/i.test(
+        transcript,
+      );
+    if (
+      !selected_restaurant_id &&
+      isAffirmative &&
+      visible_restaurant_ids.length === 1 &&
+      (currentStatus === "idle" || currentStatus === "collecting_minimum_fields")
+    ) {
+      selected_restaurant_id = visible_restaurant_ids[0];
+    }
 
     // Resolve city
     const userCity = user_location
@@ -637,6 +660,10 @@ Deno.serve(async (req) => {
     let lastReservationId: string | null = (booking_state.reservation_id as string) ?? null;
     let lastGuestId: string | null = null;
     let lastSearchIds: string[] = [];
+    // When search_restaurants returns exactly one match, capture its name so we
+    // can prompt "Do you want to book a table at X?" instead of asking which
+    // one they want — there's nothing to disambiguate.
+    let lastSearchSingleName: string | null = null;
     let lastOrderId: string | null = (booking_state.order_id as string) ?? null;
     let lastTextReply = "";
 
@@ -724,6 +751,10 @@ Deno.serve(async (req) => {
             const { data, error } = await query;
             if (!error && data) {
               lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
+              lastSearchSingleName =
+                data.length === 1
+                  ? ((data[0] as { name?: string }).name ?? null)
+                  : null;
               derivedActions.push({ type: "update_map_markers", restaurant_ids: lastSearchIds });
               derivedActions.push({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
               mapDelta.visible = true;
@@ -791,6 +822,22 @@ Deno.serve(async (req) => {
 
           // ── get_menu ──────────────────────────────────────────────────────
           else if (toolName === "get_menu") {
+            // Guard: never fetch/show the menu until the reservation is actually
+            // confirmed. The model occasionally tries to jump straight from a
+            // "yes" (restaurant confirmation) into step 6 (menu), which dumps
+            // the user into the menu before we've even collected party/date.
+            const menuAllowed =
+              currentStatus === "confirmed" ||
+              currentStatus === "offering_preorder" ||
+              currentStatus === "browsing_menu" ||
+              currentStatus === "post_booking";
+            if (!menuAllowed) {
+              toolResult = JSON.stringify({
+                error: "Cannot show the menu yet: reservation is not confirmed. Finish collecting party_size + date, call check_availability, complete_booking, and emit show_confirmation FIRST.",
+              });
+              // Fall through to the normal tool_result persistence below so the
+              // conversation stays well-formed for OpenAI.
+            } else {
             const { data: menuItems, error } = await supabaseAdmin
               .from("menu_items")
               .select("id, name, description, price, category, category_id, dietary_flags, allergens, is_preorderable, is_available")
@@ -816,6 +863,7 @@ Deno.serve(async (req) => {
                 derivedActions.push({ type: "show_menu", restaurant_id: toolInput.restaurant_id });
               }
             }
+            } // end menuAllowed
           }
 
           // ── create_preorder_order ─────────────────────────────────────────
@@ -896,7 +944,7 @@ Deno.serve(async (req) => {
                 await supabaseAdmin.from("order_items").insert(orderItems);
 
                 const checkoutPath = rest?.slug
-                  ? `/r/${rest.slug}?order_id=${order.id}&step=checkout`
+                  ? `/${rest.slug}?order_id=${order.id}&step=checkout`
                   : null;
 
                 lastOrderId = order.id;
@@ -1090,7 +1138,9 @@ Deno.serve(async (req) => {
             const restaurantHint = selected_restaurant_id && !booking_state.party_size && !booking_state.date
               ? ` IMPORTANT: user selected restaurant ID "${selected_restaurant_id}". You MUST emit start_booking (restaurant_id="${selected_restaurant_id}") and highlight_restaurant actions. spoken_text must ask for party size and date — do NOT mention availability.`
               : "";
-            const searchHint = lastSearchIds.length > 0
+            const searchHint = lastSearchIds.length === 1 && lastSearchSingleName
+              ? ` IMPORTANT: search_restaurants returned exactly ONE match ("${lastSearchSingleName}"). spoken_text must ask "Do you want to book a table at ${lastSearchSingleName}?" — do NOT ask "which restaurant?" (there's nothing to disambiguate) and do NOT mention availability. Set next_expected_input="confirmation".`
+              : lastSearchIds.length > 0
               ? ` IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations.`
               : "";
             return base + restaurantHint + searchHint;
@@ -1129,6 +1179,14 @@ Deno.serve(async (req) => {
       parsed.spoken_text = "How many guests?";
     } else if (selected_restaurant_id && !bsDateAfter) {
       parsed.spoken_text = "What date?";
+    } else if (
+      !selected_restaurant_id &&
+      lastSearchIds.length === 1 &&
+      lastSearchSingleName
+    ) {
+      // Single search result — don't ask "which restaurant?", confirm directly.
+      parsed.spoken_text = `Do you want to book a table at ${lastSearchSingleName}?`;
+      parsed.next_expected_input = "confirmation";
     }
 
     parsed.conversation_id = conversationId;
@@ -1159,6 +1217,25 @@ Deno.serve(async (req) => {
         continue;
       }
       responseActions.unshift(d);
+    }
+
+    // Guard: strip show_menu / offer_preorder actions when the booking isn't
+    // actually confirmed yet. This prevents the "user says yes to single
+    // restaurant → menu appears + orchestrator asks for party size" bug.
+    const mergedStatus =
+      ((parsed.booking as Record<string, unknown> | null)?.status as string | undefined) ??
+      currentStatus;
+    const menuPhaseAllowed =
+      mergedStatus === "confirmed" ||
+      mergedStatus === "offering_preorder" ||
+      mergedStatus === "browsing_menu" ||
+      mergedStatus === "post_booking" ||
+      mergedStatus === "collecting_payment" ||
+      mergedStatus === "paid";
+    if (!menuPhaseAllowed) {
+      parsed.ui_actions = (parsed.ui_actions as Array<Record<string, unknown>>).filter(
+        (a) => a.type !== "show_menu" && a.type !== "offer_preorder",
+      );
     }
 
     // Merge server booking delta (tool execution) into parsed.booking.

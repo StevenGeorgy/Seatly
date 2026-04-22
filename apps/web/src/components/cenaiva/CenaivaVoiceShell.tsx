@@ -11,8 +11,7 @@ import { useUser } from "@/hooks/useUser";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
 import { CustomerMap } from "@/components/cenaiva/CustomerMap";
 import { RestaurantRail } from "@/components/cenaiva/RestaurantRail";
-import { BookingSheet } from "@/components/cenaiva/BookingSheet";
-import { ExitButton } from "@/components/cenaiva/ExitButton";
+import { BookingSheet, MANUAL_MENU_STATUSES } from "@/components/cenaiva/BookingSheet";
 
 interface CenaivaVoiceShellProps {
   /** When true, plays a hard-coded opening greeting as soon as the shell opens */
@@ -51,6 +50,8 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const inManualMenu = MANUAL_MENU_STATUSES.has(state.booking.status);
+
   // Client-side greeting — no LLM roundtrip, instant playback
   useEffect(() => {
     if (!initialGreeting) return;
@@ -66,13 +67,26 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
     void (async () => {
       await voice.speak(greeting);
-      // After greeting, start listening automatically
-      if (isOpenRef.current) {
+      // After greeting, start listening automatically — unless we're already
+      // in the manual menu flow (pre-order offer / browsing menu), where the
+      // user drives the UI with taps and only opts into the mic for ad-hoc
+      // ingredient / allergen questions.
+      if (isOpenRef.current && !MANUAL_MENU_STATUSES.has(state.booking.status)) {
         void assistant?.startListening();
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialGreeting, state.isOpen]);
+
+  // When the booking transitions into the manual menu flow, hard-stop any
+  // active listening so the mic doesn't keep running while the user taps
+  // through the menu.
+  useEffect(() => {
+    if (inManualMenu) {
+      voice.stopListening();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inManualMenu]);
 
   const handleOrbClick = () => {
     if (state.voiceStatus === "listening") {
@@ -155,32 +169,35 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             </button>
           )}
 
-          {/* Map layer — always visible while the shell is open. */}
-          <div className={cn("flex-1 relative", bookingActive && "h-[45%] flex-none")}>
-            <CustomerMap restaurants={restaurants} />
+          {/* Map layer — hidden while the user is driving the manual menu
+              flow so the menu can fill the screen. */}
+          {!inManualMenu && (
+            <div className={cn("flex-1 relative", bookingActive && "h-[45%] flex-none")}>
+              <CustomerMap restaurants={restaurants} />
 
-            {/* Spoken text overlay */}
-            <AnimatePresence>
-              {state.lastSpokenText && (
-                <motion.div
-                  key={state.lastSpokenText}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[85%] max-w-sm"
-                >
-                  <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-4 py-2.5 text-white text-sm text-center font-medium border border-white/10">
-                    {state.lastSpokenText}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+              {/* Spoken text overlay */}
+              <AnimatePresence>
+                {state.lastSpokenText && (
+                  <motion.div
+                    key={state.lastSpokenText}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[85%] max-w-sm"
+                  >
+                    <div className="bg-black/70 backdrop-blur-sm rounded-2xl px-4 py-2.5 text-white text-sm text-center font-medium border border-white/10">
+                      {state.lastSpokenText}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
 
           {/* Restaurant rail — hidden during advanced booking/payment steps */}
-          {!showConfirmationOrPostBooking && (
-            <div className="bg-[#0D0D0D] border-t border-white/5 py-2">
+          {!showConfirmationOrPostBooking && !inManualMenu && (
+            <div className="bg-[#0D0D0D] border-t border-white/5">
               <RestaurantRail restaurants={restaurants} />
               {restaurants.length === 0 && (
                 <p className="text-center text-white/20 text-xs py-3 px-4">
@@ -190,9 +207,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             </div>
           )}
 
-          {/* Booking sheet overlay */}
-          <div className="relative">
-            <BookingSheet onExit={handleClose} />
+          {/* Booking sheet — fills available space in manual menu flow so
+              the menu isn't capped at 65% of the viewport. */}
+          <div className={cn("relative", inManualMenu && "flex-1 min-h-0")}>
+            <BookingSheet onExit={handleClose} fullScreen={inManualMenu} />
           </div>
 
           {/* Voice orb + text input strip */}
@@ -233,7 +251,9 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                   {state.voiceStatus === "processing" && "Thinking…"}
                   {state.voiceStatus === "speaking" && state.lastSpokenText}
                   {(state.voiceStatus === "idle" || state.voiceStatus === "interrupted") &&
-                    'Tap the mic or say "Hey Cenaiva"'}
+                    (inManualMenu
+                      ? "Tap the mic to ask about ingredients or allergens"
+                      : 'Tap the mic or say "Hey Cenaiva"')}
                   {state.voiceStatus === "error" && (
                     <button
                       type="button"

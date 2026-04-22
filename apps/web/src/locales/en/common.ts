@@ -596,9 +596,21 @@ const common = {
       fullNameMax: "Name is too long.",
     },
     errors: {
-      signInFailed: "Could not sign in. Check your email and password.",
+      signIn: {
+        invalidCredentials:
+          "Invalid email or password. If you use Google sign-in, use that button instead.",
+        emailNotConfirmed:
+          "Confirm your email first (check your inbox for the link from us), then try again.",
+        userBanned: "This account cannot sign in. Contact support if you think this is a mistake.",
+        tooManyRequests: "Too many attempts. Wait a minute and try again.",
+        oauthOnly:
+          "This account was created with Google. Use “Continue with Google” to sign in.",
+        generic: "Could not sign in. Check your email and password.",
+      },
       signUpFailed: "Could not create the account. Try again.",
       loadProfileFailed: "Signed in but profile could not be loaded.",
+      loadProfileFailedDetail:
+        "Signed in but profile could not be loaded: {{message}}. If this persists, check Supabase RLS and that your .env points to the correct project.",
       oauthFailed: "Could not start Google sign-in.",
       resetEmailFailed: "Could not send reset email. Try again.",
       updatePasswordFailed: "Could not update password.",

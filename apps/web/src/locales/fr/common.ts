@@ -598,9 +598,22 @@ const common = {
       fullNameMax: "Le nom est trop long.",
     },
     errors: {
-      signInFailed: "Connexion impossible. V\u00e9rifiez le courriel et le mot de passe.",
+      signIn: {
+        invalidCredentials:
+          "Courriel ou mot de passe invalide. Si vous utilisez Google, utilisez plut\u00f4t ce bouton.",
+        emailNotConfirmed:
+          "Confirmez d\u2019abord votre courriel (lien dans votre bo\u00eete de r\u00e9ception), puis r\u00e9essayez.",
+        userBanned:
+          "Ce compte ne peut pas se connecter. Communiquez avec le soutien si vous croyez qu\u2019il s\u2019agit d\u2019une erreur.",
+        tooManyRequests: "Trop de tentatives. Attendez une minute et r\u00e9essayez.",
+        oauthOnly:
+          "Ce compte a \u00e9t\u00e9 cr\u00e9\u00e9 avec Google. Utilisez \u00ab Continuer avec Google \u00bb pour vous connecter.",
+        generic: "Connexion impossible. V\u00e9rifiez le courriel et le mot de passe.",
+      },
       signUpFailed: "Impossible de cr\u00e9er le compte. R\u00e9essayez.",
       loadProfileFailed: "Connect\u00e9, mais le profil n\u2019a pas pu \u00eatre charg\u00e9.",
+      loadProfileFailedDetail:
+        "Connect\u00e9, mais le profil n\u2019a pas pu \u00eatre charg\u00e9 : {{message}}. Si le probl\u00e8me persiste, v\u00e9rifiez les politiques RLS sur Supabase et que votre .env pointe vers le bon projet.",
       oauthFailed: "Impossible de d\u00e9marrer la connexion Google.",
       resetEmailFailed: "Impossible d\u2019envoyer le courriel. R\u00e9essayez.",
       updatePasswordFailed: "Impossible de mettre \u00e0 jour le mot de passe.",

@@ -1,7 +1,7 @@
 import { useState, useMemo, useId, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { format, isValid, parse, startOfToday } from "date-fns";
-import { useParams, Link, useSearchParams } from "react-router-dom";
+import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   Star,
@@ -325,6 +325,11 @@ export default function RestaurantPublicPage() {
   const { t } = useTranslation();
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  /** Did the user arrive here from Cenaiva's prepay flow? If so, after the
+   *  checkout confirms we want to drop them back on their dashboard rather
+   *  than the generic "Back to Discover" CTA. */
+  const cameFromCenaivaPrepay = !!searchParams.get("order_id");
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const assistant = useAssistant();
@@ -1810,27 +1815,35 @@ export default function RestaurantPublicPage() {
               </div>
 
               <div className="flex w-full flex-col gap-2">
-                <Button
-                  onClick={() => {
-                    setStep("type");
-                    setCart([]);
-                    setOrderType(null);
-                    setTipOption("18");
-                    setCustomTipAmount("");
-                    setPaymentSplitMode("single");
-                    setSplitPartyCountInput("2");
-                    setCardNumber("");
-                    setCardExpiry("");
-                    setCardCvc("");
-                    setConfirmationCode("");
-                    setOrderError(null);
-                  }}
-                >
-                  Order again
-                </Button>
-                <Button variant="outline" asChild>
-                  <Link to="/discover">Back to Discover</Link>
-                </Button>
+                {cameFromCenaivaPrepay ? (
+                  <Button onClick={() => navigate("/account")}>
+                    Back to dashboard
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      onClick={() => {
+                        setStep("type");
+                        setCart([]);
+                        setOrderType(null);
+                        setTipOption("18");
+                        setCustomTipAmount("");
+                        setPaymentSplitMode("single");
+                        setSplitPartyCountInput("2");
+                        setCardNumber("");
+                        setCardExpiry("");
+                        setCardCvc("");
+                        setConfirmationCode("");
+                        setOrderError(null);
+                      }}
+                    >
+                      Order again
+                    </Button>
+                    <Button variant="outline" asChild>
+                      <Link to="/discover">Back to Discover</Link>
+                    </Button>
+                  </>
+                )}
               </div>
             </motion.div>
           )}

@@ -265,7 +265,16 @@ function AssistantInner({ children }: { children: ReactNode }) {
         if (spokenText) await voice.speak(spokenText);
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
-        if (isOpenRef.current && !textModeRef.current) {
+        // In the manual menu / prepay flow the UI is button-driven — we only
+        // open the mic on explicit tap (for ingredient / allergen questions).
+        // Skip the automatic re-listen so the mic doesn't silently reopen
+        // after every response.
+        const manualMenuActive = [
+          "offering_preorder",
+          "browsing_menu",
+        ].includes(stateRef.current.booking.status);
+
+        if (isOpenRef.current && !textModeRef.current && !manualMenuActive) {
           // 400ms grace: lets Chrome's audio stack release the mic after TTS
           // ends, avoiding InvalidStateError on recognition.start().
           setTimeout(() => {
@@ -434,7 +443,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   // After a successful payment the "You're all set!" confirmation renders
   // briefly. We speak a short farewell, then tear down the shell and navigate
-  // back to /discover so the user isn't stranded on a paid receipt.
+  // back to /account (the customer dashboard) so the user lands on their
+  // home screen rather than a paid receipt.
   const paidAckRef = useRef(false);
   useEffect(() => {
     if (state.booking.status !== "paid") {
@@ -444,7 +454,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
     if (paidAckRef.current) return;
     paidAckRef.current = true;
     const t = setTimeout(() => {
-      void sayGoodbyeAndClose("You're all set. Enjoy your meal. Bye!");
+      void sayGoodbyeAndClose("You're all set. Enjoy your meal. Bye!", "/account");
     }, 1500);
     return () => clearTimeout(t);
   }, [state.booking.status, sayGoodbyeAndClose]);

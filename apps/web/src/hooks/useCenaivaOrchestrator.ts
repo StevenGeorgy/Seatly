@@ -1,11 +1,12 @@
 import { useCallback, useRef, useState } from "react";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import type { AssistantResponseType, OrchestratorRequestType } from "@cenaiva/assistant";
 import { AssistantResponse } from "@cenaiva/assistant";
-
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const ENDPOINT = `${SUPABASE_URL}/functions/v1/cenaiva-orchestrate`;
 
 /** Hard cap on a single orchestrator call. The edge function runs up to 5
  *  tool-use iterations + a final JSON completion (gpt-4o chat), so a realistic
@@ -51,11 +52,12 @@ export function useCenaivaOrchestrator() {
           return null;
         }
 
-        const res = await fetch(ENDPOINT, {
+        const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/cenaiva-orchestrate`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
+            apikey: getSupabaseAnonKey(),
           },
           body: JSON.stringify(req),
           signal: controller.signal,

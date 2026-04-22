@@ -3,7 +3,7 @@ import { CreditCard, Plus, Trash2, Star } from "lucide-react";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { Button } from "@/components/ui/button";
 import { isStripeConfigured, stripePromise } from "@/lib/stripe";
-import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getSupabaseAnonKey, getSupabaseBrowserClient, getSupabaseProjectUrl } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 
 type SavedCard = {
@@ -188,11 +188,11 @@ export function PaymentMethodsSection() {
     if (!session) { setLoading(false); return; }
 
     const res = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-list-methods`,
+      `${getSupabaseProjectUrl()}/functions/v1/stripe-list-methods`,
       {
         headers: {
           Authorization: `Bearer ${session.access_token}`,
-          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+          apikey: getSupabaseAnonKey(),
         },
       },
     );
@@ -210,12 +210,12 @@ export function PaymentMethodsSection() {
       const { data: { session } } = await client.auth.getSession();
       if (!session) return;
       const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-setup-intent`,
+        `${getSupabaseProjectUrl()}/functions/v1/stripe-setup-intent`,
         {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
-            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            apikey: getSupabaseAnonKey(),
           },
         },
       );
@@ -234,13 +234,13 @@ export function PaymentMethodsSection() {
       const { data: { session } } = await client.auth.getSession();
       if (session) {
         await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-detach-method`,
+          `${getSupabaseProjectUrl()}/functions/v1/stripe-detach-method`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${session.access_token}`,
-              apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+              apikey: getSupabaseAnonKey(),
             },
             body: JSON.stringify({ payment_method_id: card.stripe_payment_method_id }),
           },

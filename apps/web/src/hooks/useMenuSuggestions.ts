@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 export type SuggestionType = "menu_item" | "menu_item_update" | "promotion" | "event";
 
@@ -57,13 +62,13 @@ export function useMenuSuggestions() {
       if (!session?.access_token) return;
 
       const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-menu-suggestions`,
+        `${getSupabaseProjectUrl()}/functions/v1/generate-menu-suggestions`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${session.access_token}`,
-            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            apikey: getSupabaseAnonKey(),
           },
           body: JSON.stringify({ restaurant_id: selectedRestaurantId }),
         },
