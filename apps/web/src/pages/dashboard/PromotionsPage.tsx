@@ -38,7 +38,7 @@ type FormState = {
   promo_type: PromoType;
   discount_value: string;
   discount_unit: "percent" | "dollar";
-  applies_to: "all" | "dine_in" | "pickup" | "delivery";
+  applies_to: "all" | "dine_in";
   min_order_amount: string;
   starts_at: string;
   ends_at: string;
@@ -497,10 +497,8 @@ function PromoFormDrawer({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All order types</SelectItem>
+                    <SelectItem value="all">All bookings</SelectItem>
                     <SelectItem value="dine_in">Dine-In only</SelectItem>
-                    <SelectItem value="pickup">Pickup only</SelectItem>
-                    <SelectItem value="delivery">Delivery only</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

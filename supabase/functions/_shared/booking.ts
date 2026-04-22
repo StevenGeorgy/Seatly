@@ -11,7 +11,7 @@ export interface BookingItem {
 export interface CompleteBookingParams {
   user_profile_id: string;
   restaurant_id: string;
-  order_type: "dine_in" | "pickup" | "delivery";
+  order_type: "dine_in";
   // Dine-in fields
   date_time?: string | null; // UTC ISO
   shift_id?: string | null;
@@ -27,7 +27,6 @@ export interface CompleteBookingParams {
   // Order items (optional for pure reservations)
   items?: BookingItem[];
   notes?: string | null;
-  delivery_address?: string | null;
 }
 
 export interface CompleteBookingResult {
@@ -67,11 +66,10 @@ export async function completeBooking(
     occasion,
     seating_preference,
     notes,
-    delivery_address,
   } = params;
 
-  // Dine-in validation
-  if (order_type === "dine_in" && (!date_time || !shift_id || !party_size)) {
+  // Dine-in validation (dine_in is the only supported type)
+  if (!date_time || !shift_id || !party_size) {
     return {
       success: false,
       confirmation_code: "",
@@ -84,7 +82,7 @@ export async function completeBooking(
       total: 0,
       currency: "CAD",
       checkout_url: null,
-      error: "date_time, shift_id, and party_size are required for dine-in.",
+      error: "date_time, shift_id, and party_size are required.",
     };
   }
 
@@ -149,43 +147,41 @@ export async function completeBooking(
 
   const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
-  // Create reservation for dine-in
+  // Create reservation
   let reservationId: string | null = null;
-  if (order_type === "dine_in") {
-    const { data: reservation, error: resvErr } = await supabaseAdmin
-      .from("reservations")
-      .insert({
-        restaurant_id,
-        guest_id: guestId,
-        shift_id,
-        party_size,
-        reserved_at: date_time,
-        status: "confirmed",
-        source: "cenaiva",
-        confirmation_code: confirmationCode,
-        special_request: special_request ?? null,
-        occasion: occasion ?? null,
-      })
-      .select("id")
-      .single();
-    if (resvErr) {
-      return {
-        success: false,
-        confirmation_code: "",
-        order_type,
-        reservation_id: null,
-        order_id: null,
-        guest_id: guestId ?? null,
-        subtotal: 0,
-        tax: 0,
-        total: 0,
-        currency: "CAD",
-        checkout_url: null,
-        error: `Reservation failed: ${resvErr.message}`,
-      };
-    }
-    reservationId = reservation.id;
+  const { data: reservation, error: resvErr } = await supabaseAdmin
+    .from("reservations")
+    .insert({
+      restaurant_id,
+      guest_id: guestId,
+      shift_id,
+      party_size,
+      reserved_at: date_time,
+      status: "confirmed",
+      source: "cenaiva",
+      confirmation_code: confirmationCode,
+      special_request: special_request ?? null,
+      occasion: occasion ?? null,
+    })
+    .select("id")
+    .single();
+  if (resvErr) {
+    return {
+      success: false,
+      confirmation_code: "",
+      order_type,
+      reservation_id: null,
+      order_id: null,
+      guest_id: guestId ?? null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: "CAD",
+      checkout_url: null,
+      error: `Reservation failed: ${resvErr.message}`,
+    };
   }
+  reservationId = reservation.id;
 
   // Calculate totals
   const { data: rest } = await supabaseAdmin
@@ -199,21 +195,21 @@ export async function completeBooking(
   const taxAmount = n2(subtotal * taxRate);
   const total = n2(subtotal + taxAmount);
 
-  // Create order (even if no items — reservation-only bookings still need an order row)
-  const orderNotes = [notes, special_request, delivery_address ? `Delivery to: ${delivery_address}` : null]
+  // Create order only if there's a preorder
+  const orderNotes = [notes, special_request]
     .filter(Boolean)
     .join(" | ") || null;
 
   let orderId: string | null = null;
-  if (items.length > 0 || order_type !== "dine_in") {
+  if (items.length > 0) {
     const { data: order, error: orderErr } = await supabaseAdmin
       .from("orders")
       .insert({
         restaurant_id,
         guest_id: guestId,
         reservation_id: reservationId,
-        order_type: order_type === "dine_in" ? "dine_in" : order_type,
-        is_preorder: order_type !== "dine_in",
+        order_type: "dine_in",
+        is_preorder: true,
         status: "pending",
         subtotal: n2(subtotal),
         tax_amount: taxAmount,

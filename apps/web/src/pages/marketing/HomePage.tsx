@@ -30,7 +30,7 @@ const ease = [0.25, 0.46, 0.45, 0.94] as const;
 
 const DINER_FEATURES = [
   { icon: MapPin, title: "Discover", desc: "Search and browse restaurants by cuisine, city, rating, or dietary preference." },
-  { icon: CalendarDays, title: "Book & Order", desc: "Dine-in reservations, pickup, and delivery — all in one flow, no app-switching." },
+  { icon: CalendarDays, title: "Book & Preorder", desc: "Dine-in reservations with optional preorder — all in one seamless flow." },
   { icon: Sparkles, title: "Allergen-aware menus", desc: "Set your restrictions once and see them flagged across every menu, automatically." },
   { icon: Scissors, title: "Split the bill", desc: "Divide the check between up to 10 cards without any awkward math." },
   { icon: CreditCard, title: "Saved cards & tipping", desc: "Pay with a tap. Choose 15 / 18 / 20% or custom tip, before or after the meal." },
@@ -40,7 +40,7 @@ const DINER_FEATURES = [
 const RESTAURANT_FEATURES = [
   { icon: CalendarDays, title: "Reservations", desc: "Online booking with confirmation codes, no-show risk scores, and automated reminders." },
   { icon: MapPin, title: "Live floor plan", desc: "Drag-and-drop tables across multiple floors with live status and undo/redo." },
-  { icon: UtensilsCrossed, title: "Point of sale", desc: "Dine-in, takeout, and delivery orders managed from a single real-time dashboard." },
+  { icon: UtensilsCrossed, title: "Point of sale", desc: "Dine-in orders managed from a single real-time dashboard." },
   { icon: Users, title: "Staff & roster", desc: "Manage roles, hourly rates, and employment types for your whole team." },
   { icon: BarChart3, title: "Analytics", desc: "Revenue charts, peak-hour heatmaps, and menu performance — always up to date." },
   { icon: UserCircle, title: "Guest CRM", desc: "Visit history, spend totals, dietary restrictions, VIP flags, tags, and loyalty balance." },
@@ -152,7 +152,7 @@ export default function HomePage() {
                   {[
                     "Book a reservation at any Cenaiva restaurant",
                     "Browse menus filtered by your dietary needs",
-                    "Place dine-in, pickup, or delivery orders",
+                    "Preorder from the menu before you arrive",
                     "Pay with a saved card — with tip included",
                   ].map((item) => (
                     <li key={item} className="flex items-start gap-2 text-sm text-text-secondary">

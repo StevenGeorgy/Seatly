@@ -47,7 +47,7 @@ const RESTAURANT_FEATURES = [
   {
     icon: UtensilsCrossed,
     title: "Point of Sale",
-    desc: "Dine-in, takeout, and delivery orders managed from a single real-time dashboard.",
+    desc: "Dine-in orders managed from a single real-time dashboard.",
   },
   {
     icon: Globe,
@@ -104,8 +104,8 @@ const DINER_FEATURES = [
   },
   {
     icon: CalendarDays,
-    title: "Book & Order in one flow",
-    desc: "Dine-in reservations, pickup, or delivery — no switching between apps.",
+    title: "Book & Preorder in one flow",
+    desc: "Dine-in reservations with optional preorder from the menu — no app-switching.",
   },
   {
     icon: Sparkles,

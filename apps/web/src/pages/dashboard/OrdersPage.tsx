@@ -19,7 +19,6 @@ import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type KdsColumn = { key: string; label: string; items: OrderRow[] };
-type NewOrderType = "dine_in" | "takeout" | "delivery";
 type CartLine = { item: MenuItemRow; qty: number };
 
 // ─── New Order Drawer ─────────────────────────────────────────────────────────
@@ -36,7 +35,6 @@ function NewOrderDrawer({
   restaurantId: string | null;
   currency: string;
 }) {
-  const [orderType, setOrderType] = useState<NewOrderType>("dine_in");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [notes, setNotes] = useState("");
@@ -78,7 +76,6 @@ function NewOrderDrawer({
   const subtotal = cart.reduce((sum, l) => sum + l.item.price * l.qty, 0);
 
   const reset = () => {
-    setOrderType("dine_in");
     setCustomerName("");
     setCustomerPhone("");
     setNotes("");
@@ -106,7 +103,7 @@ function NewOrderDrawer({
         .insert({
           restaurant_id: restaurantId,
           is_preorder: false,
-          order_type: orderType,
+          order_type: "dine_in",
           status: "pending",
           subtotal: Math.round(subtotal * 100) / 100,
           confirmation_code: code,
@@ -136,13 +133,7 @@ function NewOrderDrawer({
     } finally {
       setSaving(false);
     }
-  }, [restaurantId, cart, orderType, subtotal, notes, onSaved, onClose]);
-
-  const orderTypes: { key: NewOrderType; label: string }[] = [
-    { key: "dine_in", label: "Dine In" },
-    { key: "takeout", label: "Pickup" },
-    { key: "delivery", label: "Delivery" },
-  ];
+  }, [restaurantId, cart, subtotal, notes, onSaved, onClose]);
 
   return (
     <AnimatePresence>
@@ -176,27 +167,6 @@ function NewOrderDrawer({
 
             {/* Form */}
             <div className="flex flex-1 flex-col gap-5 overflow-y-auto p-5">
-              {/* Order Type */}
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs font-semibold uppercase tracking-wider text-text-muted">Order Type</Label>
-                <div className="flex gap-2">
-                  {orderTypes.map((ot) => (
-                    <button
-                      key={ot.key}
-                      type="button"
-                      onClick={() => setOrderType(ot.key)}
-                      className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                        orderType === ot.key
-                          ? "border-gold bg-gold/10 text-gold"
-                          : "border-border text-text-secondary hover:border-gold/30"
-                      }`}
-                    >
-                      {ot.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {/* Customer Info */}
               <div className="flex flex-col gap-3">
                 <Label className="text-xs font-semibold uppercase tracking-wider text-text-muted">Customer Info (optional)</Label>
@@ -451,11 +421,7 @@ export default function OrdersPage() {
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-1.5">
                             <span className="text-xs font-semibold uppercase tracking-wider text-gold">
-                              {order.order_type === "pickup" || order.order_type === "takeout"
-                                ? "Pickup"
-                                : order.order_type === "delivery"
-                                  ? "Delivery"
-                                  : `${t("dashboard.orders.table")} ${tableNum}`}
+                              {`${t("dashboard.orders.table")} ${tableNum}`}
                             </span>
                             {order.source === "cenaiva" && (
                               <span className="rounded bg-[#C8A951]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#C8A951]">

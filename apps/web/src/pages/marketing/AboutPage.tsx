@@ -153,8 +153,8 @@ export default function AboutPage() {
                 <h3 className="text-lg font-bold text-white">For Diners</h3>
               </div>
               <p className="text-sm leading-relaxed text-text-secondary">
-                Discover restaurants by cuisine, rating, and city. Book a table, place
-                a takeout or delivery order, and pay — all in one app. Cenaiva AI, the
+                Discover restaurants by cuisine, rating, and city. Book a table, optionally
+                preorder from the menu, and pay — all in one app. Cenaiva AI, the
                 concierge, handles your booking by voice or text, knows your allergies,
                 and can split the bill between your whole table.
               </p>

@@ -12,9 +12,6 @@ import {
   Minus,
   Check,
   Flame,
-  UtensilsCrossed,
-  Package,
-  Bike,
   CalendarDays,
   Clock,
   Users,
@@ -41,11 +38,9 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
-import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type OrderType = "dine_in" | "pickup" | "delivery";
-type Step = "type" | "details" | "menu" | "checkout" | "confirmed";
+type Step = "details" | "menu" | "checkout" | "confirmed";
 
 type MenuItem = {
   id: string;
@@ -74,22 +69,6 @@ type DineInDetails = {
   phone: string;
   allergies: string;
   occasion: string;
-};
-
-type DeliveryDetails = {
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  unit: string;
-  instructions: string;
-};
-
-type PickupDetails = {
-  name: string;
-  email: string;
-  phone: string;
-  time: string;
 };
 
 type SplitCardRow = {
@@ -188,7 +167,6 @@ const MENU: MenuItem[] = [
 
 const CATEGORIES = ["All", "Starters", "Mains", "Desserts", "Drinks"];
 const TIMES = ["5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM","7:30 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM"];
-const PICKUP_TIMES = ["12:00 PM","12:30 PM","1:00 PM","1:30 PM","2:00 PM","5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM"];
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
 const SEATING_PREFERENCES = [
   "",
@@ -243,9 +221,8 @@ function formatCardPanInput(value: string): string {
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
 const STEPS: { key: Step; labelKey: string }[] = [
-  { key: "type", labelKey: "customerPublic.booking.stepService" },
-  { key: "menu", labelKey: "customerPublic.booking.stepMenu" },
   { key: "details", labelKey: "customerPublic.booking.stepDetails" },
+  { key: "menu", labelKey: "customerPublic.booking.stepMenu" },
   { key: "checkout", labelKey: "customerPublic.booking.stepPayment" },
 ];
 
@@ -332,7 +309,6 @@ export default function RestaurantPublicPage() {
   const cameFromCenaivaPrepay = !!searchParams.get("order_id");
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
-  const assistant = useAssistant();
   const { promotions: allPromos } = useAllActivePromotions();
   const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
@@ -363,8 +339,7 @@ export default function RestaurantPublicPage() {
     [dbCategories],
   );
 
-  const [step, setStep] = useState<Step>("type");
-  const [orderType, setOrderType] = useState<OrderType | null>(null);
+  const [step, setStep] = useState<Step>("details");
   const [activeCategory, setActiveCategory] = useState("All");
   const [activePromoId, setActivePromoId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -373,12 +348,6 @@ export default function RestaurantPublicPage() {
     date: "", time: "7:00 PM", party_size: 2,
     seating_preference: "",
     name: "", email: "", phone: "", allergies: "", occasion: "",
-  });
-  const [delivery, setDelivery] = useState<DeliveryDetails>({
-    name: "", email: "", phone: "", address: "", unit: "", instructions: "",
-  });
-  const [pickup, setPickup] = useState<PickupDetails>({
-    name: "", email: "", phone: "", time: "6:00 PM",
   });
 
   // Pre-fill contact fields from logged-in profile (only on first load)
@@ -396,18 +365,6 @@ export default function RestaurantPublicPage() {
       phone: d.phone || phone,
       allergies: d.allergies || allergies,
       seating_preference: d.seating_preference || seating,
-    }));
-    setDelivery((d) => ({
-      ...d,
-      name: d.name || name,
-      email: d.email || email,
-      phone: d.phone || phone,
-    }));
-    setPickup((d) => ({
-      ...d,
-      name: d.name || name,
-      email: d.email || email,
-      phone: d.phone || phone,
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
@@ -432,7 +389,7 @@ export default function RestaurantPublicPage() {
     void (async () => {
       const { data: order } = await client
         .from("orders")
-        .select("id, order_type, notes, order_items(name, quantity, unit_price, modifications, menu_item_id)")
+        .select("id, notes, order_items(name, quantity, unit_price, modifications, menu_item_id)")
         .eq("id", orderId)
         .single();
       if (!order) return;
@@ -459,11 +416,6 @@ export default function RestaurantPublicPage() {
       }));
 
       setCart(cartItems);
-      setOrderType(
-        order.order_type === "dine_in" ? "dine_in"
-          : order.order_type === "delivery" ? "delivery"
-          : "pickup",
-      );
       setStep("checkout");
     })();
   // Run once on mount — searchParams is stable for the initial URL
@@ -556,7 +508,7 @@ export default function RestaurantPublicPage() {
 
   // Parse the user's allergy text into individual keywords and find flagged items
   const { flaggedItems, allergenKeywords } = useMemo(() => {
-    const raw = orderType === "dine_in" ? dineIn.allergies : "";
+    const raw = dineIn.allergies;
     if (!raw.trim()) return { flaggedItems: [], allergenKeywords: [] };
 
     // Split on commas, spaces, common separators and lowercase
@@ -600,7 +552,7 @@ export default function RestaurantPublicPage() {
     }));
 
     return { flaggedItems: flagged, allergenKeywords: Array.from(matched) };
-  }, [dineIn.allergies, orderType, menuItems]);
+  }, [dineIn.allergies, menuItems]);
 
   const cartTotal          = cart.reduce((s, i) => s + i.price * i.qty, 0);
   const cartCount          = cart.reduce((s, i) => s + i.qty, 0);
@@ -610,7 +562,6 @@ export default function RestaurantPublicPage() {
   const discountedSubtotal = Math.max(0, cartTotal - discount);
   const tax                = discountedSubtotal * taxRate;
   const total              = discountedSubtotal + tax;
-  const deliveryFee = orderType === "delivery" ? 4.99 : 0;
   const parsedCustomTip = Number.parseFloat(customTipAmount);
   const tipAmount =
     tipOption === "after"
@@ -620,7 +571,7 @@ export default function RestaurantPublicPage() {
         ? parsedCustomTip
         : 0
       : cartTotal * (Number.parseInt(tipOption, 10) / 100);
-  const totalNow = total + deliveryFee + tipAmount;
+  const totalNow = total + tipAmount;
 
   const splitEachShare = useMemo(() => {
     if (paymentSplitMode !== "split") return NaN;
@@ -657,22 +608,17 @@ export default function RestaurantPublicPage() {
   }
 
   const canProceedDetails = () => {
-    if (orderType === "dine_in") {
-      return (
-        dineIn.date &&
-        dineIn.name &&
-        dineIn.email &&
-        typeof dineIn.party_size === "number" &&
-        dineIn.party_size >= 1
-      );
-    }
-    if (orderType === "pickup")   return pickup.name && pickup.email && pickup.phone;
-    if (orderType === "delivery") return delivery.name && delivery.email && delivery.phone && delivery.address;
-    return false;
+    return (
+      dineIn.date &&
+      dineIn.name &&
+      dineIn.email &&
+      typeof dineIn.party_size === "number" &&
+      dineIn.party_size >= 1
+    );
   };
 
   const handlePlaceOrder = useCallback(async () => {
-    if (!restaurant || !orderType || cart.length === 0) return;
+    if (!restaurant) return;
     const isRealUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(restaurant.id);
     if (!isSupabaseConfigured() || !isRealUuid) {
       // Mock mode — just show confirmation
@@ -688,16 +634,10 @@ export default function RestaurantPublicPage() {
     try {
       const client = getSupabaseBrowserClient();
 
-      // Determine contact info based on order type
-      const contactName =
-        orderType === "dine_in" ? dineIn.name :
-        orderType === "pickup" ? pickup.name : delivery.name;
-      const contactEmail =
-        orderType === "dine_in" ? dineIn.email :
-        orderType === "pickup" ? pickup.email : delivery.email;
-      const contactPhone =
-        orderType === "dine_in" ? dineIn.phone :
-        orderType === "pickup" ? pickup.phone : delivery.phone;
+      // Contact info from dine-in reservation form
+      const contactName = dineIn.name;
+      const contactEmail = dineIn.email;
+      const contactPhone = dineIn.phone;
 
       // 1. Upsert a guest record for this restaurant
       let guestId: string | null = null;
@@ -722,7 +662,7 @@ export default function RestaurantPublicPage() {
               email: contactEmail,
               phone: contactPhone,
               dietary_restrictions: dineIn.allergies ? dineIn.allergies.split(",").map((s: string) => s.trim()).filter(Boolean) : [],
-              seating_preference: orderType === "dine_in" ? dineIn.seating_preference : null,
+              seating_preference: dineIn.seating_preference || null,
             })
             .select("id")
             .single();
@@ -731,70 +671,69 @@ export default function RestaurantPublicPage() {
         }
       }
 
-      // 2. For dine-in, create a reservation
-      let reservationId: string | null = null;
-      if (orderType === "dine_in") {
-        const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
-        const { data: resData, error: resErr } = await client
-          .from("reservations")
-          .insert({
-            restaurant_id: restaurant.id,
-            guest_id: guestId,
-            party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
-            reserved_at: reservedAt,
-            status: "pending",
-            source: "web",
-            special_request: dineIn.allergies || null,
-            occasion: dineIn.occasion || null,
-            confirmation_code: code,
-            is_guest_checkout: !profile,
-            guest_full_name: contactName,
-            guest_email: contactEmail,
-            guest_phone: contactPhone,
-            dietary_notes: dineIn.allergies || null,
-          })
-          .select("id")
-          .single();
-        if (resErr) throw new Error(`Reservation: ${resErr.message}`);
-        reservationId = resData.id;
-      }
-
-      // 3. Create the order
-      const { data: orderData, error: orderErr } = await client
-        .from("orders")
+      // 2. Create the reservation
+      const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
+      const { data: resData, error: resErr } = await client
+        .from("reservations")
         .insert({
           restaurant_id: restaurant.id,
-          reservation_id: reservationId,
           guest_id: guestId,
-          is_preorder: orderType !== "dine_in",
-          order_type: orderType === "pickup" ? "takeout" : orderType,
+          party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
+          reserved_at: reservedAt,
           status: "pending",
-          subtotal: roundMoney(discountedSubtotal),
-          tax_amount: roundMoney(tax),
-          tip_amount: roundMoney(tipAmount),
-          total_amount: roundMoney(totalNow),
-          discount_amount: discount > 0 ? roundMoney(discount) : null,
-          discount_reason: activePromo?.title ?? null,
-          promotion_id: activePromo?.id ?? null,
-          payment_method: paymentSplitMode === "split" ? "split" : "card",
+          source: "web",
+          special_request: dineIn.allergies || null,
+          occasion: dineIn.occasion || null,
           confirmation_code: code,
+          is_guest_checkout: !profile,
+          guest_full_name: contactName,
+          guest_email: contactEmail,
+          guest_phone: contactPhone,
+          dietary_notes: dineIn.allergies || null,
         })
         .select("id")
         .single();
-      if (orderErr) throw new Error(`Order: ${orderErr.message}`);
+      if (resErr) throw new Error(`Reservation: ${resErr.message}`);
+      const reservationId: string = resData.id;
 
-      // 4. Insert order items
-      const items = cart.map((item) => ({
-        order_id: orderData.id,
-        menu_item_id: item.id.startsWith("m") ? null : item.id, // skip mock IDs
-        name: item.name,
-        quantity: item.qty,
-        unit_price: roundMoney(item.price),
-        line_total: roundMoney(item.price * item.qty),
-        status: "pending",
-      }));
-      const { error: itemsErr } = await client.from("order_items").insert(items);
-      if (itemsErr) throw new Error(`Order items: ${itemsErr.message}`);
+      // 3. Create the order (only if user preordered items)
+      if (cart.length > 0) {
+        const { data: orderData, error: orderErr } = await client
+          .from("orders")
+          .insert({
+            restaurant_id: restaurant.id,
+            reservation_id: reservationId,
+            guest_id: guestId,
+            is_preorder: true,
+            order_type: "dine_in",
+            status: "pending",
+            subtotal: roundMoney(discountedSubtotal),
+            tax_amount: roundMoney(tax),
+            tip_amount: roundMoney(tipAmount),
+            total_amount: roundMoney(totalNow),
+            discount_amount: discount > 0 ? roundMoney(discount) : null,
+            discount_reason: activePromo?.title ?? null,
+            promotion_id: activePromo?.id ?? null,
+            payment_method: paymentSplitMode === "split" ? "split" : "card",
+            confirmation_code: code,
+          })
+          .select("id")
+          .single();
+        if (orderErr) throw new Error(`Order: ${orderErr.message}`);
+
+        // 4. Insert order items
+        const items = cart.map((item) => ({
+          order_id: orderData.id,
+          menu_item_id: item.id.startsWith("m") ? null : item.id, // skip mock IDs
+          name: item.name,
+          quantity: item.qty,
+          unit_price: roundMoney(item.price),
+          line_total: roundMoney(item.price * item.qty),
+          status: "pending",
+        }));
+        const { error: itemsErr } = await client.from("order_items").insert(items);
+        if (itemsErr) throw new Error(`Order items: ${itemsErr.message}`);
+      }
 
       // 5. Increment promotion usage counter
       if (activePromo) {
@@ -818,7 +757,7 @@ export default function RestaurantPublicPage() {
     } finally {
       setPlacing(false);
     }
-  }, [restaurant, orderType, cart, profile, dineIn, pickup, delivery, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos]);
+  }, [restaurant, cart, profile, dineIn, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos]);
 
   if (loading) {
     return (
@@ -887,44 +826,7 @@ export default function RestaurantPublicPage() {
         {/* ── Step content ─────────────────────────────────────────────────────── */}
         <AnimatePresence mode="wait">
 
-          {/* ═══════════════════════════════════ STEP 1: SERVICE TYPE ══════════ */}
-          {step === "type" && (
-            <motion.div key="type" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
-              <h2 className="mb-5 text-lg font-bold text-white">How would you like to order?</h2>
-              <div className="flex flex-col gap-3">
-                {([
-                  { key: "dine_in",  icon: UtensilsCrossed, label: "Dine In",  sub: "Voice-guided table reservation via Cenaiva" },
-                  { key: "pickup",   icon: Package,          label: "Pickup",   sub: "Order ahead and pick up when ready"         },
-                  { key: "delivery", icon: Bike,             label: "Delivery", sub: "Get it delivered to your door"              },
-                ] as const).map(({ key, icon: Icon, label, sub }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => {
-                      if (key === "dine_in") {
-                        assistant?.open(restaurant?.id ?? undefined, restaurant?.name ?? undefined);
-                      } else {
-                        setOrderType(key);
-                        setStep("menu");
-                      }
-                    }}
-                    className="flex items-center gap-4 rounded-2xl border border-border bg-bg-surface p-5 text-left transition-all hover:border-gold/40 hover:bg-bg-elevated group"
-                  >
-                    <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-gold/10 transition-colors group-hover:bg-gold/20">
-                      <Icon className="size-5 text-gold" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-text-primary">{label}</p>
-                      <p className="text-xs text-text-muted">{sub}</p>
-                    </div>
-                    <ChevronRight className="size-4 text-text-muted group-hover:text-gold transition-colors" />
-                  </button>
-                ))}
-              </div>
-            </motion.div>
-          )}
-
-          {/* ═══════════════════════════════════ STEP 2: DETAILS ═══════════════ */}
+          {/* ═══════════════════════════════════ STEP 1: DETAILS ═══════════════ */}
           {step === "details" && (
             <motion.div
               key="details"
@@ -935,18 +837,11 @@ export default function RestaurantPublicPage() {
               className="pointer-events-auto"
             >
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-white">
-                  {orderType === "dine_in" ? "Book your table" : orderType === "pickup" ? "Pickup details" : "Delivery details"}
-                </h2>
-                <button type="button" onClick={() => setStep("menu")} className="text-xs text-text-muted hover:text-gold transition-colors">
-                  ← Back to menu
-                </button>
+                <h2 className="text-lg font-bold text-white">Book your table</h2>
               </div>
 
               <div className="rounded-2xl border border-border bg-bg-surface p-5 sm:p-6">
-                {/* ── Dine In ── */}
-                {orderType === "dine_in" && (
-                  <div className="space-y-4">
+                <div className="space-y-4">
                     {/* Date + Time + Party */}
                     <div className="grid grid-cols-3 gap-3">
                       <div>
@@ -1119,95 +1014,26 @@ export default function RestaurantPublicPage() {
                       <Input id="di-allergies" value={dineIn.allergies} onChange={(e) => setDineIn((d) => ({ ...d, allergies: e.target.value }))} placeholder="e.g. Nut allergy (2 guests), 1 vegan, gluten-free" />
                       <p className="mt-1.5 text-[11px] text-text-muted">Please list restrictions for every guest in your party.</p>
                     </div>
-                  </div>
-                )}
-
-                {/* ── Pickup ── */}
-                {orderType === "pickup" && (
-                  <div className="space-y-4">
-                    <div>
-                      <Label htmlFor="pu-name" className="mb-1.5 block text-xs text-text-muted">Full Name <span className="text-danger">*</span></Label>
-                      <Input id="pu-name" required value={pickup.name} onChange={(e) => setPickup((p) => ({ ...p, name: e.target.value }))} placeholder="Jane Smith" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label htmlFor="pu-email" className="mb-1.5 block text-xs text-text-muted">Email <span className="text-danger">*</span></Label>
-                        <Input id="pu-email" type="email" required value={pickup.email} onChange={(e) => setPickup((p) => ({ ...p, email: e.target.value }))} placeholder="jane@example.com" />
-                      </div>
-                      <div>
-                        <Label htmlFor="pu-phone" className="mb-1.5 block text-xs text-text-muted">Phone <span className="text-danger">*</span></Label>
-                        <Input id="pu-phone" type="tel" required value={pickup.phone} onChange={(e) => setPickup((p) => ({ ...p, phone: e.target.value }))} placeholder="+1 (416) 555-0100" />
-                      </div>
-                    </div>
-                    <div>
-                      <Label className="mb-1.5 block text-xs text-text-muted">Pickup time</Label>
-                      <div className="relative">
-                        <Clock className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted z-10" />
-                        <select
-                          value={pickup.time}
-                          onChange={(e) => setPickup((p) => ({ ...p, time: e.target.value }))}
-                          className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-10 pr-8 text-sm text-text-primary outline-none focus:border-gold/40"
-                        >
-                          {PICKUP_TIMES.map((t) => <option key={t}>{t}</option>)}
-                        </select>
-                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* ── Delivery ── */}
-                {orderType === "delivery" && (
-                  <div className="space-y-4">
-                    <div>
-                      <Label htmlFor="dv-name" className="mb-1.5 block text-xs text-text-muted">Full Name <span className="text-danger">*</span></Label>
-                      <Input id="dv-name" required value={delivery.name} onChange={(e) => setDelivery((d) => ({ ...d, name: e.target.value }))} placeholder="Jane Smith" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label htmlFor="dv-email" className="mb-1.5 block text-xs text-text-muted">Email <span className="text-danger">*</span></Label>
-                        <Input id="dv-email" type="email" required value={delivery.email} onChange={(e) => setDelivery((d) => ({ ...d, email: e.target.value }))} placeholder="jane@example.com" />
-                      </div>
-                      <div>
-                        <Label htmlFor="dv-phone" className="mb-1.5 block text-xs text-text-muted">Phone <span className="text-danger">*</span></Label>
-                        <Input id="dv-phone" type="tel" required value={delivery.phone} onChange={(e) => setDelivery((d) => ({ ...d, phone: e.target.value }))} placeholder="+1 (416) 555-0100" />
-                      </div>
-                    </div>
-                    <div>
-                      <Label htmlFor="dv-address" className="mb-1.5 block text-xs text-text-muted">Delivery address <span className="text-danger">*</span></Label>
-                      <Input id="dv-address" required value={delivery.address} onChange={(e) => setDelivery((d) => ({ ...d, address: e.target.value }))} placeholder="123 Main St, Toronto, ON" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label htmlFor="dv-unit" className="mb-1.5 block text-xs text-text-muted">Apt / Unit</Label>
-                        <Input id="dv-unit" value={delivery.unit} onChange={(e) => setDelivery((d) => ({ ...d, unit: e.target.value }))} placeholder="Apt 4B" />
-                      </div>
-                      <div>
-                        <Label htmlFor="dv-instructions" className="mb-1.5 block text-xs text-text-muted">Instructions</Label>
-                        <Input id="dv-instructions" value={delivery.instructions} onChange={(e) => setDelivery((d) => ({ ...d, instructions: e.target.value }))} placeholder="Ring doorbell" />
-                      </div>
-                    </div>
-                  </div>
-                )}
+                </div>
               </div>
 
               <Button
                 className="mt-5 h-12 w-full text-base font-semibold"
                 disabled={!canProceedDetails()}
-                onClick={() => setStep("checkout")}
+                onClick={() => setStep("menu")}
               >
-                Continue to Checkout
+                Continue — add preorder (optional)
                 <ChevronRight className="size-4 ml-1" />
               </Button>
             </motion.div>
           )}
 
-          {/* ═══════════════════════════════════ STEP 3: MENU ══════════════════ */}
+          {/* ═══════════════════════════════════ STEP 2: MENU ══════════════════ */}
           {step === "menu" && (
             <motion.div key="menu" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-white">Choose your items</h2>
-                <button type="button" onClick={() => setStep("type")} className="text-xs text-text-muted hover:text-gold transition-colors">← Change type</button>
+                <h2 className="text-lg font-bold text-white">Preorder (optional)</h2>
+                <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Back to booking</button>
               </div>
 
               {/* ── Allergen warning section ── */}
@@ -1391,17 +1217,22 @@ export default function RestaurantPublicPage() {
                 </AnimatePresence>
               </div>
 
-              {/* Continue button — only enabled when cart has items */}
+              {/* Continue button — skips straight to confirmation when cart is empty */}
               <div className="sticky bottom-4 mt-5">
                 <Button
                   className="h-12 w-full text-base font-semibold shadow-xl"
-                  disabled={cartCount === 0}
-                  onClick={() => setStep("details")}
+                  onClick={() => {
+                    if (cartCount === 0) {
+                      void handlePlaceOrder();
+                    } else {
+                      setStep("checkout");
+                    }
+                  }}
                 >
                   {cartCount === 0
-                    ? "Add items to continue"
+                    ? "Skip preorder · Confirm booking"
                     : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
-                  {cartCount > 0 && <ChevronRight className="size-4 ml-1" />}
+                  <ChevronRight className="size-4 ml-1" />
                 </Button>
               </div>
             </motion.div>
@@ -1443,12 +1274,6 @@ export default function RestaurantPublicPage() {
                       <span className="text-green-400">- {formatCurrency(discount, currency)}</span>
                     </div>
                   )}
-                  {orderType === "delivery" && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-text-secondary">Delivery fee</span>
-                      <span className="text-text-primary">{formatCurrency(deliveryFee, currency)}</span>
-                    </div>
-                  )}
                   <div className="flex justify-between text-sm">
                     <span className="text-text-secondary">
                       Tip {tipOption === "after" ? "(after experience)" : ""}
@@ -1468,25 +1293,23 @@ export default function RestaurantPublicPage() {
                 </div>
               </div>
 
-              {/* Booking summary for dine in */}
-              {orderType === "dine_in" && (
-                <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-text-muted">Reservation</p>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div><p className="text-text-muted text-xs">Name</p><p className="font-medium text-text-primary">{dineIn.name}</p></div>
-                    <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {dineIn.time}</p></div>
-                    <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size || 1} guests</p></div>
-                    {dineIn.seating_preference && (
-                      <div>
-                        <p className="text-text-muted text-xs">Table preference</p>
-                        <p className="font-medium text-text-primary">{dineIn.seating_preference}</p>
-                      </div>
-                    )}
-                    {dineIn.allergies && <div className="col-span-2"><p className="text-text-muted text-xs">Dietary notes</p><p className="font-medium text-text-primary">{dineIn.allergies}</p></div>}
-                    {dineIn.occasion && <div><p className="text-text-muted text-xs">Occasion</p><p className="font-medium text-text-primary">{dineIn.occasion}</p></div>}
-                  </div>
+              {/* Booking summary */}
+              <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-text-muted">Reservation</p>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div><p className="text-text-muted text-xs">Name</p><p className="font-medium text-text-primary">{dineIn.name}</p></div>
+                  <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {dineIn.time}</p></div>
+                  <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size || 1} guests</p></div>
+                  {dineIn.seating_preference && (
+                    <div>
+                      <p className="text-text-muted text-xs">Table preference</p>
+                      <p className="font-medium text-text-primary">{dineIn.seating_preference}</p>
+                    </div>
+                  )}
+                  {dineIn.allergies && <div className="col-span-2"><p className="text-text-muted text-xs">Dietary notes</p><p className="font-medium text-text-primary">{dineIn.allergies}</p></div>}
+                  {dineIn.occasion && <div><p className="text-text-muted text-xs">Occasion</p><p className="font-medium text-text-primary">{dineIn.occasion}</p></div>}
                 </div>
-              )}
+              </div>
 
               {/* Payment */}
               <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
@@ -1794,15 +1617,9 @@ export default function RestaurantPublicPage() {
               </motion.div>
 
               <div>
-                <h2 className="text-2xl font-bold text-white">
-                  {orderType === "dine_in" ? "Table Booked!" : orderType === "pickup" ? "Order Placed!" : "Order on its way!"}
-                </h2>
+                <h2 className="text-2xl font-bold text-white">Table Booked!</h2>
                 <p className="mt-2 text-sm text-text-secondary">
-                  {orderType === "dine_in"
-                    ? `Your table at ${restaurant.name} is reserved for ${dineIn.party_size || 1} on ${dineIn.date} at ${dineIn.time}.`
-                    : orderType === "pickup"
-                    ? `Your order will be ready for pickup at ${pickup.time}.`
-                    : `Your order is being prepared and will arrive shortly.`}
+                  {`Your table at ${restaurant.name} is reserved for ${dineIn.party_size || 1} on ${dineIn.date} at ${dineIn.time}.`}
                 </p>
               </div>
 
@@ -1823,9 +1640,8 @@ export default function RestaurantPublicPage() {
                   <>
                     <Button
                       onClick={() => {
-                        setStep("type");
+                        setStep("details");
                         setCart([]);
-                        setOrderType(null);
                         setTipOption("18");
                         setCustomTipAmount("");
                         setPaymentSplitMode("single");
@@ -1837,7 +1653,7 @@ export default function RestaurantPublicPage() {
                         setOrderError(null);
                       }}
                     >
-                      Order again
+                      Book again
                     </Button>
                     <Button variant="outline" asChild>
                       <Link to="/discover">Back to Discover</Link>

@@ -58,7 +58,7 @@ const CUISINE_EMOJI: Record<string, string> = {
 
 const CUISINES = ["All", "Italian", "Japanese", "Mexican", "French", "Indian", "Thai", "Seafood", "BBQ"];
 
-function RestaurantCard({ r, index, onBookWithCenaiva }: { r: Restaurant; index: number; onBookWithCenaiva: (r: Restaurant) => void }) {
+function RestaurantCard({ r, index }: { r: Restaurant; index: number }) {
   const gradient = CUISINE_GRADIENT[r.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-800";
   const emoji = CUISINE_EMOJI[r.cuisine_type ?? ""] ?? "🍽️";
   return (
@@ -120,14 +120,7 @@ function RestaurantCard({ r, index, onBookWithCenaiva }: { r: Restaurant; index:
             <span className="text-xs text-text-muted">
               {r.total_reviews != null ? `${r.total_reviews} reviews` : ""}
             </span>
-            <button
-              type="button"
-              onClick={(e) => { e.preventDefault(); onBookWithCenaiva(r); }}
-              className="flex items-center gap-1 text-xs font-medium text-[#C8A951] hover:text-[#E6C060] transition-colors"
-            >
-              <Mic className="size-3" />
-              Book with Cenaiva
-            </button>
+            <span className="text-xs font-medium text-gold">Book a table →</span>
           </div>
         </div>
       </Link>
@@ -336,7 +329,7 @@ export default function DiscoverPage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((r, i) => (
-                  <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
+                  <RestaurantCard key={r.id} r={r} index={i} />
                 ))}
               </div>
             )}
@@ -354,7 +347,7 @@ export default function DiscoverPage() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {featured.map((r, i) => (
-                    <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
+                    <RestaurantCard key={r.id} r={r} index={i} />
                   ))}
                 </div>
               </section>
@@ -371,7 +364,7 @@ export default function DiscoverPage() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {others.map((r, i) => (
-                    <RestaurantCard key={r.id} r={r} index={i} onBookWithCenaiva={(res) => assistant?.open(res.id, res.name)} />
+                    <RestaurantCard key={r.id} r={r} index={i} />
                   ))}
                 </div>
               </section>

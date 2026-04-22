@@ -75,11 +75,6 @@ function OrderCard({ order }: { order: MyOrderRow }) {
             <span className="text-sm font-medium truncate">
               {order.restaurant?.name ?? "Restaurant"}
             </span>
-            {order.order_type && (
-              <span className="rounded-full bg-gold/10 px-2 py-0.5 text-xs text-gold capitalize">
-                {order.order_type.replace("_", " ")}
-              </span>
-            )}
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-xs text-text-muted">
             {date && <span><Clock className="inline size-3 mr-0.5" />{date}</span>}

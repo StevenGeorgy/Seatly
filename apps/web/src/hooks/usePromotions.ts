@@ -4,7 +4,7 @@ import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type PromoType = "bogo" | "percentage" | "fixed" | "free_item";
-export type AppliesTo = "all" | "dine_in" | "pickup" | "delivery";
+export type AppliesTo = "all" | "dine_in";
 export type BadgeColor = "amber" | "green" | "red" | "blue";
 
 export type PromotionRow = {

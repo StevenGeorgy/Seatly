@@ -151,35 +151,28 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "complete_booking",
       description:
-        "Complete a full booking in one step: creates the guest record, reservation (dine-in only), order, and order items. " +
-        "This is the ONLY tool that finalises a booking — never use partial tools. " +
-        "Items are MANDATORY for every booking type. Do NOT call this tool unless items has at least one entry.",
+        "Complete a dine-in booking in one step: creates the guest record, reservation, and an optional preorder. " +
+        "This is the ONLY tool that finalises a booking. " +
+        "Preorder is optional — pass an empty items array if the user only wants to reserve a table.",
       parameters: {
         type: "object",
         properties: {
           restaurant_id: { type: "string" },
-          order_type: {
-            type: "string",
-            enum: ["dine_in", "takeout", "delivery"],
-            description: "dine_in creates a reservation + order. takeout/delivery creates an order only.",
-          },
-          // ── Dine-in reservation fields (required when order_type = dine_in) ──
           date_time: {
             type: "string",
-            description: "UTC ISO datetime from check_availability. Required for dine_in.",
+            description: "UTC ISO datetime from check_availability. Required.",
           },
           shift_id: {
             type: "string",
-            description: "Shift ID from check_availability. Required for dine_in.",
+            description: "Shift ID from check_availability. Required.",
           },
           party_size: {
             type: "number",
-            description: "Number of guests. Required for dine_in.",
+            description: "Number of guests. Required.",
           },
-          // ── Order items — REQUIRED for ALL booking types ──
           items: {
             type: "array",
-            description: "REQUIRED. Items the customer is ordering. Must have at least one item.",
+            description: "Optional preorder items. Pass an empty array if the user only wants to reserve a table.",
             items: {
               type: "object",
               properties: {
@@ -192,11 +185,9 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
               required: ["menu_item_id", "name", "quantity", "unit_price"],
             },
           },
-          // ── Guest details ──
           guest_name: { type: "string" },
           guest_email: { type: "string" },
           guest_phone: { type: "string" },
-          // ── Optional extras ──
           special_request: { type: "string", description: "Dietary notes or requests for the kitchen / host" },
           occasion: {
             type: "string",
@@ -208,14 +199,10 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           },
           notes: {
             type: "string",
-            description: "Order-level notes or delivery instructions",
-          },
-          delivery_address: {
-            type: "string",
-            description: "Full delivery address. Required when order_type = delivery.",
+            description: "Order-level notes",
           },
         },
-        required: ["restaurant_id", "order_type", "items"],
+        required: ["restaurant_id", "date_time", "shift_id", "party_size"],
       },
     },
   },
@@ -616,7 +603,6 @@ async function executeTool(
     case "complete_booking": {
       const {
         restaurant_id,
-        order_type,
         date_time,
         shift_id,
         party_size,
@@ -628,20 +614,12 @@ async function executeTool(
         occasion,
         seating_preference,
         notes,
-        delivery_address,
       } = input;
 
-      // Hard guard — must have items
-      if (!items?.length) {
-        return JSON.stringify({
-          error: "items are required. Browse the menu and add at least one item before completing the booking.",
-        });
-      }
-
       // Dine-in requires reservation fields
-      if (order_type === "dine_in" && (!date_time || !shift_id || !party_size)) {
+      if (!date_time || !shift_id || !party_size) {
         return JSON.stringify({
-          error: "date_time, shift_id, and party_size are required for dine-in bookings. Call check_availability first.",
+          error: "date_time, shift_id, and party_size are required. Call check_availability first.",
         });
       }
 
@@ -687,91 +665,92 @@ async function executeTool(
 
       const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
-      // Create reservation for dine-in
-      let reservationId: string | null = null;
-      if (order_type === "dine_in") {
-        const { data: reservation, error: resvErr } = await supabaseAdmin
-          .from("reservations")
-          .insert({
-            restaurant_id,
-            guest_id: guestId,
-            shift_id,
-            party_size,
-            reserved_at: date_time,
-            status: "confirmed",
-            source: "cenaiva",
-            confirmation_code: confirmationCode,
-            special_request: special_request || null,
-            occasion: occasion || null,
-          })
-          .select("id")
-          .single();
-        if (resvErr) return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
-        reservationId = reservation.id;
-      }
+      // Create reservation
+      const { data: reservation, error: resvErr } = await supabaseAdmin
+        .from("reservations")
+        .insert({
+          restaurant_id,
+          guest_id: guestId,
+          shift_id,
+          party_size,
+          reserved_at: date_time,
+          status: "confirmed",
+          source: "cenaiva",
+          confirmation_code: confirmationCode,
+          special_request: special_request || null,
+          occasion: occasion || null,
+        })
+        .select("id")
+        .single();
+      if (resvErr) return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
+      const reservationId: string = reservation.id;
 
-      // Calculate order totals
       const { data: rest } = await supabaseAdmin
         .from("restaurants")
         .select("tax_rate, currency, slug")
         .eq("id", restaurant_id)
         .single();
-      const taxRate = rest?.tax_rate ?? 0.13;
-      const subtotal = items.reduce(
-        (sum: number, i: any) => sum + i.unit_price * i.quantity,
-        0,
-      );
-      const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
-      const total = Math.round((subtotal + taxAmount) * 100) / 100;
 
-      // Create order
-      const orderNotes = [
-        notes,
-        special_request,
-        delivery_address ? `Delivery to: ${delivery_address}` : null,
-      ]
-        .filter(Boolean)
-        .join(" | ") || null;
+      // Create optional preorder
+      let orderId: string | null = null;
+      let subtotal = 0;
+      let taxAmount = 0;
+      let total = 0;
+      let itemsSummary = "";
 
-      const { data: order, error: orderErr } = await supabaseAdmin
-        .from("orders")
-        .insert({
-          restaurant_id,
-          guest_id: guestId,
-          reservation_id: reservationId,
-          order_type: order_type === "dine_in" ? "dine_in" : order_type,
-          is_preorder: order_type !== "dine_in",
+      if (items?.length) {
+        const taxRate = rest?.tax_rate ?? 0.13;
+        subtotal = items.reduce(
+          (sum: number, i: any) => sum + i.unit_price * i.quantity,
+          0,
+        );
+        taxAmount = Math.round(subtotal * taxRate * 100) / 100;
+        total = Math.round((subtotal + taxAmount) * 100) / 100;
+
+        const orderNotes = [notes, special_request].filter(Boolean).join(" | ") || null;
+
+        const { data: order, error: orderErr } = await supabaseAdmin
+          .from("orders")
+          .insert({
+            restaurant_id,
+            guest_id: guestId,
+            reservation_id: reservationId,
+            order_type: "dine_in",
+            is_preorder: true,
+            status: "pending",
+            subtotal: Math.round(subtotal * 100) / 100,
+            tax_amount: taxAmount,
+            total_amount: total,
+            confirmation_code: confirmationCode,
+            notes: orderNotes,
+            source: "cenaiva",
+          })
+          .select("id")
+          .single();
+        if (orderErr) return JSON.stringify({ error: `Order creation failed: ${orderErr.message}` });
+        orderId = order.id;
+
+        const orderItems = items.map((item: any) => ({
+          order_id: order.id,
+          menu_item_id: item.menu_item_id,
+          name: item.name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          line_total: Math.round(item.unit_price * item.quantity * 100) / 100,
+          modifications: item.modifications || null,
           status: "pending",
-          subtotal: Math.round(subtotal * 100) / 100,
-          tax_amount: taxAmount,
-          total_amount: total,
-          confirmation_code: confirmationCode,
-          notes: orderNotes,
-          source: "cenaiva",
-        })
-        .select("id")
-        .single();
-      if (orderErr) return JSON.stringify({ error: `Order creation failed: ${orderErr.message}` });
+        }));
+        const { error: itemsErr } = await supabaseAdmin.from("order_items").insert(orderItems);
+        if (itemsErr) return JSON.stringify({ error: `Order items failed: ${itemsErr.message}` });
 
-      // Create order items
-      const orderItems = items.map((item: any) => ({
-        order_id: order.id,
-        menu_item_id: item.menu_item_id,
-        name: item.name,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        line_total: Math.round(item.unit_price * item.quantity * 100) / 100,
-        modifications: item.modifications || null,
-        status: "pending",
-      }));
-      const { error: itemsErr } = await supabaseAdmin.from("order_items").insert(orderItems);
-      if (itemsErr) return JSON.stringify({ error: `Order items failed: ${itemsErr.message}` });
+        itemsSummary = items.map((i: any) => `${i.quantity}× ${i.name}`).join(", ");
+      }
 
       fireWebhook("booking_completed", {
-        order_type,
+        order_type: "dine_in",
         restaurant_id,
         reservation_id: reservationId,
-        order_id: order.id,
+        order_id: orderId,
         total,
         confirmation_code: confirmationCode,
         guest_name: guestFields.full_name,
@@ -779,22 +758,18 @@ async function executeTool(
         allergies: guestFields.allergies || [],
       });
 
-      const itemsSummary = items
-        .map((i: any) => `${i.quantity}× ${i.name}`)
-        .join(", ");
-
       return JSON.stringify({
         success: true,
         confirmation_code: confirmationCode,
-        order_type,
+        order_type: "dine_in",
         reservation_id: reservationId,
-        order_id: order.id,
+        order_id: orderId,
         items_ordered: itemsSummary,
         subtotal: Math.round(subtotal * 100) / 100,
         tax: taxAmount,
         total,
         currency: rest?.currency || "CAD",
-        checkout_url: rest?.slug ? `/${rest.slug}?order_id=${order.id}&step=checkout` : null,
+        checkout_url: orderId && rest?.slug ? `/${rest.slug}?order_id=${orderId}&step=checkout` : null,
       });
     }
 
@@ -1281,14 +1256,12 @@ Restaurant ID: ${restaurantContext.id}`
 }
 
 Operational rules:
-1. MANDATORY BOOKING FLOW — follow this sequence every time, no shortcuts:
-   • Dine-in:  check_availability → browse_menu → confirm item list with user → collect guest details → complete_booking
-   • Takeout / Delivery:  browse_menu → confirm item list with user → collect guest details → complete_booking
-   Never skip steps. Never call complete_booking before the user has chosen at least one menu item.
+1. MANDATORY BOOKING FLOW — Cenaiva is dine-in only. Follow this sequence every time:
+   • check_availability → optionally browse_menu and confirm preorder items with user → collect guest details → complete_booking
+   Preorder is optional — the user can book a table without ordering food. If they don't want to preorder, skip browse_menu and call complete_booking with an empty items array.
 
-2. complete_booking is the ONLY tool that finalises any booking (dine-in, takeout, or delivery).
-   It REQUIRES a non-empty items array. If items is missing or empty, do NOT call the tool — go back and browse the menu first.
-   Never call check_availability or browse_menu and then jump straight to complete_booking without confirming the items with the user.
+2. complete_booking is the ONLY tool that finalises a reservation. It always creates a dine-in booking with an optional preorder.
+   Never call check_availability and jump straight to complete_booking without confirming date/time and party size with the user first.
 
 3. If the user has allergies, proactively flag menu items that contain those allergens.
 
