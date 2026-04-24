@@ -17,6 +17,15 @@ function applyPronunciation(text: string): string {
 // How long (ms) to wait after the last final speech result before resolving.
 // Gives the user time to pause mid-sentence without being cut off.
 const SILENCE_TIMEOUT_MS = 1500;
+// How long (ms) to wait after the last INTERIM result with no further activity
+// before we force recognition to stop. Chrome sometimes never promotes an
+// interim to a final result (quiet speech, background noise, slow network
+// round-trip to Google) — without this watchdog the mic stays pinned on
+// "Listening…" forever and the promise never resolves.
+const INTERIM_SILENCE_TIMEOUT_MS = 2500;
+// Hard cap: even if no speech activity is detected at all, stop recognition
+// after this long so the caller can relisten / go idle instead of hanging.
+const MAX_LISTEN_DURATION_MS = 15000;
 
 /**
  * Chrome loads voices asynchronously. The first speechSynthesis.speak() call
@@ -59,7 +68,9 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
 
       let settled = false;
       let accumulatedTranscript = "";
+      let latestInterim = "";
       let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+      let interimSilenceTimer: ReturnType<typeof setTimeout> | null = null;
 
       const recognition = new SpeechRecognitionAPI();
       recognitionRef.current = recognition;
@@ -70,10 +81,22 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
 
+      // Hard max watchdog — guarantees the promise resolves even if Chrome
+      // never emits any result at all (muted mic, blocked audio graph, etc.).
+      const maxDurationTimer = setTimeout(() => {
+        try { recognition.stop(); } catch { /* ignore */ }
+      }, MAX_LISTEN_DURATION_MS);
+
+      const clearTimers = () => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (interimSilenceTimer) clearTimeout(interimSilenceTimer);
+        clearTimeout(maxDurationTimer);
+      };
+
       const finish = (transcript: string) => {
         if (!settled) {
           settled = true;
-          if (silenceTimer) clearTimeout(silenceTimer);
+          clearTimers();
           recognitionRef.current = null;
           setIsRecording(false);
           resolve(transcript.trim());
@@ -81,23 +104,35 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       };
 
       recognition.onresult = (event: any) => {
-        // Reset the silence timer whenever any speech activity arrives
+        // Reset both silence timers on any activity
         if (silenceTimer) clearTimeout(silenceTimer);
+        if (interimSilenceTimer) clearTimeout(interimSilenceTimer);
 
         let finalChunk = "";
+        let interimChunk = "";
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            finalChunk += event.results[i][0]?.transcript || "";
-          }
+          const res = event.results[i];
+          const text = res[0]?.transcript || "";
+          if (res.isFinal) finalChunk += text;
+          else interimChunk += text;
         }
 
         if (finalChunk) {
           accumulatedTranscript +=
             (accumulatedTranscript ? " " : "") + finalChunk;
-          // Start (or restart) the silence timer
+          // Start (or restart) the post-final silence timer
           silenceTimer = setTimeout(() => {
-            recognition.stop();
+            try { recognition.stop(); } catch { /* ignore */ }
           }, SILENCE_TIMEOUT_MS);
+        } else if (interimChunk) {
+          // Track the most recent interim so onend can fall back to it if
+          // Chrome never promotes it to a final. Without this, users whose
+          // speech stays "interim only" (Chrome bug under certain network
+          // conditions) get a blank transcript even though they spoke.
+          latestInterim = interimChunk.trim();
+          interimSilenceTimer = setTimeout(() => {
+            try { recognition.stop(); } catch { /* ignore */ }
+          }, INTERIM_SILENCE_TIMEOUT_MS);
         }
       };
 
@@ -107,10 +142,10 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
         // "not-allowed" is the only fatal one (user denied permission).
         const transient = ["no-speech", "aborted", "audio-capture", "service-not-allowed"];
         if (transient.includes(event.error)) {
-          finish(accumulatedTranscript);
+          finish(accumulatedTranscript || latestInterim);
         } else if (!settled) {
           settled = true;
-          if (silenceTimer) clearTimeout(silenceTimer);
+          clearTimers();
           setIsRecording(false);
           reject(new Error(event.error));
         }
@@ -119,7 +154,7 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
       // onend fires when recognition.stop() is called (from silence timer or
       // externally via stopRecognition) or when Chrome auto-ends.
       recognition.onend = () => {
-        finish(accumulatedTranscript);
+        finish(accumulatedTranscript || latestInterim);
       };
 
       setIsRecording(true);
@@ -146,9 +181,17 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
    */
   const primeTTS = useCallback(() => {
     if (!isSynthesisSupported) return;
+    // Cancel any stale pending utterances so the warmer isn't queued behind
+    // something that's stuck — Chrome sometimes reports pending=true for a
+    // dead utterance across tab focus changes.
+    try { window.speechSynthesis.cancel(); } catch { /* noop */ }
     window.speechSynthesis.resume();
-    // Queue a zero-length utterance to warm up the audio pipeline
-    const warm = new SpeechSynthesisUtterance("");
+    // Queue a SINGLE-SPACE (not empty) utterance. Chrome treats empty-string
+    // utterances as no-ops and never fires onstart, so the autoplay unlock
+    // doesn't actually get granted. A space is inaudible but still triggers
+    // the speech pipeline's unlock sequence.
+    const warm = new SpeechSynthesisUtterance(" ");
+    warm.volume = 0;
     window.speechSynthesis.speak(warm);
   }, [isSynthesisSupported]);
 

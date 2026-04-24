@@ -376,10 +376,22 @@ export default function RestaurantPublicPage() {
     return () => { resetTheme(); };
   }, [restaurant?.id, restaurant?.settings_json]);
 
+  /** When arriving via Cenaiva's order_id deep-link we already have a
+   *  reservation + order in the DB. Holding the existing reservation_id
+   *  lets handlePlaceOrder skip re-inserting a new one (which would fail
+   *  anyway — dineIn.date is only populated from the existing record, so
+   *  a manual-flow insert would ship "T19:00:00" as the timestamp). */
+  const [existingReservationId, setExistingReservationId] = useState<string | null>(null);
+  const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
+
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
   // checkout (split bill, different card), it links here with the order_id.
-  // We fetch the order, populate cart state, and jump to the checkout step.
+  // We fetch the order + its linked reservation, populate cart + dine-in
+  // state, and jump to the checkout step. Without pulling the reservation
+  // into dineIn, the checkout form's hidden date field stays empty and the
+  // reservation insert fails with "invalid input syntax for type timestamp"
+  // because the built string collapses to "T19:00:00".
   useEffect(() => {
     const orderId = searchParams.get("order_id");
     const targetStep = searchParams.get("step") as Step | null;
@@ -389,7 +401,9 @@ export default function RestaurantPublicPage() {
     void (async () => {
       const { data: order } = await client
         .from("orders")
-        .select("id, notes, order_items(name, quantity, unit_price, modifications, menu_item_id)")
+        .select(
+          "id, notes, reservation_id, order_items(name, quantity, unit_price, modifications, menu_item_id), reservations(id, reserved_at, party_size, guest_full_name, guest_email, guest_phone, special_request, occasion)",
+        )
         .eq("id", orderId)
         .single();
       if (!order) return;
@@ -416,6 +430,46 @@ export default function RestaurantPublicPage() {
       }));
 
       setCart(cartItems);
+      setExistingOrderId(order.id as string);
+
+      const resv = (order as { reservations?: {
+        id: string; reserved_at: string | null; party_size: number | null;
+        guest_full_name: string | null; guest_email: string | null; guest_phone: string | null;
+        special_request: string | null; occasion: string | null;
+      } | null }).reservations;
+      if (resv) {
+        setExistingReservationId(resv.id);
+        // reserved_at is an ISO timestamp — split into YYYY-MM-DD + "h:mm AM/PM"
+        let date = "";
+        let time = "7:00 PM";
+        if (resv.reserved_at) {
+          const d = new Date(resv.reserved_at);
+          if (!Number.isNaN(d.getTime())) {
+            const y = d.getFullYear();
+            const mo = String(d.getMonth() + 1).padStart(2, "0");
+            const da = String(d.getDate()).padStart(2, "0");
+            date = `${y}-${mo}-${da}`;
+            let h = d.getHours();
+            const mi = String(d.getMinutes()).padStart(2, "0");
+            const period = h >= 12 ? "PM" : "AM";
+            if (h === 0) h = 12;
+            else if (h > 12) h -= 12;
+            time = `${h}:${mi} ${period}`;
+          }
+        }
+        setDineIn((prev) => ({
+          ...prev,
+          date,
+          time,
+          party_size: resv.party_size ?? prev.party_size,
+          name: resv.guest_full_name ?? prev.name,
+          email: resv.guest_email ?? prev.email,
+          phone: resv.guest_phone ?? prev.phone,
+          allergies: resv.special_request ?? prev.allergies,
+          occasion: resv.occasion ?? prev.occasion,
+        }));
+      }
+
       setStep("checkout");
     })();
   // Run once on mount — searchParams is stable for the initial URL
@@ -671,33 +725,60 @@ export default function RestaurantPublicPage() {
         }
       }
 
-      // 2. Create the reservation
-      const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
-      const { data: resData, error: resErr } = await client
-        .from("reservations")
-        .insert({
-          restaurant_id: restaurant.id,
-          guest_id: guestId,
-          party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
-          reserved_at: reservedAt,
-          status: "pending",
-          source: "web",
-          special_request: dineIn.allergies || null,
-          occasion: dineIn.occasion || null,
-          confirmation_code: code,
-          is_guest_checkout: !profile,
-          guest_full_name: contactName,
-          guest_email: contactEmail,
-          guest_phone: contactPhone,
-          dietary_notes: dineIn.allergies || null,
-        })
-        .select("id")
-        .single();
-      if (resErr) throw new Error(`Reservation: ${resErr.message}`);
-      const reservationId: string = resData.id;
+      // 2. Create or reuse the reservation. When we arrived via a Cenaiva
+      //    order_id deep-link, both the reservation and the order already
+      //    exist — creating a second one would double-book the table and
+      //    also fails ("T19:00:00") because dineIn.date is only mirrored
+      //    from the existing row.
+      let reservationId: string;
+      if (existingReservationId) {
+        reservationId = existingReservationId;
+      } else {
+        const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
+        const { data: resData, error: resErr } = await client
+          .from("reservations")
+          .insert({
+            restaurant_id: restaurant.id,
+            guest_id: guestId,
+            party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
+            reserved_at: reservedAt,
+            status: "pending",
+            source: "web",
+            special_request: dineIn.allergies || null,
+            occasion: dineIn.occasion || null,
+            confirmation_code: code,
+            is_guest_checkout: !profile,
+            guest_full_name: contactName,
+            guest_email: contactEmail,
+            guest_phone: contactPhone,
+            dietary_notes: dineIn.allergies || null,
+          })
+          .select("id")
+          .single();
+        if (resErr) throw new Error(`Reservation: ${resErr.message}`);
+        reservationId = resData.id;
+      }
 
-      // 3. Create the order (only if user preordered items)
-      if (cart.length > 0) {
+      // 3. Create (or update) the order.
+      if (existingOrderId) {
+        // Cenaiva already created the order with line items. Update tip /
+        // payment / discount on the existing row and mark it pending.
+        const { error: orderUpdErr } = await client
+          .from("orders")
+          .update({
+            subtotal: roundMoney(discountedSubtotal),
+            tax_amount: roundMoney(tax),
+            tip_amount: roundMoney(tipAmount),
+            total_amount: roundMoney(totalNow),
+            discount_amount: discount > 0 ? roundMoney(discount) : null,
+            discount_reason: activePromo?.title ?? null,
+            promotion_id: activePromo?.id ?? null,
+            payment_method: paymentSplitMode === "split" ? "split" : "card",
+            status: "pending",
+          })
+          .eq("id", existingOrderId);
+        if (orderUpdErr) throw new Error(`Order: ${orderUpdErr.message}`);
+      } else if (cart.length > 0) {
         const { data: orderData, error: orderErr } = await client
           .from("orders")
           .insert({
@@ -757,7 +838,7 @@ export default function RestaurantPublicPage() {
     } finally {
       setPlacing(false);
     }
-  }, [restaurant, cart, profile, dineIn, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos]);
+  }, [restaurant, cart, profile, dineIn, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos, existingReservationId, existingOrderId]);
 
   if (loading) {
     return (

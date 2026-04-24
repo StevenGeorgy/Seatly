@@ -10,6 +10,10 @@ export interface AvailabilitySlot {
 
 export interface AvailabilityResult {
   slots: AvailabilitySlot[];
+  /** Human-readable opening window ("5:00 PM to 10:00 PM") the assistant
+   *  should speak INSTEAD of enumerating individual slots. Computed from
+   *  the earliest and latest bookable slot across all matching shifts. */
+  hours_window?: string | null;
   message?: string;
 }
 
@@ -21,15 +25,50 @@ export async function getAvailability(
   const dateOnly = date.slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
 
-  // Fetch restaurant timezone
+  // Fetch restaurant timezone + owner-configured hours. `hours_json` is the
+  // source of truth for what the customer sees as "store hours" (set in the
+  // Settings page). Shape: { monday: { open, close } | null, ..., special: [] }
+  // in 12-hour strings ("11:00 AM", "10:00 PM").
   const { data: restaurantRow } = await supabaseAdmin
     .from("restaurants")
-    .select("timezone")
+    .select("timezone, hours_json")
     .eq("id", restaurant_id)
     .single();
   const timezone = restaurantRow?.timezone || "UTC";
 
   const dayOfWeek = localDayOfWeek(dateOnly, timezone);
+  // localDayOfWeek returns ISO 1-7 (1=Mon ... 7=Sun). hours_json keys are
+  // lowercase day names, so map the number to the corresponding key.
+  const DOW_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const dayOfWeekName = DOW_NAMES[dayOfWeek - 1] ?? "monday";
+
+  // Resolve the spoken store-hours string for THIS date. Special-day entries
+  // take precedence over the recurring weekly schedule. When closed or the
+  // row is missing, hours_window falls back to the slot-derived window later.
+  let configuredHoursWindow: string | null = null;
+  const hoursJson =
+    restaurantRow?.hours_json && typeof restaurantRow.hours_json === "object"
+      ? (restaurantRow.hours_json as Record<string, unknown>)
+      : null;
+  if (hoursJson) {
+    const specialEntries = Array.isArray(hoursJson.special)
+      ? (hoursJson.special as Array<Record<string, unknown>>)
+      : [];
+    const special = specialEntries.find((s) => String(s.date ?? "") === dateOnly);
+    if (special) {
+      if (!special.closed && special.from && special.to) {
+        configuredHoursWindow = `${special.from} to ${special.to}`;
+      }
+    } else {
+      const weekly = hoursJson[dayOfWeekName] as
+        | { open?: string; close?: string }
+        | null
+        | undefined;
+      if (weekly && weekly.open && weekly.close) {
+        configuredHoursWindow = `${weekly.open} to ${weekly.close}`;
+      }
+    }
+  }
 
   // Fetch matching shifts — also select blackout_dates and advance_booking_days
   const { data: shifts } = await supabaseAdmin
@@ -128,5 +167,15 @@ export async function getAvailability(
     }
   }
 
-  return { slots: slots.slice(0, 15) };
+  const limited = slots.slice(0, 15);
+  // Prefer the owner-configured hours. Fall back to the slot-derived window
+  // only when hours_json is missing or the day is marked closed (otherwise
+  // the assistant would read a misleading narrow range like "12 PM to 8:30
+  // PM" that just reflects the shift configuration, not real store hours).
+  const hours_window =
+    configuredHoursWindow ??
+    (limited.length
+      ? `${limited[0].display_time} to ${limited[limited.length - 1].display_time}`
+      : null);
+  return { slots: limited, hours_window };
 }

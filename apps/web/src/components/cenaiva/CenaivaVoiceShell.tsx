@@ -63,7 +63,15 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     greetedRef.current = true;
 
     const firstName = profile?.full_name?.split(" ")[0] ?? "there";
-    const greeting = `Hey, ${firstName}! How can I help you?`;
+    // If the user is resuming an in-progress booking flow (shell was closed
+    // mid-conversation), use a shorter resumption cue instead of the full
+    // "How can I help?" opener — otherwise the LLM has to re-establish context
+    // and the first turn feels like a fresh start when it shouldn't.
+    const isResumingMidFlow =
+      state.booking.status !== "idle" && state.booking.status !== "collecting_minimum_fields";
+    const greeting = isResumingMidFlow
+      ? `Hey, ${firstName}! Where were we?`
+      : `Hey, ${firstName}! How can I help?`;
     dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
     void (async () => {
       await voice.speak(greeting);
@@ -214,7 +222,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           </div>
 
           {/* Voice orb + text input strip */}
-          <div className="bg-[#0D0D0D] border-t border-white/10 px-4 py-4 flex items-center gap-3">
+          <div className="mt-auto bg-[#0D0D0D] px-4 py-4 flex items-center gap-3">
             <VoiceOrb
               status={state.voiceStatus}
               onClick={handleOrbClick}

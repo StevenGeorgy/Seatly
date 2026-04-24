@@ -309,8 +309,10 @@ GEOGRAPHY — restaurants exist in many cities nationwide.
 - Treat phrases like "out of town", "in another city", "somewhere else" as signals to ask which city they want — then re-run search_restaurants with that city.
 - If the user names a city different from their detected city, ALWAYS re-run search_restaurants with the named city — do not refuse or say "I only show local results".
 
-BOOKING STATE (authoritative — trust these values exactly, never re-ask a SET field):
+BOOKING STATE (authoritative — trust these values exactly):
 ${bookingChecklist}
+⚠️ FIELD GUARD: Any field above marked "(SET)" is LOCKED. Do NOT ask for it, repeat it, or confirm it in spoken_text.
+If restaurant_id + party_size + date are all SET → call check_availability immediately with zero extra questions.
 Current cart (${cart.length} items): ${cartSummary}.
 
 PERSPECTIVE — You are the ASSISTANT. You are NEVER the guest.
@@ -340,6 +342,8 @@ FLOW — follow exactly in this order:
        - date: "tonight" / "today" → today's YYYY-MM-DD. "tomorrow" → today+1. "Friday" / "next Saturday" → the next occurrence of that weekday in YYYY-MM-DD.
        - time: "7pm" → "19:00". "seven thirty" → "19:30". "noon" → "12:00".
    4b. If the BOOKING STATE checklist shows party_size SET and date SET, DO NOT ask for them again — call check_availability straight away.
+   4c. NEVER ask "Would you like to book?" / "Should I book it?" / "Ready to book?" or any variant. Once restaurant_id + party_size + date are SET, the user's intent to book is already confirmed — proceed silently to check_availability. The only explicit confirmation allowed in this flow is slot selection (step 4d).
+   4d. When slots come back from check_availability: speak ONLY the open-hours window from the tool result's "hours_window" field. Say exactly: "<name> is open <hours_window>. What time?" (e.g. "Georgy Inc is open 5:00 PM to 10:00 PM. What time?"). DO NOT enumerate individual slots. DO NOT append "or others" / "and more" / "or any other time". The grid of tappable slot buttons already renders in the UI — your job is only to ask the user for their preferred time. When the user replies with a time ("7", "seven pm", "the 7 o'clock one", "yeah 7"), match it to the nearest slot from the tool result and emit select_time_slot with that slot's exact shift_id and date_time.
    Call check_availability only once all three of restaurant_id, date, and party_size are SET. User picks slot → select_time_slot.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
 6. ONLY AFTER you have emitted show_confirmation in a PRIOR turn AND booking_state.status is one of {"confirmed","offering_preorder","browsing_menu","post_booking"}: emit offer_preorder and ask "Want to pre-order from the menu?" (≤ 10 words). Do NOT enter step 6 while booking_state.status is "idle" or "collecting_minimum_fields" — those are still steps 1-4.
@@ -369,6 +373,67 @@ RULES:
 - Parse tip freely from natural speech. When unsure, default to 20% and confirm.
 - Always echo the conversation_id in every response.
 - All UI actions must use types from this list: ${UI_ACTION_TYPES.join(", ")}.`;
+}
+
+// ── Fuzzy match helpers (for STT-garbled restaurant names) ───────────────────
+// Chrome Web Speech API routinely mangles proper nouns (e.g. "Georgy" → "Jury",
+// "Sienna's" → "scenes"). When the user is choosing among visible candidates
+// we score each name against the transcript and auto-select if one clearly
+// wins. Without this the LLM regex-matches exact names and asks "which
+// restaurant?" forever.
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  const curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+function scoreNameMatch(name: string, transcript: string): number {
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const n = normalize(name);
+  const t = normalize(transcript);
+  if (!n || !t) return 0;
+  // Whole-name substring match — strongest signal.
+  if (t.includes(n)) return 100;
+  const stop = new Set([
+    "inc", "llc", "ltd", "the", "a", "an", "and",
+    "restaurant", "restaurants", "cafe", "bar", "grill", "kitchen", "bistro",
+  ]);
+  const nameTokens = n.split(" ").filter((w) => w.length >= 2 && !stop.has(w));
+  const transcriptTokens = Array.from(
+    new Set(t.split(" ").filter((w) => w.length >= 2)),
+  );
+  let score = 0;
+  for (const tok of nameTokens) {
+    if (transcriptTokens.includes(tok)) {
+      score += 10;
+      continue;
+    }
+    // Near-match within edit distance 2 (handles STT substitutions of 1-2 chars)
+    for (const trans of transcriptTokens) {
+      if (Math.abs(trans.length - tok.length) > 2) continue;
+      const maxLen = Math.max(trans.length, tok.length);
+      const allowed = maxLen <= 4 ? 1 : 2;
+      if (levenshtein(trans, tok) <= allowed) {
+        score += 5;
+        break;
+      }
+    }
+  }
+  return score;
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -591,17 +656,48 @@ Deno.serve(async (req) => {
     // with no way to connect the user's reply to a candidate and it loops
     // "which restaurant?" forever.
     let visibleRestaurantsLine = "";
+    let sttFuzzyMatchLine = "";
     if (visible_restaurant_ids.length) {
       const { data: visRows } = await supabaseAdmin
         .from("restaurants")
         .select("id, name, cuisine_type")
         .in("id", visible_restaurant_ids.slice(0, 8));
       if (visRows?.length) {
+        const rows = visRows as Array<{ id: string; name: string; cuisine_type: string | null }>;
         visibleRestaurantsLine =
           "Visible restaurant candidates (match user's spoken reply against these names — spelling/pronunciation will be approximate):\n" +
-          (visRows as Array<{ id: string; name: string; cuisine_type: string | null }>)
+          rows
             .map((r) => `  - "${r.name}"${r.cuisine_type ? ` (${r.cuisine_type})` : ""} → id=${r.id}`)
             .join("\n");
+
+        // Server-side fuzzy match: if the transcript is clearly talking about
+        // one specific visible restaurant, auto-promote it to the explicit
+        // selection so the LLM can't get wedged on "which restaurant?" when
+        // STT garbles the proper noun. This is the single biggest cause of
+        // the 3x "which restaurant" voice loop — the LLM regex-matches exact
+        // names, but Chrome STT routinely mangles them (e.g. "Georgy" →
+        // "Jury", "Sienna's" → "scenes"). Edit-distance lets us recover.
+        if (
+          !selected_restaurant_id &&
+          transcript &&
+          (currentStatus === "idle" || currentStatus === "collecting_minimum_fields")
+        ) {
+          const scored = rows
+            .map((r) => ({ id: r.id, name: r.name, score: scoreNameMatch(r.name, transcript) }))
+            .filter((s) => s.score > 0)
+            .sort((a, b) => b.score - a.score);
+          const best = scored[0];
+          const next = scored[1];
+          // Accept if (a) unique candidate with any match, or (b) top beats
+          // runner-up by a clear margin. Threshold tuned so "Georgy" matches
+          // "Georgy Inc" when only one visible restaurant contains it, but
+          // two candidates with shared token ("Georgy Inc" vs "Steven
+          // Georgy") still go through disambiguation.
+          if (best && best.score >= 10 && (!next || best.score >= next.score + 8)) {
+            selected_restaurant_id = best.id;
+            sttFuzzyMatchLine = `⚠️ STT FUZZY MATCH: transcript "${transcript}" resolved to restaurant "${best.name}" (id=${best.id}). Treat this as the user's confirmed selection — emit start_booking + highlight_restaurant and move on.`;
+          }
+        }
       } else {
         visibleRestaurantsLine = `Visible restaurant IDs: ${visible_restaurant_ids.slice(0, 8).join(", ")}`;
       }
@@ -615,9 +711,15 @@ Deno.serve(async (req) => {
       .filter((m) => m.role === "assistant")
       .slice(0, 2)
       .map((m) => (m.content ?? "").toLowerCase());
-    const repeatedWhichAsk = recentAssistant.filter((c) =>
-      /which|would you like|pick one|choose/.test(c)
-    ).length >= 2;
+    // Only fire the anti-loop guard during the restaurant-picking phase.
+    // "would you like" and generic "choose" can also appear in pre-order prompts
+    // ("Would you like to pre-order?") so we scope to restaurant-specific phrases.
+    const repeatedWhichAsk =
+      !selected_restaurant_id &&
+      (currentStatus === "idle" || currentStatus === "collecting_minimum_fields") &&
+      recentAssistant.filter((c) =>
+        /which restaurant|which one\b|pick one|what restaurant|which.*place/.test(c)
+      ).length >= 2;
 
     const userContent = [
       transcript ? `User said: "${transcript}"` : "User opened the assistant.",
@@ -625,6 +727,7 @@ Deno.serve(async (req) => {
         ? `⚠️ User has explicitly selected restaurant ID: ${selected_restaurant_id}. This selection is CONFIRMED — emit start_booking + highlight_restaurant and move to party_size. Do NOT ask which restaurant again.`
         : "",
       visibleRestaurantsLine,
+      sttFuzzyMatchLine,
       repeatedWhichAsk && !selected_restaurant_id
         ? "⚠️ You have already asked 'which restaurant?' at least twice. Do NOT ask it again. Take the closest-sounding candidate from the list above and emit highlight_restaurant on its id + spoken_text 'Did you mean <name>?' Set next_expected_input='confirmation'."
         : "",
@@ -765,10 +868,24 @@ Deno.serve(async (req) => {
 
           // ── check_availability ────────────────────────────────────────────
           else if (toolName === "check_availability") {
-            // Require all three fields — missing any means the model is guessing
-            if (!toolInput.restaurant_id || !toolInput.date || toolInput.party_size == null) {
+            // Authoritative guard: the LLM cannot fabricate a party_size or
+            // date that wasn't actually collected from the user. We cross-check
+            // the tool args against the client-sent booking_state and reject
+            // if either is only present in the LLM's call. Without this the
+            // model happily defaults to party_size=2 and current date, which
+            // surfaces as "Georgy Inc is available. Choose a time..." without
+            // ever asking "how many guests?".
+            const bsPartySize = booking_state.party_size as number | null | undefined;
+            const bsDate = booking_state.date as string | null | undefined;
+            const missingFields: string[] = [];
+            if (!toolInput.restaurant_id) missingFields.push("restaurant_id");
+            if (!toolInput.date || !bsDate) missingFields.push("date");
+            if (toolInput.party_size == null || bsPartySize == null) {
+              missingFields.push("party_size");
+            }
+            if (missingFields.length) {
               toolResult = JSON.stringify({
-                error: "Cannot check availability: restaurant_id, date (YYYY-MM-DD), and party_size are all required. Ask the user for any that are missing.",
+                error: `Cannot check availability yet: the user has NOT provided ${missingFields.join(", ")}. Do NOT guess or default — ask them in plain language. For party_size say "How many guests?".`,
               });
             } else {
               const result = await getAvailability(
@@ -867,9 +984,51 @@ Deno.serve(async (req) => {
 
           // ── create_preorder_order ─────────────────────────────────────────
           else if (toolName === "create_preorder_order") {
-            const { restaurant_id, reservation_id, items } = toolInput;
-            if (!items?.length) {
-              toolResult = JSON.stringify({ error: "No items provided." });
+            const { restaurant_id, reservation_id } = toolInput;
+            // The client cart in booking_state is the authoritative source of
+            // truth for menu_item_id + unit_price — the LLM's `items` arg often
+            // omits the menu_item_id (the cart summary in the system prompt
+            // doesn't surface UUIDs) which silently blanks out order_items.
+            // Prefer booking_state.cart; fall back to the LLM arg only if the
+            // cart is missing (manual text-only flow).
+            const stateCart = (booking_state.cart as Array<{
+              menu_item_id?: string;
+              name?: string;
+              qty?: number;
+              quantity?: number;
+              unit_price?: number;
+            }> | undefined) ?? [];
+            const llmItems = (toolInput.items as Array<Record<string, unknown>> | undefined) ?? [];
+            const rawItems = stateCart.length ? stateCart : llmItems;
+            // Normalise: accept both `qty` and `quantity`, require a valid
+            // menu_item_id UUID — drop any row that can't be inserted cleanly.
+            const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            const items = rawItems
+              .map((raw) => {
+                const menu_item_id = String(raw.menu_item_id ?? "");
+                const name = String(raw.name ?? "").trim();
+                const quantity = Number(
+                  (raw as { quantity?: number; qty?: number }).quantity ??
+                    (raw as { qty?: number }).qty ??
+                    0,
+                );
+                const unit_price = Number((raw as { unit_price?: number }).unit_price ?? 0);
+                return { menu_item_id, name, quantity, unit_price };
+              })
+              .filter(
+                (i) =>
+                  UUID_RE.test(i.menu_item_id) &&
+                  i.name.length > 0 &&
+                  Number.isFinite(i.quantity) &&
+                  i.quantity > 0 &&
+                  Number.isFinite(i.unit_price) &&
+                  i.unit_price >= 0,
+              );
+            if (!items.length) {
+              toolResult = JSON.stringify({
+                error:
+                  "No valid items provided. Cart is empty or every item was missing a menu_item_id / quantity / unit_price.",
+              });
             } else {
               // Ensure guest row exists (upsert based on user_profile_id + restaurant)
               const { data: existingGuest } = await supabaseAdmin
@@ -931,7 +1090,7 @@ Deno.serve(async (req) => {
               if (orderErr || !order) {
                 toolResult = JSON.stringify({ error: `Order creation failed: ${orderErr?.message}` });
               } else {
-                const orderItems = items.map((item: { menu_item_id: string; name: string; quantity: number; unit_price: number }) => ({
+                const orderItems = items.map((item) => ({
                   order_id: order.id,
                   menu_item_id: item.menu_item_id,
                   name: item.name,
@@ -940,7 +1099,21 @@ Deno.serve(async (req) => {
                   line_total: Math.round(item.unit_price * item.quantity * 100) / 100,
                   status: "pending",
                 }));
-                await supabaseAdmin.from("order_items").insert(orderItems);
+                // Surface + rollback on failure — without this the parent
+                // order row is left as a phantom "empty" order and the
+                // checkout page renders a blank Order Summary.
+                const { error: itemsErr } = await supabaseAdmin
+                  .from("order_items")
+                  .insert(orderItems);
+                if (itemsErr) {
+                  console.error("order_items insert failed:", itemsErr, orderItems);
+                  await supabaseAdmin.from("orders").delete().eq("id", order.id);
+                  toolResult = JSON.stringify({
+                    error: `Order items insert failed: ${itemsErr.message}`,
+                  });
+                  messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+                  continue;
+                }
 
                 const checkoutPath = rest?.slug
                   ? `/${rest.slug}?order_id=${order.id}&step=checkout`
@@ -1172,6 +1345,10 @@ Deno.serve(async (req) => {
     // instead of asking — which gives the user no prompt to continue.
     const bsPartyAfter = (booking_state.party_size as number | null | undefined) ?? null;
     const bsDateAfter = (booking_state.date as string | null | undefined) ?? null;
+    const bsTimeAfter = (booking_state.time as string | null | undefined) ?? null;
+    const bsRestaurantAfter = (booking_state.restaurant_id as string | null | undefined) ?? null;
+    const hasRestaurant = !!(selected_restaurant_id || bsRestaurantAfter);
+
     if (selected_restaurant_id && bsPartyAfter == null && !bsDateAfter) {
       parsed.spoken_text = "How many guests, and what date?";
     } else if (selected_restaurant_id && bsPartyAfter == null) {
@@ -1186,6 +1363,39 @@ Deno.serve(async (req) => {
       // Single search result — don't ask "which restaurant?", confirm directly.
       parsed.spoken_text = `Do you want to book a table at ${lastSearchSingleName}?`;
       parsed.next_expected_input = "confirmation";
+    }
+
+    // Anti-repetition net: on ANY turn (not just the one where the user
+    // selected a restaurant), if the model's spoken_text asks for a field
+    // that's already SET, rewrite it to prompt for the next MISSING field.
+    // Without this the model occasionally regresses a turn or two later
+    // ("how many guests?" after party_size was already set) because a tool
+    // result pushed the SET/MISSING checklist out of its attention window.
+    if (hasRestaurant && typeof parsed.spoken_text === "string") {
+      const spoken = parsed.spoken_text as string;
+      // Broad patterns — the LLM uses varied phrasings for the same question.
+      const asksParty = /how many|party size|guests|people|for how many|group size|your party|how large|how big|persons?\b/i.test(spoken);
+      const asksDate = /what date|which date|which day|when would|what day|when are you|what evening|what night|when.*(?:come|visit|book|dine|dinner|lunch|eat)|when.*thinking|what.*date/i.test(spoken);
+      const asksTime = /what time|which time|when.*like to eat|what hour|when.*arrive/i.test(spoken);
+      const asksWhichRestaurant = /which restaurant|which one\b|pick one|choose.{0,20}restaurant|what restaurant|which.*place/i.test(spoken);
+
+      const repeatsParty = asksParty && bsPartyAfter != null;
+      const repeatsDate = asksDate && !!bsDateAfter;
+      const repeatsTime = asksTime && !!bsTimeAfter;
+      const repeatsRestaurant = asksWhichRestaurant && !!bsRestaurantAfter;
+
+      if (repeatsParty || repeatsDate || repeatsTime || repeatsRestaurant) {
+        if (bsPartyAfter == null) {
+          parsed.spoken_text = "How many guests?";
+        } else if (!bsDateAfter) {
+          parsed.spoken_text = "What date?";
+        } else if (!bsTimeAfter) {
+          parsed.spoken_text = "What time works?";
+        } else {
+          // All minimum fields are set — advance to slot selection.
+          parsed.spoken_text = "Checking availability.";
+        }
+      }
     }
 
     parsed.conversation_id = conversationId;
@@ -1221,20 +1431,57 @@ Deno.serve(async (req) => {
     // Guard: strip show_menu / offer_preorder actions when the booking isn't
     // actually confirmed yet. This prevents the "user says yes to single
     // restaurant → menu appears + orchestrator asks for party size" bug.
+    //
+    // CRITICAL: the previous implementation trusted `mergedStatus` — which
+    // is derived from the LLM's OWN `booking.status` output. When the model
+    // hallucinated `booking.status: "offering_preorder"` after a "yes" to a
+    // single-result restaurant (before party_size/date had been collected),
+    // the guard was fooled into letting `offer_preorder` through and the
+    // client jumped straight to the preorder UI without a reservation.
+    // A real reservation_id is the single source of truth — require it.
+    const responseReservationId =
+      ((parsed.booking as Record<string, unknown> | null)?.reservation_id as string | null | undefined) ?? null;
+    const hasRealReservation =
+      !!lastReservationId ||
+      !!responseReservationId ||
+      !!(booking_state.reservation_id as string | null | undefined);
     const mergedStatus =
       ((parsed.booking as Record<string, unknown> | null)?.status as string | undefined) ??
       currentStatus;
     const menuPhaseAllowed =
-      mergedStatus === "confirmed" ||
-      mergedStatus === "offering_preorder" ||
-      mergedStatus === "browsing_menu" ||
-      mergedStatus === "post_booking" ||
-      mergedStatus === "collecting_payment" ||
-      mergedStatus === "paid";
+      hasRealReservation && (
+        mergedStatus === "confirmed" ||
+        mergedStatus === "offering_preorder" ||
+        mergedStatus === "browsing_menu" ||
+        mergedStatus === "post_booking" ||
+        mergedStatus === "collecting_payment" ||
+        mergedStatus === "paid"
+      );
     if (!menuPhaseAllowed) {
       parsed.ui_actions = (parsed.ui_actions as Array<Record<string, unknown>>).filter(
-        (a) => a.type !== "show_menu" && a.type !== "offer_preorder",
+        (a) => a.type !== "show_menu" && a.type !== "offer_preorder" && a.type !== "show_confirmation",
       );
+      // Also scrub any LLM-fabricated booking.status that tries to jump into
+      // a preorder/post-booking phase without a real reservation — the
+      // client uses status to drive UI transitions, so leaking this through
+      // lights up the preorder sheet prematurely.
+      const preorderStatuses = new Set([
+        "confirmed",
+        "offering_preorder",
+        "browsing_menu",
+        "reviewing_cart",
+        "choosing_tip_timing",
+        "choosing_tip_amount",
+        "choosing_payment_split",
+        "charging",
+        "paid",
+        "post_booking",
+      ]);
+      const bk = parsed.booking as Record<string, unknown> | null;
+      if (bk && typeof bk.status === "string" && preorderStatuses.has(bk.status)) {
+        delete bk.status;
+        parsed.booking = bk;
+      }
     }
 
     // Merge server booking delta (tool execution) into parsed.booking.

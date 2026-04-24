@@ -5,8 +5,9 @@
   "overrides": {
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@xmldom/xmldom": "0.8.12",
-    "tar": "7.5.13"
+    "@xmldom/xmldom": "^0.8.13",
+    "tar": "7.5.13",
+    "uuid": "^14.0.0"
   },
   "scripts": {
     "seed:users": "tsx scripts/seed-users.ts",

@@ -21,7 +21,10 @@ interface AssistantContextValue {
    * land elsewhere (e.g. public menu after accepting pre-order).
    */
   sayGoodbyeAndClose: (message?: string, redirectAfter?: string) => Promise<void>;
-  sendTranscript: (transcript: string, opts?: { restaurantId?: string }) => Promise<void>;
+  sendTranscript: (
+    transcript: string,
+    opts?: { restaurantId?: string; silent?: boolean },
+  ) => Promise<void>;
   startListening: () => Promise<void>;
   setTextMode: (active: boolean) => void;
 }
@@ -84,6 +87,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+  // The wake-word recognizer and the command recognizer cannot BOTH hold the
+  // mic on Chrome — only one active SpeechRecognition instance is allowed.
+  // When we open the shell we must synchronously tear down the wake-word
+  // recognizer before starting the command recognizer. React's effect-based
+  // teardown runs *after* commit, which is too late and causes InvalidStateError.
+  const forceStopWakeWordRef = useRef<() => void>(() => {});
   // Mirror state in a ref so sendTranscript always reads the *latest* booking
   // fields — not the snapshot from when the callback was defined. This was
   // the root cause of "AI keeps asking for party_size even after I answered":
@@ -149,7 +158,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, []);
 
   const sendTranscript = useCallback(
-    async (transcript: string, opts?: { restaurantId?: string }) => {
+    async (
+      transcript: string,
+      opts?: { restaurantId?: string; silent?: boolean },
+    ) => {
       if (processingRef.current) return;
       processingRef.current = true;
 
@@ -262,7 +274,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           const base = spokenText.trim().replace(/[.!?]*$/, "");
           spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
         }
-        if (spokenText) await voice.speak(spokenText);
+        if (spokenText && !opts?.silent) await voice.speak(spokenText);
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         // In the manual menu / prepay flow the UI is button-driven — we only
@@ -275,13 +287,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
         ].includes(stateRef.current.booking.status);
 
         if (isOpenRef.current && !textModeRef.current && !manualMenuActive) {
-          // 400ms grace: lets Chrome's audio stack release the mic after TTS
-          // ends, avoiding InvalidStateError on recognition.start().
+          // 200ms grace: lets Chrome's audio stack release the mic after TTS
+          // ends, avoiding InvalidStateError on recognition.start(). Tightened
+          // from 400ms for snappier back-and-forth pacing.
           setTimeout(() => {
             if (isOpenRef.current && !textModeRef.current) {
               void startListeningRef.current();
             }
-          }, 400);
+          }, 200);
         }
       } catch (err) {
         processingRef.current = false;
@@ -368,6 +381,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
     (restaurantId?: string, restaurantName?: string) => {
       requestLocation();
 
+      // Free the mic synchronously so the command recognizer can claim it
+      // immediately without fighting the wake word for the stream.
+      forceStopWakeWordRef.current();
+
       if (!micGrantedRef.current) {
         requestMicPermission().then((granted) => {
           if (granted) {
@@ -439,7 +456,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const setTextMode = useCallback((active: boolean) => {
     textModeRef.current = active;
-  }, []);
+    // Safety net: entering text mode should never be blocked by a stale
+    // processing flag. If the previous voice turn hung (recognizer wedged,
+    // orchestrator still in-flight when the user pivots to typing), clearing
+    // the flag here guarantees the next Send goes through instead of being
+    // silently dropped by the `if (processingRef.current) return;` guard.
+    if (active) {
+      processingRef.current = false;
+      emptyRelistenStreakRef.current = 0;
+      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+    }
+  }, [dispatch]);
 
   // After a successful payment the "You're all set!" confirmation renders
   // briefly. We speak a short farewell, then tear down the shell and navigate
@@ -468,6 +495,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
     useCenaivaWakeWord(onWake);
+
+  // Keep the ref in sync so open() — defined earlier in this component —
+  // can tear down the wake-word recognizer synchronously before starting
+  // the command recognizer.
+  useEffect(() => {
+    forceStopWakeWordRef.current = forceStopWakeWord;
+  }, [forceStopWakeWord]);
 
   const enableWakeWord = useCallback(() => {
     if (micGrantedRef.current) setWakeWordEnabled(true);

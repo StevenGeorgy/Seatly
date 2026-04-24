@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { Calendar, Clock, Users, CheckCircle2, Plus, Minus, ShoppingCart } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,7 @@ import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useAvailability } from "@/hooks/useAvailability";
 import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItems";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 interface BookingSheetProps {
   onExit: () => void;
@@ -33,7 +35,9 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const { state, dispatch } = useAssistantStore();
   const assistant = useAssistant();
   const availability = useAvailability();
+  const navigate = useNavigate();
   const { booking, showExitX } = state;
+  const [prepayBusy, setPrepayBusy] = useState(false);
 
   // Local-only review/prepay flow — no orchestrator involvement. Once the
   // user is done picking items in `browsing_menu`, the "Review order" button
@@ -93,6 +97,81 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       void assistant?.sendTranscript(parts.join(", "));
     }
     onExit();
+  };
+
+  /** Client-side "Yes, prepay" — bypasses the orchestrator entirely so the
+   *  button feels like a direct link to checkout. The orchestrator round-trip
+   *  (LLM turn + create_preorder_order tool call) added ~2-4s of latency
+   *  during which the UI showed "Thinking..." and sometimes failed to emit
+   *  navigate_to_checkout at all. We already have restaurant_id, reservation_id,
+   *  and the authoritative cart in booking state; RLS allows authenticated
+   *  guests to insert their own orders (same path manual checkout uses). */
+  const handleYesPrepay = async () => {
+    if (prepayBusy) return;
+    if (!booking.restaurant_id || !booking.reservation_id || booking.cart.length === 0) {
+      return;
+    }
+    setPrepayBusy(true);
+    try {
+      const client = getSupabaseBrowserClient();
+
+      // Fetch slug + tax rate for URL + totals. Keep this lean (no join).
+      const { data: rest, error: restErr } = await client
+        .from("restaurants")
+        .select("slug, tax_rate, currency")
+        .eq("id", booking.restaurant_id)
+        .single();
+      if (restErr || !rest?.slug) throw new Error(restErr?.message ?? "Missing slug");
+
+      const taxRate = rest.tax_rate ?? 0.13;
+      const subtotal = booking.cart_subtotal;
+      const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
+      const total = Math.round((subtotal + taxAmount) * 100) / 100;
+      const code = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+      const { data: order, error: orderErr } = await client
+        .from("orders")
+        .insert({
+          restaurant_id: booking.restaurant_id,
+          reservation_id: booking.reservation_id,
+          is_preorder: true,
+          order_type: "dine_in",
+          status: "pending",
+          subtotal,
+          tax_amount: taxAmount,
+          total_amount: total,
+          confirmation_code: code,
+          source: "cenaiva",
+        })
+        .select("id")
+        .single();
+      if (orderErr || !order) throw new Error(orderErr?.message ?? "Order failed");
+
+      const orderItems = booking.cart.map((item) => ({
+        order_id: order.id,
+        menu_item_id: item.menu_item_id,
+        name: item.name,
+        quantity: item.qty,
+        unit_price: item.unit_price,
+        line_total: Math.round(item.unit_price * item.qty * 100) / 100,
+        status: "pending",
+      }));
+      const { error: itemsErr } = await client.from("order_items").insert(orderItems);
+      if (itemsErr) {
+        // Roll back the headless order so the user doesn't see a $0 orphan.
+        await client.from("orders").delete().eq("id", order.id);
+        throw new Error(itemsErr.message);
+      }
+
+      // Tear down the voice shell + navigate in one shot. AssistantProvider's
+      // close() stops mic/TTS so we don't keep "Listening…" after the user
+      // is already on the checkout page.
+      assistant?.close();
+      navigate(`/${rest.slug}?order_id=${order.id}&step=checkout`);
+    } catch (err) {
+      console.error("Yes-prepay direct flow failed:", err);
+      setPrepayBusy(false);
+    }
   };
 
   // ── Menu item helpers ────────────────────────────────────────────────────────
@@ -161,11 +240,44 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
     }, {});
   }, [menuItems, categories]);
 
-  // ── Guard: nothing to show until booking is started ──────────────────────────
-  // "collecting_minimum_fields" is a valid rendered state — the branch at the
-  // bottom of this component shows the party-size/date chips for that status.
+  // ── Guard: nothing to show unless a branch below will render real content.
+  // Every previous iteration of this guard missed an edge case — e.g. status
+  // is "awaiting_time_selection" but availability.slots.length === 0 (slot
+  // fetch in-flight from the orchestrator) leaves the wrapper motion.div
+  // mounted with zero children, producing the empty black bar above the mic.
+  // Instead of enumerating statuses, mirror the exact conditions of each
+  // render branch below and bail if none match.
+  const hasConfirmationCard = (isConfirmed || isPaid) && !!booking.confirmation_code;
+  const hasOfferPreorder = booking.status === "offering_preorder";
+  const hasBrowsingMenu = booking.status === "browsing_menu";
+  const hasReviewingCart =
+    booking.status === "reviewing_cart" || booking.status === "choosing_tip_timing";
+  const hasTipAmount = booking.status === "choosing_tip_amount";
+  const hasPaymentSplit = booking.status === "choosing_payment_split";
+  const hasCharging = booking.status === "charging";
+  const hasLoadingAvailability =
+    booking.status === "loading_availability" && availability.loading;
+  const hasSlotGrid =
+    booking.status === "awaiting_time_selection" && availability.slots.length > 0;
+  const hasConfirming = booking.status === "confirming";
+  const hasCollectingCTA =
+    booking.status === "collecting_minimum_fields" &&
+    !!booking.restaurant_id && !!booking.date && !!booking.party_size;
 
-  if (booking.status === "idle") return null;
+  const hasAnyContent =
+    hasConfirmationCard ||
+    hasOfferPreorder ||
+    hasBrowsingMenu ||
+    hasReviewingCart ||
+    hasTipAmount ||
+    hasPaymentSplit ||
+    hasCharging ||
+    hasLoadingAvailability ||
+    hasSlotGrid ||
+    hasConfirming ||
+    hasCollectingCTA;
+
+  if (!hasAnyContent) return null;
 
   // Computed tip for display
   const tipDisplay = booking.tip_percent != null
@@ -444,17 +556,11 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                 </p>
                 <div className="flex gap-3 justify-center">
                   <button
-                    onClick={() => {
-                      // Yes prepay: hand the cart to the orchestrator so it
-                      // can create a real order and return a checkout URL.
-                      // The shell auto-closes via navigate_to_checkout.
-                      void assistant?.sendTranscript(
-                        "Yes, please create the prepaid order and take me to checkout now.",
-                      );
-                    }}
-                    className="px-5 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors"
+                    onClick={() => void handleYesPrepay()}
+                    disabled={prepayBusy}
+                    className="px-5 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium hover:bg-[#E6C060] transition-colors disabled:opacity-60"
                   >
-                    Yes, prepay
+                    {prepayBusy ? "…" : "Yes, prepay"}
                   </button>
                   <button
                     onClick={() => {
