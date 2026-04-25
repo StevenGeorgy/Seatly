@@ -214,12 +214,19 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
       // confirmation card. Previously the LLM was expected to emit
       // `offer_preorder` in the same response, which was unreliable — this
       // makes the preorder question deterministic after every booking.
+      //
+      // Fall back to the value already on `state.booking.confirmation_code`
+      // when the orchestrator emits a bare `{type:"show_confirmation"}`
+      // without the code attribute. Without this guard the action overwrites
+      // the code that the bookingPatch just applied (causing the "You're
+      // booked!" card to disappear).
       return {
         ...state,
         booking: {
           ...state.booking,
           status: "offering_preorder",
-          confirmation_code: action.confirmation_code,
+          confirmation_code:
+            action.confirmation_code ?? state.booking.confirmation_code,
         },
         customerAccepted: true,
       };
@@ -385,7 +392,14 @@ export function assistantReducer(
       }
 
       if (response.booking) {
-        next = { ...next, booking: { ...next.booking, ...response.booking } };
+        // Drop null/undefined fields from the patch so an LLM regression
+        // (e.g. `party_size: null` after we already collected it) can't
+        // overwrite previously-set state and force the orchestrator to
+        // re-ask the same question on the next turn.
+        const bookingPatch = Object.fromEntries(
+          Object.entries(response.booking).filter(([, v]) => v != null),
+        ) as Partial<typeof next.booking>;
+        next = { ...next, booking: { ...next.booking, ...bookingPatch } };
       }
 
       if (response.map) {

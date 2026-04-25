@@ -501,10 +501,13 @@ async function executeTool(
         timeZone: timezone,
         weekday: "short",
       }).format(anchorUTC);
+      // `shifts.days_of_week` is 0-6 (0=Sun … 6=Sat) — same convention as
+      // JS `getDay()` / `getUTCDay()`. Match it directly so Sunday + post-
+      // midnight-UTC Saturday queries don't silently return zero shifts.
       const dowMap: Record<string, number> = {
-        Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+        Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
       };
-      const dayOfWeek = dowMap[localDow] ?? (anchorUTC.getUTCDay() || 7);
+      const dayOfWeek = dowMap[localDow] ?? anchorUTC.getUTCDay();
 
       const { data: shifts } = await supabaseAdmin
         .from("shifts")
@@ -516,7 +519,7 @@ async function executeTool(
         .contains("days_of_week", [dayOfWeek]);
 
       if (!shifts?.length)
-        return JSON.stringify({ slots: [], message: "No shifts available on this date." });
+        return JSON.stringify({ slots: [], message: "No availability on that date." });
 
       // Query existing reservations using UTC bounds for the restaurant's local day
       const dayStartUTC = localToUTC(dateOnly, "00:00", timezone);

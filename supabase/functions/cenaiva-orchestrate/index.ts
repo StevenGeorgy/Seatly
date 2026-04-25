@@ -178,8 +178,41 @@ const NUMBER_WORDS: Record<string, number> = {
   couple: 2, duo: 2, pair: 2,
 };
 
+// Strip filler / politeness words so voice replies like "uh, two please" or
+// "let's say four thanks" reduce to "two" / "four" — which the bare-number
+// regex below can match. Without this, common spoken phrasings fall through
+// to the LLM safety-net and (when the LLM also misses the extraction) the
+// orchestrator re-asks the same question.
+function stripFiller(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(
+      /\b(uh+|um+|er+|ah+|hmm+|mm+|like|so|well|please|pls|thanks|thank you|thx|actually|maybe|i think|i guess|let'?s say|i'?d say|let me see|sorry|okay|ok|yeah|yep|yes|sure|alright)\b/g,
+      " ",
+    )
+    .replace(/[,.!?;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Web Speech API regularly mishears spoken digits as homophones — most
+// commonly "four" → "for" / "fore", "two" → "to" / "too", "eight" → "ate",
+// "one" → "won". When followed by a counting noun ("guests", "people",
+// "of us", "adults"), normalize the homophone back to the digit word so
+// parsePartySize can extract it. Without this, replies like "for guests
+// please" parse to null and the orchestrator loops "How many guests?".
+function normalizeSpokenDigits(t: string): string {
+  const COUNT_NOUN = "(?:guests?|people|persons?|adults?|pax|of\\s+us)";
+  return t
+    .replace(new RegExp(`\\b(?:fore?|four)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "four"))
+    .replace(new RegExp(`\\b(?:too?|two)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "two"))
+    .replace(new RegExp(`\\b(?:ate|eight)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "eight"))
+    .replace(new RegExp(`\\b(?:won|one)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "one"))
+    .replace(new RegExp(`\\b(?:sicks?|six)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "six"));
+}
+
 function parsePartySize(raw: string): number | null {
-  const t = raw.toLowerCase();
+  const t = normalizeSpokenDigits(stripFiller(raw));
   // "just me" / "solo" / "for one"
   if (/\b(just\s+me|solo|alone|by\s+myself)\b/.test(t)) return 1;
   if (/\b(me\s+and\s+my\s+(wife|husband|partner|boyfriend|girlfriend|friend|kid|date))\b/.test(t)) return 2;
@@ -222,7 +255,7 @@ function parsePartySize(raw: string): number | null {
 }
 
 function parseDate(raw: string): string | null {
-  const t = raw.toLowerCase();
+  const t = stripFiller(raw);
   const now = new Date();
   const toISO = (d: Date) => d.toISOString().slice(0, 10);
   if (/\b(today|tonight|this\s+evening)\b/.test(t)) return toISO(now);
@@ -245,6 +278,112 @@ function parseDate(raw: string): string | null {
   const iso = raw.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (iso) return iso[1];
   return null;
+}
+
+// Parse a free-text time ("9pm", "9 pm", "nine pm", "21:00", "7:30") to a
+// 24-hour "HH:MM" string. Returns null when the transcript clearly isn't a
+// time. Used to auto-promote a voice reply ("9pm") to a select_time_slot
+// emission so the LLM can't get wedged re-asking "what time?" after slots
+// have been shown.
+const TIME_WORDS: Record<string, number> = {
+  twelve: 12, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11,
+  noon: 12, midnight: 0,
+};
+
+function parseTime(raw: string): string | null {
+  const t = stripFiller(raw);
+  // "9pm" / "9 pm" / "9:30 pm" / "9:30pm"
+  const ampm = t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/);
+  if (ampm) {
+    let h = parseInt(ampm[1], 10);
+    const min = ampm[2] ? parseInt(ampm[2], 10) : 0;
+    const period = ampm[3].replace(/\./g, "");
+    if (period === "pm" && h < 12) h += 12;
+    if (period === "am" && h === 12) h = 0;
+    if (h >= 0 && h <= 23 && min >= 0 && min < 60) {
+      return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+  }
+  // "21:00" or "9:30" (24-hour)
+  const colon = t.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (colon) {
+    const h = parseInt(colon[1], 10);
+    const min = parseInt(colon[2], 10);
+    if (h >= 0 && h <= 23 && min >= 0 && min < 60) {
+      return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+  }
+  // "nine pm" / "seven thirty" / "noon" / "midnight"
+  const word = t.match(
+    /\b(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?/,
+  );
+  if (word) {
+    const h0 = TIME_WORDS[word[1]];
+    if (h0 != null) {
+      let h = h0;
+      let min = 0;
+      const mid = word[2];
+      let period: string | null = word[3] ?? null;
+      if (mid === "thirty") min = 30;
+      else if (mid === "fifteen") min = 15;
+      else if (mid && /forty/.test(mid)) min = 45;
+      else if (mid === "am" || mid === "pm") period = mid;
+      if (period === "pm" && h < 12) h += 12;
+      if (period === "am" && h === 12) h = 0;
+      // If no period specified and hour 1–10, assume PM (dinner context).
+      if (!period && h >= 1 && h <= 10) h += 12;
+      return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+  }
+  // Bare digit + period split: "9 pm" already covered. "9" alone is too
+  // ambiguous — only match when paired with a context word.
+  const bare = t.match(
+    /\b(?:at|around|maybe|like|how about|book)\s+(\d{1,2})\b(?!\s*(?:people|guests|of|year|years))/,
+  );
+  if (bare) {
+    let h = parseInt(bare[1], 10);
+    if (h >= 1 && h <= 11) h += 12; // dinner default
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
+  return null;
+}
+
+// Convert a slot's display_time ("9:00 PM") back to minutes-from-midnight
+// for nearest-slot matching against a parsed user time.
+function displayTimeToMinutes(display: string): number | null {
+  const m = display.match(/^(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const period = m[3].toUpperCase();
+  if (period === "PM" && h < 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return h * 60 + min;
+}
+
+function findNearestSlot(
+  slots: Array<{ shift_id: string; date_time: string; display_time: string }>,
+  targetHHMM: string,
+): { shift_id: string; date_time: string; display_time: string } | null {
+  if (!slots.length) return null;
+  const [th, tm] = targetHHMM.split(":").map(Number);
+  const target = th * 60 + tm;
+  let best: typeof slots[number] | null = null;
+  let bestDiff = Infinity;
+  for (const slot of slots) {
+    const sm = displayTimeToMinutes(slot.display_time);
+    if (sm == null) continue;
+    const diff = Math.abs(sm - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = slot;
+    }
+  }
+  // Reject matches more than 45 minutes off — beyond that the user clearly
+  // meant a time we don't offer (and we should not silently substitute).
+  if (bestDiff > 45) return null;
+  return best;
 }
 
 // ── Nominatim city lookup ─────────────────────────────────────────────────────
@@ -335,16 +474,16 @@ FLOW — follow exactly in this order:
 3. When the user names a specific restaurant OR the user message contains "Selected restaurant ID: <uuid>", that restaurant is CONFIRMED. Immediately emit highlight_restaurant + start_booking with that ID and move to step 4 — do NOT ask "which one?" again.
    3a. FUZZY NAME MATCHING: the user is talking to a speech recognizer, so their pronunciation of a restaurant name will be approximate ("steven gorgey" / "steve georgy" / "georges inc" / "gorgi inc"). When "Visible restaurant candidates" are listed in the user message, score the user's reply against each candidate name (phonetic + token overlap). If ONE candidate clearly wins, treat it as CONFIRMED and emit highlight_restaurant + start_booking on it — do not ask again. If TWO candidates are close, emit highlight_restaurant on your best guess and say "Did you mean <name>?" — then next_expected_input='confirmation'.
    3b. NEVER ask the same disambiguation question more than twice in a row. If you've already asked "which restaurant?" twice, the next turn MUST commit to a best-guess confirmation ("Did you mean X?") — not another "which one?".
-   3c. SINGLE-RESULT YES: if only ONE restaurant is visible AND the user replies with an affirmative ("yes", "yeah", "sure", "ok", "book it", "do it"), treat that one restaurant as CONFIRMED — emit highlight_restaurant + start_booking with its id and go to step 4 (ask party_size + date). DO NOT call get_menu, emit show_menu, or emit offer_preorder — those belong to step 6, AFTER the reservation is confirmed.
-4. Collect party_size and date via set_booking_field. Ask ONLY for fields marked MISSING in the BOOKING STATE checklist above — never re-ask a field that is already SET.
-   4a. Parse natural-language answers from voice users into structured values and emit set_booking_field immediately:
+   3c. SINGLE-RESULT AUTO-CONFIRM: when search_restaurants returns exactly ONE match the assistant is fully confident — DO NOT ask "Do you want to book at X?" or any confirmation variant. Treat the result as CONFIRMED, emit highlight_restaurant + start_booking with its id, and go directly to step 4 (ask party_size first). Confirmation prompts only belong in cases of genuine ambiguity (two close STT-fuzzy candidates) — see 3a. DO NOT call get_menu, emit show_menu, or emit offer_preorder — those belong to step 6, AFTER the reservation is confirmed.
+4. Collect booking fields in TWO QUESTIONS in this exact order. Ask ONLY for fields marked MISSING in the BOOKING STATE checklist above — never re-ask a field that is already SET.
+   4a. **Question 1 — party_size only** (when party_size MISSING): ask "How many guests?" (≤ 4 words). Do NOT also ask date/time in this turn — that comes next.
+   4b. **Question 2 — date AND time together** (when party_size SET but date OR time MISSING): ask "What date and time?" (≤ 6 words). The user will answer with both ("tomorrow at 7pm", "Friday 8 PM", "tonight at 9"). Parse BOTH from the single reply and emit set_booking_field for each.
+   4c. Parse natural-language answers from voice users into structured values and emit set_booking_field immediately:
        - party_size: "two" / "for 2" / "party of three" / "me and my wife" → 2/3/2. "a couple" → 2. "solo" / "just me" → 1.
        - date: "tonight" / "today" → today's YYYY-MM-DD. "tomorrow" → today+1. "Friday" / "next Saturday" → the next occurrence of that weekday in YYYY-MM-DD.
        - time: "7pm" → "19:00". "seven thirty" → "19:30". "noon" → "12:00".
-   4b. If the BOOKING STATE checklist shows party_size SET and date SET, DO NOT ask for them again — call check_availability straight away.
-   4c. NEVER ask "Would you like to book?" / "Should I book it?" / "Ready to book?" or any variant. Once restaurant_id + party_size + date are SET, the user's intent to book is already confirmed — proceed silently to check_availability. The only explicit confirmation allowed in this flow is slot selection (step 4d).
-   4d. When slots come back from check_availability: speak ONLY the open-hours window from the tool result's "hours_window" field. Say exactly: "<name> is open <hours_window>. What time?" (e.g. "Georgy Inc is open 5:00 PM to 10:00 PM. What time?"). DO NOT enumerate individual slots. DO NOT append "or others" / "and more" / "or any other time". The grid of tappable slot buttons already renders in the UI — your job is only to ask the user for their preferred time. When the user replies with a time ("7", "seven pm", "the 7 o'clock one", "yeah 7"), match it to the nearest slot from the tool result and emit select_time_slot with that slot's exact shift_id and date_time.
-   Call check_availability only once all three of restaurant_id, date, and party_size are SET. User picks slot → select_time_slot.
+   4d. NEVER ask "Would you like to book?" / "Should I book it?" / "Ready to book?" or any variant. Once restaurant_id + party_size + date are SET, the user's intent to book is already confirmed — proceed silently to check_availability.
+   4e. Call check_availability only once restaurant_id, date, AND party_size are all SET. The server will auto-match the user's stated time to the nearest slot and complete the booking — you do NOT need to enumerate slots or re-ask "what time?" once the user has already given a time in their date+time reply. If the user did NOT include a time (only said a date), then after slots come back ask "What time?" — but normally the date+time arrives together so no extra question is needed.
 5. Call complete_booking → emit show_confirmation + show_exit_x.
 6. ONLY AFTER you have emitted show_confirmation in a PRIOR turn AND booking_state.status is one of {"confirmed","offering_preorder","browsing_menu","post_booking"}: emit offer_preorder and ask "Want to pre-order from the menu?" (≤ 10 words). Do NOT enter step 6 while booking_state.status is "idle" or "collecting_minimum_fields" — those are still steps 1-4.
    a. If no: emit show_post_booking_questions. DONE.
@@ -366,6 +505,8 @@ RULES:
 - One question per turn.
 - NEVER re-ask for a booking field that is already SET in the BOOKING STATE checklist — read the checklist first every turn.
 - NEVER speak as if YOU are the guest (see PERSPECTIVE above).
+- CUSTOMER VOCABULARY: NEVER say the words "shift", "shifts", "lunch shift", "dinner shift", or any internal scheduling term in spoken_text. These are operational concepts the customer doesn't care about. Always use customer-friendly wording: "no availability", "no openings", "no tables at that time", "we don't have anything then". If a tool message contains the word "shift", paraphrase it before speaking — never echo it verbatim.
+- NO-AVAILABILITY RE-PROMPT: When check_availability returns zero slots OR the user picks a time outside the available slots, ask "What date and time would you like instead?" (re-prompt for BOTH) — not just "What time?". The user may want a different day entirely.
 - NEVER say "no reservations available" unless you've called check_availability and confirmed it returned no slots. If search_restaurants returns results, show them.
 - NEVER call check_availability unless restaurant_id, date, AND party_size are all known.
 - If you have enough info, act (emit actions) instead of asking.
@@ -557,6 +698,29 @@ Deno.serve(async (req) => {
       .order("created_at", { ascending: false })
       .limit(40);
 
+    // Promote a "yes" to an explicit selection when the previous assistant
+    // turn already proposed a specific restaurant via highlight_restaurant
+    // (i.e. the LLM said "Did you mean Georgy Inc?"). Without this, an
+    // affirmative reply with 2+ visible restaurants would slip past the
+    // single-result promotion above, the LLM would see no selection set, and
+    // it would re-ask the same disambiguation question — which is exactly
+    // the loop the user reported.
+    if (
+      !selected_restaurant_id &&
+      isAffirmative &&
+      (currentStatus === "idle" || currentStatus === "collecting_minimum_fields")
+    ) {
+      const lastAssistant = (history ?? []).find((m) => m.role === "assistant");
+      const fullResp = (lastAssistant?.metadata as { full_response?: { ui_actions?: Array<Record<string, unknown>> } } | null)?.full_response;
+      const lastHighlight = fullResp?.ui_actions?.find((a) => a?.type === "highlight_restaurant");
+      const proposedId = lastHighlight && typeof lastHighlight.restaurant_id === "string"
+        ? lastHighlight.restaurant_id
+        : null;
+      if (proposedId) {
+        selected_restaurant_id = proposedId;
+      }
+    }
+
     const rawMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
     for (const msg of (history ?? []).reverse()) {
@@ -650,6 +814,19 @@ Deno.serve(async (req) => {
       messages.push(m);
     }
 
+    // Count how many turns in a row we've already asked the user to pick a
+    // restaurant. Computed BEFORE fuzzy match so we can relax scoring on
+    // the re-ask — when the user answered a "which restaurant?" prompt,
+    // they clearly meant SOMETHING from the visible list. Don't throw
+    // their reply away over a margin-of-victory check.
+    const recentAssistant = (history ?? [])
+      .filter((m) => m.role === "assistant")
+      .slice(0, 2)
+      .map((m) => (m.content ?? "").toLowerCase());
+    const priorWhichAsks = recentAssistant.filter((c) =>
+      /which restaurant|which one\b|pick one|what restaurant|which.*place/.test(c)
+    ).length;
+
     // Fetch names for the visible restaurants so the LLM has something to
     // fuzzy-match spoken transcripts against. Without names, STT jitter on a
     // proper noun (e.g. "Steven Georgy" → "steven gorgey") leaves the model
@@ -688,12 +865,19 @@ Deno.serve(async (req) => {
             .sort((a, b) => b.score - a.score);
           const best = scored[0];
           const next = scored[1];
-          // Accept if (a) unique candidate with any match, or (b) top beats
-          // runner-up by a clear margin. Threshold tuned so "Georgy" matches
-          // "Georgy Inc" when only one visible restaurant contains it, but
-          // two candidates with shared token ("Georgy Inc" vs "Steven
-          // Georgy") still go through disambiguation.
-          if (best && best.score >= 10 && (!next || best.score >= next.score + 8)) {
+          // When we've ALREADY asked "which one?" in a prior turn, relax
+          // thresholds: the user's reply is almost certainly a selection
+          // attempt. Only one visible candidate + any positive score wins.
+          const minScore = priorWhichAsks >= 1 ? 5 : 10;
+          const minGap = priorWhichAsks >= 1 ? 3 : 8;
+          const onlyOneCandidate = rows.length === 1;
+          if (
+            best &&
+            (
+              (onlyOneCandidate && best.score > 0) ||
+              (best.score >= minScore && (!next || best.score >= next.score + minGap))
+            )
+          ) {
             selected_restaurant_id = best.id;
             sttFuzzyMatchLine = `⚠️ STT FUZZY MATCH: transcript "${transcript}" resolved to restaurant "${best.name}" (id=${best.id}). Treat this as the user's confirmed selection — emit start_booking + highlight_restaurant and move on.`;
           }
@@ -703,23 +887,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Count how many turns in a row we've already asked the user to pick a
-    // restaurant. If the last 2 assistant messages both asked "which one?",
-    // the next turn MUST commit to a best-guess confirmation instead of
-    // asking yet again.
-    const recentAssistant = (history ?? [])
-      .filter((m) => m.role === "assistant")
-      .slice(0, 2)
-      .map((m) => (m.content ?? "").toLowerCase());
-    // Only fire the anti-loop guard during the restaurant-picking phase.
-    // "would you like" and generic "choose" can also appear in pre-order prompts
-    // ("Would you like to pre-order?") so we scope to restaurant-specific phrases.
+    // Anti-loop guard: fire after just ONE prior "which restaurant?" ask.
+    // Waiting for a second ask let the orchestrator re-run search_restaurants
+    // and unfilter the map before the guard kicked in. Scoped to the
+    // restaurant-picking phase so pre-order prompts don't trip it.
     const repeatedWhichAsk =
       !selected_restaurant_id &&
       (currentStatus === "idle" || currentStatus === "collecting_minimum_fields") &&
-      recentAssistant.filter((c) =>
-        /which restaurant|which one\b|pick one|what restaurant|which.*place/.test(c)
-      ).length >= 2;
+      priorWhichAsks >= 1;
 
     const userContent = [
       transcript ? `User said: "${transcript}"` : "User opened the assistant.",
@@ -757,7 +932,10 @@ Deno.serve(async (req) => {
     // loop we record every tool execution into `derivedActions` / booking+map
     // deltas so the final JSON-turn response is reinforced server-side even
     // if the model drops an action from its output.
-    const MAX_ITER = 5;
+    // Cap at 3 to bound worst-case latency. In practice the model converges
+    // in 1-2 iterations; 5 was just a fudge factor that occasionally cost
+    // the user an extra ~2s per turn.
+    const MAX_ITER = 3;
     let iterations = 0;
     let lastReservationId: string | null = (booking_state.reservation_id as string) ?? null;
     let lastGuestId: string | null = null;
@@ -775,6 +953,10 @@ Deno.serve(async (req) => {
     const mapDelta: Record<string, unknown> = {};
     const toolsExecuted: string[] = [];
     let lastCheckoutPath: string | null = null;
+    // Most recent check_availability result — used post-loop to map a voice
+    // time reply ("9pm") to a real slot when the LLM forgets to emit
+    // select_time_slot (Bug #1).
+    let lastAvailabilitySlots: Array<{ shift_id: string; date_time: string; display_time: string }> = [];
 
     const alreadySearched = (history ?? []).some(
       (m) => m.role === "tool_call" &&
@@ -834,36 +1016,77 @@ Deno.serve(async (req) => {
 
           // ── search_restaurants ────────────────────────────────────────────
           if (toolName === "search_restaurants") {
-            let query = supabaseAdmin
-              .from("restaurants")
-              .select("id, name, cuisine_type, city, description, address, lat, lng, slug")
-              .eq("is_active", true)
-              .limit(8);
-            if (toolInput.cuisine_type) query = query.ilike("cuisine_type", `%${toolInput.cuisine_type}%`);
-            if (toolInput.city) query = query.ilike("city", `%${toolInput.city}%`);
-            if (toolInput.query) {
-              const words = toolInput.query.trim().split(/\s+/).filter((w: string) => w.length > 1);
-              if (words.length) {
-                const conditions = words
-                  .map((w: string) => `name.ilike.%${w}%,cuisine_type.ilike.%${w}%,city.ilike.%${w}%`)
-                  .join(",");
-                query = query.or(conditions);
+            // Guard: block redundant searches once candidates are already on
+            // the map. The LLM occasionally re-calls this with the user's
+            // spoken restaurant name as `query`, which runs a broad OR across
+            // name/cuisine/city and wipes out the existing filter (observed:
+            // user said "Egyptian" → filter narrowed → user answered with a
+            // name → LLM re-searched → map unfiltered → "which one?" re-ask).
+            // Only allow re-search when the user explicitly named a new city
+            // or asked for somewhere else.
+            const isPicking =
+              currentStatus === "idle" || currentStatus === "collecting_minimum_fields";
+            const userChangedGeography = /\b(in|near)\s+[a-z]+|different city|another city|out of town|somewhere else|elsewhere/i.test(
+              transcript,
+            );
+            const alreadyCalledThisTurn =
+              toolsExecuted.filter((t) => t === "search_restaurants").length > 1;
+            const shouldBlock =
+              !selected_restaurant_id &&
+              isPicking &&
+              visible_restaurant_ids.length > 0 &&
+              (alreadySearched || alreadyCalledThisTurn) &&
+              !userChangedGeography;
+
+            if (shouldBlock) {
+              toolResult = JSON.stringify({
+                error:
+                  "DO NOT re-run search_restaurants. Candidates are already visible. Match the user's spoken reply against the Visible restaurant candidates list and emit highlight_restaurant + start_booking on the closest match. If no match is remotely plausible, say 'Did you mean <closest name>?' instead.",
+              });
+              didSearch = true;
+            } else {
+              let query = supabaseAdmin
+                .from("restaurants")
+                .select("id, name, cuisine_type, city, description, address, lat, lng, slug")
+                .eq("is_active", true)
+                .limit(8);
+              if (toolInput.cuisine_type) query = query.ilike("cuisine_type", `%${toolInput.cuisine_type}%`);
+              if (toolInput.city) query = query.ilike("city", `%${toolInput.city}%`);
+              if (toolInput.query) {
+                const words = toolInput.query.trim().split(/\s+/).filter((w: string) => w.length > 1);
+                if (words.length) {
+                  const conditions = words
+                    .map((w: string) => `name.ilike.%${w}%,cuisine_type.ilike.%${w}%,city.ilike.%${w}%`)
+                    .join(",");
+                  query = query.or(conditions);
+                }
               }
+              const { data, error } = await query;
+              if (!error && data) {
+                lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
+                lastSearchSingleName =
+                  data.length === 1
+                    ? ((data[0] as { name?: string }).name ?? null)
+                    : null;
+                derivedActions.push({ type: "update_map_markers", restaurant_ids: lastSearchIds });
+                derivedActions.push({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
+                mapDelta.visible = true;
+                mapDelta.marker_restaurant_ids = lastSearchIds;
+
+                // Single-result auto-confirm: when search returns exactly one
+                // match, the assistant is fully confident — skip the "Do you
+                // want to book at X?" confirmation step and treat the result
+                // as the user's selection. The forced-override below will
+                // then ask "How many guests?" directly.
+                if (lastSearchIds.length === 1 && !selected_restaurant_id) {
+                  selected_restaurant_id = lastSearchIds[0];
+                  derivedActions.push({ type: "highlight_restaurant", restaurant_id: lastSearchIds[0] });
+                  derivedActions.push({ type: "start_booking", restaurant_id: lastSearchIds[0] });
+                }
+              }
+              toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
+              didSearch = true; // break after — don't eagerly chain check_availability without date/party_size
             }
-            const { data, error } = await query;
-            if (!error && data) {
-              lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
-              lastSearchSingleName =
-                data.length === 1
-                  ? ((data[0] as { name?: string }).name ?? null)
-                  : null;
-              derivedActions.push({ type: "update_map_markers", restaurant_ids: lastSearchIds });
-              derivedActions.push({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
-              mapDelta.visible = true;
-              mapDelta.marker_restaurant_ids = lastSearchIds;
-            }
-            toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
-            didSearch = true; // break after — don't eagerly chain check_availability without date/party_size
           }
 
           // ── check_availability ────────────────────────────────────────────
@@ -894,6 +1117,13 @@ Deno.serve(async (req) => {
                 toolInput.party_size,
               );
               toolResult = JSON.stringify(result);
+              if (Array.isArray(result.slots) && result.slots.length) {
+                lastAvailabilitySlots = result.slots.map((s) => ({
+                  shift_id: s.shift_id,
+                  date_time: s.date_time,
+                  display_time: s.display_time,
+                }));
+              }
               derivedActions.push({ type: "load_availability" });
             }
           }
@@ -1291,78 +1521,243 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── Recover slots from history if not fetched this turn ──────────────────
+    // The user's "9pm" reply often arrives on the turn AFTER check_availability.
+    // Scan the most recent tool result for a slots array so we can still
+    // match the time even when no fresh tool call ran this turn.
+    if (lastAvailabilitySlots.length === 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "tool" || typeof m.content !== "string") continue;
+        try {
+          const parsedTool = JSON.parse(m.content);
+          if (Array.isArray(parsedTool?.slots) && parsedTool.slots.length) {
+            lastAvailabilitySlots = parsedTool.slots
+              .filter(
+                (s: unknown): s is { shift_id: string; date_time: string; display_time: string } =>
+                  !!s &&
+                  typeof (s as Record<string, unknown>).shift_id === "string" &&
+                  typeof (s as Record<string, unknown>).date_time === "string" &&
+                  typeof (s as Record<string, unknown>).display_time === "string",
+              )
+              .map((s: { shift_id: string; date_time: string; display_time: string }) => ({
+                shift_id: s.shift_id,
+                date_time: s.date_time,
+                display_time: s.display_time,
+              }));
+            if (lastAvailabilitySlots.length) break;
+          }
+        } catch {
+          // Non-JSON tool result — skip.
+        }
+      }
+    }
+
+    // ── Auto-match a voice time + auto-complete the booking (Bug #1) ─────────
+    // When the user replies with a time after slots have been shown, the LLM
+    // sometimes regresses to "store is open X to Y. What time?" instead of
+    // matching the time to a slot. Server-side: parse the time, match it to
+    // the nearest slot, and run completeBooking directly so the user lands on
+    // the confirmation card without an extra round-trip.
+    let autoBookedSlot: { shift_id: string; date_time: string; display_time: string } | null = null;
+    let autoBookingResult:
+      | { reservation_id: string; confirmation_code: string; restaurant_id: string; party_size: number; date: string }
+      | null = null;
+    {
+      const bsRestaurantId = (booking_state.restaurant_id as string | null | undefined) ?? selected_restaurant_id;
+      const bsPartySize = booking_state.party_size as number | null | undefined;
+      const bsDate = booking_state.date as string | null | undefined;
+      const bsShiftId = booking_state.shift_id as string | null | undefined;
+      const bsReservationId = booking_state.reservation_id as string | null | undefined;
+      const allFieldsReady =
+        !!bsRestaurantId &&
+        !!bsPartySize &&
+        !!bsDate &&
+        !bsShiftId &&
+        !bsReservationId &&
+        !lastReservationId &&
+        lastAvailabilitySlots.length > 0;
+
+      if (allFieldsReady && transcript) {
+        const parsedTimeHHMM = parseTime(transcript);
+        if (parsedTimeHHMM) {
+          const nearest = findNearestSlot(lastAvailabilitySlots, parsedTimeHHMM);
+          if (nearest) {
+            autoBookedSlot = nearest;
+            const result = await completeBooking({
+              user_profile_id: userProfileId,
+              restaurant_id: bsRestaurantId!,
+              order_type: "dine_in",
+              date_time: nearest.date_time,
+              shift_id: nearest.shift_id,
+              party_size: bsPartySize!,
+            });
+            if (result.success && result.reservation_id && result.confirmation_code) {
+              lastReservationId = result.reservation_id;
+              if (result.guest_id) lastGuestId = result.guest_id;
+              autoBookingResult = {
+                reservation_id: result.reservation_id,
+                confirmation_code: result.confirmation_code,
+                restaurant_id: bsRestaurantId!,
+                party_size: bsPartySize!,
+                date: bsDate!,
+              };
+              // Push the same actions a normal complete_booking flow would —
+              // shift_id / slot_iso / time / status flow through bookingDelta
+              // below, so we only need the confirmation + exit actions here.
+              derivedActions.push({
+                type: "show_confirmation",
+                confirmation_code: result.confirmation_code,
+              });
+              derivedActions.push({ type: "show_exit_x" });
+              bookingDelta.reservation_id = result.reservation_id;
+              bookingDelta.confirmation_code = result.confirmation_code;
+              bookingDelta.shift_id = nearest.shift_id;
+              bookingDelta.slot_iso = nearest.date_time;
+              bookingDelta.time = nearest.display_time;
+              // Move the booking past the time-selection gate so the
+              // menuPhaseAllowed guard doesn't strip our show_confirmation.
+              bookingDelta.status = "offering_preorder";
+            }
+          }
+        }
+      }
+    }
+
     // ── Final structured JSON turn ────────────────────────────────────────────
     // Ask the model to produce the full structured response. This is the core
     // JSON contract the web app consumes. Server-derived actions (from tool
     // execution above) and transcript parsers below are layered on top as
     // belt-and-suspenders so the UI always advances even when the model drops
     // an action.
-    const jsonCompletion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 500,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-        {
-          role: "user",
-          content: (() => {
-            const base = `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.`;
-            const restaurantHint = selected_restaurant_id && !booking_state.party_size && !booking_state.date
-              ? ` IMPORTANT: user selected restaurant ID "${selected_restaurant_id}". You MUST emit start_booking (restaurant_id="${selected_restaurant_id}") and highlight_restaurant actions. spoken_text must ask for party size and date — do NOT mention availability.`
-              : "";
-            const searchHint = lastSearchIds.length === 1 && lastSearchSingleName
-              ? ` IMPORTANT: search_restaurants returned exactly ONE match ("${lastSearchSingleName}"). spoken_text must ask "Do you want to book a table at ${lastSearchSingleName}?" — do NOT ask "which restaurant?" (there's nothing to disambiguate) and do NOT mention availability. Set next_expected_input="confirmation".`
-              : lastSearchIds.length > 0
-              ? ` IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations.`
-              : "";
-            return base + restaurantHint + searchHint;
-          })(),
-        },
-      ],
-      response_format: { type: "json_object" },
-    });
-
-    const rawJson = jsonCompletion.choices[0].message.content ?? "{}";
+    //
+    // FAST PATH: When the tool loop ended on iteration 1 without executing
+    // any tool (i.e. the model just spoke text), we already have everything
+    // we need. The post-processing below (anti-repetition net, transcript
+    // parsers, prefilled-field emitter, auto-book fallback) layers in any
+    // ui_actions / booking fields the UI requires, so a second OpenAI
+    // roundtrip just to wrap `lastTextReply` in JSON is wasteful — that's
+    // ~1-2s of dead air every conversational turn. Skip it.
     let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(rawJson);
-    } catch {
+    const skipSynthesis =
+      iterations === 1 &&
+      toolsExecuted.length === 0 &&
+      !!lastTextReply &&
+      !autoBookingResult;
+
+    if (skipSynthesis) {
       parsed = {
         conversation_id: conversationId,
-        spoken_text: "Something went wrong. Please try again.",
-        intent: "fallback_handoff",
-        step: "greeting",
-        ui_actions: [{ type: "fallback_to_manual" }],
+        spoken_text: lastTextReply,
+        intent: "conversational",
+        step: currentStatus || "greeting",
+        ui_actions: [],
         booking: null,
         map: null,
         filters: null,
-        next_expected_input: "none",
+        next_expected_input: "free_text",
       };
+    } else {
+      const jsonCompletion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        max_tokens: 400,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+          {
+            role: "user",
+            content: (() => {
+              const base = `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.`;
+              const restaurantHint = selected_restaurant_id && !booking_state.party_size && !booking_state.date
+                ? ` IMPORTANT: user selected restaurant ID "${selected_restaurant_id}". You MUST emit start_booking (restaurant_id="${selected_restaurant_id}") and highlight_restaurant actions. spoken_text must ask for party size and date — do NOT mention availability.`
+                : "";
+              const searchHint = lastSearchIds.length === 1 && lastSearchSingleName
+                ? ` IMPORTANT: search_restaurants returned exactly ONE match ("${lastSearchSingleName}") — the assistant is fully confident in the user's intent. Treat it as CONFIRMED. Emit highlight_restaurant + start_booking on its id and ask "How many guests?" directly. Do NOT ask "Do you want to book at ${lastSearchSingleName}?" or any confirmation variant.`
+                : lastSearchIds.length > 0
+                ? ` IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations.`
+                : "";
+              return base + restaurantHint + searchHint;
+            })(),
+          },
+        ],
+        response_format: { type: "json_object" },
+      });
+
+      const rawJson = jsonCompletion.choices[0].message.content ?? "{}";
+      try {
+        parsed = JSON.parse(rawJson);
+      } catch {
+        parsed = {
+          conversation_id: conversationId,
+          spoken_text: "Something went wrong. Please try again.",
+          intent: "fallback_handoff",
+          step: "greeting",
+          ui_actions: [{ type: "fallback_to_manual" }],
+          booking: null,
+          map: null,
+          filters: null,
+          next_expected_input: "none",
+        };
+      }
+    }
+
+    // Hard-override spoken_text when we auto-booked from a voice time reply.
+    // The LLM regressed and re-asked for the time; we already created the
+    // reservation, so speak the confirmation instead and prompt the preorder.
+    if (autoBookingResult && autoBookedSlot) {
+      parsed.spoken_text = `You're booked for ${autoBookedSlot.display_time}. Want to pre-order from the menu?`;
+      parsed.next_expected_input = "confirmation";
     }
 
     // Hard-override spoken_text when a restaurant was just selected but we
     // still need party_size or date. The model often says "Booking X in Y."
     // instead of asking — which gives the user no prompt to continue.
-    const bsPartyAfter = (booking_state.party_size as number | null | undefined) ?? null;
-    const bsDateAfter = (booking_state.date as string | null | undefined) ?? null;
-    const bsTimeAfter = (booking_state.time as string | null | undefined) ?? null;
-    const bsRestaurantAfter = (booking_state.restaurant_id as string | null | undefined) ?? null;
+    //
+    // CRITICAL: also consider the LLM's *own* output for this turn — both
+    // `parsed.booking` and any `set_booking_field` ui_actions. Without this,
+    // when the user says something the regex parsers don't catch (e.g. "uh,
+    // two please", "let's say four", "around 7", "the 30th") but the LLM
+    // does extract correctly, we'd see booking_state.party_size still null
+    // and incorrectly force-rewrite the LLM's reply back to "How many guests?",
+    // re-asking the question the user just answered.
+    const llmBooking = (parsed.booking as Record<string, unknown> | null) ?? null;
+    const llmSetField = (field: string): unknown => {
+      const a = (parsed.ui_actions as Array<Record<string, unknown>> | undefined)?.find(
+        (x) => x?.type === "set_booking_field" && x.field === field,
+      );
+      return a?.value;
+    };
+    const bsPartyAfter =
+      (booking_state.party_size as number | null | undefined) ??
+      (llmBooking?.party_size as number | null | undefined) ??
+      (llmSetField("party_size") as number | null | undefined) ??
+      null;
+    const bsDateAfter =
+      (booking_state.date as string | null | undefined) ??
+      (llmBooking?.date as string | null | undefined) ??
+      (llmSetField("date") as string | null | undefined) ??
+      null;
+    const bsTimeAfter =
+      (booking_state.time as string | null | undefined) ??
+      (llmBooking?.time as string | null | undefined) ??
+      (llmSetField("time") as string | null | undefined) ??
+      null;
+    const bsRestaurantAfter =
+      (booking_state.restaurant_id as string | null | undefined) ??
+      (llmBooking?.restaurant_id as string | null | undefined) ??
+      (llmSetField("restaurant_id") as string | null | undefined) ??
+      null;
     const hasRestaurant = !!(selected_restaurant_id || bsRestaurantAfter);
 
-    if (selected_restaurant_id && bsPartyAfter == null && !bsDateAfter) {
-      parsed.spoken_text = "How many guests, and what date?";
-    } else if (selected_restaurant_id && bsPartyAfter == null) {
+    if (selected_restaurant_id && bsPartyAfter == null) {
+      // Question 1 — party size only. (Single-result searches are auto-
+      // promoted to selected_restaurant_id at search time, so this branch
+      // also handles "user searched and one result came back" — no extra
+      // confirmation step.)
       parsed.spoken_text = "How many guests?";
-    } else if (selected_restaurant_id && !bsDateAfter) {
-      parsed.spoken_text = "What date?";
-    } else if (
-      !selected_restaurant_id &&
-      lastSearchIds.length === 1 &&
-      lastSearchSingleName
-    ) {
-      // Single search result — don't ask "which restaurant?", confirm directly.
-      parsed.spoken_text = `Do you want to book a table at ${lastSearchSingleName}?`;
-      parsed.next_expected_input = "confirmation";
+    } else if (selected_restaurant_id && (!bsDateAfter || !bsTimeAfter)) {
+      // Question 2 — date AND time together.
+      parsed.spoken_text = "What date and time?";
     }
 
     // Anti-repetition net: on ANY turn (not just the one where the user
@@ -1386,11 +1781,11 @@ Deno.serve(async (req) => {
 
       if (repeatsParty || repeatsDate || repeatsTime || repeatsRestaurant) {
         if (bsPartyAfter == null) {
+          // Question 1 — party size first.
           parsed.spoken_text = "How many guests?";
-        } else if (!bsDateAfter) {
-          parsed.spoken_text = "What date?";
-        } else if (!bsTimeAfter) {
-          parsed.spoken_text = "What time works?";
+        } else if (!bsDateAfter || !bsTimeAfter) {
+          // Question 2 — date AND time together (single combined prompt).
+          parsed.spoken_text = "What date and time?";
         } else {
           // All minimum fields are set — advance to slot selection.
           parsed.spoken_text = "Checking availability.";
@@ -1446,6 +1841,7 @@ Deno.serve(async (req) => {
       !!responseReservationId ||
       !!(booking_state.reservation_id as string | null | undefined);
     const mergedStatus =
+      (bookingDelta.status as string | undefined) ??
       ((parsed.booking as Record<string, unknown> | null)?.status as string | undefined) ??
       currentStatus;
     const menuPhaseAllowed =
@@ -1491,6 +1887,39 @@ Deno.serve(async (req) => {
     // Merge server map delta.
     if (Object.keys(mapDelta).length > 0) {
       parsed.map = { ...((parsed.map as Record<string, unknown>) ?? {}), ...mapDelta };
+    }
+
+    // ── Companion set_booking_field(time) for select_time_slot (Bug #2) ──────
+    // The select_time_slot action only carries shift_id + slot_iso; without a
+    // matching set_booking_field for `time` the confirmation card has no time
+    // to render. When we have access to lastAvailabilitySlots, look up the
+    // display_time for the chosen slot_iso and emit the field update.
+    {
+      const stsAction = (parsed.ui_actions as Array<Record<string, unknown>>).find(
+        (a) => a.type === "select_time_slot",
+      );
+      if (stsAction && lastAvailabilitySlots.length) {
+        const slotIso = stsAction.slot_iso as string | undefined;
+        const match = slotIso
+          ? lastAvailabilitySlots.find((s) => s.date_time === slotIso)
+          : undefined;
+        if (match) {
+          const alreadyHasTimeField = (parsed.ui_actions as Array<Record<string, unknown>>).some(
+            (a) => a.type === "set_booking_field" && a.field === "time",
+          );
+          if (!alreadyHasTimeField) {
+            (parsed.ui_actions as Array<Record<string, unknown>>).push({
+              type: "set_booking_field",
+              field: "time",
+              value: match.display_time,
+            });
+          }
+          parsed.booking = {
+            ...((parsed.booking as Record<string, unknown>) ?? {}),
+            time: match.display_time,
+          };
+        }
+      }
     }
 
     // ── Safety-net: transcript parsers (party_size / date) ────────────────────
@@ -1553,6 +1982,18 @@ Deno.serve(async (req) => {
         mapPatch.marker_restaurant_ids = lastSearchIds;
       }
       parsed.map = mapPatch;
+    }
+
+    // Scrub null/undefined fields from parsed.booking. The client merges this
+    // patch into existing state, and a literal `null` would overwrite a
+    // previously-collected value (e.g. party_size) with null — causing the
+    // orchestrator to re-ask the same question on the next turn.
+    if (parsed.booking && typeof parsed.booking === "object") {
+      const bk = parsed.booking as Record<string, unknown>;
+      for (const k of Object.keys(bk)) {
+        if (bk[k] == null) delete bk[k];
+      }
+      parsed.booking = bk;
     }
 
     // Prevent unused-var warnings for state we track for downstream observability.

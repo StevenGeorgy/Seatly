@@ -30,3 +30,6 @@ verify_jwt = false
 
 [functions.generate-menu-suggestions]
 verify_jwt = false
+
+[functions.get-order-public]
+verify_jwt = false

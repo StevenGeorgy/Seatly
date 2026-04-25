@@ -14,17 +14,21 @@ export function localToUTC(dateStr: string, timeStr: string, timezone: string): 
   return new Date(tempDate.getTime() + offsetMinutes * 60_000).toISOString();
 }
 
-// Map locale weekday abbreviation → ISO day-of-week (1=Mon … 7=Sun)
+// Map locale weekday abbreviation → JS day-of-week (0=Sun … 6=Sat).
+// This matches both `Date.prototype.getDay()` and the convention stored in
+// `shifts.days_of_week` in Postgres, so a value returned here can be used
+// directly as the lookup key against the DB without translation.
 const DOW_MAP: Record<string, number> = {
-  Sun: 7, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
 };
 
-// Return the ISO day-of-week for a YYYY-MM-DD string in the given timezone.
+// Return the JS-style day-of-week (0=Sun … 6=Sat) for a YYYY-MM-DD string in
+// the given timezone.
 export function localDayOfWeek(dateStr: string, timezone: string): number {
   const anchor = new Date(`${dateStr}T12:00:00Z`);
   const localDow = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     weekday: "short",
   }).format(anchor);
-  return DOW_MAP[localDow] ?? (anchor.getUTCDay() || 7);
+  return DOW_MAP[localDow] ?? anchor.getUTCDay();
 }

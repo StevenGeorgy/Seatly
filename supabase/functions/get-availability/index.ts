@@ -29,7 +29,11 @@ Deno.serve(async (req: Request) => {
     );
 
     const date = new Date(dateStr);
-    const dayOfWeek = date.getDay() === 0 ? 7 : date.getDay();
+    // `shifts.days_of_week` stores 0-6 (0=Sun … 6=Sat) — same convention as
+    // JS `Date.prototype.getDay()` — so use the value directly. The previous
+    // ISO 1-7 mapping caused Sunday lookups (and Saturday lookups when the
+    // server clock had already rolled past UTC midnight) to find no shifts.
+    const dayOfWeek = date.getDay();
     const dateOnly = dateStr.slice(0, 10);
 
     const { data: shifts } = await supabase

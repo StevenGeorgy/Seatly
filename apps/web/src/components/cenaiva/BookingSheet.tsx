@@ -9,6 +9,7 @@ import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useAvailability } from "@/hooks/useAvailability";
 import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItems";
+import { useUser } from "@/hooks/useUser";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -36,6 +37,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const assistant = useAssistant();
   const availability = useAvailability();
   const navigate = useNavigate();
+  const { profile } = useUser();
   const { booking, showExitX } = state;
   const [prepayBusy, setPrepayBusy] = useState(false);
 
@@ -80,6 +82,10 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
 
   const handleSlotSelect = (slot: { shift_id: string; date_time: string; display_time: string }) => {
     dispatch({ type: "select_time_slot", slot_iso: slot.date_time, shift_id: slot.shift_id });
+    // Populate booking.time so the confirmation card has a time to display.
+    // select_time_slot only carries shift_id + slot_iso; set_booking_field is
+    // the action shape the reducer uses to update individual booking fields.
+    dispatch({ type: "set_booking_field", field: "time", value: slot.display_time });
     void assistant?.sendTranscript(`I'll take the ${slot.display_time} slot`);
   };
 
@@ -129,10 +135,29 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       const total = Math.round((subtotal + taxAmount) * 100) / 100;
       const code = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
+      // Look up the existing guest row for this user+restaurant. complete_booking
+      // already created it server-side when the reservation was confirmed, so a
+      // simple SELECT is enough — guests_select_own RLS lets the authenticated
+      // user read their own guest rows. Without guest_id on the order, the
+      // orders_select_own RLS policy blocks the deep-link SELECT later
+      // (`?order_id=...&step=checkout`) and the page falls back to the manual
+      // booking form instead of jumping to checkout.
+      if (!profile?.id) throw new Error("Missing user profile");
+      const { data: guestRow, error: guestErr } = await client
+        .from("guests")
+        .select("id")
+        .eq("user_profile_id", profile.id)
+        .eq("restaurant_id", booking.restaurant_id)
+        .maybeSingle();
+      if (guestErr || !guestRow?.id) {
+        throw new Error(guestErr?.message ?? "Guest record missing — reservation may not be confirmed yet");
+      }
+
       const { data: order, error: orderErr } = await client
         .from("orders")
         .insert({
           restaurant_id: booking.restaurant_id,
+          guest_id: guestRow.id,
           reservation_id: booking.reservation_id,
           is_preorder: true,
           order_type: "dine_in",
@@ -335,17 +360,61 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                     <Users className="w-4 h-4" />{booking.party_size}
                   </span>
                 )}
-                {booking.date && (
+                {(booking.slot_iso || booking.date) && (
                   <span className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
                     {(() => {
-                      try { return format(new Date(booking.date), "MMM d"); } catch { return booking.date; }
+                      // Prefer slot_iso (UTC ISO from availability) so the date
+                      // renders in the user's local timezone. Fall back to
+                      // booking.date "YYYY-MM-DD" parsed as a LOCAL date (not
+                      // UTC) — `new Date("2026-04-25")` would parse as UTC
+                      // midnight and show Apr 24 in negative-offset timezones.
+                      if (booking.slot_iso) {
+                        try { return format(new Date(booking.slot_iso), "MMM d"); } catch { /* fall through */ }
+                      }
+                      if (booking.date) {
+                        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(booking.date);
+                        if (m) {
+                          const local = new Date(
+                            parseInt(m[1], 10),
+                            parseInt(m[2], 10) - 1,
+                            parseInt(m[3], 10),
+                          );
+                          try { return format(local, "MMM d"); } catch { return booking.date; }
+                        }
+                        try { return format(new Date(booking.date), "MMM d"); } catch { return booking.date; }
+                      }
+                      return null;
                     })()}
                   </span>
                 )}
-                {booking.time && (
+                {(booking.slot_iso || booking.time) && (
                   <span className="flex items-center gap-1">
-                    <Clock className="w-4 h-4" />{booking.time}
+                    <Clock className="w-4 h-4" />
+                    {(() => {
+                      // Prefer slot_iso so the time renders in the browser's
+                      // local timezone (matches the checkout summary).
+                      if (booking.slot_iso) {
+                        try {
+                          return new Date(booking.slot_iso).toLocaleTimeString("en-US", {
+                            hour: "numeric",
+                            minute: "2-digit",
+                            hour12: true,
+                          });
+                        } catch { /* fall through */ }
+                      }
+                      // Fallback: booking.time can be 24h "HH:mm" or already
+                      // a 12h "h:mm AM/PM" string from availability.display_time.
+                      const t = booking.time ?? "";
+                      if (/[AaPp][Mm]\b/.test(t)) return t;
+                      const m = /^(\d{1,2}):(\d{2})/.exec(t);
+                      if (!m) return t;
+                      let h = parseInt(m[1], 10);
+                      const period = h >= 12 ? "PM" : "AM";
+                      if (h === 0) h = 12;
+                      else if (h > 12) h -= 12;
+                      return `${h}:${m[2]} ${period}`;
+                    })()}
                   </span>
                 )}
               </div>

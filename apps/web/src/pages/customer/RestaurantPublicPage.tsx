@@ -34,7 +34,12 @@ import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
 import { useUser } from "@/hooks/useUser";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
@@ -397,15 +402,33 @@ export default function RestaurantPublicPage() {
     const targetStep = searchParams.get("step") as Step | null;
     if (!orderId || targetStep !== "checkout" || !isSupabaseConfigured()) return;
 
-    const client = getSupabaseBrowserClient();
     void (async () => {
-      const { data: order } = await client
-        .from("orders")
-        .select(
-          "id, notes, reservation_id, order_items(name, quantity, unit_price, modifications, menu_item_id), reservations(id, reserved_at, party_size, guest_full_name, guest_email, guest_phone, special_request, occasion)",
-        )
-        .eq("id", orderId)
-        .single();
+      // Fetch via edge function (service role) — the customer arriving from
+      // Cenaiva's prepay deep-link is unauthenticated, so the orders RLS
+      // policy `orders_select_own` would return null for a direct query.
+      const client = getSupabaseBrowserClient();
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const res = await fetch(
+        `${getSupabaseProjectUrl()}/functions/v1/get-order-public?order_id=${encodeURIComponent(orderId)}`,
+        {
+          headers: {
+            apikey: getSupabaseAnonKey(),
+            Authorization: `Bearer ${token ?? getSupabaseAnonKey()}`,
+          },
+        },
+      );
+      if (!res.ok) return;
+      const json = (await res.json()) as { order?: unknown };
+      const order = json.order as
+        | {
+            id: string;
+            notes: string | null;
+            reservation_id: string | null;
+            order_items: { name: string; quantity: number; unit_price: number; modifications: string | null; menu_item_id: string | null }[];
+            reservations: { id: string; reserved_at: string | null; party_size: number | null; guest_full_name: string | null; guest_email: string | null; guest_phone: string | null; special_request: string | null; occasion: string | null } | null;
+          }
+        | undefined;
       if (!order) return;
 
       const orderItems = (order.order_items || []) as {

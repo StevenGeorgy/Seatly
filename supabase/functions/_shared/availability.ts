@@ -37,10 +37,12 @@ export async function getAvailability(
   const timezone = restaurantRow?.timezone || "UTC";
 
   const dayOfWeek = localDayOfWeek(dateOnly, timezone);
-  // localDayOfWeek returns ISO 1-7 (1=Mon ... 7=Sun). hours_json keys are
+  // localDayOfWeek returns JS-style 0-6 (0=Sun ... 6=Sat) — the same
+  // convention used by `shifts.days_of_week` in Postgres, so this value can
+  // be passed straight to the `.contains` query below. hours_json keys are
   // lowercase day names, so map the number to the corresponding key.
-  const DOW_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-  const dayOfWeekName = DOW_NAMES[dayOfWeek - 1] ?? "monday";
+  const DOW_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const dayOfWeekName = DOW_NAMES[dayOfWeek] ?? "monday";
 
   // Resolve the spoken store-hours string for THIS date. Special-day entries
   // take precedence over the recurring weekly schedule. When closed or the
@@ -81,7 +83,7 @@ export async function getAvailability(
     .contains("days_of_week", [dayOfWeek]);
 
   if (!shifts?.length) {
-    return { slots: [], message: "No shifts available on this date." };
+    return { slots: [], message: "No availability on that date." };
   }
 
   // Query reservations using UTC bounds for the restaurant's local day

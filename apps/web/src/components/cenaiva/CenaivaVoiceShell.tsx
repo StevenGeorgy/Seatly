@@ -141,8 +141,6 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     assistant?.close();
   };
 
-  const bookingActive =
-    state.booking.status !== "idle" && state.booking.status !== "collecting_minimum_fields";
   const showConfirmationOrPostBooking =
     state.booking.status === "confirmed" ||
     state.booking.status === "post_booking" ||
@@ -180,7 +178,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           {/* Map layer — hidden while the user is driving the manual menu
               flow so the menu can fill the screen. */}
           {!inManualMenu && (
-            <div className={cn("flex-1 relative", bookingActive && "h-[45%] flex-none")}>
+            <div className="flex-1 relative">
               <CustomerMap restaurants={restaurants} />
 
               {/* Spoken text overlay */}
