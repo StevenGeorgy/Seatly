@@ -3,11 +3,12 @@
   "configurations": [
     {
       "name": "Cenaiva Web (Vite)",
-      "runtimeExecutable": "npm",
+      "runtimeExecutable": "/opt/homebrew/bin/npm",
       "runtimeArgs": ["run", "dev", "--workspace=apps/web", "--", "--port", "5177"],
       "port": 5177,
       "env": {
-        "VITE_DEV_SERVER_HTTPS": "false"
+        "VITE_DEV_SERVER_HTTPS": "false",
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
       }
     }
   ]

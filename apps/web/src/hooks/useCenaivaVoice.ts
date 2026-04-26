@@ -4,10 +4,10 @@ import { useDeepgramTranscription } from "@/hooks/useDeepgramTranscription";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 
-// When true, voice input routes through Deepgram's noise-robust Nova streaming
-// model instead of the browser Web Speech API. Off by default so local
-// development without a Deepgram key continues to work.
-const DEEPGRAM_ENABLED = import.meta.env.VITE_DEEPGRAM_STT_ENABLED === "true";
+// When not explicitly disabled, route command voice input through Deepgram's
+// Nova transcription path. Browser STT fallback is intentionally disabled so
+// Cenaiva never routes command recognition through Web Speech.
+const DEEPGRAM_ENABLED = import.meta.env.VITE_DEEPGRAM_STT_ENABLED !== "false";
 
 export function useCenaivaVoice() {
   const { dispatch, state } = useAssistantStore();
@@ -18,18 +18,13 @@ export function useCenaivaVoice() {
   const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
   const manualStopRef = useRef(false);
-  // Once Deepgram has failed once in this session (bad token scope, bad
-  // WebSocket handshake, etc.) we stop trying it for the rest of the session.
-  // This prevents every subsequent listen from triggering a fresh round of
-  // "WebSocket connection failed" browser errors + fallback log noise.
-  const deepgramDisabledRef = useRef(false);
   // Same pattern for ElevenLabs: if the edge function 503s (no key / quota /
   // misconfigured) once, skip it for the rest of the session and go straight
   // to Web Speech. Keeps TTS responsive instead of adding 2 network round-trips
   // of latency before every utterance.
   const elevenDisabledRef = useRef(false);
 
-  const startListening = useCallback(async (): Promise<{ transcript: string; stopped: boolean }> => {
+  const startListening = useCallback(async (sttHints: string[] = []): Promise<{ transcript: string; stopped: boolean }> => {
     if (listeningRef.current) return { transcript: "", stopped: false };
     listeningRef.current = true;
     manualStopRef.current = false;
@@ -44,21 +39,19 @@ export function useCenaivaVoice() {
 
     try {
       let transcript: string;
-      if (DEEPGRAM_ENABLED && deepgram.isSupported && !deepgramDisabledRef.current) {
+      if (DEEPGRAM_ENABLED && deepgram.isSupported) {
         try {
-          transcript = await deepgram.startRecognition();
+          transcript = await deepgram.startRecognition(sttHints);
         } catch (err) {
-          // On Deepgram-specific failures (token, socket, worklet) fall back
-          // to Web Speech so the user is never stranded without STT. We
-          // re-throw permission errors so the caller can render the grant-
-          // access UI.
+          // Never fall back to browser speech recognition. Deepgram failures
+          // surface upward so the UI can fail closed instead of silently
+          // switching to Google/Chrome transcription.
           const msg = (err as Error)?.message ?? "";
           if (msg === "not-allowed" || msg.includes("not-allowed")) throw err;
-          deepgramDisabledRef.current = true;
-          transcript = await speech.startRecognition();
+          throw new Error(`deepgram-stt-unavailable:${msg || "unknown"}`);
         }
       } else {
-        transcript = await speech.startRecognition();
+        throw new Error("voice-stt-unavailable");
       }
 
       if (!manualStopRef.current) {
@@ -138,15 +131,43 @@ export function useCenaivaVoice() {
     dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
   }, [dispatch, elevenlabs, speech]);
 
+  // ── Streaming TTS (phone-call pacing) ─────────────────────────────────────
+  // Available only when ElevenLabs is enabled. Web Speech doesn't have a
+  // safe queued-streaming primitive that works consistently across browsers,
+  // so the fallback path skips streaming and the caller speaks the full
+  // final text in one shot.
+  const isStreamingTTSAvailable = elEnabledFlag && !elevenDisabledRef.current;
+
+  const speakStreamingChunk = useCallback(
+    (text: string) => {
+      if (!isStreamingTTSAvailable) return;
+      dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
+      elevenlabs.speakQueued(text);
+    },
+    [dispatch, elevenlabs, isStreamingTTSAvailable],
+  );
+
+  const discardStreamingSpeech = useCallback(() => {
+    elevenlabs.discardQueued();
+  }, [elevenlabs]);
+
+  const drainStreamingSpeech = useCallback(async () => {
+    await elevenlabs.drainQueue();
+    dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+  }, [elevenlabs, dispatch]);
+
   return {
     startListening,
     stopListening,
     speak,
+    speakStreamingChunk,
+    discardStreamingSpeech,
+    drainStreamingSpeech,
+    isStreamingTTSAvailable,
     stopSpeaking,
     primeTTS: speech.primeTTS,
     voiceStatus: state.voiceStatus,
-    isRecognitionSupported:
-      (DEEPGRAM_ENABLED && deepgram.isSupported) || speech.isRecognitionSupported,
+    isRecognitionSupported: DEEPGRAM_ENABLED && deepgram.isSupported,
     isSpeaking: elevenlabs.isSpeaking || speech.isSpeaking,
     isRecording: speech.isRecording || deepgram.isRecording,
   };

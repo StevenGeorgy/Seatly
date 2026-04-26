@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
-import { NOISE_ROBUST_AUDIO_CONSTRAINTS } from "@/hooks/useDeepgramTranscription";
+import { NOISE_ROBUST_AUDIO_CONSTRAINTS, prefetchDeepgramToken } from "@/hooks/useDeepgramTranscription";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
 import { useUser } from "@/hooks/useUser";
 import { useSavedCards } from "@/hooks/useSavedCards";
@@ -26,6 +26,7 @@ interface AssistantContextValue {
     opts?: { restaurantId?: string; silent?: boolean },
   ) => Promise<void>;
   startListening: () => Promise<void>;
+  setSpeechHints: (hints: string[]) => void;
   setTextMode: (active: boolean) => void;
 }
 
@@ -87,6 +88,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+  const speechHintsRef = useRef<string[]>([]);
   // The wake-word recognizer and the command recognizer cannot BOTH hold the
   // mic on Chrome — only one active SpeechRecognition instance is allowed.
   // When we open the shell we must synchronously tear down the wake-word
@@ -213,14 +215,35 @@ function AssistantInner({ children }: { children: ReactNode }) {
         reservation_id: current.booking.reservation_id,
       };
 
+      // Capture what the orchestrator streamed via speech_chunk SSE frames.
+      // After the final payload arrives we compare this to spoken_text — if
+      // they match we skip the trailing voice.speak() (avoiding a double-
+      // speak), otherwise we discard the queued audio and speak the override.
+      let streamedText = "";
+      let streamingActive = voice.isStreamingTTSAvailable && !opts?.silent;
+      const streamCallbacks = streamingActive
+        ? {
+            onSpeechChunk: (text: string) => {
+              streamedText += (streamedText ? " " : "") + text;
+              voice.speakStreamingChunk(text);
+            },
+            onDiscardPendingSpeech: () => {
+              streamedText = "";
+              voice.discardStreamingSpeech();
+            },
+          }
+        : undefined;
+
       try {
-        const response = await orchestrator.send(req);
+        const response = await orchestrator.send(req, streamCallbacks);
         processingRef.current = false;
 
         if (!response) {
           // Orchestrator returned null (network / timeout / 500). Handle text
           // mode and voice mode differently: chat users can see a banner + toast,
-          // voice users need an audible retry cue.
+          // voice users need an audible retry cue. Discard any partially-
+          // queued streaming audio so the user doesn't hear half a sentence.
+          if (streamingActive) voice.discardStreamingSpeech();
           const cause = orchestrator.lastErrorRef.current ?? "unknown";
           const friendly =
             cause === "timeout"
@@ -274,7 +297,29 @@ function AssistantInner({ children }: { children: ReactNode }) {
           const base = spokenText.trim().replace(/[.!?]*$/, "");
           spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
         }
-        if (spokenText && !opts?.silent) await voice.speak(spokenText);
+        if (spokenText && !opts?.silent) {
+          // Normalize for comparison — strip trailing punctuation/whitespace
+          // and collapse internal whitespace so minor formatting differences
+          // (e.g. extra space after a period) don't trigger a double-speak.
+          const norm = (s: string) =>
+            s.replace(/\s+/g, " ").replace(/[.!?,\s]+$/, "").trim().toLowerCase();
+          const streamedTextNorm = norm(streamedText);
+          const spokenTextNorm = norm(spokenText);
+          if (streamingActive && streamedTextNorm && streamedTextNorm === spokenTextNorm) {
+            // Streamed text exactly matched the final spoken_text — just wait
+            // for queued chunks to finish playing instead of re-speaking.
+            await voice.drainStreamingSpeech();
+          } else {
+            // Override fired (auto-book confirmation, restaurant-selected
+            // hard-prompt, anti-repetition rewrite) OR streaming was unavailable.
+            // Drop any queued audio and speak the authoritative final text.
+            if (streamingActive) voice.discardStreamingSpeech();
+            await voice.speak(spokenText);
+          }
+        } else if (streamingActive) {
+          // No spokenText (silent flow) — make sure any queued audio is dropped.
+          voice.discardStreamingSpeech();
+        }
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         // In the manual menu / prepay flow the UI is button-driven — we only
@@ -298,6 +343,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         }
       } catch (err) {
         processingRef.current = false;
+        if (streamingActive) voice.discardStreamingSpeech();
         console.error("sendTranscript error:", err);
         // Speak the retry prompt (voice mode) OR surface a banner + toast (text
         // mode). The red "error" voice status is reserved for mic-permission-denied.
@@ -322,7 +368,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const startListening = useCallback(async () => {
     if (!isOpenRef.current) return;
     try {
-      const { transcript, stopped } = await voice.startListening();
+      const { transcript, stopped } = await voice.startListening(speechHintsRef.current);
       if (stopped) {
         emptyRelistenStreakRef.current = 0;
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
@@ -355,7 +401,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // user sees the grant-access prompt and tapping it re-requests perms.
       const msg = (err as Error)?.message ?? "";
       const isPermDenied = msg === "not-allowed" || msg.includes("not-allowed");
+      const isVoiceSttUnavailable =
+        msg.includes("voice-stt-unavailable") ||
+        msg.includes("deepgram-stt-unavailable") ||
+        msg.includes("browser-stt-disabled");
       if (isPermDenied) return;
+      if (isVoiceSttUnavailable) {
+        emptyRelistenStreakRef.current = 0;
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        toast.error("Voice transcription is unavailable right now.", { duration: 3000 });
+        return;
+      }
       emptyRelistenStreakRef.current += 1;
       if (emptyRelistenStreakRef.current >= MAX_EMPTY_RELISTENS) {
         emptyRelistenStreakRef.current = 0;
@@ -377,9 +433,20 @@ function AssistantInner({ children }: { children: ReactNode }) {
     startListeningRef.current = startListening;
   }, [startListening]);
 
+  const setSpeechHints = useCallback((hints: string[]) => {
+    speechHintsRef.current = hints
+      .map((hint) => hint.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }, []);
+
   const open = useCallback(
     (restaurantId?: string, restaurantName?: string) => {
       requestLocation();
+      // Prime browser speech in the same user gesture that opens the shell.
+      // This makes the Web Speech fallback audible on /discover even when
+      // ElevenLabs is disabled or unavailable.
+      try { voice.primeTTS(); } catch { /* noop */ }
 
       // Free the mic synchronously so the command recognizer can claim it
       // immediately without fighting the wake word for the stream.
@@ -393,13 +460,19 @@ function AssistantInner({ children }: { children: ReactNode }) {
         });
       }
 
+      // Warm the Deepgram short-lived token cache in parallel with the mic
+      // permission prompt. By the time the user finishes the wake word and
+      // starts the utterance, the token is already in hand — saves the
+      // 100-300ms /deepgram-live-token round-trip on the first turn.
+      prefetchDeepgramToken();
+
       if (restaurantId && restaurantName) {
         dispatch({ type: "PRESELECT_RESTAURANT", restaurant_id: restaurantId, restaurant_name: restaurantName });
       } else {
         dispatch({ type: "OPEN" });
       }
     },
-    [dispatch, requestLocation],
+    [dispatch, requestLocation, voice],
   );
 
   // voice is a fresh object literal every render of useCenaivaVoice, so any
@@ -539,8 +612,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // text / booking delta — the biggest contributor to the collecting_minimum_fields
   // render storm that was triggering "Page Unresponsive".
   const ctx = useMemo<AssistantContextValue>(
-    () => ({ open, close, sayGoodbyeAndClose, sendTranscript, startListening, setTextMode }),
-    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, setTextMode],
+    () => ({ open, close, sayGoodbyeAndClose, sendTranscript, startListening, setSpeechHints, setTextMode }),
+    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, setSpeechHints, setTextMode],
   );
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }

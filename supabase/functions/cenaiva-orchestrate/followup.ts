@@ -1,0 +1,573 @@
+export type AssistantIntent =
+  | "discover_restaurants"
+  | "book_restaurant"
+  | "refine_search"
+  | "select_restaurant"
+  | "choose_party_size"
+  | "choose_date"
+  | "choose_time"
+  | "confirm_booking"
+  | "offer_preorder"
+  | "build_cart"
+  | "collect_tip"
+  | "choose_payment"
+  | "ask_post_booking_details"
+  | "answer_restaurant_question"
+  | "fallback_handoff";
+
+export type AssistantStep =
+  | "greeting"
+  | "choose_cuisine"
+  | "choose_location"
+  | "choose_restaurant"
+  | "choose_party"
+  | "choose_date"
+  | "choose_time"
+  | "confirm"
+  | "offer_preorder"
+  | "build_cart"
+  | "review_cart"
+  | "collect_tip"
+  | "choose_payment"
+  | "post_booking"
+  | "done";
+
+export type AssistantNextInput =
+  | "cuisine"
+  | "location"
+  | "restaurant"
+  | "party_size"
+  | "date"
+  | "time"
+  | "confirmation"
+  | "preorder_choice"
+  | "menu_selection"
+  | "tip_timing"
+  | "tip_amount"
+  | "payment_split"
+  | "post_booking_answer"
+  | "none";
+
+export interface VisibleRestaurant {
+  id: string;
+  name: string;
+  cuisine_type: string | null;
+}
+
+export interface FollowUpAction {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface FollowUpContext {
+  transcript: string;
+  selected_restaurant_id: string | null;
+  booking_state: {
+    restaurant_id?: string | null;
+    party_size?: number | null;
+    date?: string | null;
+    time?: string | null;
+    reservation_id?: string | null;
+    status?: string | null;
+  };
+  derivedActions: FollowUpAction[];
+  lastSearchIds: string[];
+  lastAvailabilitySlots: Array<{
+    shift_id: string;
+    date_time: string;
+    display_time: string;
+  }>;
+  preFilled: {
+    party_size?: number;
+    date?: string;
+  };
+  lastTextReply: string;
+  visibleRestaurants: VisibleRestaurant[];
+}
+
+export interface DeterministicFollowUp {
+  promoted_selected_restaurant_id: string | null;
+  spoken_text: string;
+  intent: AssistantIntent;
+  step: AssistantStep;
+  next_expected_input: AssistantNextInput;
+  ui_actions: FollowUpAction[];
+  booking: Record<string, unknown> | null;
+  map: Record<string, unknown> | null;
+  filters: Record<string, unknown> | null;
+}
+
+interface VisibleRestaurantResolution {
+  selected: VisibleRestaurant | null;
+  suggested: VisibleRestaurant | null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function hasAction(actions: FollowUpAction[], type: string): boolean {
+  return actions.some((action) => action.type === type);
+}
+
+function firstRestaurantId(actions: FollowUpAction[], type: string): string | null {
+  const match = actions.find((action) => action.type === type && typeof action.restaurant_id === "string");
+  return typeof match?.restaurant_id === "string" ? match.restaurant_id : null;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePhrase(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  const curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+function scoreNameMatch(name: string, transcript: string): number {
+  const n = normalizePhrase(name);
+  const t = normalizePhrase(transcript);
+  if (!n || !t) return 0;
+  if (t.includes(n)) return 100;
+
+  const stop = new Set([
+    "the", "a", "an", "and",
+    "restaurant", "restaurants", "cafe", "bar", "grill", "kitchen", "bistro",
+  ]);
+  const nameTokens = n.split(" ").filter((word) => word.length >= 2 && !stop.has(word));
+  const transcriptTokens = Array.from(new Set(t.split(" ").filter((word) => word.length >= 2)));
+
+  let score = 0;
+  for (const token of nameTokens) {
+    if (transcriptTokens.includes(token)) {
+      score += 10;
+      continue;
+    }
+    for (const transcriptToken of transcriptTokens) {
+      if (Math.abs(transcriptToken.length - token.length) > 2) continue;
+      const maxLen = Math.max(transcriptToken.length, token.length);
+      const allowed = maxLen <= 4 ? 1 : 2;
+      if (levenshtein(transcriptToken, token) <= allowed) {
+        score += 5;
+        break;
+      }
+    }
+  }
+  return score;
+}
+
+function resolveOrdinalSelection(transcript: string, visibleRestaurants: VisibleRestaurant[]): VisibleRestaurant | null {
+  if (!transcript.trim() || visibleRestaurants.length === 0) return null;
+  const normalized = normalizePhrase(transcript);
+  if (!normalized) return null;
+
+  const patterns: Array<{ index: number; test: RegExp }> = [
+    { index: 0, test: /\b(first|1st|number one|no 1|option one|the one on the left|left one)\b/i },
+    { index: 1, test: /\b(second|2nd|number two|no 2|option two|the one on the right|right one)\b/i },
+    { index: 2, test: /\b(third|3rd|number three|no 3|option three)\b/i },
+    { index: 3, test: /\b(fourth|4th|number four|no 4|option four)\b/i },
+  ];
+
+  for (const pattern of patterns) {
+    if (pattern.index < visibleRestaurants.length && pattern.test.test(normalized)) {
+      return visibleRestaurants[pattern.index];
+    }
+  }
+
+  if (/\b(last|final)\b/i.test(normalized)) {
+    return visibleRestaurants[visibleRestaurants.length - 1] ?? null;
+  }
+
+  return null;
+}
+
+function resolveVisibleRestaurantSelection(
+  transcript: string,
+  visibleRestaurants: VisibleRestaurant[],
+): VisibleRestaurantResolution {
+  if (!transcript.trim() || visibleRestaurants.length === 0) {
+    return { selected: null, suggested: null };
+  }
+
+  const ordinalMatch = resolveOrdinalSelection(transcript, visibleRestaurants);
+  if (ordinalMatch) {
+    return { selected: ordinalMatch, suggested: ordinalMatch };
+  }
+
+  const scored = visibleRestaurants
+    .map((restaurant) => ({
+      restaurant,
+      score: scoreNameMatch(restaurant.name, transcript),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  const next = scored[1];
+  if (!best) return { selected: null, suggested: null };
+  if (best.score >= 20) return { selected: best.restaurant, suggested: best.restaurant };
+  if (!next && best.score >= 10) return { selected: best.restaurant, suggested: best.restaurant };
+  if (next && best.score >= next.score + 8 && best.score >= 10) {
+    return { selected: best.restaurant, suggested: best.restaurant };
+  }
+  if (best.score >= 5) {
+    return { selected: null, suggested: best.restaurant };
+  }
+  return { selected: null, suggested: null };
+}
+
+function matchesCuisinePhrase(transcript: string, cuisine: string): boolean {
+  const normalizedTranscript = normalizePhrase(transcript);
+  const normalizedCuisine = normalizePhrase(cuisine);
+  if (!normalizedTranscript || !normalizedCuisine) return false;
+
+  const direct = new RegExp(`(?:^|\\s)${escapeRegex(normalizedCuisine)}(?:\\s|$)`, "i");
+  if (!direct.test(normalizedTranscript)) return false;
+
+  const tokens = normalizedTranscript.split(" ").filter(Boolean);
+  if (tokens.length <= 6) return true;
+
+  const refinement = new RegExp(
+    `\\b(?:only|just|show|find|looking|want|need|prefer|any)\\b[\\s\\S]{0,24}\\b${escapeRegex(normalizedCuisine)}\\b`,
+    "i",
+  );
+  return refinement.test(normalizedTranscript);
+}
+
+function detectCuisineRefinement(
+  transcript: string,
+  visibleRestaurants: VisibleRestaurant[],
+): { cuisine: string; restaurant_ids: string[] } | null {
+  if (!transcript.trim() || visibleRestaurants.length === 0) return null;
+
+  const cuisineBuckets = new Map<string, { label: string; restaurant_ids: string[] }>();
+  for (const restaurant of visibleRestaurants) {
+    if (!restaurant.cuisine_type) continue;
+    const key = normalizePhrase(restaurant.cuisine_type);
+    if (!key) continue;
+    const bucket = cuisineBuckets.get(key) ?? {
+      label: restaurant.cuisine_type,
+      restaurant_ids: [],
+    };
+    bucket.restaurant_ids.push(restaurant.id);
+    cuisineBuckets.set(key, bucket);
+  }
+
+  const matches = Array.from(cuisineBuckets.values())
+    .filter((bucket) => matchesCuisinePhrase(transcript, bucket.label))
+    .sort((a, b) => b.label.length - a.label.length);
+
+  if (!matches.length) return null;
+  const best = matches[0];
+  if (best.restaurant_ids.length === 0 || best.restaurant_ids.length === visibleRestaurants.length) {
+    return null;
+  }
+
+  return {
+    cuisine: best.label,
+    restaurant_ids: best.restaurant_ids,
+  };
+}
+
+function defaultPhase(
+  status: string | null,
+): Pick<DeterministicFollowUp, "intent" | "step" | "next_expected_input"> {
+  switch (status) {
+    case "loading_availability":
+    case "awaiting_time_selection":
+      return { intent: "choose_time", step: "choose_time", next_expected_input: "time" };
+    case "confirming":
+    case "confirmed":
+      return { intent: "confirm_booking", step: "confirm", next_expected_input: "confirmation" };
+    case "offering_preorder":
+      return { intent: "offer_preorder", step: "offer_preorder", next_expected_input: "preorder_choice" };
+    case "browsing_menu":
+      return { intent: "build_cart", step: "build_cart", next_expected_input: "menu_selection" };
+    case "reviewing_cart":
+      return { intent: "build_cart", step: "review_cart", next_expected_input: "tip_timing" };
+    case "choosing_tip_timing":
+      return { intent: "collect_tip", step: "collect_tip", next_expected_input: "tip_timing" };
+    case "choosing_tip_amount":
+      return { intent: "collect_tip", step: "collect_tip", next_expected_input: "tip_amount" };
+    case "choosing_payment_split":
+    case "charging":
+      return { intent: "choose_payment", step: "choose_payment", next_expected_input: "payment_split" };
+    case "paid":
+      return { intent: "choose_payment", step: "done", next_expected_input: "none" };
+    case "post_booking":
+      return { intent: "ask_post_booking_details", step: "post_booking", next_expected_input: "post_booking_answer" };
+    case "collecting_minimum_fields":
+      return { intent: "book_restaurant", step: "choose_party", next_expected_input: "party_size" };
+    case "idle":
+    default:
+      return { intent: "discover_restaurants", step: "choose_cuisine", next_expected_input: "cuisine" };
+  }
+}
+
+export function buildDeterministicFollowUp(context: FollowUpContext): DeterministicFollowUp {
+  const selectedFromAction = firstRestaurantId(context.derivedActions, "start_booking");
+  const visibleResolution = resolveVisibleRestaurantSelection(context.transcript, context.visibleRestaurants);
+  const visibleSelection = visibleResolution.selected;
+  const suggestedVisibleRestaurant = visibleResolution.suggested;
+  const effectiveSelectedRestaurantId =
+    context.selected_restaurant_id ??
+    stringOrNull(context.booking_state.restaurant_id) ??
+    visibleSelection?.id ??
+    selectedFromAction;
+  const effectivePartySize =
+    numberOrNull(context.booking_state.party_size) ??
+    numberOrNull(context.preFilled.party_size) ??
+    null;
+  const effectiveDate =
+    stringOrNull(context.booking_state.date) ??
+    stringOrNull(context.preFilled.date) ??
+    null;
+  const effectiveTime = stringOrNull(context.booking_state.time);
+  const reservationId = stringOrNull(context.booking_state.reservation_id);
+  const status = stringOrNull(context.booking_state.status) ?? "idle";
+  const hasAvailability = hasAction(context.derivedActions, "load_availability") || context.lastAvailabilitySlots.length > 0;
+  const hasConfirmation = hasAction(context.derivedActions, "show_confirmation") || !!reservationId;
+  const trimmedLastText = context.lastTextReply.trim();
+
+  if (!context.selected_restaurant_id && !stringOrNull(context.booking_state.restaurant_id) && visibleSelection) {
+    return {
+      promoted_selected_restaurant_id: visibleSelection.id,
+      spoken_text: "How many guests?",
+      intent: "select_restaurant",
+      step: "choose_party",
+      next_expected_input: "party_size",
+      ui_actions: [
+        { type: "highlight_restaurant", restaurant_id: visibleSelection.id },
+        { type: "start_booking", restaurant_id: visibleSelection.id },
+      ],
+      booking: {
+        restaurant_id: visibleSelection.id,
+        status: "collecting_minimum_fields",
+      },
+      map: null,
+      filters: null,
+    };
+  }
+
+  if (!effectiveSelectedRestaurantId && context.lastSearchIds.length === 0) {
+    const refinement = detectCuisineRefinement(context.transcript, context.visibleRestaurants);
+    if (refinement) {
+      const ui_actions: FollowUpAction[] = [
+        { type: "set_filters" },
+        { type: "update_map_markers", restaurant_ids: refinement.restaurant_ids },
+        { type: "show_restaurant_cards", restaurant_ids: refinement.restaurant_ids },
+      ];
+      const map = {
+        visible: true,
+        marker_restaurant_ids: refinement.restaurant_ids,
+      };
+      const filters = {
+        cuisine: [refinement.cuisine],
+      };
+
+      if (refinement.restaurant_ids.length === 1) {
+        const restaurantId = refinement.restaurant_ids[0];
+        ui_actions.push({ type: "highlight_restaurant", restaurant_id: restaurantId });
+        ui_actions.push({ type: "start_booking", restaurant_id: restaurantId });
+        return {
+          promoted_selected_restaurant_id: restaurantId,
+          spoken_text: "How many guests?",
+          intent: "select_restaurant",
+          step: "choose_party",
+          next_expected_input: "party_size",
+          ui_actions,
+          booking: {
+            restaurant_id: restaurantId,
+            status: "collecting_minimum_fields",
+          },
+          map,
+          filters,
+        };
+      }
+
+      return {
+        promoted_selected_restaurant_id: null,
+        spoken_text: "Which restaurant would you like?",
+        intent: "refine_search",
+        step: "choose_restaurant",
+        next_expected_input: "restaurant",
+        ui_actions,
+        booking: null,
+        map,
+        filters,
+      };
+    }
+  }
+
+  if (!effectiveSelectedRestaurantId && context.visibleRestaurants.length > 0) {
+    const visibleIds = context.visibleRestaurants.map((restaurant) => restaurant.id);
+    if (suggestedVisibleRestaurant) {
+      const prompt = /^did you mean\b/i.test(trimmedLastText)
+        ? trimmedLastText
+        : `Did you mean ${suggestedVisibleRestaurant.name}?`;
+      return {
+        promoted_selected_restaurant_id: null,
+        spoken_text: prompt,
+        intent: "refine_search",
+        step: "choose_restaurant",
+        next_expected_input: "confirmation",
+        ui_actions: [
+          { type: "highlight_restaurant", restaurant_id: suggestedVisibleRestaurant.id },
+        ],
+        booking: null,
+        map: {
+          visible: true,
+          marker_restaurant_ids: visibleIds,
+          highlighted_restaurant_id: suggestedVisibleRestaurant.id,
+        },
+        filters: null,
+      };
+    }
+    return {
+      promoted_selected_restaurant_id: null,
+      spoken_text: "Which restaurant would you like?",
+      intent: "refine_search",
+      step: "choose_restaurant",
+      next_expected_input: "restaurant",
+      ui_actions: [],
+      booking: null,
+      map: {
+        visible: true,
+        marker_restaurant_ids: visibleIds,
+      },
+      filters: null,
+    };
+  }
+
+  if (effectiveSelectedRestaurantId && effectivePartySize == null) {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: "How many guests?",
+      intent: "select_restaurant",
+      step: "choose_party",
+      next_expected_input: "party_size",
+      ui_actions: [],
+      booking: {
+        restaurant_id: effectiveSelectedRestaurantId,
+        status: "collecting_minimum_fields",
+      },
+      map: null,
+      filters: null,
+    };
+  }
+
+  if (effectiveSelectedRestaurantId && effectivePartySize != null && effectiveDate && !effectiveTime && hasAvailability) {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: "What time?",
+      intent: "choose_time",
+      step: "choose_time",
+      next_expected_input: "time",
+      ui_actions: [],
+      booking: {
+        restaurant_id: effectiveSelectedRestaurantId,
+        party_size: effectivePartySize,
+        date: effectiveDate,
+      },
+      map: null,
+      filters: null,
+    };
+  }
+
+  if (effectiveSelectedRestaurantId && effectivePartySize != null && (!effectiveDate || !effectiveTime)) {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: "What date and time?",
+      intent: "choose_date",
+      step: "choose_date",
+      next_expected_input: "date",
+      ui_actions: [],
+      booking: {
+        restaurant_id: effectiveSelectedRestaurantId,
+        party_size: effectivePartySize,
+        ...(effectiveDate ? { date: effectiveDate } : {}),
+      },
+      map: null,
+      filters: null,
+    };
+  }
+
+  if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1) {
+    return {
+      promoted_selected_restaurant_id: null,
+      spoken_text: "Which restaurant would you like?",
+      intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      step: "choose_restaurant",
+      next_expected_input: "restaurant",
+      ui_actions: [],
+      booking: null,
+      map: {
+        visible: true,
+        marker_restaurant_ids: context.lastSearchIds,
+      },
+      filters: null,
+    };
+  }
+
+  if (hasConfirmation) {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: trimmedLastText || "Your table is booked.",
+      intent: "confirm_booking",
+      step: "confirm",
+      next_expected_input: "preorder_choice",
+      ui_actions: [],
+      booking: reservationId ? { reservation_id: reservationId } : null,
+      map: null,
+      filters: null,
+    };
+  }
+
+  const phase = defaultPhase(status);
+  if (trimmedLastText) {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: trimmedLastText,
+      intent: phase.intent,
+      step: phase.step,
+      next_expected_input: phase.next_expected_input,
+      ui_actions: [],
+      booking: null,
+      map: null,
+      filters: null,
+    };
+  }
+
+  return {
+    promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+    spoken_text: "Got it. What would you like to do next?",
+    intent: phase.intent,
+    step: phase.step,
+    next_expected_input: phase.next_expected_input,
+    ui_actions: [],
+    booking: null,
+    map: null,
+    filters: null,
+  };
+}

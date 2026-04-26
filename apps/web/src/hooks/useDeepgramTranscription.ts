@@ -6,7 +6,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 
-const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
+const DEEPGRAM_PRERECORDED_URL = "https://api.deepgram.com/v1/listen";
 
 // Mic constraints tuned for speech in noisy rooms. The browser's built-in
 // WebRTC DSP (noise suppression + echo cancellation + AGC) removes a huge
@@ -19,29 +19,67 @@ export const NOISE_ROBUST_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
   channelCount: 1,
 };
 
-// Query params tuned for robustness against continuous background noise.
-// - model=nova-3: Deepgram's best-accuracy streaming model.
-// - smart_format, punctuate: nicer transcripts for downstream LLM.
-// - interim_results=true: required for utterance_end_ms.
-// - endpointing=300: a short VAD-silence window so we finalise quickly.
-// - utterance_end_ms=1200: word-gap based end-of-turn — docs call this out
-//   as the right tool when continuous background sound keeps the VAD busy.
-// - vad_events=true: surfaces a SpeechStarted event we can use to flip UI.
-const LISTEN_QUERY: Record<string, string> = {
+// Browser wake-word detection stays on Web Speech, but the post-wake command
+// transcript should come from Deepgram. We keep the 700ms end-of-turn target
+// locally by ending the recording after 700ms of measured silence, then send
+// the captured utterance to Deepgram's REST /listen endpoint with the same
+// Nova-3 + keyterm prompting configuration.
+const TRANSCRIBE_QUERY: Record<string, string> = {
   model: "nova-3",
   language: "en-CA",
   smart_format: "true",
   punctuate: "true",
-  interim_results: "true",
-  endpointing: "300",
-  utterance_end_ms: "1200",
-  vad_events: "true",
-  encoding: "linear16",
-  sample_rate: "16000",
-  channels: "1",
 };
 
-const WORKLET_URL = "/deepgram-pcm-worklet.js";
+const TOKEN_TTL_BUFFER_MS = 5_000;
+const SILENCE_TIMEOUT_MS = 700;
+const NO_SPEECH_TIMEOUT_MS = 4_000;
+const TURN_TIMEOUT_MS = 30_000;
+const SPEECH_RMS_THRESHOLD = 0.015;
+const MAX_KEYTERMS = 12;
+const MEDIA_RECORDER_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+] as const;
+
+interface DeepgramPrerecordedResponse {
+  results?: {
+    channels?: Array<{
+      alternatives?: Array<{
+        transcript?: string;
+      }>;
+    }>;
+  };
+}
+
+function normalizeKeyterms(keyterms: string[] = []): string[] {
+  return Array.from(
+    new Set(
+      keyterms
+        .map((term) => term.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, MAX_KEYTERMS);
+}
+
+function buildDeepgramTranscribeUrl(keyterms: string[] = []): string {
+  const params = new URLSearchParams(TRANSCRIBE_QUERY);
+  for (const term of normalizeKeyterms(keyterms)) {
+    params.append("keyterm", term);
+  }
+  return `${DEEPGRAM_PRERECORDED_URL}?${params.toString()}`;
+}
+
+function pickRecorderMimeType(): string | undefined {
+  if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+    return undefined;
+  }
+  if (typeof MediaRecorder.isTypeSupported !== "function") {
+    return undefined;
+  }
+  return MEDIA_RECORDER_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
+}
 
 async function getBearerToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
@@ -50,7 +88,16 @@ async function getBearerToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
-async function fetchDeepgramToken(): Promise<string | null> {
+let cachedToken: string | null = null;
+let cachedTokenExpiresAt = 0;
+let inFlightTokenFetch: Promise<string | null> | null = null;
+
+function invalidateDeepgramTokenCache() {
+  cachedToken = null;
+  cachedTokenExpiresAt = 0;
+}
+
+async function fetchDeepgramTokenFresh(): Promise<string | null> {
   const bearer = await getBearerToken();
   if (!bearer) return null;
   const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/deepgram-live-token`, {
@@ -62,77 +109,134 @@ async function fetchDeepgramToken(): Promise<string | null> {
     },
   });
   if (!res.ok) {
-    // Silent — caller converts a null token into a graceful Web Speech fallback
-    // so there's no value in console-warning on every mic press.
     return null;
   }
-  const json = (await res.json()) as { access_token?: string };
-  return json.access_token ?? null;
+  const json = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!json.access_token) return null;
+  const ttlMs = (json.expires_in ?? 30) * 1000;
+  cachedToken = json.access_token;
+  cachedTokenExpiresAt = Date.now() + ttlMs - TOKEN_TTL_BUFFER_MS;
+  return cachedToken;
 }
 
-interface DeepgramTranscriptPayload {
-  type: "Results" | "UtteranceEnd" | "SpeechStarted" | "Metadata";
-  channel?: {
-    alternatives?: Array<{ transcript?: string; confidence?: number }>;
-  };
-  is_final?: boolean;
-  speech_final?: boolean;
+export async function getDeepgramLiveToken(): Promise<string | null> {
+  if (cachedToken && Date.now() < cachedTokenExpiresAt) {
+    return cachedToken;
+  }
+  if (inFlightTokenFetch) return inFlightTokenFetch;
+  inFlightTokenFetch = fetchDeepgramTokenFresh().finally(() => {
+    inFlightTokenFetch = null;
+  });
+  return inFlightTokenFetch;
 }
 
-/**
- * Streams the user's mic through Deepgram Listen and resolves when the user
- * stops talking (utterance-end or silence). Designed as a drop-in replacement
- * for `useCenaivaSpeech.startRecognition` when the Deepgram STT flag is on.
- */
+export function prefetchDeepgramToken(): void {
+  void getDeepgramLiveToken();
+}
+
+async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<string> {
+  const url = buildDeepgramTranscribeUrl(keyterms);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = await getDeepgramLiveToken();
+    if (!token) {
+      throw new Error("deepgram-token-unavailable");
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": blob.type || "audio/webm",
+        },
+        body: blob,
+      });
+
+      if (response.ok) {
+        const json = (await response.json()) as DeepgramPrerecordedResponse;
+        return json.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
+      }
+
+      const bodyText = await response.text().catch(() => "");
+      invalidateDeepgramTokenCache();
+
+      const shouldRetry =
+        attempt === 0 &&
+        (response.status === 401 || response.status === 403 || response.status >= 500);
+      if (shouldRetry) {
+        continue;
+      }
+
+      throw new Error(
+        `deepgram-http-${response.status}${bodyText ? `:${bodyText.slice(0, 120)}` : ""}`,
+      );
+    } catch (err) {
+      invalidateDeepgramTokenCache();
+      if (attempt === 0) continue;
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  throw new Error("deepgram-transcribe-failed");
+}
+
 export function useDeepgramTranscription() {
   const [isRecording, setIsRecording] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
-  const workletRef = useRef<AudioWorkletNode | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const settledRef = useRef(false);
-  const accumulatedRef = useRef("");
-  const resolveRef = useRef<((t: string) => void) | null>(null);
-  const rejectRef = useRef<((e: Error) => void) | null>(null);
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Hard cap on a single recognition turn — prevents a hung socket from
-  // holding the mic open forever if the server never sends UtteranceEnd.
-  const TURN_TIMEOUT_MS = 30_000;
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const turnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const resolveRef = useRef<((value: string) => void) | null>(null);
+  const rejectRef = useRef<((reason?: Error) => void) | null>(null);
+  const settledRef = useRef(false);
+  const speechDetectedRef = useRef(false);
+  const lastSpeechAtRef = useRef(0);
+  const recordingStartedAtRef = useRef(0);
+  const keytermsRef = useRef<string[]>([]);
+  const stoppingRef = useRef(false);
 
-  const teardown = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
+  const clearTurnTimer = useCallback(() => {
     if (turnTimerRef.current) {
       clearTimeout(turnTimerRef.current);
       turnTimerRef.current = null;
     }
-    if (socketRef.current) {
-      try {
-        if (socketRef.current.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({ type: "CloseStream" }));
-        }
-        socketRef.current.close();
-      } catch { /* ignore */ }
-      socketRef.current = null;
+  }, []);
+
+  const cancelLevelMonitor = useCallback(() => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
-    if (workletRef.current) {
-      try { workletRef.current.disconnect(); } catch { /* ignore */ }
-      workletRef.current = null;
+  }, []);
+
+  const cleanupMedia = useCallback(() => {
+    cancelLevelMonitor();
+    clearTurnTimer();
+
+    if (sourceRef.current) {
+      try { sourceRef.current.disconnect(); } catch { /* ignore */ }
+      sourceRef.current = null;
+    }
+    if (analyserRef.current) {
+      try { analyserRef.current.disconnect(); } catch { /* ignore */ }
+      analyserRef.current = null;
     }
     if (contextRef.current) {
       try { void contextRef.current.close(); } catch { /* ignore */ }
       contextRef.current = null;
     }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+    recorderRef.current = null;
     setIsRecording(false);
-  }, []);
+  }, [cancelLevelMonitor, clearTurnTimer]);
 
   const finish = useCallback((transcript: string) => {
     if (settledRef.current) return;
@@ -140,27 +244,109 @@ export function useDeepgramTranscription() {
     const resolve = resolveRef.current;
     resolveRef.current = null;
     rejectRef.current = null;
-    teardown();
+    cleanupMedia();
     resolve?.(transcript.trim());
-  }, [teardown]);
+  }, [cleanupMedia]);
 
-  const fail = useCallback((err: Error) => {
+  const fail = useCallback((error: Error) => {
     if (settledRef.current) return;
     settledRef.current = true;
     const reject = rejectRef.current;
     resolveRef.current = null;
     rejectRef.current = null;
-    teardown();
-    reject?.(err);
-  }, [teardown]);
+    cleanupMedia();
+    reject?.(error);
+  }, [cleanupMedia]);
 
-  const startRecognition = useCallback(async (): Promise<string> => {
+  const stopRecorder = useCallback(() => {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    cancelLevelMonitor();
+    clearTurnTimer();
+
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      finish("");
+      return;
+    }
+
+    if (recorder.state !== "inactive") {
+      try { recorder.requestData(); } catch { /* ignore */ }
+      try {
+        recorder.stop();
+        return;
+      } catch { /* ignore */ }
+    }
+
+    finish("");
+  }, [cancelLevelMonitor, clearTurnTimer, finish]);
+
+  const monitorLevels = useCallback(() => {
+    const analyser = analyserRef.current;
+    if (!analyser || stoppingRef.current) return;
+
+    const samples = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      const activeAnalyser = analyserRef.current;
+      if (!activeAnalyser || stoppingRef.current) return;
+
+      activeAnalyser.getFloatTimeDomainData(samples);
+      let sumSquares = 0;
+      for (let i = 0; i < samples.length; i += 1) {
+        const sample = samples[i];
+        sumSquares += sample * sample;
+      }
+      const rms = Math.sqrt(sumSquares / samples.length);
+      const now = Date.now();
+
+      if (rms >= SPEECH_RMS_THRESHOLD) {
+        speechDetectedRef.current = true;
+        lastSpeechAtRef.current = now;
+      }
+
+      if (!speechDetectedRef.current) {
+        if (now - recordingStartedAtRef.current >= NO_SPEECH_TIMEOUT_MS) {
+          stopRecorder();
+          return;
+        }
+      } else if (now - lastSpeechAtRef.current >= SILENCE_TIMEOUT_MS) {
+        stopRecorder();
+        return;
+      }
+
+      animationFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    animationFrameRef.current = requestAnimationFrame(tick);
+  }, [stopRecorder]);
+
+  const startRecognition = useCallback(async (keyterms: string[] = []): Promise<string> => {
     if (isRecording) return "";
-    settledRef.current = false;
-    accumulatedRef.current = "";
+    if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+      throw new Error("deepgram-mediarecorder-unavailable");
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("deepgram-getusermedia-unavailable");
+    }
 
-    const token = await fetchDeepgramToken();
+    const AudioCtxCtor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtxCtor) {
+      throw new Error("deepgram-audiocontext-unavailable");
+    }
+
+    const token = await getDeepgramLiveToken();
     if (!token) throw new Error("deepgram-token-unavailable");
+    cachedToken = token;
+
+    settledRef.current = false;
+    stoppingRef.current = false;
+    speechDetectedRef.current = false;
+    chunksRef.current = [];
+    keytermsRef.current = normalizeKeyterms(keyterms);
+    recordingStartedAtRef.current = Date.now();
+    lastSpeechAtRef.current = recordingStartedAtRef.current;
 
     let stream: MediaStream;
     try {
@@ -172,121 +358,100 @@ export function useDeepgramTranscription() {
       if (msg.includes("NotAllowed") || msg.includes("Permission")) {
         throw new Error("not-allowed");
       }
-      throw err;
+      throw err instanceof Error ? err : new Error(String(err));
     }
     streamRef.current = stream;
 
-    const AudioCtxCtor =
-      (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
     const context = new AudioCtxCtor();
     contextRef.current = context;
+    try { await context.resume(); } catch { /* ignore */ }
+    const source = context.createMediaStreamSource(stream);
+    sourceRef.current = source;
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.2;
+    analyserRef.current = analyser;
+    source.connect(analyser);
+
+    const recorderMimeType = pickRecorderMimeType();
+    let recorder: MediaRecorder;
     try {
-      await context.audioWorklet.addModule(WORKLET_URL);
+      recorder = recorderMimeType
+        ? new MediaRecorder(stream, { mimeType: recorderMimeType })
+        : new MediaRecorder(stream);
     } catch (err) {
-      teardown();
-      throw new Error("worklet-load-failed:" + ((err as Error)?.message ?? ""));
+      cleanupMedia();
+      throw new Error(`deepgram-recorder-start-failed:${(err as Error)?.message ?? ""}`);
+    }
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (event: BlobEvent) => {
+      if (event.data.size > 0) {
+        chunksRef.current.push(event.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      fail(new Error("deepgram-recorder-error"));
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, {
+        type: recorder.mimeType || recorderMimeType || "audio/webm",
+      });
+      void (async () => {
+        cleanupMedia();
+        if (!blob.size || !speechDetectedRef.current) {
+          finish("");
+          return;
+        }
+        try {
+          const transcript = await transcribeWithDeepgram(blob, keytermsRef.current);
+          finish(transcript);
+        } catch (err) {
+          fail(err instanceof Error ? err : new Error(String(err)));
+        }
+      })();
+    };
+
+    try {
+      recorder.start(250);
+    } catch (err) {
+      cleanupMedia();
+      throw new Error(`deepgram-recorder-start-failed:${(err as Error)?.message ?? ""}`);
     }
 
-    const source = context.createMediaStreamSource(stream);
-    const worklet = new AudioWorkletNode(context, "pcm-worklet", {
-      numberOfInputs: 1,
-      numberOfOutputs: 0,
-      processorOptions: { targetSampleRate: 16000 },
-    });
-    workletRef.current = worklet;
-
-    const qs = new URLSearchParams(LISTEN_QUERY).toString();
-    const url = `${DEEPGRAM_LISTEN_URL}?${qs}`;
-    // Browsers can't attach arbitrary headers to WebSocket, but Deepgram
-    // accepts the token via the `Sec-WebSocket-Protocol` sub-protocol list.
-    // Short-lived tokens minted by /v1/auth/grant use the `bearer` scheme;
-    // long-lived project API keys use `token` — we're on the short-lived flow.
-    const socket = new WebSocket(url, ["bearer", token]);
-    socketRef.current = socket;
-    socket.binaryType = "arraybuffer";
-
-    worklet.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(event.data);
-      }
-    };
-
-    source.connect(worklet);
-
-    socket.onopen = () => {
-      setIsRecording(true);
-      turnTimerRef.current = setTimeout(() => {
-        finish(accumulatedRef.current);
-      }, TURN_TIMEOUT_MS);
-    };
-
-    socket.onmessage = (event: MessageEvent) => {
-      let msg: DeepgramTranscriptPayload;
-      try {
-        msg = JSON.parse(typeof event.data === "string" ? event.data : "{}");
-      } catch { return; }
-
-      if (msg.type === "UtteranceEnd") {
-        finish(accumulatedRef.current);
-        return;
-      }
-
-      if (msg.type === "Results") {
-        const alt = msg.channel?.alternatives?.[0];
-        const text = (alt?.transcript ?? "").trim();
-        if (!text) return;
-        if (msg.is_final) {
-          accumulatedRef.current = accumulatedRef.current
-            ? `${accumulatedRef.current} ${text}`
-            : text;
-          // speech_final is set by Deepgram's VAD endpointing. When we get it
-          // in a quiet room it means the speaker is done — resolve.
-          if (msg.speech_final) {
-            finish(accumulatedRef.current);
-          }
-        }
-      }
-    };
-
-    socket.onerror = () => {
-      fail(new Error("deepgram-socket-error"));
-    };
-
-    socket.onclose = (evt) => {
-      // If we haven't resolved yet, close means the server disconnected.
-      // Honor whatever partial transcript we have rather than rejecting —
-      // the caller will treat empty transcripts as "didn't catch that".
-      if (!settledRef.current) {
-        if (evt.code === 1008 || evt.code === 4001 || evt.code === 4008) {
-          // auth / protocol failures — surface as an error so fallback kicks in
-          fail(new Error(`deepgram-socket-closed-${evt.code}`));
-        } else {
-          finish(accumulatedRef.current);
-        }
-      }
-    };
+    setIsRecording(true);
+    turnTimerRef.current = setTimeout(() => {
+      stopRecorder();
+    }, TURN_TIMEOUT_MS);
+    monitorLevels();
 
     return new Promise<string>((resolve, reject) => {
       resolveRef.current = resolve;
       rejectRef.current = reject;
     });
-  }, [isRecording, finish, fail, teardown]);
+  }, [cleanupMedia, fail, finish, isRecording, monitorLevels, stopRecorder]);
 
   const stopRecognition = useCallback(() => {
     if (settledRef.current) {
-      teardown();
+      cleanupMedia();
       return;
     }
-    finish(accumulatedRef.current);
-  }, [finish, teardown]);
+    stopRecorder();
+  }, [cleanupMedia, stopRecorder]);
 
-  // Cleanup on unmount — never leave a mic stream or socket hanging.
-  useEffect(() => () => teardown(), [teardown]);
+  useEffect(() => () => cleanupMedia(), [cleanupMedia]);
 
   return {
     isRecording,
     startRecognition,
     stopRecognition,
-    isSupported: typeof window !== "undefined" && !!window.AudioContext && !!window.WebSocket,
+    isSupported:
+      typeof window !== "undefined" &&
+      typeof MediaRecorder !== "undefined" &&
+      !!navigator.mediaDevices?.getUserMedia &&
+      !!(window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext),
   };
 }

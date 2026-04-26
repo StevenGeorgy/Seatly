@@ -5,6 +5,10 @@ const SpeechRecognitionAPI =
     ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     : null;
 
+// Browser speech recognition is intentionally disabled for Cenaiva's STT path.
+// We keep this hook for browser TTS only.
+const BROWSER_STT_ENABLED = false;
+
 /**
  * Replace "Cenaiva" in spoken text with a phonetic spelling that Web Speech
  * Synthesis voices render as "sin-eye-vuh" rather than the default "sen-ay-vuh".
@@ -15,8 +19,9 @@ function applyPronunciation(text: string): string {
 }
 
 // How long (ms) to wait after the last final speech result before resolving.
-// Gives the user time to pause mid-sentence without being cut off.
-const SILENCE_TIMEOUT_MS = 1500;
+// Tuned to match the faster Deepgram path so the Web Speech fallback doesn't
+// feel noticeably laggier on turn-end detection.
+const SILENCE_TIMEOUT_MS = 700;
 // How long (ms) to wait after the last INTERIM result with no further activity
 // before we force recognition to stop. Chrome sometimes never promotes an
 // interim to a final result (quiet speech, background noise, slow network
@@ -48,14 +53,14 @@ export function useCenaivaSpeech(lang: string = "en-CA") {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const recognitionRef = useRef<any>(null);
 
-  const isRecognitionSupported = !!SpeechRecognitionAPI;
+  const isRecognitionSupported = !!SpeechRecognitionAPI && BROWSER_STT_ENABLED;
   const isSynthesisSupported =
     typeof window !== "undefined" && "speechSynthesis" in window;
 
   const startRecognition = useCallback((): Promise<string> => {
     return new Promise((resolve, reject) => {
-      if (!SpeechRecognitionAPI) {
-        reject(new Error("Speech recognition not supported"));
+      if (!SpeechRecognitionAPI || !BROWSER_STT_ENABLED) {
+        reject(new Error("browser-stt-disabled"));
         return;
       }
 

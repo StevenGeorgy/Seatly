@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X, Keyboard } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -51,6 +51,32 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   }, []);
 
   const inManualMenu = MANUAL_MENU_STATUSES.has(state.booking.status);
+  const speechHints = useMemo(() => {
+    const visibleIds = new Set(state.map.marker_restaurant_ids ?? []);
+    const visibleNames = restaurants
+      .filter((restaurant) => visibleIds.has(restaurant.id))
+      .map((restaurant) => restaurant.name);
+    const hints = [
+      state.booking.restaurant_name ?? "",
+      ...visibleNames,
+    ];
+    if (state.map.highlighted_restaurant_id) {
+      const highlighted = restaurants.find((restaurant) => restaurant.id === state.map.highlighted_restaurant_id);
+      if (highlighted?.name) {
+        hints.unshift(highlighted.name);
+      }
+    }
+    return Array.from(new Set(hints.map((hint) => hint.trim()).filter(Boolean))).slice(0, 12);
+  }, [
+    restaurants,
+    state.booking.restaurant_name,
+    state.map.highlighted_restaurant_id,
+    state.map.marker_restaurant_ids,
+  ]);
+
+  useEffect(() => {
+    assistant?.setSpeechHints(speechHints);
+  }, [assistant, speechHints]);
 
   // Client-side greeting — no LLM roundtrip, instant playback
   useEffect(() => {

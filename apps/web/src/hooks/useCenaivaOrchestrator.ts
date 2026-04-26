@@ -21,6 +21,19 @@ async function getBearerToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+/**
+ * Optional callbacks for consuming the orchestrator's streamed SSE frames.
+ * - onSpeechChunk: called for every sentence-boundary chunk the LLM produces.
+ *   Use this to push text into the queued TTS player so audio starts playing
+ *   while the orchestrator is still running its tool loop.
+ * - onDiscardPendingSpeech: the model spoke text and then pivoted to a tool
+ *   call — drop any chunks already queued so we don't speak superseded text.
+ */
+export interface SendCallbacks {
+  onSpeechChunk?: (text: string) => void;
+  onDiscardPendingSpeech?: () => void;
+}
+
 export function useCenaivaOrchestrator() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +49,10 @@ export function useCenaivaOrchestrator() {
   }, []);
 
   const send = useCallback(
-    async (req: OrchestratorRequestType): Promise<AssistantResponseType | null> => {
+    async (
+      req: OrchestratorRequestType,
+      callbacks?: SendCallbacks,
+    ): Promise<AssistantResponseType | null> => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -58,16 +74,79 @@ export function useCenaivaOrchestrator() {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             apikey: getSupabaseAnonKey(),
+            Accept: "text/event-stream",
           },
           body: JSON.stringify(req),
           signal: controller.signal,
         });
 
-        const json = await res.json() as Record<string, unknown>;
-
-        if (!res.ok) {
-          const msg = (json.error as string) ?? `http_${res.status}`;
+        if (!res.ok || !res.body) {
+          // The orchestrator may still emit a JSON error body if it fails
+          // before opening the stream. Try to parse a body for a useful error.
+          let msg = `http_${res.status}`;
+          try {
+            const j = await res.json();
+            if (j?.error) msg = j.error as string;
+          } catch { /* not json */ }
           recordError(msg);
+          return null;
+        }
+
+        // SSE parse loop. Frames are separated by blank lines. Each frame is
+        // one or more `data: <json>` lines — we always emit a single line, so
+        // we just split on \n\n and parse the JSON after `data: `.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let finalPayload: Record<string, unknown> | null = null;
+        let streamErrorMsg: string | null = null;
+
+        // Read until the stream ends or `final` / `error` arrives. We don't
+        // bail early on `final` — the server closes the stream right after.
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sepIdx: number;
+          while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+            const rawFrame = buffer.slice(0, sepIdx);
+            buffer = buffer.slice(sepIdx + 2);
+            const dataLine = rawFrame
+              .split("\n")
+              .find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+            let frame: Record<string, unknown>;
+            try {
+              frame = JSON.parse(dataLine.slice(6));
+            } catch {
+              continue;
+            }
+            switch (frame.type) {
+              case "speech_chunk":
+                if (typeof frame.text === "string" && frame.text.length) {
+                  callbacks?.onSpeechChunk?.(frame.text);
+                }
+                break;
+              case "discard_pending_speech":
+                callbacks?.onDiscardPendingSpeech?.();
+                break;
+              case "final":
+                finalPayload = frame.payload as Record<string, unknown>;
+                break;
+              case "error":
+                streamErrorMsg = (frame.message as string) ?? `http_${frame.status ?? 500}`;
+                break;
+            }
+          }
+        }
+
+        if (streamErrorMsg) {
+          recordError(streamErrorMsg);
+          return null;
+        }
+        if (!finalPayload) {
+          recordError("no_final_payload");
           return null;
         }
 
@@ -75,11 +154,10 @@ export function useCenaivaOrchestrator() {
         // missing optional fields) is expected in development — we fall
         // through with a best-effort cast so the flow keeps working instead
         // of spamming the console on every turn.
-        const parsed = AssistantResponse.safeParse(json);
+        const parsed = AssistantResponse.safeParse(finalPayload);
         if (!parsed.success) {
-          return json as AssistantResponseType;
+          return finalPayload as AssistantResponseType;
         }
-
         return parsed.data;
       } catch (err) {
         if ((err as Error).name === "AbortError") {

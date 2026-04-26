@@ -6,9 +6,95 @@ import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { getAvailability } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
+import { buildDeterministicFollowUp, type VisibleRestaurant } from "./followup.ts";
 
 const openai = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
 const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+
+// Pre-warm the OpenAI HTTP connection on module init so the first user turn
+// after a cold function start doesn't pay the TLS handshake cost. Best-effort
+// — failures are silent and never block the function.
+(async () => {
+  try { await openai.models.list(); } catch { /* noop */ }
+})();
+
+// ── SSE response helper ──────────────────────────────────────────────────────
+// Streams a sequence of frames to the client as Server-Sent Events.
+// Frame shapes used by this function:
+//   { type: "speech_chunk", text }       — sentence to synthesize early
+//   { type: "discard_pending_speech" }   — drop already-queued chunks
+//   { type: "final", payload }           — full structured JSON response
+//   { type: "error", message, status? }  — terminal error
+type SseSend = (frame: Record<string, unknown>) => void;
+function streamSse(handler: (send: SseSend) => Promise<void>): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send: SseSend = (frame) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+        } catch { /* underlying stream gone */ }
+      };
+      try {
+        await handler(send);
+      } catch (err) {
+        const e = err as { message?: string; stack?: string; status?: number; code?: string };
+        console.error("cenaiva-orchestrate error:", e?.message, e?.stack);
+        send({
+          type: "error",
+          message: e?.message ?? String(err),
+          status: e?.status ?? 500,
+          code: e?.code ?? null,
+          kind: e?.status ? `upstream_${e.status}` : "unhandled",
+        });
+      } finally {
+        closed = true;
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+    },
+  });
+}
+
+// Sentence-boundary chunker. Accumulates streamed LLM tokens and yields
+// flushable chunks whenever the buffer ends in terminal punctuation followed
+// by whitespace, OR the buffer crosses a soft length threshold (so very long
+// sentences still flush in pieces). Returns an empty string when there's
+// nothing to flush yet.
+function takeSentenceChunk(buffer: string): { chunk: string; remainder: string } {
+  if (!buffer) return { chunk: "", remainder: "" };
+  // Match through the LAST terminal punctuation that has whitespace after it,
+  // so we always flush full sentences when possible.
+  const m = buffer.match(/^([\s\S]*?[.!?])(\s+)/);
+  if (m) {
+    return { chunk: m[1].trim(), remainder: buffer.slice(m[0].length) };
+  }
+  // Comma-bounded clause flush at >=60 chars — keeps very long replies moving
+  // without waiting for the full sentence.
+  if (buffer.length >= 60) {
+    const c = buffer.match(/^([\s\S]*?,)(\s+)/);
+    if (c && c[1].length >= 30) {
+      return { chunk: c[1].trim(), remainder: buffer.slice(c[0].length) };
+    }
+  }
+  // Hard length cap: 120 chars without punctuation → flush at the last space.
+  if (buffer.length >= 120) {
+    const lastSpace = buffer.lastIndexOf(" ", 120);
+    if (lastSpace > 30) {
+      return { chunk: buffer.slice(0, lastSpace).trim(), remainder: buffer.slice(lastSpace + 1) };
+    }
+  }
+  return { chunk: "", remainder: buffer };
+}
 
 // ── UI action types list (kept in sync with @cenaiva/assistant schema) ────────
 
@@ -550,7 +636,7 @@ function scoreNameMatch(name: string, transcript: string): number {
   // Whole-name substring match — strongest signal.
   if (t.includes(n)) return 100;
   const stop = new Set([
-    "inc", "llc", "ltd", "the", "a", "an", "and",
+    "the", "a", "an", "and",
     "restaurant", "restaurants", "cafe", "bar", "grill", "kitchen", "bistro",
   ]);
   const nameTokens = n.split(" ").filter((w) => w.length >= 2 && !stop.has(w));
@@ -584,19 +670,28 @@ Deno.serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  try {
-    // Auth
+  return streamSse(async (send) => {
+    // Auth — surfaced as in-band SSE error frames so the single response
+    // type is always text/event-stream. Client orchestrator hook reads
+    // the error frame and converts it back to the same error states the
+    // legacy JSON path used (not_authenticated, http_401, etc.).
     const authHeader = req.headers.get("Authorization") ?? "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const payload = decodeJwtPayload(token);
-    if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401);
+    if (!payload?.sub) {
+      send({ type: "error", message: "Unauthorized", status: 401 });
+      return;
+    }
 
     const { data: userProfile } = await supabaseAdmin
       .from("user_profiles")
       .select("id, full_name, email")
       .eq("auth_user_id", payload.sub as string)
       .single();
-    if (!userProfile) return jsonRes({ error: "User profile not found" }, 401);
+    if (!userProfile) {
+      send({ type: "error", message: "User profile not found", status: 401 });
+      return;
+    }
 
     const userProfileId: string = userProfile.id;
     const userName: string = userProfile.full_name ?? "there";
@@ -688,15 +783,18 @@ Deno.serve(async (req) => {
       conversationId = conv?.id ?? crypto.randomUUID();
     }
 
-    // Load last 40 messages. 10 was too small — a single restaurant-picking
-    // flow with 2-3 tool calls per turn would push the party_size/date answer
-    // out of the window within a few turns, making the model re-ask for it.
+    // Load last 12 messages. 40 was paying ~30% extra LLM input tokens + DB
+    // load every turn for context the booking flow doesn't need — the system
+    // prompt + booking-state checklist already encode the state machine, and
+    // the regex parsers below catch the few facts (party_size, date) that
+    // need to survive longer than the window. Drop to 12 for tighter pacing;
+    // raise to 16 if a regression appears in QA.
     const { data: history } = await supabaseAdmin
       .from("chat_messages")
       .select("role, content, metadata")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
-      .limit(40);
+      .limit(12);
 
     // Promote a "yes" to an explicit selection when the previous assistant
     // turn already proposed a specific restaurant via highlight_restaurant
@@ -833,6 +931,7 @@ Deno.serve(async (req) => {
     // with no way to connect the user's reply to a candidate and it loops
     // "which restaurant?" forever.
     let visibleRestaurantsLine = "";
+    let visibleRestaurantRows: VisibleRestaurant[] = [];
     let sttFuzzyMatchLine = "";
     if (visible_restaurant_ids.length) {
       const { data: visRows } = await supabaseAdmin
@@ -841,6 +940,7 @@ Deno.serve(async (req) => {
         .in("id", visible_restaurant_ids.slice(0, 8));
       if (visRows?.length) {
         const rows = visRows as Array<{ id: string; name: string; cuisine_type: string | null }>;
+        visibleRestaurantRows = rows;
         visibleRestaurantsLine =
           "Visible restaurant candidates (match user's spoken reply against these names — spelling/pronunciation will be approximate):\n" +
           rows
@@ -976,15 +1076,107 @@ Deno.serve(async (req) => {
         (history?.length ?? 0) === 0 &&
         !alreadySearched;
 
-      const completion = await openai.chat.completions.create({
+      // Streaming tool-loop call. Text deltas are flushed as `speech_chunk`
+      // SSE frames at sentence boundaries so the client can begin TTS
+      // playback while the LLM is still generating — the single biggest
+      // perceived-latency win on conversational turns. Tool-call deltas
+      // are accumulated and reconstructed back into a non-streaming
+      // `choice` shape for the existing tool-execution branches below.
+      const llmStream = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         max_tokens: 600,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
         tools: TOOLS,
         tool_choice: isFirstTurnNoRestaurant ? "required" : "auto",
+        stream: true,
       });
 
-      const choice = completion.choices[0];
+      let accContent = "";
+      let accFinishReason: string | null = null;
+      const toolCallAcc = new Map<number, {
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }>();
+      let speechBuffer = "";
+      let iterationHasToolCalls = false;
+      let chunksEmittedThisIter = 0;
+
+      for await (const chunk of llmStream) {
+        const ch = chunk.choices?.[0];
+        if (!ch) continue;
+        if (ch.finish_reason) accFinishReason = ch.finish_reason;
+        const delta = ch.delta ?? {};
+
+        if (delta.tool_calls?.length) {
+          if (!iterationHasToolCalls) {
+            iterationHasToolCalls = true;
+            // Model started streaming text and then pivoted to a tool call.
+            // Discard the in-flight audio so we don't speak text that's
+            // about to be superseded by tool output.
+            if (chunksEmittedThisIter > 0) {
+              send({ type: "discard_pending_speech" });
+              chunksEmittedThisIter = 0;
+            }
+            speechBuffer = "";
+          }
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            const cur = toolCallAcc.get(idx) ?? {
+              id: tc.id ?? "",
+              type: "function" as const,
+              function: { name: "", arguments: "" },
+            };
+            if (tc.id) cur.id = tc.id;
+            if (tc.function?.name) cur.function.name += tc.function.name;
+            if (tc.function?.arguments) cur.function.arguments += tc.function.arguments;
+            toolCallAcc.set(idx, cur);
+          }
+          continue;
+        }
+
+        if (typeof delta.content === "string" && delta.content.length) {
+          accContent += delta.content;
+          if (!iterationHasToolCalls) {
+            speechBuffer += delta.content;
+            // Flush every complete sentence chunk available in the buffer.
+            while (true) {
+              const flushed = takeSentenceChunk(speechBuffer);
+              if (!flushed.chunk) break;
+              speechBuffer = flushed.remainder;
+              send({ type: "speech_chunk", text: flushed.chunk });
+              chunksEmittedThisIter++;
+            }
+          }
+        }
+      }
+
+      // Flush any residual buffered text as a final speech chunk for this
+      // iteration. Skipped when tool_calls were emitted (audio was discarded).
+      if (!iterationHasToolCalls && speechBuffer.trim().length) {
+        send({ type: "speech_chunk", text: speechBuffer.trim() });
+        chunksEmittedThisIter++;
+        speechBuffer = "";
+      }
+
+      const reconstructedToolCalls = Array.from(toolCallAcc.values()).filter(
+        (tc) => tc.id && tc.function.name,
+      );
+      const choice = {
+        finish_reason:
+          accFinishReason ??
+          (reconstructedToolCalls.length ? "tool_calls" : "stop"),
+        message: {
+          role: "assistant" as const,
+          content: accContent || null,
+          ...(reconstructedToolCalls.length
+            ? { tool_calls: reconstructedToolCalls }
+            : {}),
+        },
+      } as unknown as {
+        finish_reason: string | null;
+        message: OpenAI.Chat.ChatCompletionMessage;
+      };
 
       // Capture any plain text on this turn — the model sometimes returns
       // both text AND tool_calls. The last non-empty text is our spoken_text.
@@ -1624,82 +1816,51 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Final structured JSON turn ────────────────────────────────────────────
-    // Ask the model to produce the full structured response. This is the core
-    // JSON contract the web app consumes. Server-derived actions (from tool
-    // execution above) and transcript parsers below are layered on top as
-    // belt-and-suspenders so the UI always advances even when the model drops
-    // an action.
-    //
-    // FAST PATH: When the tool loop ended on iteration 1 without executing
-    // any tool (i.e. the model just spoke text), we already have everything
-    // we need. The post-processing below (anti-repetition net, transcript
-    // parsers, prefilled-field emitter, auto-book fallback) layers in any
-    // ui_actions / booking fields the UI requires, so a second OpenAI
-    // roundtrip just to wrap `lastTextReply` in JSON is wasteful — that's
-    // ~1-2s of dead air every conversational turn. Skip it.
-    let parsed: Record<string, unknown>;
-    const skipSynthesis =
-      iterations === 1 &&
-      toolsExecuted.length === 0 &&
-      !!lastTextReply &&
-      !autoBookingResult;
-
-    if (skipSynthesis) {
-      parsed = {
-        conversation_id: conversationId,
-        spoken_text: lastTextReply,
-        intent: "conversational",
-        step: currentStatus || "greeting",
-        ui_actions: [],
-        booking: null,
-        map: null,
-        filters: null,
-        next_expected_input: "free_text",
-      };
-    } else {
-      const jsonCompletion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        max_tokens: 400,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages,
-          {
-            role: "user",
-            content: (() => {
-              const base = `Now respond with ONLY a valid JSON object. Required fields: conversation_id (must be "${conversationId}"), spoken_text (≤20 words), intent, step, ui_actions (array — never null), booking (object or null), map (object or null), filters (object or null), next_expected_input. Use only ui_action types from the approved list.`;
-              const restaurantHint = selected_restaurant_id && !booking_state.party_size && !booking_state.date
-                ? ` IMPORTANT: user selected restaurant ID "${selected_restaurant_id}". You MUST emit start_booking (restaurant_id="${selected_restaurant_id}") and highlight_restaurant actions. spoken_text must ask for party size and date — do NOT mention availability.`
-                : "";
-              const searchHint = lastSearchIds.length === 1 && lastSearchSingleName
-                ? ` IMPORTANT: search_restaurants returned exactly ONE match ("${lastSearchSingleName}") — the assistant is fully confident in the user's intent. Treat it as CONFIRMED. Emit highlight_restaurant + start_booking on its id and ask "How many guests?" directly. Do NOT ask "Do you want to book at ${lastSearchSingleName}?" or any confirmation variant.`
-                : lastSearchIds.length > 0
-                ? ` IMPORTANT: search_restaurants just returned results. spoken_text must ask which restaurant the user wants — do NOT mention availability or reservations.`
-                : "";
-              return base + restaurantHint + searchHint;
-            })(),
-          },
-        ],
-        response_format: { type: "json_object" },
-      });
-
-      const rawJson = jsonCompletion.choices[0].message.content ?? "{}";
-      try {
-        parsed = JSON.parse(rawJson);
-      } catch {
-        parsed = {
-          conversation_id: conversationId,
-          spoken_text: "Something went wrong. Please try again.",
-          intent: "fallback_handoff",
-          step: "greeting",
-          ui_actions: [{ type: "fallback_to_manual" }],
-          booking: null,
-          map: null,
-          filters: null,
-          next_expected_input: "none",
-        };
-      }
+    // ── Deterministic JSON shaper ────────────────────────────────────────────
+    // We previously made a SECOND OpenAI call here just to wrap the tool-loop
+    // output in the structured JSON contract — that added ~1-2s every
+    // tool-driven turn. The tool-loop call already produced spoken_text in
+    // `lastTextReply`, the tools we ran are tracked in `toolsExecuted` /
+    // `derivedActions` / `bookingDelta`, and the post-processing chain
+    // immediately below (auto-book hard-override, prefilled-field emitter,
+    // anti-repetition rewriter, transcript parsers, derived-action merge,
+    // menu-phase guard) already does the work of turning all that into the
+    // shape the client expects. So the second LLM round-trip was always
+    // redundant. The shaper just provides the skeleton; everything else
+    // fills it in below, exactly as it did before.
+    const followUp = buildDeterministicFollowUp({
+      transcript,
+      selected_restaurant_id,
+      booking_state: {
+        restaurant_id: booking_state.restaurant_id as string | null | undefined,
+        party_size: booking_state.party_size as number | null | undefined,
+        date: booking_state.date as string | null | undefined,
+        time: booking_state.time as string | null | undefined,
+        reservation_id: booking_state.reservation_id as string | null | undefined,
+        status: booking_state.status as string | null | undefined,
+      },
+      derivedActions,
+      lastSearchIds,
+      lastAvailabilitySlots,
+      preFilled,
+      lastTextReply,
+      visibleRestaurants: visibleRestaurantRows,
+    });
+    if (followUp.promoted_selected_restaurant_id) {
+      selected_restaurant_id = followUp.promoted_selected_restaurant_id;
     }
+
+    const parsed: Record<string, unknown> = {
+      conversation_id: conversationId,
+      spoken_text: followUp.spoken_text,
+      intent: followUp.intent,
+      step: followUp.step,
+      ui_actions: [...followUp.ui_actions],
+      booking: followUp.booking,
+      map: followUp.map,
+      filters: followUp.filters,
+      next_expected_input: followUp.next_expected_input,
+    };
 
     // Hard-override spoken_text when we auto-booked from a voice time reply.
     // The LLM regressed and re-asked for the time; we already created the
@@ -2004,6 +2165,13 @@ Deno.serve(async (req) => {
     void lastTextReply;
     void toolsExecuted;
 
+    // Final safety net: the deterministic follow-up builder should already
+    // supply a schema-valid prompt, but keep one last guard so the user never
+    // gets dead silence if a later rewrite clears spoken_text unexpectedly.
+    if (!parsed.spoken_text || !(parsed.spoken_text as string).trim()) {
+      parsed.spoken_text = "Got it. What would you like to do next?";
+    }
+
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: conversationId,
       role: "assistant",
@@ -2011,17 +2179,6 @@ Deno.serve(async (req) => {
       metadata: { kind: "orchestrator", full_response: parsed },
     });
 
-    return jsonRes(parsed);
-  } catch (err) {
-    const e = err as { message?: string; stack?: string; status?: number; code?: string };
-    console.error("cenaiva-orchestrate error:", e?.message, e?.stack);
-    return jsonRes(
-      {
-        error: e?.message ?? String(err),
-        code: e?.code ?? null,
-        kind: e?.status ? `upstream_${e.status}` : "unhandled",
-      },
-      500,
-    );
-  }
+    send({ type: "final", payload: parsed });
+  });
 });
