@@ -6,6 +6,7 @@ import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { getAvailability } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
+import { localDayOfWeek } from "../_shared/time.ts";
 import { buildDeterministicFollowUp, type VisibleRestaurant } from "./followup.ts";
 
 const openai = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
@@ -118,7 +119,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "search_restaurants",
       description:
-        "Search and RECOMMEND dine-in restaurants across ALL cities. Use this whenever the user asks for ideas, recommendations, suggestions, or filters — not just exact name lookups. Pass ONLY the parameters the user's words actually justify. Do NOT default city to the user's detected city — leave city blank unless the user names a city. Combine multiple filters when the user gives multiple signals (e.g. 'cheap Italian near me with a deal' → cuisine_type=Italian, price_range_max=2, near_user=true, sort_by=distance, with_active_promotion=true). Always populate the most specific filters you can derive from the user's words; do NOT fall back to a single broad query string when structured filters fit.",
+        "Search and RECOMMEND dine-in restaurants. Use this whenever the user asks for ideas, recommendations, suggestions, or filters — not just exact name lookups. Default to nearby results when the user's location is available and they have NOT asked for a different city. Do NOT default city to the user's detected city name — leave city blank unless the user names one. Combine multiple filters when the user gives multiple signals (e.g. 'cheap Italian near me with a deal' → cuisine_type=Italian, price_range_max=2, near_user=true, sort_by=distance, with_active_promotion=true). Always populate the most specific filters you can derive from the user's words; do NOT fall back to a single broad query string when structured filters fit.",
       parameters: {
         type: "object",
         properties: {
@@ -379,24 +380,52 @@ function parsePartySize(raw: string): number | null {
   return null;
 }
 
-function parseDate(raw: string): string | null {
+function formatISODateInTimeZone(date: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function addDaysToISODate(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return utc.toISOString().slice(0, 10);
+}
+
+function formatPromptNow(timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(new Date());
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day} ${byType.hour}:${byType.minute} ${byType.dayPeriod} (${timezone})`;
+}
+
+function parseDateInTimeZone(raw: string, timezone: string): string | null {
   const t = stripFiller(raw);
-  const now = new Date();
-  const toISO = (d: Date) => d.toISOString().slice(0, 10);
-  if (/\b(today|tonight|this\s+evening)\b/.test(t)) return toISO(now);
+  const todayIso = formatISODateInTimeZone(new Date(), timezone);
+  if (/\b(today|tonight|this\s+evening)\b/.test(t)) return todayIso;
   if (/\btomorrow\b/.test(t)) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 1);
-    return toISO(d);
+    return addDaysToISODate(todayIso, 1);
   }
   const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const todayDow = localDayOfWeek(todayIso, timezone);
   for (let i = 0; i < 7; i++) {
     const re = new RegExp(`\\b(?:this|next|on)?\\s*${weekdays[i]}\\b`);
     if (re.test(t)) {
-      const d = new Date(now);
-      const diff = (i - d.getDay() + 7) % 7 || 7;
-      d.setDate(d.getDate() + diff);
-      return toISO(d);
+      const diff = (i - todayDow + 7) % 7 || 7;
+      return addDaysToISODate(todayIso, diff);
     }
   }
   // YYYY-MM-DD literal
@@ -563,12 +592,12 @@ function buildSystemPrompt(opts: {
 
   return `You are Cenaiva, a voice-first dine-in table reservation assistant.
 Today: ${opts.now}. User: ${opts.userName} (first name: ${opts.firstName}). Screen: ${opts.currentScreen}.
-User's detected city (MAP ANCHOR ONLY — not a search filter): ${opts.userCity || "unknown"}.
+User's detected city: ${opts.userCity || "unknown"}.
 Has saved card on file: ${opts.hasSavedCard}.
 
 GEOGRAPHY — restaurants exist in many cities nationwide.
-- The user's detected city is ONLY for centering the map on startup. It is NOT a search filter.
-- Default search is nationwide (pass no city to search_restaurants).
+- If the user has shared location and has NOT named a different city, default discovery/recommendation searches to nearby restaurants.
+- Do NOT inject the detected city name into the city filter unless the user explicitly names that city.
 - Pass city to search_restaurants ONLY when the user explicitly names one ("in Montreal", "Toronto restaurants", "places in Calgary", "my parents' town — Edmonton").
 - Treat phrases like "out of town", "in another city", "somewhere else" as signals to ask which city they want — then re-run search_restaurants with that city.
 - If the user names a city different from their detected city, ALWAYS re-run search_restaurants with the named city — do not refuse or say "I only show local results".
@@ -590,7 +619,7 @@ Natural phrases like "I want food from X", "I feel like X", "I'm craving Italian
 
 RECOMMENDATIONS — search_restaurants is your recommendation engine. ALWAYS call it (with the right structured filters) when the user asks for ideas, suggestions, "what's good", "where should I eat", or any open-ended discovery request. NEVER reply "What would you like to do?" / "Got it!" without first running a search when the user has clearly expressed a preference, budget, occasion, location, event interest, or deal interest. Map intent → filters like this:
 - BUDGET signals ("cheap", "affordable", "budget", "under $20", "not too expensive") → set price_range_max (1 or 2). "fancy"/"upscale"/"fine dining"/"splurge"/"high-end" → set price_range_min=3 (or sort_by=price_desc).
-- PROXIMITY signals ("near me", "closest", "nearby", "around here", "walking distance") → near_user=true, sort_by="distance".
+- PROXIMITY signals ("near me", "closest", "nearby", "around here", "walking distance") → near_user=true, sort_by="distance". If the user does NOT name another city, local discovery should still stay nearby by default.
 - DIFFERENT-CITY signals ("in Calgary", "show me Montreal", "out of town") → set city to that city. Combine with other filters as needed.
 - OCCASION signals ("date night", "anniversary", "romantic", "impress my date") → set occasion="date" plus min_rating=4 (and price_range_min=3 if they sound upscale). "birthday"/"family"/"group"/"business" → set occasion accordingly.
 - TOP-RATED signals ("best", "top rated", "highly rated", "great spots", "favorites") → min_rating=4, sort_by="rating".
@@ -715,6 +744,95 @@ function scoreNameMatch(name: string, transcript: string): number {
   return score;
 }
 
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeCityName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function inferRecommendationOccasion(value: string): string | null {
+  const normalized = normalizeSearchText(value);
+  if (!normalized) return null;
+  if (/\b(date|date night|romantic|anniversary|impress my date|good date spot|cute place)\b/i.test(normalized)) {
+    return "date";
+  }
+  if (/\b(business|client dinner|work dinner|meeting)\b/i.test(normalized)) {
+    return "business";
+  }
+  if (/\b(family|kids|child friendly)\b/i.test(normalized)) {
+    return "family";
+  }
+  if (/\b(group|friends|crew|party of|big table)\b/i.test(normalized)) {
+    return "group";
+  }
+  if (/\b(birthday|celebration)\b/i.test(normalized)) {
+    return "birthday";
+  }
+  return null;
+}
+
+type SearchRestaurantRow = {
+  id: string;
+  name?: string;
+  cuisine_type?: string | null;
+  description?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  price_range?: number | null;
+  avg_rating?: number | null;
+  distance_km?: number;
+};
+
+function scoreRecommendationFit(
+  row: SearchRestaurantRow,
+  occasion: string | null,
+  vibeQuery: string,
+): number {
+  const normalizedDescription = normalizeSearchText(row.description ?? "");
+  const normalizedName = normalizeSearchText(row.name ?? "");
+  const normalizedCuisine = normalizeSearchText(row.cuisine_type ?? "");
+  const normalizedQuery = normalizeSearchText(vibeQuery);
+
+  let score = (row.avg_rating ?? 0) * 25;
+
+  if (occasion === "date") {
+    if ((row.price_range ?? 0) >= 3) score += 18;
+    if ((row.price_range ?? 0) === 2) score += 10;
+    if (/(french|italian|japanese|mediterranean|spanish|steakhouse|seafood|wine)/i.test(normalizedCuisine)) {
+      score += 12;
+    }
+    if (/(romantic|cozy|intimate|candle|date|wine|cocktail|rooftop|tasting|fine dining|share plates)/i.test(normalizedDescription)) {
+      score += 18;
+    }
+    if (/(family|kids|sports|loud|casual|fast)/i.test(normalizedDescription)) {
+      score -= 8;
+    }
+  } else if (occasion === "business") {
+    if ((row.price_range ?? 0) >= 3) score += 14;
+    if (/(quiet|private|business|wine|steak|fine dining)/i.test(normalizedDescription)) score += 12;
+  } else if (occasion === "family") {
+    if ((row.price_range ?? 0) <= 2) score += 8;
+    if (/(family|kids|shareable|casual|spacious)/i.test(normalizedDescription)) score += 12;
+  } else if (occasion === "group") {
+    if (/(group|large table|share plates|spacious|cocktails)/i.test(normalizedDescription)) score += 12;
+  } else if (occasion === "birthday") {
+    if (/(celebration|cocktail|dessert|tasting|rooftop)/i.test(normalizedDescription)) score += 12;
+  }
+
+  if (normalizedQuery) {
+    const queryTokens = normalizedQuery.split(" ").filter((token) => token.length >= 3);
+    for (const token of queryTokens) {
+      if (normalizedName.includes(token)) score += 6;
+      if (normalizedCuisine.includes(token)) score += 8;
+      if (normalizedDescription.includes(token)) score += 10;
+    }
+  }
+
+  return score;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -759,6 +877,7 @@ Deno.serve(async (req) => {
       visible_restaurant_ids?: string[];
       selected_restaurant_id?: string | null;
       user_location?: { lat: number; lng: number } | null;
+      timezone?: string;
       conversation_id?: string;
       has_saved_card?: boolean;
       guest_id?: string | null;
@@ -772,9 +891,14 @@ Deno.serve(async (req) => {
       visible_restaurant_ids = [],
       selected_restaurant_id: bodySelectedRestaurantId = null,
       user_location = null,
+      timezone: requestTimeZone,
       conversation_id: incomingConvId,
       has_saved_card = false,
     } = body;
+    const effectiveTimeZone =
+      typeof requestTimeZone === "string" && requestTimeZone.trim()
+        ? requestTimeZone.trim()
+        : "America/Toronto";
 
     // Mutable selection — the server may promote a voice "yes" into an
     // explicit selection when the map is already narrowed to one restaurant.
@@ -816,7 +940,7 @@ Deno.serve(async (req) => {
         }
       }
       if (booking_state.date == null) {
-        const d = parseDate(transcript);
+        const d = parseDateInTimeZone(transcript, effectiveTimeZone);
         if (d) {
           booking_state.date = d;
           preFilled.date = d;
@@ -911,9 +1035,9 @@ Deno.serve(async (req) => {
     }
 
     // Also scan every prior user transcript in this conversation — the user
-    // may have said "for 4 tomorrow" 5 turns ago and the model still hasn't
-    // emitted set_booking_field. Don't let that field stay MISSING any longer.
-    if (booking_state.party_size == null || booking_state.date == null) {
+    // may have said "for 4 tomorrow at 5pm" 5 turns ago and the model still
+    // hasn't emitted set_booking_field. Don't let those fields stay MISSING.
+    if (booking_state.party_size == null || booking_state.date == null || booking_state.time == null) {
       for (const msg of (history ?? [])) {
         if (msg.role !== "user" || !msg.content) continue;
         if (booking_state.party_size == null) {
@@ -924,13 +1048,20 @@ Deno.serve(async (req) => {
           }
         }
         if (booking_state.date == null) {
-          const d = parseDate(msg.content);
+          const d = parseDateInTimeZone(msg.content, effectiveTimeZone);
           if (d) {
             booking_state.date = d;
             preFilled.date = d;
           }
         }
-        if (booking_state.party_size != null && booking_state.date != null) break;
+        if (booking_state.time == null) {
+          const t = parseTime(msg.content);
+          if (t) {
+            booking_state.time = t;
+            preFilled.time = t;
+          }
+        }
+        if (booking_state.party_size != null && booking_state.date != null && booking_state.time != null) break;
       }
     }
 
@@ -1006,7 +1137,14 @@ Deno.serve(async (req) => {
         .select("id, name, cuisine_type")
         .in("id", visible_restaurant_ids.slice(0, 8));
       if (visRows?.length) {
-        const rows = visRows as Array<{ id: string; name: string; cuisine_type: string | null }>;
+        const rowsById = new Map(
+          (visRows as Array<{ id: string; name: string; cuisine_type: string | null }>)
+            .map((row) => [row.id, row] as const),
+        );
+        const rows = visible_restaurant_ids
+          .slice(0, 8)
+          .map((id) => rowsById.get(id))
+          .filter((row): row is { id: string; name: string; cuisine_type: string | null } => !!row);
         visibleRestaurantRows = rows;
         visibleRestaurantsLine =
           "Visible restaurant candidates (match user's spoken reply against these names — spelling/pronunciation will be approximate):\n" +
@@ -1110,7 +1248,7 @@ Deno.serve(async (req) => {
       firstName,
       userName,
       userCity,
-      now: new Date().toISOString(),
+      now: formatPromptNow(effectiveTimeZone),
       bookingState: booking_state,
       currentScreen: screen,
       hasSavedCard: has_saved_card,
@@ -1129,10 +1267,7 @@ Deno.serve(async (req) => {
     let lastReservationId: string | null = (booking_state.reservation_id as string) ?? null;
     let lastGuestId: string | null = null;
     let lastSearchIds: string[] = [];
-    // When search_restaurants returns exactly one match, capture its name so we
-    // can prompt "Do you want to book a table at X?" instead of asking which
-    // one they want — there's nothing to disambiguate.
-    let lastSearchSingleName: string | null = null;
+    let lastSearchRows: VisibleRestaurant[] = [];
     let lastOrderId: string | null = (booking_state.order_id as string) ?? null;
     let lastTextReply = "";
 
@@ -1407,19 +1542,27 @@ Deno.serve(async (req) => {
 
               // Distance + sort post-processing.
               if (!error && data) {
-                type Row = {
-                  id: string;
-                  name?: string;
-                  lat?: number | null;
-                  lng?: number | null;
-                  price_range?: number | null;
-                  avg_rating?: number | null;
-                  distance_km?: number;
-                };
-                let rows = data as Row[];
+                let rows = data as SearchRestaurantRow[];
 
-                const wantsNear = toolInput.near_user === true;
                 const loc = user_location;
+                const requestedCity =
+                  typeof toolInput.city === "string" && toolInput.city.trim()
+                    ? toolInput.city.trim()
+                    : "";
+                const normalizedRequestedCity = requestedCity ? normalizeCityName(requestedCity) : "";
+                const normalizedUserCity = userCity ? normalizeCityName(userCity) : "";
+                const requestedDifferentCity =
+                  !!normalizedRequestedCity &&
+                  !!normalizedUserCity &&
+                  normalizedRequestedCity !== normalizedUserCity;
+                const wantsNear =
+                  !!loc &&
+                  !requestedDifferentCity &&
+                  (
+                    toolInput.near_user === true ||
+                    !normalizedRequestedCity ||
+                    normalizedRequestedCity === normalizedUserCity
+                  );
                 if (wantsNear && loc && typeof loc.lat === "number" && typeof loc.lng === "number") {
                   const userLat = loc.lat;
                   const userLng = loc.lng;
@@ -1444,6 +1587,18 @@ Deno.serve(async (req) => {
                 }
 
                 const sortBy = toolInput.sort_by as string | undefined;
+                const effectiveOccasion =
+                  typeof toolInput.occasion === "string" && toolInput.occasion.trim()
+                    ? toolInput.occasion.trim().toLowerCase()
+                    : inferRecommendationOccasion(
+                      [transcript, typeof toolInput.query === "string" ? toolInput.query : ""].join(" "),
+                    );
+                const vibeQuery = [
+                  typeof toolInput.query === "string" ? toolInput.query : "",
+                  typeof toolInput.cuisine_type === "string" ? toolInput.cuisine_type : "",
+                  transcript,
+                ].join(" ");
+
                 if (sortBy === "rating") {
                   rows.sort((a, b) => (b.avg_rating ?? 0) - (a.avg_rating ?? 0));
                 } else if (sortBy === "distance" || (wantsNear && !sortBy)) {
@@ -1452,32 +1607,31 @@ Deno.serve(async (req) => {
                   rows.sort((a, b) => (a.price_range ?? 99) - (b.price_range ?? 99));
                 } else if (sortBy === "price_desc") {
                   rows.sort((a, b) => (b.price_range ?? 0) - (a.price_range ?? 0));
+                } else if (effectiveOccasion) {
+                  rows.sort((a, b) =>
+                    scoreRecommendationFit(b, effectiveOccasion, vibeQuery) -
+                      scoreRecommendationFit(a, effectiveOccasion, vibeQuery) ||
+                    (b.avg_rating ?? 0) - (a.avg_rating ?? 0),
+                  );
                 }
 
                 data = rows.slice(0, 8);
+                lastSearchRows = (data as SearchRestaurantRow[]).map((row) => ({
+                  id: row.id,
+                  name: row.name ?? "",
+                  cuisine_type: row.cuisine_type ?? null,
+                }));
                 lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
-                lastSearchSingleName =
-                  data.length === 1
-                    ? ((data[0] as { name?: string }).name ?? null)
-                    : null;
                 derivedActions.push({ type: "update_map_markers", restaurant_ids: lastSearchIds });
                 derivedActions.push({ type: "show_restaurant_cards", restaurant_ids: lastSearchIds });
                 mapDelta.visible = true;
                 mapDelta.marker_restaurant_ids = lastSearchIds;
 
-                // Single-result auto-confirm: when search returns exactly one
-                // match, the assistant is fully confident — skip the "Do you
-                // want to book at X?" confirmation step and treat the result
-                // as the user's selection. The forced-override below will
-                // then ask "How many guests?" directly.
-                if (lastSearchIds.length === 1 && !selected_restaurant_id) {
-                  selected_restaurant_id = lastSearchIds[0];
-                  derivedActions.push({ type: "highlight_restaurant", restaurant_id: lastSearchIds[0] });
-                  derivedActions.push({ type: "start_booking", restaurant_id: lastSearchIds[0] });
-                  if (lastSearchSingleName) {
-                    bookingDelta.restaurant_name = lastSearchSingleName;
-                  }
-                }
+                // Do not auto-select a recommendation result. Even when a
+                // search/refinement collapses to one candidate, the shell
+                // should surface that restaurant and wait for the user to
+                // explicitly choose it (tap, say the name, or confirm "yes")
+                // before start_booking runs.
               }
               toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
               didSearch = true; // break after — don't eagerly chain check_availability without date/party_size
@@ -1525,6 +1679,10 @@ Deno.serve(async (req) => {
 
           // ── complete_booking ──────────────────────────────────────────────
           else if (toolName === "complete_booking") {
+            const matchedSlot =
+              typeof toolInput.date_time === "string"
+                ? lastAvailabilitySlots.find((slot) => slot.date_time === toolInput.date_time)
+                : null;
             const result = await completeBooking({
               user_profile_id: userProfileId,
               restaurant_id: toolInput.restaurant_id,
@@ -1544,6 +1702,20 @@ Deno.serve(async (req) => {
               derivedActions.push({ type: "show_exit_x" });
               bookingDelta.reservation_id = result.reservation_id;
               bookingDelta.confirmation_code = result.confirmation_code;
+              if (typeof toolInput.shift_id === "string") bookingDelta.shift_id = toolInput.shift_id;
+              if (typeof toolInput.date_time === "string") bookingDelta.slot_iso = toolInput.date_time;
+              if (matchedSlot?.display_time) {
+                bookingDelta.time = matchedSlot.display_time;
+              } else if (typeof booking_state.time === "string" && booking_state.time.trim()) {
+                bookingDelta.time = booking_state.time;
+              } else if (preFilled.time) {
+                bookingDelta.time = preFilled.time;
+              }
+              if (typeof booking_state.date === "string" && booking_state.date.trim()) {
+                bookingDelta.date = booking_state.date;
+              } else if (preFilled.date) {
+                bookingDelta.date = preFilled.date;
+              }
             }
           }
 
@@ -2048,6 +2220,7 @@ Deno.serve(async (req) => {
       preFilled,
       lastTextReply,
       visibleRestaurants: visibleRestaurantRows,
+      lastSearchRestaurants: lastSearchRows,
     });
     if (followUp.promoted_selected_restaurant_id) {
       selected_restaurant_id = followUp.promoted_selected_restaurant_id;
@@ -2106,10 +2279,19 @@ Deno.serve(async (req) => {
       (llmBooking?.time as string | null | undefined) ??
       (llmSetField("time") as string | null | undefined) ??
       null;
+    const bsShiftAfter =
+      (booking_state.shift_id as string | null | undefined) ??
+      (llmBooking?.shift_id as string | null | undefined) ??
+      null;
     const bsRestaurantAfter =
       (booking_state.restaurant_id as string | null | undefined) ??
       (llmBooking?.restaurant_id as string | null | undefined) ??
       (llmSetField("restaurant_id") as string | null | undefined) ??
+      null;
+    const reservationAfter =
+      (booking_state.reservation_id as string | null | undefined) ??
+      (llmBooking?.reservation_id as string | null | undefined) ??
+      lastReservationId ??
       null;
     const hasRestaurant = !!(selected_restaurant_id || bsRestaurantAfter);
 
@@ -2151,8 +2333,26 @@ Deno.serve(async (req) => {
           // Question 2 — date AND time together (single combined prompt).
           parsed.spoken_text = "What date and time?";
         } else {
-          // All minimum fields are set — advance to slot selection.
-          parsed.spoken_text = "Checking availability.";
+          const hasAvailabilityAction = derivedActions.some(
+            (action) => action.type === "load_availability",
+          );
+          const shouldQueueAvailability =
+            !!bsRestaurantAfter &&
+            bsPartyAfter != null &&
+            !!bsDateAfter &&
+            !bsShiftAfter &&
+            !reservationAfter;
+
+          // Never strand the user on a bare "Checking availability."
+          // prompt. If the booking has enough info to load slots and the
+          // model forgot to emit the action, queue it deterministically so
+          // the client can continue the flow.
+          if (shouldQueueAvailability && !hasAvailabilityAction) {
+            derivedActions.push({ type: "load_availability" });
+          }
+          if (shouldQueueAvailability || hasAvailabilityAction || lastAvailabilitySlots.length > 0) {
+            parsed.spoken_text = "Checking availability.";
+          }
         }
       }
     }
@@ -2163,6 +2363,21 @@ Deno.serve(async (req) => {
     parsed.ui_actions = (parsed.ui_actions as Array<unknown>).filter(
       (a): a is Record<string, unknown> => a != null && typeof (a as Record<string, unknown>).type === "string",
     );
+
+    const spokenText = typeof parsed.spoken_text === "string" ? parsed.spoken_text : "";
+    const impliesAvailabilityLookup = /checking availability|checking for availability|checking available times|looking for available times/i.test(spokenText);
+    if (impliesAvailabilityLookup) {
+      const hasAvailabilityAction = derivedActions.some((action) => action.type === "load_availability");
+      const canLoadAvailability =
+        !!bsRestaurantAfter &&
+        bsPartyAfter != null &&
+        !!bsDateAfter &&
+        !bsShiftAfter &&
+        !reservationAfter;
+      if (canLoadAvailability && !hasAvailabilityAction) {
+        derivedActions.push({ type: "load_availability" });
+      }
+    }
 
     // ── Merge server-derived actions (from tool execution) ───────────────────
     // Prepend actions the server observed from tool calls. If the model
@@ -2296,6 +2511,10 @@ Deno.serve(async (req) => {
       (responseBooking?.date as string | null | undefined) ??
       (booking_state.date as string | null | undefined) ??
       null;
+    const currentTime =
+      (responseBooking?.time as string | null | undefined) ??
+      (booking_state.time as string | null | undefined) ??
+      null;
 
     const alreadySetsField = (field: string) =>
       responseActions.some(
@@ -2313,6 +2532,10 @@ Deno.serve(async (req) => {
       responseActions.push({ type: "set_booking_field", field: "date", value: preFilled.date });
       parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), date: preFilled.date };
     }
+    if (preFilled.time && currentTime == null && !alreadySetsField("time")) {
+      responseActions.push({ type: "set_booking_field", field: "time", value: preFilled.time });
+      parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), time: preFilled.time };
+    }
 
     if (transcript) {
       if (currentPartySize == null && !alreadySetsField("party_size")) {
@@ -2323,10 +2546,17 @@ Deno.serve(async (req) => {
         }
       }
       if (currentDate == null && !alreadySetsField("date")) {
-        const parsedDate = parseDate(transcript);
+        const parsedDate = parseDateInTimeZone(transcript, effectiveTimeZone);
         if (parsedDate) {
           responseActions.push({ type: "set_booking_field", field: "date", value: parsedDate });
           parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), date: parsedDate };
+        }
+      }
+      if (currentTime == null && !alreadySetsField("time")) {
+        const parsedTime = parseTime(transcript);
+        if (parsedTime) {
+          responseActions.push({ type: "set_booking_field", field: "time", value: parsedTime });
+          parsed.booking = { ...((parsed.booking as Record<string, unknown>) ?? {}), time: parsedTime };
         }
       }
     }

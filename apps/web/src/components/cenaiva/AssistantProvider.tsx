@@ -13,7 +13,11 @@ import type { OrchestratorRequestType } from "@cenaiva/assistant";
 // ── Context exposed to child components ───────────────────────────────────────
 
 interface AssistantContextValue {
-  open: (restaurantId?: string, restaurantName?: string) => void;
+  open: (
+    restaurantId?: string,
+    restaurantName?: string,
+    opts?: { autoListen?: boolean },
+  ) => void;
   close: () => void;
   /**
    * Speak a farewell line, then tear down the voice stack and navigate.
@@ -26,6 +30,7 @@ interface AssistantContextValue {
     opts?: { restaurantId?: string; silent?: boolean },
   ) => Promise<void>;
   startListening: () => Promise<void>;
+  shouldAutoListenOnOpen: () => boolean;
   setSpeechHints: (hints: string[]) => void;
   setTextMode: (active: boolean) => void;
 }
@@ -89,6 +94,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const textModeRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
   const speechHintsRef = useRef<string[]>([]);
+  const autoListenOnOpenRef = useRef(false);
   // The wake-word recognizer and the command recognizer cannot BOTH hold the
   // mic on Chrome — only one active SpeechRecognition instance is allowed.
   // When we open the shell we must synchronously tear down the wake-word
@@ -177,6 +183,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
       dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
 
       const current = stateRef.current;
+      const browserTimeZone =
+        typeof Intl !== "undefined"
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : undefined;
       const req: OrchestratorRequestType = {
         transcript,
         screen: "discover",
@@ -209,6 +219,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         visible_restaurant_ids: current.map.marker_restaurant_ids,
         selected_restaurant_id: opts?.restaurantId ?? current.booking.restaurant_id,
         user_location: userLocationRef.current,
+        timezone: browserTimeZone || undefined,
         conversation_id: current.conversationId ?? undefined,
         has_saved_card: hasCard,
         guest_id: null,
@@ -429,6 +440,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }
   }, [voice, sendTranscript, dispatch]);
 
+  const shouldAutoListenOnOpen = useCallback(() => autoListenOnOpenRef.current, []);
+
   useEffect(() => {
     startListeningRef.current = startListening;
   }, [startListening]);
@@ -441,7 +454,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, []);
 
   const open = useCallback(
-    (restaurantId?: string, restaurantName?: string) => {
+    (restaurantId?: string, restaurantName?: string, opts?: { autoListen?: boolean }) => {
+      autoListenOnOpenRef.current = opts?.autoListen === true;
       requestLocation();
       // Prime browser speech in the same user gesture that opens the shell.
       // This makes the Web Speech fallback audible on /discover even when
@@ -494,6 +508,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
     isOpenRef.current = false;
     textModeRef.current = false;
     emptyRelistenStreakRef.current = 0;
+    autoListenOnOpenRef.current = false;
     voiceRef.current.stopSpeaking();
     voiceRef.current.stopListening();
     dispatch({ type: "CLOSE" });
@@ -510,6 +525,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       isOpenRef.current = false;
       textModeRef.current = false;
       emptyRelistenStreakRef.current = 0;
+      autoListenOnOpenRef.current = false;
       voiceRef.current.stopListening();
       dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: message });
       try {
@@ -563,7 +579,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
     if (!user) return;
     // Prime the audio pipeline again on wake so the greeting reliably plays.
     try { voice.primeTTS(); } catch { /* noop */ }
-    open();
+    open(undefined, undefined, { autoListen: true });
   }, [user, open, voice]);
 
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =
@@ -612,8 +628,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // text / booking delta — the biggest contributor to the collecting_minimum_fields
   // render storm that was triggering "Page Unresponsive".
   const ctx = useMemo<AssistantContextValue>(
-    () => ({ open, close, sayGoodbyeAndClose, sendTranscript, startListening, setSpeechHints, setTextMode }),
-    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, setSpeechHints, setTextMode],
+    () => ({
+      open,
+      close,
+      sayGoodbyeAndClose,
+      sendTranscript,
+      startListening,
+      shouldAutoListenOnOpen,
+      setSpeechHints,
+      setTextMode,
+    }),
+    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode],
   );
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }

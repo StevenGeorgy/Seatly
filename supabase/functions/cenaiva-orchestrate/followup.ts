@@ -83,6 +83,7 @@ export interface FollowUpContext {
   };
   lastTextReply: string;
   visibleRestaurants: VisibleRestaurant[];
+  lastSearchRestaurants: VisibleRestaurant[];
 }
 
 export interface DeterministicFollowUp {
@@ -255,6 +256,63 @@ function matchesCuisinePhrase(transcript: string, cuisine: string): boolean {
   return refinement.test(normalizedTranscript);
 }
 
+function inferOccasionTone(transcript: string): "date" | "business" | "family" | "group" | "birthday" | null {
+  const normalized = normalizePhrase(transcript);
+  if (!normalized) return null;
+  if (/\b(date|date night|romantic|anniversary|impress my date|good date spot|cute place)\b/i.test(normalized)) {
+    return "date";
+  }
+  if (/\b(business|client dinner|work dinner|meeting)\b/i.test(normalized)) {
+    return "business";
+  }
+  if (/\b(family|kids|child friendly)\b/i.test(normalized)) {
+    return "family";
+  }
+  if (/\b(group|friends|crew|party of|big table)\b/i.test(normalized)) {
+    return "group";
+  }
+  if (/\b(birthday|celebration)\b/i.test(normalized)) {
+    return "birthday";
+  }
+  return null;
+}
+
+function joinRecommendedNames(restaurants: VisibleRestaurant[]): string {
+  const names = restaurants
+    .map((restaurant) => restaurant.name.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  if (names.length === 0) return "a few spots";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} or ${names[1]}`;
+  return `${names[0]}, ${names[1]}, or ${names[2]}`;
+}
+
+function buildRecommendationPrompt(
+  transcript: string,
+  restaurants: VisibleRestaurant[],
+): string {
+  const listedNames = joinRecommendedNames(restaurants);
+  switch (inferOccasionTone(transcript)) {
+    case "date":
+      return `For a date spot, ${listedNames} stand out. Which one sounds best?`;
+    case "business":
+      return `For a business dinner, ${listedNames} look strong. Which one works best?`;
+    case "family":
+      return `For a family meal, ${listedNames} look good. Which one sounds best?`;
+    case "group":
+      return `For a group, ${listedNames} look like solid picks. Which one works best?`;
+    case "birthday":
+      return `For a birthday meal, ${listedNames} look fun. Which one sounds best?`;
+    default:
+      return `${listedNames} look good. Which one sounds best?`;
+  }
+}
+
+function buildSingleCandidatePrompt(restaurant: VisibleRestaurant): string {
+  return `I found ${restaurant.name}. Want that one?`;
+}
+
 function detectCuisineRefinement(
   transcript: string,
   visibleRestaurants: VisibleRestaurant[],
@@ -349,6 +407,9 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   const hasAvailability = hasAction(context.derivedActions, "load_availability") || context.lastAvailabilitySlots.length > 0;
   const hasConfirmation = hasAction(context.derivedActions, "show_confirmation") || !!reservationId;
   const trimmedLastText = context.lastTextReply.trim();
+  const recommendedRestaurants = context.lastSearchRestaurants.length > 0
+    ? context.lastSearchRestaurants
+    : context.visibleRestaurants;
 
   if (!context.selected_restaurant_id && !stringOrNull(context.booking_state.restaurant_id) && visibleSelection) {
     return {
@@ -366,6 +427,32 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         status: "collecting_minimum_fields",
       },
       map: null,
+      filters: null,
+    };
+  }
+
+  const singleSuggestedRestaurant =
+    context.lastSearchRestaurants.length === 1
+      ? context.lastSearchRestaurants[0]
+      : context.visibleRestaurants.length === 1
+        ? context.visibleRestaurants[0]
+        : null;
+
+  if (!effectiveSelectedRestaurantId && singleSuggestedRestaurant) {
+    return {
+      promoted_selected_restaurant_id: null,
+      spoken_text: buildSingleCandidatePrompt(singleSuggestedRestaurant),
+      intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      step: "choose_restaurant",
+      next_expected_input: "confirmation",
+      ui_actions: [],
+      booking: null,
+      map: {
+        visible: true,
+        marker_restaurant_ids: context.lastSearchIds.length > 0
+          ? context.lastSearchIds
+          : [singleSuggestedRestaurant.id],
+      },
       filters: null,
     };
   }
@@ -388,19 +475,17 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
 
       if (refinement.restaurant_ids.length === 1) {
         const restaurantId = refinement.restaurant_ids[0];
-        ui_actions.push({ type: "highlight_restaurant", restaurant_id: restaurantId });
-        ui_actions.push({ type: "start_booking", restaurant_id: restaurantId });
+        const matchedRestaurant = context.visibleRestaurants.find((restaurant) => restaurant.id === restaurantId);
         return {
-          promoted_selected_restaurant_id: restaurantId,
-          spoken_text: "How many guests?",
-          intent: "select_restaurant",
-          step: "choose_party",
-          next_expected_input: "party_size",
+          promoted_selected_restaurant_id: null,
+          spoken_text: buildSingleCandidatePrompt(
+            matchedRestaurant ?? { id: restaurantId, name: "that restaurant", cuisine_type: null },
+          ),
+          intent: "refine_search",
+          step: "choose_restaurant",
+          next_expected_input: "confirmation",
           ui_actions,
-          booking: {
-            restaurant_id: restaurantId,
-            status: "collecting_minimum_fields",
-          },
+          booking: null,
           map,
           filters,
         };
@@ -408,7 +493,9 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
 
       return {
         promoted_selected_restaurant_id: null,
-        spoken_text: "Which restaurant would you like?",
+        spoken_text: buildRecommendationPrompt(context.transcript, context.visibleRestaurants.filter((restaurant) =>
+          refinement.restaurant_ids.includes(restaurant.id)
+        )),
         intent: "refine_search",
         step: "choose_restaurant",
         next_expected_input: "restaurant",
@@ -418,6 +505,23 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         filters,
       };
     }
+  }
+
+  if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1 && context.lastSearchRestaurants.length > 0) {
+    return {
+      promoted_selected_restaurant_id: null,
+      spoken_text: buildRecommendationPrompt(context.transcript, context.lastSearchRestaurants),
+      intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      step: "choose_restaurant",
+      next_expected_input: "restaurant",
+      ui_actions: [],
+      booking: null,
+      map: {
+        visible: true,
+        marker_restaurant_ids: context.lastSearchIds,
+      },
+      filters: null,
+    };
   }
 
   if (!effectiveSelectedRestaurantId && context.visibleRestaurants.length > 0) {
@@ -446,7 +550,7 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
     }
     return {
       promoted_selected_restaurant_id: null,
-      spoken_text: "Which restaurant would you like?",
+      spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
       intent: "refine_search",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
@@ -516,7 +620,7 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1) {
     return {
       promoted_selected_restaurant_id: null,
-      spoken_text: "Which restaurant would you like?",
+      spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
       intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
       step: "choose_restaurant",
       next_expected_input: "restaurant",

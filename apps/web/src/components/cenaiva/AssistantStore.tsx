@@ -99,6 +99,49 @@ function computeCartSubtotal(cart: CartItem[]): number {
   return Math.round(cart.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
 }
 
+function beginBookingForRestaurant(
+  booking: BookingState,
+  restaurantId: string,
+  restaurantName?: string,
+): BookingState {
+  const isSameRestaurant = booking.restaurant_id === restaurantId;
+  const shouldPreserveCollectedFields = isSameRestaurant || booking.restaurant_id == null;
+
+  if (shouldPreserveCollectedFields) {
+    return {
+      ...booking,
+      restaurant_id: restaurantId,
+      ...(restaurantName != null ? { restaurant_name: restaurantName } : {}),
+      status: "collecting_minimum_fields",
+    };
+  }
+
+  return {
+    ...booking,
+    restaurant_id: restaurantId,
+    ...(restaurantName != null ? { restaurant_name: restaurantName } : {}),
+    party_size: null,
+    date: null,
+    time: null,
+    shift_id: null,
+    slot_iso: null,
+    special_request: null,
+    occasion: null,
+    status: "collecting_minimum_fields",
+    confirmation_code: null,
+    reservation_id: null,
+    want_preorder: null,
+    cart: [],
+    cart_subtotal: 0,
+    tip_choice: null,
+    tip_amount: null,
+    tip_percent: null,
+    payment_split: null,
+    order_id: null,
+    payment_status: "idle",
+  };
+}
+
 function applyUIAction(state: AssistantState, action: UIActionType): AssistantState {
   switch (action.type) {
     case "open_assistant":
@@ -169,11 +212,10 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
     case "start_booking":
       return {
         ...state,
-        booking: {
-          ...state.booking,
-          restaurant_id: action.restaurant_id,
-          status: "collecting_minimum_fields",
-        },
+        booking: beginBookingForRestaurant(state.booking, action.restaurant_id),
+        availabilityOpen: false,
+        showExitX: false,
+        customerAccepted: false,
       };
 
     case "set_booking_field": {
@@ -471,12 +513,14 @@ export function assistantReducer(
       return {
         ...state,
         isOpen: true,
-        booking: {
-          ...state.booking,
-          restaurant_id: localAction.restaurant_id,
-          restaurant_name: localAction.restaurant_name,
-          status: "collecting_minimum_fields",
-        },
+        booking: beginBookingForRestaurant(
+          state.booking,
+          localAction.restaurant_id,
+          localAction.restaurant_name,
+        ),
+        availabilityOpen: false,
+        showExitX: false,
+        customerAccepted: false,
       };
   }
 

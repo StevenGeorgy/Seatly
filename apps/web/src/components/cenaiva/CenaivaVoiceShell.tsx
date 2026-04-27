@@ -127,7 +127,11 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
       // in the manual menu flow (pre-order offer / browsing menu), where the
       // user drives the UI with taps and only opts into the mic for ad-hoc
       // ingredient / allergen questions.
-      if (isOpenRef.current && !MANUAL_MENU_STATUSES.has(state.booking.status)) {
+      if (
+        isOpenRef.current &&
+        assistant?.shouldAutoListenOnOpen() &&
+        !MANUAL_MENU_STATUSES.has(state.booking.status)
+      ) {
         void assistant?.startListening();
       }
     })();
@@ -200,6 +204,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     state.booking.status === "choosing_payment_split" ||
     state.booking.status === "charging" ||
     state.booking.status === "paid";
+  const hasSelectedRestaurant = !!state.booking.restaurant_id;
 
   return (
     <AnimatePresence>
@@ -250,7 +255,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           )}
 
           {/* Restaurant rail — hidden during advanced booking/payment steps */}
-          {!showConfirmationOrPostBooking && !inManualMenu && (
+          {!showConfirmationOrPostBooking && !inManualMenu && !hasSelectedRestaurant && (
             <div className="bg-[#0D0D0D] border-t border-white/5">
               <RestaurantRail restaurants={restaurants} />
               {restaurants.length === 0 && (

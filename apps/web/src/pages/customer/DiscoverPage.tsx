@@ -186,7 +186,7 @@ export default function DiscoverPage() {
           </div>
           <button
             type="button"
-            onClick={() => assistant?.open()}
+            onClick={() => assistant?.open(undefined, undefined, { autoListen: false })}
             className="shrink-0 flex items-center gap-1.5 rounded-full border border-[#C8A951]/60 bg-[#C8A951]/10 px-3 py-1.5 text-xs font-semibold text-[#C8A951] transition-colors hover:bg-[#C8A951]/20 whitespace-nowrap"
           >
             <Mic className="size-3" />

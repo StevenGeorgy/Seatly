@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { Calendar, Clock, Users, CheckCircle2, Plus, Minus, ShoppingCart } from "lucide-react";
@@ -40,6 +40,8 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const { profile } = useUser();
   const { booking, showExitX } = state;
   const [prepayBusy, setPrepayBusy] = useState(false);
+  const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
+  const lastAvailabilityLookupKeyRef = useRef<string | null>(null);
 
   // Local-only review/prepay flow — no orchestrator involvement. Once the
   // user is done picking items in `browsing_menu`, the "Review order" button
@@ -74,10 +76,68 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const isPostBooking = booking.status === "post_booking";
   const isPaid = booking.status === "paid";
 
+  const availabilityLookupKey = useMemo(() => {
+    if (!booking.restaurant_id || !booking.date || !booking.party_size) return null;
+    return `${booking.restaurant_id}:${booking.date}:${booking.party_size}`;
+  }, [booking.date, booking.party_size, booking.restaurant_id]);
+
+  const runAvailabilityLookup = useCallback(
+    async (dispatchLoading: boolean) => {
+      if (!booking.restaurant_id || !booking.date || !booking.party_size || !availabilityLookupKey) return;
+      if (dispatchLoading) dispatch({ type: "load_availability" });
+
+      lastAvailabilityLookupKeyRef.current = availabilityLookupKey;
+      setAvailabilityNotice(null);
+
+      const result = await availability.fetchSlots(
+        booking.restaurant_id,
+        booking.date,
+        booking.party_size,
+      );
+
+      // Ignore stale responses after the user changes restaurant/date/party size.
+      if (lastAvailabilityLookupKeyRef.current !== availabilityLookupKey) return;
+
+      if (result.slots.length > 0) {
+        dispatch({ type: "SET_BOOKING_STATUS", status: "awaiting_time_selection" });
+        return;
+      }
+
+      dispatch({ type: "SET_BOOKING_STATUS", status: "collecting_minimum_fields" });
+      setAvailabilityNotice(
+        result.error ?? "I couldn't find available times for that date. Try another date or ask again.",
+      );
+    },
+    [
+      availability.fetchSlots,
+      availabilityLookupKey,
+      booking.date,
+      booking.party_size,
+      booking.restaurant_id,
+      dispatch,
+    ],
+  );
+
+  useEffect(() => {
+    if (booking.status !== "loading_availability") return;
+    if (!availabilityLookupKey || availability.loading) return;
+    if (lastAvailabilityLookupKeyRef.current === availabilityLookupKey) return;
+    void runAvailabilityLookup(false);
+  }, [
+    availability.loading,
+    availabilityLookupKey,
+    booking.status,
+    runAvailabilityLookup,
+  ]);
+
+  useEffect(() => {
+    if (booking.status !== "loading_availability") {
+      lastAvailabilityLookupKeyRef.current = null;
+    }
+  }, [booking.status]);
+
   const handleLoadAvailability = () => {
-    if (!booking.restaurant_id || !booking.date || !booking.party_size) return;
-    dispatch({ type: "load_availability" });
-    void availability.fetchSlots(booking.restaurant_id, booking.date, booking.party_size);
+    void runAvailabilityLookup(true);
   };
 
   const handleSlotSelect = (slot: { shift_id: string; date_time: string; display_time: string }) => {
@@ -360,18 +420,13 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                     <Users className="w-4 h-4" />{booking.party_size}
                   </span>
                 )}
-                {(booking.slot_iso || booking.date) && (
+                {(booking.date || booking.slot_iso) && (
                   <span className="flex items-center gap-1">
                     <Calendar className="w-4 h-4" />
                     {(() => {
-                      // Prefer slot_iso (UTC ISO from availability) so the date
-                      // renders in the user's local timezone. Fall back to
-                      // booking.date "YYYY-MM-DD" parsed as a LOCAL date (not
-                      // UTC) — `new Date("2026-04-25")` would parse as UTC
-                      // midnight and show Apr 24 in negative-offset timezones.
-                      if (booking.slot_iso) {
-                        try { return format(new Date(booking.slot_iso), "MMM d"); } catch { /* fall through */ }
-                      }
+                      // booking.date is the customer-facing local reservation
+                      // date. Prefer it over slot_iso so UTC storage never
+                      // shifts the summary to the wrong calendar day.
                       if (booking.date) {
                         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(booking.date);
                         if (m) {
@@ -384,16 +439,29 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                         }
                         try { return format(new Date(booking.date), "MMM d"); } catch { return booking.date; }
                       }
+                      if (booking.slot_iso) {
+                        try { return format(new Date(booking.slot_iso), "MMM d"); } catch { /* fall through */ }
+                      }
                       return null;
                     })()}
                   </span>
                 )}
-                {(booking.slot_iso || booking.time) && (
+                {(booking.time || booking.slot_iso) && (
                   <span className="flex items-center gap-1">
                     <Clock className="w-4 h-4" />
                     {(() => {
-                      // Prefer slot_iso so the time renders in the browser's
-                      // local timezone (matches the checkout summary).
+                      // booking.time is the customer-facing local time we
+                      // confirmed. Prefer it over slot_iso for summary display.
+                      const t = booking.time ?? "";
+                      if (/[AaPp][Mm]\b/.test(t)) return t;
+                      const m = /^(\d{1,2}):(\d{2})/.exec(t);
+                      if (m) {
+                        let h = parseInt(m[1], 10);
+                        const period = h >= 12 ? "PM" : "AM";
+                        if (h === 0) h = 12;
+                        else if (h > 12) h -= 12;
+                        return `${h}:${m[2]} ${period}`;
+                      }
                       if (booking.slot_iso) {
                         try {
                           return new Date(booking.slot_iso).toLocaleTimeString("en-US", {
@@ -403,17 +471,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                           });
                         } catch { /* fall through */ }
                       }
-                      // Fallback: booking.time can be 24h "HH:mm" or already
-                      // a 12h "h:mm AM/PM" string from availability.display_time.
-                      const t = booking.time ?? "";
-                      if (/[AaPp][Mm]\b/.test(t)) return t;
-                      const m = /^(\d{1,2}):(\d{2})/.exec(t);
-                      if (!m) return t;
-                      let h = parseInt(m[1], 10);
-                      const period = h >= 12 ? "PM" : "AM";
-                      if (h === 0) h = 12;
-                      else if (h > 12) h -= 12;
-                      return `${h}:${m[2]} ${period}`;
+                      return t;
                     })()}
                   </span>
                 )}
@@ -821,13 +879,18 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
           {/* ── Collect minimum fields via voice ─────────────────────────────── */}
           {booking.status === "collecting_minimum_fields" &&
             booking.restaurant_id && booking.date && booking.party_size && (
-            <div className="flex justify-center">
-              <Button
-                className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
-                onClick={handleLoadAvailability}
-              >
-                See available times
-              </Button>
+            <div className="space-y-3">
+              {availabilityNotice && (
+                <p className="text-center text-xs text-white/50">{availabilityNotice}</p>
+              )}
+              <div className="flex justify-center">
+                <Button
+                  className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
+                  onClick={handleLoadAvailability}
+                >
+                  See available times
+                </Button>
+              </div>
             </div>
           )}
         </div>

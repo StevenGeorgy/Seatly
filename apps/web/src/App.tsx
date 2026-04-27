@@ -50,7 +50,7 @@ function CustomerVoiceOrbFAB() {
     <div className="fixed bottom-6 right-6 z-40">
       <VoiceOrb
         status={state.voiceStatus}
-        onClick={() => assistant?.open()}
+        onClick={() => assistant?.open(undefined, undefined, { autoListen: true })}
       />
     </div>
   );

@@ -13,13 +13,18 @@ export interface AvailabilitySlot {
   display_time: string;
 }
 
+interface AvailabilityResult {
+  slots: AvailabilitySlot[];
+  error: string | null;
+}
+
 export function useAvailability() {
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchSlots = useCallback(
-    async (restaurantId: string, date: string, partySize: number) => {
+    async (restaurantId: string, date: string, partySize: number): Promise<AvailabilityResult> => {
       setLoading(true);
       setError(null);
       setSlots([]);
@@ -44,14 +49,21 @@ export function useAvailability() {
         const json = await res.json() as { slots?: AvailabilitySlot[]; error?: string };
         if (json.error) {
           setError(json.error);
+          return { slots: [], error: json.error };
         } else {
-          setSlots(json.slots ?? []);
+          const slots = json.slots ?? [];
+          setSlots(slots);
+          return { slots, error: null };
         }
       } catch (err) {
-        setError(String(err));
+        const message = String(err);
+        setError(message);
+        return { slots: [], error: message };
       } finally {
         setLoading(false);
       }
+
+      return { slots: [], error: null };
     },
     [],
   );

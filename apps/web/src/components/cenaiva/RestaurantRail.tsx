@@ -25,7 +25,9 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
 
   const markerIds = map.marker_restaurant_ids ?? [];
   const visible = markerIds.length > 0
-    ? restaurants.filter((r) => markerIds.includes(r.id))
+    ? markerIds
+      .map((id) => restaurants.find((restaurant) => restaurant.id === id))
+      .filter((restaurant): restaurant is Restaurant => !!restaurant)
     : restaurants;
 
   if (!visible.length) return null;
@@ -36,13 +38,11 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
     // voice.stopListening() from here would target a different hook instance's
     // refs and leave Chrome's actual SpeechRecognition running.
     if (state.voiceStatus === "processing") return;
-    // PRESELECT (not just highlight) so booking.restaurant_name is populated
-    // immediately for the BookingSheet confirmation card. Pairing it with
-    // highlight_restaurant keeps map.highlighted_restaurant_id in sync so the
-    // gold border on this card appears the moment the user taps. Note: we
-    // intentionally do NOT touch map.marker_restaurant_ids here — the cuisine
-    // filter that produced the visible rail (e.g. "Egyptian") must persist so
-    // the user can see what list they picked from.
+    // PRESELECT so booking.restaurant_name is populated immediately for the
+    // BookingSheet confirmation card. Pairing it with highlight_restaurant
+    // keeps the map focused on the chosen restaurant, but the gold rail state
+    // now comes ONLY from booking.restaurant_id — never from server-side
+    // recommendation highlights.
     dispatch({
       type: "PRESELECT_RESTAURANT",
       restaurant_id: r.id,
@@ -55,7 +55,7 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
   return (
     <div ref={railRef} className="flex gap-3 overflow-x-auto px-4 py-2 scrollbar-none">
       {visible.map((r) => {
-        const isSelected = booking.restaurant_id === r.id || map.highlighted_restaurant_id === r.id;
+        const isSelected = booking.restaurant_id === r.id;
         const emoji = CUISINE_EMOJI[r.cuisine_type?.toLowerCase() ?? ""] ?? "🍽️";
 
         return (

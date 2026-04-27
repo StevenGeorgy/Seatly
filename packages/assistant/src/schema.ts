@@ -200,6 +200,7 @@ export const OrchestratorRequest = z.object({
   visible_restaurant_ids: z.array(z.string()).optional(),
   selected_restaurant_id: z.string().nullable().optional(),
   user_location: latLng.nullable().optional(),
+  timezone: z.string().optional(),
   conversation_id: z.string().optional(),
   has_saved_card: z.boolean().optional(),
   guest_id: z.string().nullable().optional(),

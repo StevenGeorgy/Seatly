@@ -15,6 +15,9 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
   const { state, dispatch } = useAssistantStore();
   const { map, booking } = state;
   const mapRef = useRef<MapRef>(null);
+  const selectedRestaurant = booking.restaurant_id
+    ? restaurants.find((restaurant) => restaurant.id === booking.restaurant_id)
+    : null;
 
   // Fly to new center whenever the orchestrator updates map.center
   useEffect(() => {
@@ -26,6 +29,15 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
       });
     }
   }, [map.center, map.zoom]);
+
+  useEffect(() => {
+    if (selectedRestaurant?.lat == null || selectedRestaurant?.lng == null || !mapRef.current) return;
+    mapRef.current.flyTo({
+      center: [selectedRestaurant.lng, selectedRestaurant.lat],
+      zoom: 15.5,
+      duration: 1200,
+    });
+  }, [selectedRestaurant]);
 
   const markerIds = map.marker_restaurant_ids ?? [];
   const visibleRestaurants = restaurants.filter((r) =>

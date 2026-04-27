@@ -25,6 +25,7 @@ function makeContext(overrides: Partial<FollowUpContext> = {}): FollowUpContext 
     preFilled: {},
     lastTextReply: "",
     visibleRestaurants: [],
+    lastSearchRestaurants: [],
     ...overrides,
   };
 }
@@ -43,22 +44,26 @@ function pick(result: DeterministicFollowUp) {
   };
 }
 
-Deno.test("first cuisine search with multiple matches asks which restaurant", () => {
+Deno.test("first cuisine search with multiple matches recommends visible options", () => {
   const result = buildDeterministicFollowUp(makeContext({
     transcript: "Find me Italian restaurants",
     lastSearchIds: ["r1", "r2"],
+    lastSearchRestaurants: [
+      { id: "r1", name: "Osteria Giulia", cuisine_type: "Italian" },
+      { id: "r2", name: "Bar Vendetta", cuisine_type: "Italian" },
+    ],
   }));
 
   assertEquals(
     pick(result),
     {
-      spoken_text: "Which restaurant would you like?",
+      spoken_text: "Osteria Giulia or Bar Vendetta look good. Which one sounds best?",
       intent: "discover_restaurants",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
-      ui_actions: [],
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: "r1" }],
       booking: null,
-      map: { visible: true, marker_restaurant_ids: ["r1", "r2"] },
+      map: { visible: true, marker_restaurant_ids: ["r1", "r2"], highlighted_restaurant_id: "r1" },
       filters: null,
       promoted_selected_restaurant_id: null,
     },
@@ -66,31 +71,33 @@ Deno.test("first cuisine search with multiple matches asks which restaurant", ()
   );
 });
 
-Deno.test("first cuisine search with one match asks for party size", () => {
+Deno.test("first cuisine search with one match asks the user to confirm the restaurant", () => {
   const result = buildDeterministicFollowUp(makeContext({
     transcript: "Find me Italian",
-    derivedActions: [{ type: "start_booking", restaurant_id: "r1" }],
     lastSearchIds: ["r1"],
+    lastSearchRestaurants: [
+      { id: "r1", name: "Osteria Giulia", cuisine_type: "Italian" },
+    ],
   }));
 
   assertEquals(
     pick(result),
     {
-      spoken_text: "How many guests?",
-      intent: "select_restaurant",
-      step: "choose_party",
-      next_expected_input: "party_size",
+      spoken_text: "I found Osteria Giulia. Want that one?",
+      intent: "discover_restaurants",
+      step: "choose_restaurant",
+      next_expected_input: "confirmation",
       ui_actions: [],
-      booking: { restaurant_id: "r1", status: "collecting_minimum_fields" },
-      map: null,
+      booking: null,
+      map: { visible: true, marker_restaurant_ids: ["r1"] },
       filters: null,
-      promoted_selected_restaurant_id: "r1",
+      promoted_selected_restaurant_id: null,
     },
     "single-search follow-up",
   );
 });
 
-Deno.test("cuisine refinement on visible candidates with multiple matches narrows markers and asks which restaurant", () => {
+Deno.test("cuisine refinement on visible candidates with multiple matches names the narrowed options", () => {
   const result = buildDeterministicFollowUp(makeContext({
     transcript: "Only Japanese",
     visibleRestaurants: [
@@ -103,7 +110,7 @@ Deno.test("cuisine refinement on visible candidates with multiple matches narrow
   assertEquals(
     pick(result),
     {
-      spoken_text: "Which restaurant would you like?",
+      spoken_text: "Sora or Kumo look good. Which one sounds best?",
       intent: "refine_search",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
@@ -111,9 +118,10 @@ Deno.test("cuisine refinement on visible candidates with multiple matches narrow
         { type: "set_filters" },
         { type: "update_map_markers", restaurant_ids: ["b", "c"] },
         { type: "show_restaurant_cards", restaurant_ids: ["b", "c"] },
+        { type: "highlight_restaurant", restaurant_id: "b" },
       ],
       booking: null,
-      map: { visible: true, marker_restaurant_ids: ["b", "c"] },
+      map: { visible: true, marker_restaurant_ids: ["b", "c"], highlighted_restaurant_id: "b" },
       filters: { cuisine: ["Japanese"] },
       promoted_selected_restaurant_id: null,
     },
@@ -121,7 +129,35 @@ Deno.test("cuisine refinement on visible candidates with multiple matches narrow
   );
 });
 
-Deno.test("cuisine refinement collapsing to one visible candidate starts booking immediately", () => {
+Deno.test("date-spot recommendation names the best bottom-row suggestions", () => {
+  const result = buildDeterministicFollowUp(makeContext({
+    transcript: "Show me a good date spot",
+    lastSearchIds: ["r1", "r2", "r3"],
+    lastSearchRestaurants: [
+      { id: "r1", name: "Le Select", cuisine_type: "French" },
+      { id: "r2", name: "Bar Isabel", cuisine_type: "Spanish" },
+      { id: "r3", name: "Osteria Giulia", cuisine_type: "Italian" },
+    ],
+  }));
+
+  assertEquals(
+    pick(result),
+    {
+      spoken_text: "For a date spot, Le Select, Bar Isabel, or Osteria Giulia stand out. Which one sounds best?",
+      intent: "discover_restaurants",
+      step: "choose_restaurant",
+      next_expected_input: "restaurant",
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: "r1" }],
+      booking: null,
+      map: { visible: true, marker_restaurant_ids: ["r1", "r2", "r3"], highlighted_restaurant_id: "r1" },
+      filters: null,
+      promoted_selected_restaurant_id: null,
+    },
+    "date recommendation follow-up",
+  );
+});
+
+Deno.test("cuisine refinement collapsing to one visible candidate asks for confirmation first", () => {
   const result = buildDeterministicFollowUp(makeContext({
     transcript: "Only Japanese",
     visibleRestaurants: [
@@ -133,21 +169,19 @@ Deno.test("cuisine refinement collapsing to one visible candidate starts booking
   assertEquals(
     pick(result),
     {
-      spoken_text: "How many guests?",
-      intent: "select_restaurant",
-      step: "choose_party",
-      next_expected_input: "party_size",
+      spoken_text: "I found Sora. Want that one?",
+      intent: "refine_search",
+      step: "choose_restaurant",
+      next_expected_input: "confirmation",
       ui_actions: [
         { type: "set_filters" },
         { type: "update_map_markers", restaurant_ids: ["b"] },
         { type: "show_restaurant_cards", restaurant_ids: ["b"] },
-        { type: "highlight_restaurant", restaurant_id: "b" },
-        { type: "start_booking", restaurant_id: "b" },
       ],
-      booking: { restaurant_id: "b", status: "collecting_minimum_fields" },
+      booking: null,
       map: { visible: true, marker_restaurant_ids: ["b"] },
       filters: { cuisine: ["Japanese"] },
-      promoted_selected_restaurant_id: "b",
+      promoted_selected_restaurant_id: null,
     },
     "single-result refinement follow-up",
   );
@@ -268,7 +302,7 @@ Deno.test("ambiguous partial restaurant reply suggests one concrete candidate in
   );
 });
 
-Deno.test("visible restaurants with no resolved selection asks which restaurant instead of generic fallback", () => {
+Deno.test("visible restaurants with no resolved selection still names the visible options", () => {
   const result = buildDeterministicFollowUp(makeContext({
     transcript: "that place",
     visibleRestaurants: [
@@ -280,13 +314,13 @@ Deno.test("visible restaurants with no resolved selection asks which restaurant 
   assertEquals(
     pick(result),
     {
-      spoken_text: "Which restaurant would you like?",
+      spoken_text: "Georgy Inc or Steven Georgy look good. Which one sounds best?",
       intent: "refine_search",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
-      ui_actions: [],
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: "a" }],
       booking: null,
-      map: { visible: true, marker_restaurant_ids: ["a", "b"] },
+      map: { visible: true, marker_restaurant_ids: ["a", "b"], highlighted_restaurant_id: "a" },
       filters: null,
       promoted_selected_restaurant_id: null,
     },
