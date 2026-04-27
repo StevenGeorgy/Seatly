@@ -24,9 +24,16 @@ export const NOISE_ROBUST_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 // locally by ending the recording after 700ms of measured silence, then send
 // the captured utterance to Deepgram's REST /listen endpoint with the same
 // Nova-3 + keyterm prompting configuration.
+//
+// IMPORTANT: nova-3 does NOT accept `language=en-CA`. The REST endpoint
+// returns 400 "No such model/language/tier combination found" — which is
+// what was breaking Hey Cenaiva voice transcription end-to-end. Nova-3
+// supports the generic `en` plus regional variants `en-US` / `en-GB`. The
+// generic `en` is preferred so Canadian / Australian / etc. accents are
+// all routed through the same model with no false-rejects.
 const TRANSCRIBE_QUERY: Record<string, string> = {
   model: "nova-3",
-  language: "en-CA",
+  language: "en",
   smart_format: "true",
   punctuate: "true",
 };

@@ -18,6 +18,14 @@ interface CenaivaVoiceShellProps {
   initialGreeting?: boolean;
 }
 
+// Module-level mount token used to distinguish a real unmount (route change /
+// SPA exit) from React StrictMode's synthetic mount-cleanup-remount cycle in
+// dev. The on-unmount cleanup compares against this token after a setTimeout(0)
+// — if a fresh mount has replaced it, we know the cleanup was a false alarm
+// and skip cancelling speech. Survives across the synthetic remount because
+// it lives outside React's per-instance state.
+let activeShellMountToken: object | null = null;
+
 export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const { state, dispatch } = useAssistantStore();
   const assistant = useAssistant();
@@ -39,13 +47,27 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   // On unmount (route change away from the customer app) cancel any queued
   // speech + stop any active recognition. Without this, utterances keep
   // playing into the next page and the mic stream is held open.
+  //
+  // Deferred via setTimeout + a module-level token so React StrictMode's
+  // synthetic mount → cleanup → remount cycle in dev does NOT cancel the
+  // in-flight greeting. Without this guard the opener TTS reliably gets
+  // cut off after the first word, because the spurious cleanup fires
+  // window.speechSynthesis.cancel() between the two mounts.
   useEffect(() => {
+    const token = {};
+    activeShellMountToken = token;
     return () => {
-      voice.stopSpeaking();
-      voice.stopListening();
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-      }
+      const captured = voice;
+      setTimeout(() => {
+        // A remount has replaced our token → this was a StrictMode/HMR
+        // false unmount, skip the cancel.
+        if (activeShellMountToken !== token) return;
+        captured.stopSpeaking();
+        captured.stopListening();
+        if (typeof window !== "undefined" && "speechSynthesis" in window) {
+          try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+        }
+      }, 0);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

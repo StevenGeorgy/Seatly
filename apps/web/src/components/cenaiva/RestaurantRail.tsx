@@ -36,6 +36,18 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
     // voice.stopListening() from here would target a different hook instance's
     // refs and leave Chrome's actual SpeechRecognition running.
     if (state.voiceStatus === "processing") return;
+    // PRESELECT (not just highlight) so booking.restaurant_name is populated
+    // immediately for the BookingSheet confirmation card. Pairing it with
+    // highlight_restaurant keeps map.highlighted_restaurant_id in sync so the
+    // gold border on this card appears the moment the user taps. Note: we
+    // intentionally do NOT touch map.marker_restaurant_ids here — the cuisine
+    // filter that produced the visible rail (e.g. "Egyptian") must persist so
+    // the user can see what list they picked from.
+    dispatch({
+      type: "PRESELECT_RESTAURANT",
+      restaurant_id: r.id,
+      restaurant_name: r.name,
+    });
     dispatch({ type: "highlight_restaurant", restaurant_id: r.id });
     void assistant?.sendTranscript(`I want to book at ${r.name}`, { restaurantId: r.id });
   };

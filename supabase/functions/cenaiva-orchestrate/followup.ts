@@ -559,9 +559,24 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
     };
   }
 
+  // Last-resort spoken_text. The model produced no text and we couldn't pin
+  // down a specific phase. Prefer naming what the user can SEE on the map
+  // over the generic "Got it" — that line broke recommendation flows where
+  // search succeeded but the LLM dropped its reply.
+  const fallbackSpoken = (() => {
+    const visible = context.visibleRestaurants ?? [];
+    if (visible.length > 0) {
+      const names = visible.slice(0, 3).map((r) => r.name);
+      if (names.length === 1) return `Found ${names[0]}. Want to book it?`;
+      if (names.length === 2) return `${names[0]} and ${names[1]} look good — which one?`;
+      return `${names[0]}, ${names[1]}, and ${names[2]} are options — which one?`;
+    }
+    return "Want me to look something else up?";
+  })();
+
   return {
     promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
-    spoken_text: "Got it. What would you like to do next?",
+    spoken_text: fallbackSpoken,
     intent: phase.intent,
     step: phase.step,
     next_expected_input: phase.next_expected_input,

@@ -118,13 +118,52 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "search_restaurants",
       description:
-        "Search dine-in restaurants across ALL cities. Pass ONLY the parameters the user explicitly named. Do NOT default city to the user's detected city — leave city blank unless the user says a specific city like 'in Montreal' / 'Toronto restaurants' / 'near my parents in Calgary'. Pass cuisine_type when user names a cuisine. Pass query for a free-text name or vibe. Never pass 'near me' as query — that is NOT a city and not a name.",
+        "Search and RECOMMEND dine-in restaurants across ALL cities. Use this whenever the user asks for ideas, recommendations, suggestions, or filters — not just exact name lookups. Pass ONLY the parameters the user's words actually justify. Do NOT default city to the user's detected city — leave city blank unless the user names a city. Combine multiple filters when the user gives multiple signals (e.g. 'cheap Italian near me with a deal' → cuisine_type=Italian, price_range_max=2, near_user=true, sort_by=distance, with_active_promotion=true). Always populate the most specific filters you can derive from the user's words; do NOT fall back to a single broad query string when structured filters fit.",
       parameters: {
         type: "object",
         properties: {
-          cuisine_type: { type: "string", description: "e.g. Italian, Japanese" },
-          city: { type: "string" },
-          query: { type: "string", description: "Free-text name search" },
+          cuisine_type: { type: "string", description: "e.g. Italian, Japanese, Egyptian" },
+          city: { type: "string", description: "Only when the user explicitly names a city." },
+          query: { type: "string", description: "Free-text name search ONLY (a restaurant name or vibe word). Do not put cuisines, cities, or 'near me' here." },
+          price_range_max: {
+            type: "integer",
+            minimum: 1,
+            maximum: 4,
+            description: "Cap on price tier (1=$, 2=$$, 3=$$$, 4=$$$$). Use for budget signals: 'cheap'/'affordable'/'budget' → 2; 'mid-range' → 3; 'fancy'/'upscale'/'splurge' → omit (or set 4 only if user says 'expensive is fine'). 'under $X' for X≤25 → 1; ≤50 → 2; ≤100 → 3.",
+          },
+          price_range_min: {
+            type: "integer",
+            minimum: 1,
+            maximum: 4,
+            description: "Floor on price tier. Use only for explicit upscale signals: 'fancy'/'fine dining'/'upscale'/'high-end' → 3; 'super fancy'/'Michelin'/'splurge' → 4.",
+          },
+          min_rating: {
+            type: "number",
+            minimum: 0,
+            maximum: 5,
+            description: "Minimum avg_rating. Use 4 for 'top rated'/'best'/'highly rated'/'great spots'; 4.5 for 'the absolute best'.",
+          },
+          near_user: {
+            type: "boolean",
+            description: "True when the user says 'near me'/'closest'/'nearby'/'around here'/'walking distance'. Requires the user to have shared location (don't worry — server skips silently if missing).",
+          },
+          sort_by: {
+            type: "string",
+            enum: ["rating", "distance", "price_asc", "price_desc"],
+            description: "rating=top-rated request; distance=proximity request (pair with near_user); price_asc=cheapest first; price_desc=fanciest first.",
+          },
+          with_active_promotion: {
+            type: "boolean",
+            description: "True when the user mentions deals/discounts/promos/specials/'on sale'/'happy hour offers'.",
+          },
+          event_keyword: {
+            type: "string",
+            description: "Set when the user asks for restaurants showing/hosting a specific event or theme: 'World Cup', 'UFC', 'live music', 'jazz night', 'trivia', 'DJ', 'Super Bowl', 'F1', 'NBA finals', 'karaoke'. Pass the topic as plain text.",
+          },
+          occasion: {
+            type: "string",
+            description: "Optional vibe hint: 'date', 'anniversary', 'birthday', 'business', 'family', 'group'. The server uses this to bias rating/price/seating filters when the user didn't spell them out.",
+          },
         },
         additionalProperties: false,
       },
@@ -549,6 +588,16 @@ PERSPECTIVE — You are the ASSISTANT. You are NEVER the guest.
 Cenaiva handles DINE-IN RESERVATIONS AND PRE-ORDER PAYMENT ONLY.
 Natural phrases like "I want food from X", "I feel like X", "I'm craving Italian", "let's grab dinner at X" are DINE-IN intents — treat them as restaurant discovery/booking and proceed normally.
 
+RECOMMENDATIONS — search_restaurants is your recommendation engine. ALWAYS call it (with the right structured filters) when the user asks for ideas, suggestions, "what's good", "where should I eat", or any open-ended discovery request. NEVER reply "What would you like to do?" / "Got it!" without first running a search when the user has clearly expressed a preference, budget, occasion, location, event interest, or deal interest. Map intent → filters like this:
+- BUDGET signals ("cheap", "affordable", "budget", "under $20", "not too expensive") → set price_range_max (1 or 2). "fancy"/"upscale"/"fine dining"/"splurge"/"high-end" → set price_range_min=3 (or sort_by=price_desc).
+- PROXIMITY signals ("near me", "closest", "nearby", "around here", "walking distance") → near_user=true, sort_by="distance".
+- DIFFERENT-CITY signals ("in Calgary", "show me Montreal", "out of town") → set city to that city. Combine with other filters as needed.
+- OCCASION signals ("date night", "anniversary", "romantic", "impress my date") → set occasion="date" plus min_rating=4 (and price_range_min=3 if they sound upscale). "birthday"/"family"/"group"/"business" → set occasion accordingly.
+- TOP-RATED signals ("best", "top rated", "highly rated", "great spots", "favorites") → min_rating=4, sort_by="rating".
+- EVENT signals ("World Cup", "UFC", "live music", "trivia night", "Super Bowl", "F1", "DJ", "karaoke", "showing the game") → event_keyword=<that topic>.
+- DEAL/PROMO signals ("deals", "discounts", "promos", "specials", "happy hour", "BOGO", "any offers") → with_active_promotion=true.
+COMBINE filters when the user gives multiple signals in one breath ("cheap sushi near me with a deal" = cuisine_type=Japanese + price_range_max=2 + near_user=true + with_active_promotion=true). After search returns, name 2-3 results in spoken_text and ask which one — do NOT go silent or fall back to "Got it!".
+
 FLOW — follow exactly in this order:
 1. The client already greeted the user. The first user message is a cuisine or preference signal — NOT a greeting. Treat it as step 1.
    If booking_state.status is "idle" or missing AND no search_restaurants call has happened in this conversation yet, call search_restaurants ONCE. Emit update_map_markers + show_restaurant_cards and ask which restaurant they'd like.
@@ -589,7 +638,10 @@ FLOW — follow exactly in this order:
 RULES:
 - spoken_text ≤ 20 words. No filler ("Sure!", "Of course!", "Great choice!"). Direct.
 - One question per turn.
-- NEVER re-ask for a booking field that is already SET in the BOOKING STATE checklist — read the checklist first every turn.
+- NEVER end a turn silently after a tool runs. After search_restaurants returns results, your spoken_text MUST mention at least one (and preferably 2-3) restaurant names from the results, then ask which one — even if the user's last reply was short ("yeah", "show me deals"). The forbidden generic fallback "Got it! What would you like to do next?" is BANNED whenever results are visible — describe what's on the map instead.
+- When search_restaurants returns ZERO results, say so plainly and offer to relax one filter ("Nothing matches in your price range — want to widen the budget?"). Don't go silent and don't say "What would you like to do next?".
+- NEVER re-ask for a booking field that is already SET in the BOOKING STATE checklist — read the checklist first every turn. This includes party_size, date, AND time. If party_size + date + time are all SET, do NOT ask "what date and time?" again — proceed to check_availability.
+- If the user's reply is unclear, garbled, or you can't extract the field you asked for (e.g. you asked "what date and time?" and the transcript is "uhh", "what", or unrelated words like "the menu please"), do NOT silently re-ask the same question. Say "Sorry, I didn't catch that — could you say it again?" (or a short variant) and set next_expected_input to the same field you were collecting. Re-asking the original question verbatim feels broken; explicitly acknowledging you missed it does not.
 - NEVER speak as if YOU are the guest (see PERSPECTIVE above).
 - CUSTOMER VOCABULARY: NEVER say the words "shift", "shifts", "lunch shift", "dinner shift", or any internal scheduling term in spoken_text. These are operational concepts the customer doesn't care about. Always use customer-friendly wording: "no availability", "no openings", "no tables at that time", "we don't have anything then". If a tool message contains the word "shift", paraphrase it before speaking — never echo it verbatim.
 - NO-AVAILABILITY RE-PROMPT: When check_availability returns zero slots OR the user picks a time outside the available slots, ask "What date and time would you like instead?" (re-prompt for BOTH) — not just "What time?". The user may want a different day entirely.
@@ -754,7 +806,7 @@ Deno.serve(async (req) => {
     // Pre-fill booking_state from the current transcript so the system prompt
     // sees party_size/date as SET. Without this the model was ignoring its own
     // set_booking_field action across turns and re-asking the same questions.
-    const preFilled: { party_size?: number; date?: string } = {};
+    const preFilled: { party_size?: number; date?: string; time?: string } = {};
     if (transcript) {
       if (booking_state.party_size == null) {
         const n = parsePartySize(transcript);
@@ -768,6 +820,17 @@ Deno.serve(async (req) => {
         if (d) {
           booking_state.date = d;
           preFilled.date = d;
+        }
+      }
+      // Pre-fill time the same way: when the user answers a date+time prompt
+      // ("tomorrow at 7pm"), the LLM was occasionally emitting set_booking_field
+      // for date but dropping the time, so the next turn saw time=MISSING and
+      // re-asked. Mirror the parsePartySize/parseDate pattern so time survives.
+      if (booking_state.time == null) {
+        const t = parseTime(transcript);
+        if (t) {
+          booking_state.time = t;
+          preFilled.time = t;
         }
       }
     }
@@ -933,6 +996,10 @@ Deno.serve(async (req) => {
     let visibleRestaurantsLine = "";
     let visibleRestaurantRows: VisibleRestaurant[] = [];
     let sttFuzzyMatchLine = "";
+    // Resolved restaurant name (from rail tap, fuzzy match, or single-result
+    // search). Captured early so it can be merged into bookingDelta below — the
+    // BookingSheet confirmation card has nothing to render without it.
+    let resolvedRestaurantName: string | null = null;
     if (visible_restaurant_ids.length) {
       const { data: visRows } = await supabaseAdmin
         .from("restaurants")
@@ -980,10 +1047,32 @@ Deno.serve(async (req) => {
           ) {
             selected_restaurant_id = best.id;
             sttFuzzyMatchLine = `⚠️ STT FUZZY MATCH: transcript "${transcript}" resolved to restaurant "${best.name}" (id=${best.id}). Treat this as the user's confirmed selection — emit start_booking + highlight_restaurant and move on.`;
+            resolvedRestaurantName = best.name;
           }
         }
       } else {
         visibleRestaurantsLine = `Visible restaurant IDs: ${visible_restaurant_ids.slice(0, 8).join(", ")}`;
+      }
+    }
+
+    // If the client supplied a selected_restaurant_id (e.g. user tapped a card
+    // in RestaurantRail), or any of the branches above promoted one, look its
+    // name up from the visible rows so the BookingSheet confirmation can
+    // render the restaurant. Falls back to a DB lookup when the row isn't in
+    // the visible set (rare — happens if the rail was scrolled off-screen).
+    if (selected_restaurant_id && !resolvedRestaurantName) {
+      const matched = visibleRestaurantRows.find((r) => r.id === selected_restaurant_id);
+      if (matched?.name) {
+        resolvedRestaurantName = matched.name;
+      } else {
+        const { data: rRow } = await supabaseAdmin
+          .from("restaurants")
+          .select("name")
+          .eq("id", selected_restaurant_id)
+          .maybeSingle();
+        if (rRow && typeof (rRow as { name?: string }).name === "string") {
+          resolvedRestaurantName = (rRow as { name: string }).name;
+        }
       }
     }
 
@@ -1050,6 +1139,9 @@ Deno.serve(async (req) => {
     // Derived UI actions + deltas accumulated during tool execution.
     const derivedActions: Array<Record<string, unknown>> = [];
     const bookingDelta: Record<string, unknown> = {};
+    if (resolvedRestaurantName) {
+      bookingDelta.restaurant_name = resolvedRestaurantName;
+    }
     const mapDelta: Record<string, unknown> = {};
     const toolsExecuted: string[] = [];
     let lastCheckoutPath: string | null = null;
@@ -1237,13 +1329,24 @@ Deno.serve(async (req) => {
               });
               didSearch = true;
             } else {
+              // Pull a wider candidate set so distance/rating/price re-sorting
+              // in JS still has enough rows to surface a useful top-8.
               let query = supabaseAdmin
                 .from("restaurants")
-                .select("id, name, cuisine_type, city, description, address, lat, lng, slug")
+                .select("id, name, cuisine_type, city, description, address, lat, lng, slug, price_range, avg_rating")
                 .eq("is_active", true)
-                .limit(8);
+                .limit(60);
               if (toolInput.cuisine_type) query = query.ilike("cuisine_type", `%${toolInput.cuisine_type}%`);
               if (toolInput.city) query = query.ilike("city", `%${toolInput.city}%`);
+              if (typeof toolInput.price_range_max === "number") {
+                query = query.lte("price_range", toolInput.price_range_max);
+              }
+              if (typeof toolInput.price_range_min === "number") {
+                query = query.gte("price_range", toolInput.price_range_min);
+              }
+              if (typeof toolInput.min_rating === "number") {
+                query = query.gte("avg_rating", toolInput.min_rating);
+              }
               if (toolInput.query) {
                 const words = toolInput.query.trim().split(/\s+/).filter((w: string) => w.length > 1);
                 if (words.length) {
@@ -1253,8 +1356,105 @@ Deno.serve(async (req) => {
                   query = query.or(conditions);
                 }
               }
-              const { data, error } = await query;
+
+              // Promotion / event prefilters: intersect against the
+              // restaurant_ids that satisfy the recommendation signal.
+              let promoRestaurantIds: Set<string> | null = null;
+              if (toolInput.with_active_promotion) {
+                const nowIso = new Date().toISOString();
+                const { data: promoRows } = await supabaseAdmin
+                  .from("promotions")
+                  .select("restaurant_id, ends_at, is_active")
+                  .eq("is_active", true);
+                promoRestaurantIds = new Set(
+                  (promoRows ?? [])
+                    .filter((p) => !p.ends_at || (p.ends_at as string) > nowIso)
+                    .map((p) => p.restaurant_id as string),
+                );
+                if (promoRestaurantIds.size) {
+                  query = query.in("id", Array.from(promoRestaurantIds));
+                }
+              }
+
+              let eventRestaurantIds: Set<string> | null = null;
+              if (typeof toolInput.event_keyword === "string" && toolInput.event_keyword.trim()) {
+                const kw = toolInput.event_keyword.trim();
+                const { data: eventRows } = await supabaseAdmin
+                  .from("events")
+                  .select("restaurant_id, name, theme, date")
+                  .or(`name.ilike.%${kw}%,theme.ilike.%${kw}%,description.ilike.%${kw}%`)
+                  .gte("date", new Date().toISOString().slice(0, 10));
+                eventRestaurantIds = new Set(
+                  (eventRows ?? []).map((e) => e.restaurant_id as string).filter(Boolean),
+                );
+                if (eventRestaurantIds.size) {
+                  query = query.in("id", Array.from(eventRestaurantIds));
+                }
+              }
+
+              // If a promo/event filter was requested but matched zero
+              // restaurants, short-circuit with an empty result so we don't
+              // accidentally return the unfiltered set.
+              const requestedButEmpty =
+                (toolInput.with_active_promotion && promoRestaurantIds && promoRestaurantIds.size === 0) ||
+                (toolInput.event_keyword && eventRestaurantIds && eventRestaurantIds.size === 0);
+
+              const { data: rawData, error } = requestedButEmpty
+                ? { data: [] as Array<Record<string, unknown>>, error: null }
+                : await query;
+              // deno-lint-ignore no-explicit-any
+              let data: any = rawData;
+
+              // Distance + sort post-processing.
               if (!error && data) {
+                type Row = {
+                  id: string;
+                  name?: string;
+                  lat?: number | null;
+                  lng?: number | null;
+                  price_range?: number | null;
+                  avg_rating?: number | null;
+                  distance_km?: number;
+                };
+                let rows = data as Row[];
+
+                const wantsNear = toolInput.near_user === true;
+                const loc = user_location;
+                if (wantsNear && loc && typeof loc.lat === "number" && typeof loc.lng === "number") {
+                  const userLat = loc.lat;
+                  const userLng = loc.lng;
+                  const toRad = (deg: number) => (deg * Math.PI) / 180;
+                  const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+                    const R = 6371;
+                    const dLat = toRad(lat2 - lat1);
+                    const dLng = toRad(lng2 - lng1);
+                    const a =
+                      Math.sin(dLat / 2) ** 2 +
+                      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+                    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                  };
+                  rows = rows
+                    .map((r) => {
+                      if (typeof r.lat === "number" && typeof r.lng === "number") {
+                        r.distance_km = haversineKm(userLat, userLng, r.lat, r.lng);
+                      }
+                      return r;
+                    })
+                    .filter((r) => r.distance_km == null || r.distance_km <= 50);
+                }
+
+                const sortBy = toolInput.sort_by as string | undefined;
+                if (sortBy === "rating") {
+                  rows.sort((a, b) => (b.avg_rating ?? 0) - (a.avg_rating ?? 0));
+                } else if (sortBy === "distance" || (wantsNear && !sortBy)) {
+                  rows.sort((a, b) => (a.distance_km ?? Infinity) - (b.distance_km ?? Infinity));
+                } else if (sortBy === "price_asc") {
+                  rows.sort((a, b) => (a.price_range ?? 99) - (b.price_range ?? 99));
+                } else if (sortBy === "price_desc") {
+                  rows.sort((a, b) => (b.price_range ?? 0) - (a.price_range ?? 0));
+                }
+
+                data = rows.slice(0, 8);
                 lastSearchIds = (data as Array<{ id: string }>).map((r) => r.id);
                 lastSearchSingleName =
                   data.length === 1
@@ -1274,6 +1474,9 @@ Deno.serve(async (req) => {
                   selected_restaurant_id = lastSearchIds[0];
                   derivedActions.push({ type: "highlight_restaurant", restaurant_id: lastSearchIds[0] });
                   derivedActions.push({ type: "start_booking", restaurant_id: lastSearchIds[0] });
+                  if (lastSearchSingleName) {
+                    bookingDelta.restaurant_name = lastSearchSingleName;
+                  }
                 }
               }
               toolResult = error ? JSON.stringify({ error: error.message }) : JSON.stringify(data ?? []);
