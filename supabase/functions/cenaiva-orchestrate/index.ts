@@ -2294,16 +2294,67 @@ Deno.serve(async (req) => {
       lastReservationId ??
       null;
     const hasRestaurant = !!(selected_restaurant_id || bsRestaurantAfter);
+    const hadPartyBeforeTurn =
+      (booking_state.party_size as number | null | undefined) != null;
+    const hadDateBeforeTurn =
+      !!(booking_state.date as string | null | undefined);
+    const attemptedReplyThisTurn = typeof transcript === "string" && transcript.trim().length > 0;
+    const priorPartySize =
+      (booking_state.party_size as number | null | undefined) ??
+      null;
+    const priorDate =
+      (booking_state.date as string | null | undefined) ??
+      null;
+    const priorTime =
+      (booking_state.time as string | null | undefined) ??
+      null;
+    const capturedPartyThisTurn = priorPartySize == null && bsPartyAfter != null;
+    const capturedDateThisTurn = !priorDate && !!bsDateAfter;
+    const capturedTimeThisTurn = !priorTime && !!bsTimeAfter;
+    const lastAssistantContent =
+      ((history ?? []).find((m) => m.role === "assistant")?.content ?? "").toLowerCase();
+    const lastAskedParty =
+      /how many|party size|guests|people|for how many|group size|your party|how large|how big|persons?\b/i.test(lastAssistantContent);
+    const lastAskedDateTime =
+      /what date and time|date and time|what day and time|when and what time/i.test(lastAssistantContent);
+    const lastAskedTime =
+      /what time|which time|what hour|when would you like to come/i.test(lastAssistantContent);
 
-    if (selected_restaurant_id && bsPartyAfter == null) {
+    const partyRetryPrompt = "How many guests?";
+    const dateTimeRetryPrompt = "What date and time?";
+    const timeRetryPrompt = "What time?";
+    const retryingRequestedField =
+      (attemptedReplyThisTurn && lastAskedParty && !capturedPartyThisTurn) ||
+      (attemptedReplyThisTurn && lastAskedDateTime && !capturedDateThisTurn && !capturedTimeThisTurn) ||
+      (attemptedReplyThisTurn && lastAskedTime && !capturedTimeThisTurn);
+
+    if (attemptedReplyThisTurn && lastAskedParty && !capturedPartyThisTurn) {
+      parsed.spoken_text = partyRetryPrompt;
+      parsed.intent = "select_restaurant";
+      parsed.step = "choose_party";
+      parsed.next_expected_input = "party_size";
+    } else if (attemptedReplyThisTurn && lastAskedDateTime && !capturedDateThisTurn && !capturedTimeThisTurn) {
+      parsed.spoken_text = dateTimeRetryPrompt;
+      parsed.intent = "choose_date";
+      parsed.step = "choose_date";
+      parsed.next_expected_input = "date";
+    } else if (attemptedReplyThisTurn && lastAskedTime && !capturedTimeThisTurn) {
+      parsed.spoken_text = timeRetryPrompt;
+      parsed.intent = "choose_time";
+      parsed.step = "choose_time";
+      parsed.next_expected_input = "time";
+    } else if (selected_restaurant_id && bsPartyAfter == null) {
       // Question 1 — party size only. (Single-result searches are auto-
       // promoted to selected_restaurant_id at search time, so this branch
       // also handles "user searched and one result came back" — no extra
       // confirmation step.)
-      parsed.spoken_text = "How many guests?";
-    } else if (selected_restaurant_id && (!bsDateAfter || !bsTimeAfter)) {
-      // Question 2 — date AND time together.
-      parsed.spoken_text = "What date and time?";
+      parsed.spoken_text = hadPartyBeforeTurn ? partyRetryPrompt : "How many guests?";
+    } else if (selected_restaurant_id && bsPartyAfter != null && !bsDateAfter) {
+      // Question 2a — date AND time together when neither was captured yet.
+      parsed.spoken_text = hadPartyBeforeTurn ? dateTimeRetryPrompt : "What date and time?";
+    } else if (selected_restaurant_id && bsPartyAfter != null && bsDateAfter && !bsTimeAfter) {
+      // Question 2b — date already captured, only the time is still missing.
+      parsed.spoken_text = hadDateBeforeTurn ? timeRetryPrompt : "What time?";
     }
 
     // Anti-repetition net: on ANY turn (not just the one where the user
@@ -2312,7 +2363,7 @@ Deno.serve(async (req) => {
     // Without this the model occasionally regresses a turn or two later
     // ("how many guests?" after party_size was already set) because a tool
     // result pushed the SET/MISSING checklist out of its attention window.
-    if (hasRestaurant && typeof parsed.spoken_text === "string") {
+    if (!retryingRequestedField && hasRestaurant && typeof parsed.spoken_text === "string") {
       const spoken = parsed.spoken_text as string;
       // Broad patterns — the LLM uses varied phrasings for the same question.
       const asksParty = /how many|party size|guests|people|for how many|group size|your party|how large|how big|persons?\b/i.test(spoken);
@@ -2328,10 +2379,13 @@ Deno.serve(async (req) => {
       if (repeatsParty || repeatsDate || repeatsTime || repeatsRestaurant) {
         if (bsPartyAfter == null) {
           // Question 1 — party size first.
-          parsed.spoken_text = "How many guests?";
-        } else if (!bsDateAfter || !bsTimeAfter) {
-          // Question 2 — date AND time together (single combined prompt).
-          parsed.spoken_text = "What date and time?";
+          parsed.spoken_text = hadPartyBeforeTurn ? partyRetryPrompt : "How many guests?";
+        } else if (!bsDateAfter) {
+          // Question 2a — collect date + time together until the date lands.
+          parsed.spoken_text = hadPartyBeforeTurn ? dateTimeRetryPrompt : "What date and time?";
+        } else if (!bsTimeAfter) {
+          // Question 2b — once the date is known, only re-prompt for time.
+          parsed.spoken_text = hadDateBeforeTurn ? timeRetryPrompt : "What time?";
         } else {
           const hasAvailabilityAction = derivedActions.some(
             (action) => action.type === "load_availability",

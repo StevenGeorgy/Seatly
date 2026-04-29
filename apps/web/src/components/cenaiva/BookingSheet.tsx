@@ -140,19 +140,6 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
     void runAvailabilityLookup(true);
   };
 
-  const handleSlotSelect = (slot: { shift_id: string; date_time: string; display_time: string }) => {
-    dispatch({ type: "select_time_slot", slot_iso: slot.date_time, shift_id: slot.shift_id });
-    // Populate booking.time so the confirmation card has a time to display.
-    // select_time_slot only carries shift_id + slot_iso; set_booking_field is
-    // the action shape the reducer uses to update individual booking fields.
-    dispatch({ type: "set_booking_field", field: "time", value: slot.display_time });
-    void assistant?.sendTranscript(`I'll take the ${slot.display_time} slot`);
-  };
-
-  const handleConfirm = () => {
-    void assistant?.sendTranscript("Yes, confirm my booking");
-  };
-
   const handlePostBookingSave = () => {
     const parts: string[] = [];
     if (specialRequest.trim()) parts.push(`special request: ${specialRequest}`);
@@ -342,8 +329,6 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const hasCharging = booking.status === "charging";
   const hasLoadingAvailability =
     booking.status === "loading_availability" && availability.loading;
-  const hasSlotGrid =
-    booking.status === "awaiting_time_selection" && availability.slots.length > 0;
   const hasConfirming = booking.status === "confirming";
   const hasCollectingCTA =
     booking.status === "collecting_minimum_fields" &&
@@ -358,7 +343,6 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
     hasPaymentSplit ||
     hasCharging ||
     hasLoadingAvailability ||
-    hasSlotGrid ||
     hasConfirming ||
     hasCollectingCTA;
 
@@ -837,36 +821,6 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
           {/* ── Availability slots ───────────────────────────────────────────── */}
           {booking.status === "loading_availability" && availability.loading && (
             <div className="py-6 text-center text-white/50 text-sm">Loading slots…</div>
-          )}
-
-          {booking.status === "awaiting_time_selection" && availability.slots.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-white/60 text-sm mb-3">Pick a time:</p>
-              <div className="grid grid-cols-3 gap-2">
-                {availability.slots.map((slot) => (
-                  <button
-                    key={slot.date_time}
-                    onClick={() => handleSlotSelect(slot)}
-                    className={cn(
-                      "py-2 rounded-lg text-sm border transition-colors",
-                      booking.slot_iso === slot.date_time
-                        ? "bg-[#C8A951] text-black border-[#C8A951]"
-                        : "border-white/20 text-white hover:border-[#C8A951]",
-                    )}
-                  >
-                    {slot.display_time}
-                  </button>
-                ))}
-              </div>
-              {booking.slot_iso && (
-                <Button
-                  className="w-full mt-3 bg-[#C8A951] text-black hover:bg-[#E6C060]"
-                  onClick={handleConfirm}
-                >
-                  Confirm booking
-                </Button>
-              )}
-            </div>
           )}
 
           {/* ── Confirming state ─────────────────────────────────────────────── */}

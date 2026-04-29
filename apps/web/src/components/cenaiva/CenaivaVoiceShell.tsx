@@ -120,6 +120,24 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
     const greeting = isResumingMidFlow
       ? `Hey, ${firstName}! Where were we?`
       : `Hey, ${firstName}! How can I help?`;
+    const shouldListenImmediately =
+      assistant?.shouldAutoListenOnOpen() &&
+      !MANUAL_MENU_STATUSES.has(state.booking.status);
+
+    if (shouldListenImmediately) {
+      dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
+      const timer = window.setTimeout(() => {
+        if (
+          isOpenRef.current &&
+          assistant?.shouldAutoListenOnOpen() &&
+          !MANUAL_MENU_STATUSES.has(state.booking.status)
+        ) {
+          void assistant?.startListening();
+        }
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+
     dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
     void (async () => {
       await voice.speak(greeting);

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -138,6 +138,7 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) 
 export default function SetupPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const [step, setStep] = useState(0);
   const [direction, setDirection] = useState(1);
   const [submitting, setSubmitting] = useState(false);
@@ -174,6 +175,20 @@ export default function SetupPage() {
 
   const goNext = () => { setDirection(1);  setStep((s) => Math.min(s + 1, STEPS.length - 1)); };
   const goBack = () => { setDirection(-1); setStep((s) => Math.max(s - 1, 0)); };
+  const exitSetup = () => {
+    if (location.key !== "default") {
+      navigate(-1);
+      return;
+    }
+    navigate("/discover", { replace: true });
+  };
+  const handleBack = () => {
+    if (step > 0) {
+      goBack();
+      return;
+    }
+    exitSetup();
+  };
 
   // ── Tables helpers ──────────────────────────────────────────────────────────
   function addTable() {
@@ -245,7 +260,14 @@ export default function SetupPage() {
       {/* Header */}
       <header className="border-b border-border bg-bg-surface/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-2xl items-center justify-between px-6 py-4">
-          <span className="text-sm font-bold tracking-[0.2em] text-gold">CENAIVA</span>
+          <button
+            type="button"
+            onClick={exitSetup}
+            className="text-sm font-bold tracking-[0.2em] text-gold transition-opacity hover:opacity-80"
+            aria-label="Leave setup"
+          >
+            CENAIVA
+          </button>
           <span className="text-sm text-text-muted">Restaurant Setup</span>
         </div>
       </header>
@@ -742,7 +764,7 @@ export default function SetupPage() {
 
         {/* Navigation */}
         <div className="mt-auto flex items-center justify-between pt-8">
-          <Button variant="ghost" disabled={step === 0} onClick={goBack} className="gap-2">
+          <Button variant="ghost" onClick={handleBack} className="gap-2">
             <ArrowLeft className="size-4" />
             Back
           </Button>

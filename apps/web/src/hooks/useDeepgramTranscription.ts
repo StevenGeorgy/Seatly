@@ -42,6 +42,7 @@ const TOKEN_TTL_BUFFER_MS = 5_000;
 const SILENCE_TIMEOUT_MS = 700;
 const NO_SPEECH_TIMEOUT_MS = 4_000;
 const TURN_TIMEOUT_MS = 30_000;
+const STREAM_KEEP_WARM_MS = 12_000;
 const SPEECH_RMS_THRESHOLD = 0.015;
 const MAX_KEYTERMS = 12;
 const MEDIA_RECORDER_MIME_TYPES = [
@@ -197,6 +198,7 @@ export function useDeepgramTranscription() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const turnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const releaseStreamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const resolveRef = useRef<((value: string) => void) | null>(null);
   const rejectRef = useRef<((reason?: Error) => void) | null>(null);
@@ -214,6 +216,13 @@ export function useDeepgramTranscription() {
     }
   }, []);
 
+  const clearReleaseStreamTimer = useCallback(() => {
+    if (releaseStreamTimerRef.current) {
+      clearTimeout(releaseStreamTimerRef.current);
+      releaseStreamTimerRef.current = null;
+    }
+  }, []);
+
   const cancelLevelMonitor = useCallback(() => {
     if (animationFrameRef.current !== null) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -221,7 +230,15 @@ export function useDeepgramTranscription() {
     }
   }, []);
 
-  const cleanupMedia = useCallback(() => {
+  const releaseStream = useCallback(() => {
+    clearReleaseStreamTimer();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+  }, [clearReleaseStreamTimer]);
+
+  const cleanupMedia = useCallback((opts?: { keepWarm?: boolean }) => {
     cancelLevelMonitor();
     clearTurnTimer();
 
@@ -237,13 +254,19 @@ export function useDeepgramTranscription() {
       try { void contextRef.current.close(); } catch { /* ignore */ }
       contextRef.current = null;
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+    if (opts?.keepWarm) {
+      clearReleaseStreamTimer();
+      if (streamRef.current) {
+        releaseStreamTimerRef.current = setTimeout(() => {
+          releaseStream();
+        }, STREAM_KEEP_WARM_MS);
+      }
+    } else {
+      releaseStream();
     }
     recorderRef.current = null;
     setIsRecording(false);
-  }, [cancelLevelMonitor, clearTurnTimer]);
+  }, [cancelLevelMonitor, clearReleaseStreamTimer, clearTurnTimer, releaseStream]);
 
   const finish = useCallback((transcript: string) => {
     if (settledRef.current) return;
@@ -251,7 +274,7 @@ export function useDeepgramTranscription() {
     const resolve = resolveRef.current;
     resolveRef.current = null;
     rejectRef.current = null;
-    cleanupMedia();
+    cleanupMedia({ keepWarm: true });
     resolve?.(transcript.trim());
   }, [cleanupMedia]);
 
@@ -261,7 +284,7 @@ export function useDeepgramTranscription() {
     const reject = rejectRef.current;
     resolveRef.current = null;
     rejectRef.current = null;
-    cleanupMedia();
+    cleanupMedia({ keepWarm: true });
     reject?.(error);
   }, [cleanupMedia]);
 
@@ -343,9 +366,12 @@ export function useDeepgramTranscription() {
       throw new Error("deepgram-audiocontext-unavailable");
     }
 
-    const token = await getDeepgramLiveToken();
-    if (!token) throw new Error("deepgram-token-unavailable");
-    cachedToken = token;
+    // Warm the short-lived Deepgram token in the background, but don't block
+    // mic activation on this network round-trip. The upload path will await
+    // the same in-flight promise later if needed.
+    prefetchDeepgramToken();
+
+    clearReleaseStreamTimer();
 
     settledRef.current = false;
     stoppingRef.current = false;
@@ -355,19 +381,29 @@ export function useDeepgramTranscription() {
     recordingStartedAtRef.current = Date.now();
     lastSpeechAtRef.current = recordingStartedAtRef.current;
 
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: NOISE_ROBUST_AUDIO_CONSTRAINTS,
-      });
-    } catch (err) {
-      const msg = (err as Error)?.message ?? "";
-      if (msg.includes("NotAllowed") || msg.includes("Permission")) {
-        throw new Error("not-allowed");
+    let stream = streamRef.current;
+    const hasWarmStream =
+      !!stream &&
+      stream.getTracks().some((track) => track.readyState === "live" && track.enabled);
+
+    if (!hasWarmStream) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: NOISE_ROBUST_AUDIO_CONSTRAINTS,
+        });
+      } catch (err) {
+        const msg = (err as Error)?.message ?? "";
+        if (msg.includes("NotAllowed") || msg.includes("Permission")) {
+          throw new Error("not-allowed");
+        }
+        throw err instanceof Error ? err : new Error(String(err));
       }
-      throw err instanceof Error ? err : new Error(String(err));
+      streamRef.current = stream;
     }
-    streamRef.current = stream;
+
+    if (!stream) {
+      throw new Error("deepgram-stream-unavailable");
+    }
 
     const context = new AudioCtxCtor();
     contextRef.current = context;
@@ -407,7 +443,7 @@ export function useDeepgramTranscription() {
         type: recorder.mimeType || recorderMimeType || "audio/webm",
       });
       void (async () => {
-        cleanupMedia();
+        cleanupMedia({ keepWarm: true });
         if (!blob.size || !speechDetectedRef.current) {
           finish("");
           return;

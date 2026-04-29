@@ -36,6 +36,8 @@ interface AssistantContextValue {
 }
 
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
+const RELISTEN_AFTER_EMPTY_TURN_MS = 100;
+const RELISTEN_AFTER_ERROR_MS = 150;
 
 export function useAssistant(): AssistantContextValue | null {
   return useContext(AssistantCtx);
@@ -272,7 +274,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           if (isOpenRef.current && !textModeRef.current) {
             setTimeout(() => {
               if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
-            }, 400);
+            }, RELISTEN_AFTER_ERROR_MS);
           }
           return;
         }
@@ -331,7 +333,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
           // No spokenText (silent flow) — make sure any queued audio is dropped.
           voice.discardStreamingSpeech();
         }
-        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
 
         // In the manual menu / prepay flow the UI is button-driven — we only
         // open the mic on explicit tap (for ingredient / allergen questions).
@@ -343,14 +344,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
         ].includes(stateRef.current.booking.status);
 
         if (isOpenRef.current && !textModeRef.current && !manualMenuActive) {
-          // 200ms grace: lets Chrome's audio stack release the mic after TTS
-          // ends, avoiding InvalidStateError on recognition.start(). Tightened
-          // from 400ms for snappier back-and-forth pacing.
-          setTimeout(() => {
-            if (isOpenRef.current && !textModeRef.current) {
-              void startListeningRef.current();
-            }
-          }, 200);
+          // Hand off straight back into listening as soon as speech ends.
+          if (isOpenRef.current && !textModeRef.current) {
+            void startListeningRef.current();
+          }
+        } else {
+          dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         }
       } catch (err) {
         processingRef.current = false;
@@ -369,7 +368,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         if (isOpenRef.current && !textModeRef.current) {
           setTimeout(() => {
             if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
-          }, 400);
+          }, RELISTEN_AFTER_ERROR_MS);
         }
       }
     },
@@ -403,7 +402,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           if (isOpenRef.current && !textModeRef.current) {
             void startListeningRef.current();
           }
-        }, 400);
+        }, RELISTEN_AFTER_EMPTY_TURN_MS);
       }
     } catch (err) {
       // Transient errors (InvalidStateError, recognition-start-failed,
@@ -435,7 +434,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           if (isOpenRef.current && !textModeRef.current) {
             void startListeningRef.current();
           }
-        }, 500);
+        }, RELISTEN_AFTER_ERROR_MS);
       }
     }
   }, [voice, sendTranscript, dispatch]);
@@ -456,6 +455,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const open = useCallback(
     (restaurantId?: string, restaurantName?: string, opts?: { autoListen?: boolean }) => {
       autoListenOnOpenRef.current = opts?.autoListen === true;
+      isOpenRef.current = true;
       requestLocation();
       // Prime browser speech in the same user gesture that opens the shell.
       // This makes the Web Speech fallback audible on /discover even when

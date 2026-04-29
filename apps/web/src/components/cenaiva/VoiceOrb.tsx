@@ -34,11 +34,7 @@ export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
     >
       {/* Pulse ring when listening */}
       {status === "listening" && (
-        <motion.span
-          className="absolute inset-0 rounded-full border-2 border-[#C8A951]"
-          animate={{ scale: [1, 1.5, 1], opacity: [0.6, 0, 0.6] }}
-          transition={{ duration: 1.5, repeat: Infinity }}
-        />
+        <span className="pointer-events-none absolute inset-0 rounded-full border-2 border-[#C8A951]/50" />
       )}
 
       {/* Speaking wave rings */}
