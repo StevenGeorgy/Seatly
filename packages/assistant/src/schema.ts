@@ -126,9 +126,16 @@ const BOOKING_STATUS = z.enum([
   "choosing_tip_timing",
   "choosing_tip_amount",
   "choosing_payment_split",
+  "collecting_payment",
   "charging",
   "paid",
 ]);
+
+const PendingActionSchema = z.object({
+  type: z.enum(["modify_reservation", "cancel_reservation", "late_note", "save_preference"]),
+  payload: z.record(z.string(), z.unknown()),
+  confirmation_text: z.string(),
+}).nullable();
 
 export const BookingDeltaSchema = z.object({
   restaurant_id: z.string().nullable().optional(),
@@ -149,6 +156,7 @@ export const BookingDeltaSchema = z.object({
   tip_percent: z.number().nullable().optional(),
   tip_choice: z.enum(["now", "after"]).nullable().optional(),
   payment_split: z.enum(["single", "split"]).nullable().optional(),
+  pending_action: PendingActionSchema.optional(),
   cart_subtotal: z.number().optional(),
   cart: z.array(z.object({
     menu_item_id: z.string(),

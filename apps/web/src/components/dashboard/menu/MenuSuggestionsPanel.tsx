@@ -165,7 +165,7 @@ function SuggestionCard({
 type Props = { onClose: () => void };
 
 export function MenuSuggestionsPanel({ onClose }: Props) {
-  const { suggestions, loading, generating, generate, dismiss } = useMenuSuggestions();
+  const { suggestions, generating, generate, dismiss } = useMenuSuggestions();
   const [previewTarget, setPreviewTarget] = useState<SuggestionRow | null>(null);
   const { items: menuItems } = useMenuItems();
   const itemById = useMemo(

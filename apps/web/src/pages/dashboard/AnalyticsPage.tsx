@@ -130,7 +130,10 @@ export default function AnalyticsPage() {
                     color: "#FFFFFF",
                     fontSize: 13,
                   }}
-                  formatter={(value: number) => [formatCurrency(value, currency), t("dashboard.analytics.revenue")]}
+                  formatter={(value) => [
+                    formatCurrency(Number(value ?? 0), currency),
+                    t("dashboard.analytics.revenue"),
+                  ]}
                 />
                 <Area
                   type="monotone"

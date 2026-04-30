@@ -825,8 +825,90 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
 
           {/* ── Confirming state ─────────────────────────────────────────────── */}
           {booking.status === "confirming" && (
-            <div className="py-6 text-center text-white/60 text-sm">
-              Securing your reservation…
+            <div className="py-4 space-y-4">
+              <div className="text-center">
+                <p className="text-white text-base font-medium">Confirm reservation</p>
+                <p className="text-white/45 text-xs mt-1">Review the details before Cenaiva books it.</p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 space-y-2 text-sm">
+                {booking.restaurant_name && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-white/45">Restaurant</span>
+                    <span className="text-white text-right">{booking.restaurant_name}</span>
+                  </div>
+                )}
+                {booking.party_size && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-white/45">Guests</span>
+                    <span className="text-white">{booking.party_size}</span>
+                  </div>
+                )}
+                {booking.date && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-white/45">Date</span>
+                    <span className="text-white">
+                      {(() => {
+                        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(booking.date ?? "");
+                        if (!m) return booking.date;
+                        const local = new Date(
+                          parseInt(m[1], 10),
+                          parseInt(m[2], 10) - 1,
+                          parseInt(m[3], 10),
+                        );
+                        try { return format(local, "EEE, MMM d"); } catch { return booking.date; }
+                      })()}
+                    </span>
+                  </div>
+                )}
+                {(booking.time || booking.slot_iso) && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-white/45">Time</span>
+                    <span className="text-white">
+                      {(() => {
+                        const t = booking.time ?? "";
+                        if (/[AaPp][Mm]\b/.test(t)) return t;
+                        const m = /^(\d{1,2}):(\d{2})/.exec(t);
+                        if (m) {
+                          let h = parseInt(m[1], 10);
+                          const period = h >= 12 ? "PM" : "AM";
+                          if (h === 0) h = 12;
+                          else if (h > 12) h -= 12;
+                          return `${h}:${m[2]} ${period}`;
+                        }
+                        if (booking.slot_iso) {
+                          try {
+                            return new Date(booking.slot_iso).toLocaleTimeString("en-US", {
+                              hour: "numeric",
+                              minute: "2-digit",
+                              hour12: true,
+                            });
+                          } catch { /* fall through */ }
+                        }
+                        return t;
+                      })()}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3 justify-center">
+                <Button
+                  type="button"
+                  className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
+                  onClick={() => void assistant?.sendTranscript("yes, confirm booking", { force: true })}
+                >
+                  Confirm booking
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-white/20 text-white/60 hover:bg-white/5 text-sm"
+                  onClick={() => void assistant?.sendTranscript("change the booking details", { force: true })}
+                >
+                  Change details
+                </Button>
+              </div>
             </div>
           )}
 

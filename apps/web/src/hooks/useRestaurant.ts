@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 
 // ---------------------------------------------------------------------------
 // Mock fallback data — used when the DB returns nothing for a slug
@@ -138,7 +139,7 @@ export type Restaurant = {
   email: string | null;
   website: string | null;
   hours_json: Record<string, unknown> | null;
-  settings_json: Record<string, unknown> | null;
+  settings_json: RestaurantSettings | null;
   plan: string;
   is_active: boolean;
   timezone: string;

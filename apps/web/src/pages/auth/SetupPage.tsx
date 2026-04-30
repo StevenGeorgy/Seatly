@@ -42,7 +42,6 @@ const STEPS = [
 ] as const;
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const TIME_OPTIONS: string[] = [];
 for (let h = 0; h < 24; h++) {
   for (const m of [0, 30]) {
@@ -98,7 +97,7 @@ const restaurantSchema = z.object({
   cuisine_type: z.string().min(1, "Required"),
   phone:        z.string().optional(),
   description:  z.string().optional(),
-  currency:     z.string().default("cad"),
+  currency:     z.string().min(1, "Required"),
 });
 
 type RestaurantFormValues = z.infer<typeof restaurantSchema>;
@@ -320,7 +319,7 @@ export default function SetupPage() {
             initial="enter"
             animate="center"
             exit="exit"
-            transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
+            transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] as const }}
             className="flex flex-1 flex-col"
           >
 

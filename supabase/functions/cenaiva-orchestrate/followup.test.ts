@@ -399,13 +399,49 @@ Deno.test("availability loaded with missing time asks for a time", () => {
   );
 });
 
+Deno.test("confirming booking waits for explicit user confirmation", () => {
+  const result = buildDeterministicFollowUp(makeContext({
+    selected_restaurant_id: "r1",
+    booking_state: {
+      restaurant_id: "r1",
+      party_size: 4,
+      date: "2026-05-01",
+      time: "8:00 PM",
+      status: "confirming",
+    },
+    lastTextReply: "Just confirming: table for 4 at La Piazza, Fri, May 1 at 8:00 PM. Should I book it?",
+  }));
+
+  assertEquals(
+    pick(result),
+    {
+      spoken_text: "Just confirming: table for 4 at La Piazza, Fri, May 1 at 8:00 PM. Should I book it?",
+      intent: "confirm_booking",
+      step: "confirm",
+      next_expected_input: "confirmation",
+      ui_actions: [],
+      booking: {
+        restaurant_id: "r1",
+        party_size: 4,
+        date: "2026-05-01",
+        time: "8:00 PM",
+        status: "confirming",
+      },
+      map: null,
+      filters: null,
+      promoted_selected_restaurant_id: "r1",
+    },
+    "confirming follow-up",
+  );
+});
+
 Deno.test("true dead-end case falls back to the generic prompt with schema-valid enums", () => {
   const result = buildDeterministicFollowUp(makeContext());
 
   assertEquals(
     pick(result),
     {
-      spoken_text: "Got it. What would you like to do next?",
+      spoken_text: "What kind of restaurant are you looking for?",
       intent: "discover_restaurants",
       step: "choose_cuisine",
       next_expected_input: "cuisine",

@@ -340,7 +340,7 @@ export default function RestaurantPublicPage() {
   }, [dbMenuItems, dbCategories]);
 
   const categoryList = useMemo(
-    () => ["All", ...dbCategories.map((c) => c.name)],
+    () => (dbCategories.length > 0 ? ["All", ...dbCategories.map((c) => c.name)] : CATEGORIES),
     [dbCategories],
   );
 
@@ -1258,6 +1258,13 @@ export default function RestaurantPublicPage() {
 
               {/* Items */}
               <div className="flex flex-col gap-2.5">
+                {menuLoading ? (
+                  <>
+                    <Skeleton className="h-24 rounded-xl" />
+                    <Skeleton className="h-24 rounded-xl" />
+                    <Skeleton className="h-24 rounded-xl" />
+                  </>
+                ) : (
                 <AnimatePresence mode="popLayout">
                   {filteredMenu.map((item, i) => {
                     const inCart = cart.find((c) => c.id === item.id);
@@ -1319,6 +1326,7 @@ export default function RestaurantPublicPage() {
                     );
                   })}
                 </AnimatePresence>
+                )}
               </div>
 
               {/* Continue button — skips straight to confirmation when cart is empty */}

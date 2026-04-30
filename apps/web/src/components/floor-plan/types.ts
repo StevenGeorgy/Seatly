@@ -1,4 +1,5 @@
 import type { DecorationItem, FloorPlanLayout, SectionRow, TableRow } from "@/hooks/useFloorPlan";
+import type { KonvaEventObject } from "konva/lib/Node";
 
 // ─── Mode ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ export type FloorPlanCanvasProps = {
   selectedTableIds: string[];
   activeTool: ToolMode;
   stageScale: number;
-  onTableClick: (tableId: string, evt: import("konva").KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  onTableClick: (tableId: string, evt: KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onTableHover: (info: HoveredTableInfo | null) => void;
   onCanvasClick: (worldX: number, worldY: number) => void;
   onTableDragEnd: (tableId: string, x: number, y: number) => void;

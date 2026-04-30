@@ -1,4 +1,17 @@
 export type AssistantIntent =
+  | "reservation_create"
+  | "reservation_modify"
+  | "reservation_cancel"
+  | "restaurant_search"
+  | "menu_question"
+  | "dinner_plan"
+  | "preorder_food"
+  | "payment_question"
+  | "rewards_question"
+  | "directions"
+  | "restaurant_contact"
+  | "general_question"
+  | "fallback_unknown"
   | "discover_restaurants"
   | "book_restaurant"
   | "refine_search"
@@ -369,6 +382,7 @@ function defaultPhase(
     case "choosing_tip_amount":
       return { intent: "collect_tip", step: "collect_tip", next_expected_input: "tip_amount" };
     case "choosing_payment_split":
+    case "collecting_payment":
     case "charging":
       return { intent: "choose_payment", step: "choose_payment", next_expected_input: "payment_split" };
     case "paid":
@@ -465,7 +479,7 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         { type: "update_map_markers", restaurant_ids: refinement.restaurant_ids },
         { type: "show_restaurant_cards", restaurant_ids: refinement.restaurant_ids },
       ];
-      const map = {
+      const map: Record<string, unknown> = {
         visible: true,
         marker_restaurant_ids: refinement.restaurant_ids,
       };
@@ -491,6 +505,10 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         };
       }
 
+      const highlightedRestaurantId = refinement.restaurant_ids[0];
+      ui_actions.push({ type: "highlight_restaurant", restaurant_id: highlightedRestaurantId });
+      map.highlighted_restaurant_id = highlightedRestaurantId;
+
       return {
         promoted_selected_restaurant_id: null,
         spoken_text: buildRecommendationPrompt(context.transcript, context.visibleRestaurants.filter((restaurant) =>
@@ -508,17 +526,19 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   }
 
   if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1 && context.lastSearchRestaurants.length > 0) {
+    const highlightedRestaurantId = context.lastSearchRestaurants[0]?.id ?? context.lastSearchIds[0];
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, context.lastSearchRestaurants),
       intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
-      ui_actions: [],
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: highlightedRestaurantId }],
       booking: null,
       map: {
         visible: true,
         marker_restaurant_ids: context.lastSearchIds,
+        highlighted_restaurant_id: highlightedRestaurantId,
       },
       filters: null,
     };
@@ -548,17 +568,19 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         filters: null,
       };
     }
+    const highlightedRestaurantId = visibleIds[0];
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
       intent: "refine_search",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
-      ui_actions: [],
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: highlightedRestaurantId }],
       booking: null,
       map: {
         visible: true,
         marker_restaurant_ids: visibleIds,
+        highlighted_restaurant_id: highlightedRestaurantId,
       },
       filters: null,
     };
@@ -618,18 +640,40 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   }
 
   if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1) {
+    const highlightedRestaurantId = recommendedRestaurants[0]?.id ?? context.lastSearchIds[0];
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
       intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
       step: "choose_restaurant",
       next_expected_input: "restaurant",
-      ui_actions: [],
+      ui_actions: [{ type: "highlight_restaurant", restaurant_id: highlightedRestaurantId }],
       booking: null,
       map: {
         visible: true,
         marker_restaurant_ids: context.lastSearchIds,
+        highlighted_restaurant_id: highlightedRestaurantId,
       },
+      filters: null,
+    };
+  }
+
+  if (status === "confirming") {
+    return {
+      promoted_selected_restaurant_id: effectiveSelectedRestaurantId,
+      spoken_text: trimmedLastText || "Please confirm the booking details.",
+      intent: "confirm_booking",
+      step: "confirm",
+      next_expected_input: "confirmation",
+      ui_actions: [],
+      booking: {
+        ...(effectiveSelectedRestaurantId ? { restaurant_id: effectiveSelectedRestaurantId } : {}),
+        ...(effectivePartySize != null ? { party_size: effectivePartySize } : {}),
+        ...(effectiveDate ? { date: effectiveDate } : {}),
+        ...(effectiveTime ? { time: effectiveTime } : {}),
+        status: "confirming",
+      },
+      map: null,
       filters: null,
     };
   }
@@ -664,9 +708,8 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   }
 
   // Last-resort spoken_text. The model produced no text and we couldn't pin
-  // down a specific phase. Prefer naming what the user can SEE on the map
-  // over the generic "Got it" — that line broke recommendation flows where
-  // search succeeded but the LLM dropped its reply.
+  // down a specific phase. Prefer naming what the user can SEE on the map;
+  // otherwise ask for the restaurant preference directly.
   const fallbackSpoken = (() => {
     const visible = context.visibleRestaurants ?? [];
     if (visible.length > 0) {
@@ -675,7 +718,7 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
       if (names.length === 2) return `${names[0]} and ${names[1]} look good — which one?`;
       return `${names[0]}, ${names[1]}, and ${names[2]} are options — which one?`;
     }
-    return "Want me to look something else up?";
+    return "What kind of restaurant are you looking for?";
   })();
 
   return {

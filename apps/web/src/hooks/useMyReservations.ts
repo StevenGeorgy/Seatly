@@ -65,7 +65,26 @@ export function useMyReservations() {
       return;
     }
 
-    const rows = (data ?? []) as MyReservationRow[];
+    type RawReservationRow = Omit<MyReservationRow, "restaurant" | "table"> & {
+      restaurant:
+        | MyReservationRow["restaurant"]
+        | NonNullable<MyReservationRow["restaurant"]>[];
+      table:
+        | MyReservationRow["table"]
+        | NonNullable<MyReservationRow["table"]>[];
+    };
+    const rows = (data ?? []).map((row) => {
+      const raw = row as unknown as RawReservationRow;
+      return {
+        ...raw,
+        restaurant: Array.isArray(raw.restaurant)
+          ? raw.restaurant[0] ?? null
+          : raw.restaurant,
+        table: Array.isArray(raw.table)
+          ? raw.table[0] ?? null
+          : raw.table,
+      };
+    });
     const now = new Date().toISOString();
     setUpcoming(rows.filter((r) => r.reserved_at >= now && r.status !== "cancelled"));
     setPast(rows.filter((r) => r.reserved_at < now || r.status === "cancelled"));

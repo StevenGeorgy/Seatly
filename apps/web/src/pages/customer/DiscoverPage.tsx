@@ -7,7 +7,6 @@ import {
   MapPin,
   Flame,
   Tag,
-  SlidersHorizontal,
   Mic,
   LogOut,
   Plus,

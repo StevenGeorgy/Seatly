@@ -7,17 +7,61 @@ import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { getAvailability } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
 import { localDayOfWeek } from "../_shared/time.ts";
-import { buildDeterministicFollowUp, type VisibleRestaurant } from "./followup.ts";
+import { buildDeterministicFollowUp, type FollowUpAction, type VisibleRestaurant } from "./followup.ts";
 
 const openai = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
 const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+const LATENCY_DEBUG = Deno.env.get("CENAIVA_LATENCY_DEBUG") === "1";
+const OPENAI_PREWARM = Deno.env.get("CENAIVA_OPENAI_PREWARM") === "1";
 
-// Pre-warm the OpenAI HTTP connection on module init so the first user turn
-// after a cold function start doesn't pay the TLS handshake cost. Best-effort
-// — failures are silent and never block the function.
-(async () => {
-  try { await openai.models.list(); } catch { /* noop */ }
-})();
+// Optional pre-warm. Disabled by default because module-init network work can
+// compete with the first live request in cold starts.
+if (OPENAI_PREWARM) {
+  (async () => {
+    try { await openai.models.list(); } catch { /* noop */ }
+  })();
+}
+
+function createLatencyTimer(label: string) {
+  const start = performance.now();
+  let last = start;
+  const marks: string[] = [];
+  const mark = (name: string) => {
+    if (!LATENCY_DEBUG) return;
+    const now = performance.now();
+    marks.push(`${name}=+${Math.round(now - last)}ms/${Math.round(now - start)}ms`);
+    last = now;
+  };
+  return {
+    mark,
+    async time<T>(name: string, fn: () => PromiseLike<T>): Promise<T> {
+      const value = await fn();
+      mark(name);
+      return value;
+    },
+    done(extra: Record<string, unknown> = {}) {
+      if (!LATENCY_DEBUG) return;
+      console.log(JSON.stringify({
+        kind: "latency",
+        label,
+        total_ms: Math.round(performance.now() - start),
+        marks,
+        ...extra,
+      }));
+    },
+  };
+}
+
+function deferTask(label: string, task: Promise<unknown>) {
+  const guarded = task.catch((err) => {
+    const e = err as { message?: string };
+    console.error(`cenaiva-orchestrate ${label} failed:`, e?.message ?? String(err));
+  });
+  const runtime = (globalThis as unknown as {
+    EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void };
+  }).EdgeRuntime;
+  if (runtime?.waitUntil) runtime.waitUntil(guarded);
+}
 
 // ── SSE response helper ──────────────────────────────────────────────────────
 // Streams a sequence of frames to the client as Server-Sent Events.
@@ -191,7 +235,8 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "complete_booking",
-      description: "Create a confirmed dine-in reservation. Call only after date_time, shift_id, and party_size are all known.",
+      description:
+        "Create a confirmed dine-in reservation. This is the only tool that writes a reservation. Call it only after live availability has been checked, the slot has been selected, and the user has explicitly confirmed the exact restaurant/date/time/party-size summary.",
       parameters: {
         type: "object",
         properties: {
@@ -337,45 +382,72 @@ function normalizeSpokenDigits(t: string): string {
     .replace(new RegExp(`\\b(?:sicks?|six)\\s+${COUNT_NOUN}\\b`, "g"), (m) => m.replace(/^\S+/, "six"));
 }
 
+function numberTokenToInt(token: string): number | null {
+  if (/^\d+$/.test(token)) {
+    const n = parseInt(token, 10);
+    return n >= 1 && n <= 20 ? n : null;
+  }
+  return NUMBER_WORDS[token] ?? null;
+}
+
+function hasUncertainPartySize(raw: string): boolean {
+  const t = normalizeSpokenDigits(stripFiller(raw));
+  return /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:or|to|-)\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/.test(t);
+}
+
+function parsePartySizeRange(raw: string): { min: number; max: number } | null {
+  const t = normalizeSpokenDigits(stripFiller(raw));
+  const m = t.match(
+    /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:or|to|-)\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/,
+  );
+  if (!m) return null;
+  const a = numberTokenToInt(m[1]);
+  const b = numberTokenToInt(m[2]);
+  if (a == null || b == null) return null;
+  return { min: Math.min(a, b), max: Math.max(a, b) };
+}
+
 function parsePartySize(raw: string): number | null {
   const t = normalizeSpokenDigits(stripFiller(raw));
+  if (hasUncertainPartySize(raw)) return null;
+  const adultsKids = t.match(
+    /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+adults?\b[\s\S]{0,30}\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:kids?|children)\b/,
+  );
+  if (adultsKids) {
+    const adults = numberTokenToInt(adultsKids[1]);
+    const kids = numberTokenToInt(adultsKids[2]);
+    if (adults != null && kids != null) return adults + kids;
+  }
+  const kidsAdults = t.match(
+    /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:kids?|children)\b[\s\S]{0,30}\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+adults?\b/,
+  );
+  if (kidsAdults) {
+    const kids = numberTokenToInt(kidsAdults[1]);
+    const adults = numberTokenToInt(kidsAdults[2]);
+    if (adults != null && kids != null) return adults + kids;
+  }
   // "just me" / "solo" / "for one"
   if (/\b(just\s+me|solo|alone|by\s+myself)\b/.test(t)) return 1;
-  if (/\b(me\s+and\s+my\s+(wife|husband|partner|boyfriend|girlfriend|friend|kid|date))\b/.test(t)) return 2;
+  if (/\b(me\s+and\s+my\s+(wife|husband|partner|boyfriend|girlfriend|girl|friend|kid|date))\b/.test(t)) return 2;
   // "party of N" / "table for N" / "N people" / "N of us"
   const numMatch = t.match(
     /\b(?:party of|table for|for|just|group of|we are|we're|make it)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|couple|duo|pair)\b/,
   );
   if (numMatch) {
-    const token = numMatch[1];
-    if (/^\d+$/.test(token)) {
-      const n = parseInt(token, 10);
-      if (n >= 1 && n <= 20) return n;
-    }
-    const w = NUMBER_WORDS[token];
-    if (w) return w;
+    const n = numberTokenToInt(numMatch[1]);
+    if (n != null) return n;
   }
   // "N people" / "N guests"
   const peopleMatch = t.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(people|guests|adults|pax|persons?|of us)\b/);
   if (peopleMatch) {
-    const token = peopleMatch[1];
-    if (/^\d+$/.test(token)) {
-      const n = parseInt(token, 10);
-      if (n >= 1 && n <= 20) return n;
-    }
-    const w = NUMBER_WORDS[token];
-    if (w) return w;
+    const n = numberTokenToInt(peopleMatch[1]);
+    if (n != null) return n;
   }
   // Bare "two" / "3" when the assistant just asked party size — last resort.
   const bare = t.trim().match(/^(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/);
   if (bare) {
-    const token = bare[1];
-    if (/^\d+$/.test(token)) {
-      const n = parseInt(token, 10);
-      if (n >= 1 && n <= 20) return n;
-    }
-    const w = NUMBER_WORDS[token];
-    if (w) return w;
+    const n = numberTokenToInt(bare[1]);
+    if (n != null) return n;
   }
   return null;
 }
@@ -446,7 +518,15 @@ const TIME_WORDS: Record<string, number> = {
 };
 
 function parseTime(raw: string): string | null {
-  const t = stripFiller(raw);
+  const t = raw
+    .toLowerCase()
+    .replace(
+      /\b(uh+|um+|er+|ah+|hmm+|mm+|like|so|well|please|pls|thanks|thank you|thx|actually|maybe|i think|i guess|let'?s say|i'?d say|let me see|sorry|okay|ok|yeah|yep|yes|sure|alright)\b/g,
+      " ",
+    )
+    .replace(/[,.!?;]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   // "9pm" / "9 pm" / "9:30 pm" / "9:30pm"
   const ampm = t.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/);
   if (ampm) {
@@ -462,16 +542,21 @@ function parseTime(raw: string): string | null {
   // "21:00" or "9:30" (24-hour)
   const colon = t.match(/\b(\d{1,2}):(\d{2})\b/);
   if (colon) {
-    const h = parseInt(colon[1], 10);
+    let h = parseInt(colon[1], 10);
     const min = parseInt(colon[2], 10);
+    if (h >= 1 && h <= 10) h += 12;
     if (h >= 0 && h <= 23 && min >= 0 && min < 60) {
       return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
     }
   }
   // "nine pm" / "seven thirty" / "noon" / "midnight"
-  const word = t.match(
-    /\b(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?/,
-  );
+  const word =
+    t.match(
+      /\b(?:at|around|maybe|like|about|how about)\s+(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?/,
+    ) ??
+    t.trim().match(
+      /^(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?$/,
+    );
   if (word) {
     const h0 = TIME_WORDS[word[1]];
     if (h0 != null) {
@@ -500,7 +585,20 @@ function parseTime(raw: string): string | null {
     if (h >= 1 && h <= 11) h += 12; // dinner default
     if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
   }
+  const dateAdjacentBare = t.match(
+    /\b(?:today|tonight|tomorrow|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(\d{1,2})\b(?!\s*(?:people|guests|of|year|years))/,
+  );
+  if (dateAdjacentBare) {
+    let h = parseInt(dateAdjacentBare[1], 10);
+    if (h >= 1 && h <= 11) h += 12;
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
   return null;
+}
+
+function hasAmbiguousBareTwelve(raw: string): boolean {
+  const t = stripFiller(raw);
+  return /\b(?:at|around|for|book|today|tonight|tomorrow|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+12\b(?!\s*(?:am|pm|a\.m\.|p\.m\.|:))/i.test(t);
 }
 
 // Convert a slot's display_time ("9:00 PM") back to minutes-from-midnight
@@ -540,18 +638,76 @@ function findNearestSlot(
   return best;
 }
 
+function formatBookingDateForSpeech(dateStr: string): string {
+  const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
+  if (!year || !month || !day) return dateStr;
+  const localNoon = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  }).format(localNoon);
+}
+
+function buildBookingConfirmationPrompt(opts: {
+  restaurantName: string | null;
+  partySize: number;
+  date: string;
+  time: string;
+}): string {
+  const restaurant = opts.restaurantName || "this restaurant";
+  const dateLabel = formatBookingDateForSpeech(opts.date);
+  return `Just confirming: table for ${opts.partySize} at ${restaurant}, ${dateLabel} at ${opts.time}. Should I book it?`;
+}
+
+function scrubGenericLookupPrompt(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  const asksToLookupSomething =
+    /\b(?:want|would|should|shall|can)\b[\s\S]{0,50}\b(?:search|look)\b[\s\S]{0,40}\b(?:something|anything|else|up)\b/i.test(trimmed) ||
+    /\b(?:search|look)\b[\s\S]{0,20}\b(?:something|anything)\b[\s\S]{0,10}\bup\b/i.test(trimmed);
+  if (!asksToLookupSomething) return trimmed;
+  return "What kind of restaurant are you looking for?";
+}
+
+function safeStreamingSpeechChunk(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // Final responses are scrubbed later, but streamed TTS is spoken
+  // immediately. Suppress this generic prompt before it reaches the client.
+  return scrubGenericLookupPrompt(trimmed) === trimmed ? trimmed : null;
+}
+
 // ── Nominatim city lookup ─────────────────────────────────────────────────────
 
+const CITY_CACHE_TTL_MS = 10 * 60 * 1000;
+const CITY_LOOKUP_TIMEOUT_MS = 350;
+const cityCache = new Map<string, { city: string; expiresAt: number }>();
+
 async function resolveCity(lat: number, lng: number): Promise<string> {
+  const key = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const now = Date.now();
+  const cached = cityCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.city;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CITY_LOOKUP_TIMEOUT_MS);
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`;
-    const res = await fetch(url, { headers: { "User-Agent": "Seatly/1.0 (seatly.app)" } });
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Seatly/1.0 (seatly.app)" },
+      signal: controller.signal,
+    });
     if (!res.ok) return "";
     const data = await res.json() as { address?: Record<string, string> };
     const a = data.address ?? {};
-    return a.city ?? a.town ?? a.municipality ?? a.village ?? a.suburb ?? "";
+    const city = a.city ?? a.town ?? a.municipality ?? a.village ?? a.suburb ?? "";
+    cityCache.set(key, { city, expiresAt: now + CITY_CACHE_TTL_MS });
+    return city;
   } catch {
-    return "";
+    return cached?.city ?? "";
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -604,7 +760,7 @@ GEOGRAPHY — restaurants exist in many cities nationwide.
 
 BOOKING STATE (authoritative — trust these values exactly):
 ${bookingChecklist}
-⚠️ FIELD GUARD: Any field above marked "(SET)" is LOCKED. Do NOT ask for it, repeat it, or confirm it in spoken_text.
+⚠️ FIELD GUARD: Any field above marked "(SET)" is LOCKED. Do NOT ask for it again. You may repeat SET fields only in the mandatory final booking confirmation summary.
 If restaurant_id + party_size + date are all SET → call check_availability immediately with zero extra questions.
 Current cart (${cart.length} items): ${cartSummary}.
 
@@ -616,6 +772,17 @@ PERSPECTIVE — You are the ASSISTANT. You are NEVER the guest.
 
 Cenaiva handles DINE-IN RESERVATIONS AND PRE-ORDER PAYMENT ONLY.
 Natural phrases like "I want food from X", "I feel like X", "I'm craving Italian", "let's grab dinner at X" are DINE-IN intents — treat them as restaurant discovery/booking and proceed normally.
+
+INTENT CLASSIFICATION — classify every user turn mentally before acting:
+- reservation_create: user wants to book, reserve, get a table, or "get a spot".
+- reservation_modify / reservation_cancel: user wants to change, move, add guests, add a note, or cancel an existing booking. Do not claim the change is done until the restaurant system confirms it.
+- restaurant_search / dinner_plan: user asks what is good, open, nearby, romantic, cheap, family-friendly, quiet, business-appropriate, after a movie/game, or suitable for an occasion. Show options first unless they clearly ask to book.
+- menu_question: user asks about dishes, ingredients, alcohol, kids meals, preorderability, spice, allergens, or substitutions. Use confirmed data only; if missing, say you do not have it confirmed.
+- preorder_food / payment_question / rewards_question: keep reservation confirmation separate from preorder/payment/rewards actions.
+- directions / restaurant_contact: provide directions/contact help without modifying bookings.
+- general_question / fallback_unknown: if unrelated to restaurants, reservations, dinner planning, menus, directions, rewards, or Cenaiva booking/payment flows, use the scoped fallback.
+
+MESSY SPEECH — users will be rushed, emotional, vague, broken-English, or mis-transcribed. Extract intent generously, ask the minimum missing question, and never overload them with every possible preference. "Book dinner" usually needs party size first. "Something nice" usually needs location or time only if not inferable.
 
 RECOMMENDATIONS — search_restaurants is your recommendation engine. ALWAYS call it (with the right structured filters) when the user asks for ideas, suggestions, "what's good", "where should I eat", or any open-ended discovery request. NEVER reply "What would you like to do?" / "Got it!" without first running a search when the user has clearly expressed a preference, budget, occasion, location, event interest, or deal interest. Map intent → filters like this:
 - BUDGET signals ("cheap", "affordable", "budget", "under $20", "not too expensive") → set price_range_max (1 or 2). "fancy"/"upscale"/"fine dining"/"splurge"/"high-end" → set price_range_min=3 (or sort_by=price_desc).
@@ -646,10 +813,11 @@ FLOW — follow exactly in this order:
        - party_size: "two" / "for 2" / "party of three" / "me and my wife" → 2/3/2. "a couple" → 2. "solo" / "just me" → 1.
        - date: "tonight" / "today" → today's YYYY-MM-DD. "tomorrow" → today+1. "Friday" / "next Saturday" → the next occurrence of that weekday in YYYY-MM-DD.
        - time: "7pm" → "19:00". "seven thirty" → "19:30". "noon" → "12:00".
-   4d. NEVER ask "Would you like to book?" / "Should I book it?" / "Ready to book?" or any variant. Once restaurant_id + party_size + date are SET, the user's intent to book is already confirmed — proceed silently to check_availability.
-   4e. Call check_availability only once restaurant_id, date, AND party_size are all SET. The server will auto-match the user's stated time to the nearest slot and complete the booking — you do NOT need to enumerate slots or re-ask "what time?" once the user has already given a time in their date+time reply. If the user did NOT include a time (only said a date), then after slots come back ask "What time?" — but normally the date+time arrives together so no extra question is needed.
-5. Call complete_booking → emit show_confirmation + show_exit_x.
-6. ONLY AFTER you have emitted show_confirmation in a PRIOR turn AND booking_state.status is one of {"confirmed","offering_preorder","browsing_menu","post_booking"}: emit offer_preorder and ask "Want to pre-order from the menu?" (≤ 10 words). Do NOT enter step 6 while booking_state.status is "idle" or "collecting_minimum_fields" — those are still steps 1-4.
+   4d. Once restaurant_id + party_size + date are SET, proceed silently to check_availability. Do NOT ask for budget/vibe/dietary/seating unless the user raised it or it is required to avoid a wrong booking.
+   4e. Call check_availability only once restaurant_id, date, AND party_size are all SET. The server will match the user's stated time to the nearest slot. If the user did NOT include a time, ask "What time?" after availability comes back.
+5. FINAL BOOKING CONFIRMATION IS MANDATORY. After a live slot is selected, emit select_time_slot + confirm_booking and ask the user to confirm the exact details before any reservation is created. Use a short exact summary: "Just confirming: table for 4 at La Piazza, Friday May 1 at 8:00 PM. Should I book it?" Do NOT call complete_booking in the same turn that selects the slot.
+6. Call complete_booking ONLY when booking_state.status is "confirming", booking_state.slot_iso + booking_state.shift_id are SET, and the user's latest message is a clear confirmation ("yes", "confirm", "book it", "go ahead"). If they say no, cancel, or change anything, do NOT book — ask what to change or update the requested field and re-check availability.
+7. ONLY AFTER complete_booking succeeds and you have emitted show_confirmation: emit offer_preorder and ask "Want to pre-order from the menu?" (≤ 10 words). Do NOT enter this step while booking_state.status is "idle", "collecting_minimum_fields", "loading_availability", "awaiting_time_selection", or "confirming".
    a. If no: emit show_post_booking_questions. DONE.
    b. If yes: call get_menu, emit show_menu. Use current cart (shown above) + add_menu_item actions.
       When user says "done" / "that's it" / "that's all":
@@ -665,18 +833,26 @@ FLOW — follow exactly in this order:
           - "single" AND hasSavedCard=false → emit navigate_to_checkout. DONE.
 
 RULES:
-- spoken_text ≤ 20 words. No filler ("Sure!", "Of course!", "Great choice!"). Direct.
+- spoken_text ≤ 20 words, except final booking confirmation summaries may be up to 28 words. No filler ("Sure!", "Of course!", "Great choice!"). Direct.
 - One question per turn.
-- NEVER end a turn silently after a tool runs. After search_restaurants returns results, your spoken_text MUST mention at least one (and preferably 2-3) restaurant names from the results, then ask which one — even if the user's last reply was short ("yeah", "show me deals"). The forbidden generic fallback "Got it! What would you like to do next?" is BANNED whenever results are visible — describe what's on the map instead.
-- When search_restaurants returns ZERO results, say so plainly and offer to relax one filter ("Nothing matches in your price range — want to widen the budget?"). Don't go silent and don't say "What would you like to do next?".
+- NEVER ask a generic search/look-up question about something, anything, or something else. If there is no context yet, ask "What kind of restaurant are you looking for?"
+- NEVER end a turn silently after a tool runs. After search_restaurants returns results, your spoken_text MUST mention at least one (and preferably 2-3) restaurant names from the results, then ask which one — even if the user's last reply was short ("yeah", "show me deals"). Generic "what next?" fallback questions are BANNED whenever results are visible — describe what's on the map instead.
+- When search_restaurants returns ZERO results, say so plainly and offer to relax one filter ("Nothing matches in your price range — want to widen the budget?"). Don't go silent and don't ask generic "what next?" questions.
 - NEVER re-ask for a booking field that is already SET in the BOOKING STATE checklist — read the checklist first every turn. This includes party_size, date, AND time. If party_size + date + time are all SET, do NOT ask "what date and time?" again — proceed to check_availability.
 - If the user's reply is unclear, garbled, or you can't extract the field you asked for (e.g. you asked "what date and time?" and the transcript is "uhh", "what", or unrelated words like "the menu please"), do NOT silently re-ask the same question. Say "Sorry, I didn't catch that — could you say it again?" (or a short variant) and set next_expected_input to the same field you were collecting. Re-asking the original question verbatim feels broken; explicitly acknowledging you missed it does not.
 - NEVER speak as if YOU are the guest (see PERSPECTIVE above).
 - CUSTOMER VOCABULARY: NEVER say the words "shift", "shifts", "lunch shift", "dinner shift", or any internal scheduling term in spoken_text. These are operational concepts the customer doesn't care about. Always use customer-friendly wording: "no availability", "no openings", "no tables at that time", "we don't have anything then". If a tool message contains the word "shift", paraphrase it before speaking — never echo it verbatim.
-- NO-AVAILABILITY RE-PROMPT: When check_availability returns zero slots OR the user picks a time outside the available slots, ask "What date and time would you like instead?" (re-prompt for BOTH) — not just "What time?". The user may want a different day entirely.
+- NO-AVAILABILITY RE-PROMPT: When check_availability returns zero slots OR the user picks a time outside the available slots, offer a safer alternative: nearby time, different day, similar restaurant, waitlist/contact if available. If asking again, ask "What date and time would you like instead?" — not just "What time?".
 - NEVER say "no reservations available" unless you've called check_availability and confirmed it returned no slots. If search_restaurants returns results, show them.
 - NEVER call check_availability unless restaurant_id, date, AND party_size are all known.
 - If you have enough info, act (emit actions) instead of asking.
+- SAFETY / TRUST:
+  - Never guarantee allergy safety, halal/kosher certification, wheelchair access, quietness, parking, or menu availability unless tool/database data explicitly confirms it. Prefer: "I don't have that confirmed, but I can add it as a note."
+  - For allergies, serious dietary restrictions, accessibility, stroller/wheelchair space, birthdays, private rooms, and seating preferences, add or preserve the request in special_request/seating_preference. Say the restaurant should confirm serious allergy details directly.
+  - For ambiguous dates ("next Friday", "Friday night"), ambiguous times ("12", "after work", "around 7-ish"), and same-name restaurants/locations, use exact date/time/location wording in the final confirmation.
+  - Restaurant discovery, dinner planning, menu questions, directions, contact, rewards, and payment questions should NOT create a booking unless the user clearly asks to book and then confirms the final booking summary.
+  - Never charge a saved card, take a deposit, or prepay a preorder without a separate explicit payment confirmation after the reservation is handled.
+  - Do not support prank/fake/mass/duplicate bookings. If the user asks for abusive booking behavior, refuse briefly and offer one legitimate reservation.
 - Never ask post-booking questions (occasion, dietary) BEFORE show_confirmation.
 - Parse tip freely from natural speech. When unsure, default to 20% and confirm.
 - Always echo the conversation_id in every response.
@@ -777,6 +953,8 @@ type SearchRestaurantRow = {
   id: string;
   name?: string;
   cuisine_type?: string | null;
+  city?: string | null;
+  address?: string | null;
   description?: string | null;
   lat?: number | null;
   lng?: number | null;
@@ -833,6 +1011,1284 @@ function scoreRecommendationFit(
   return score;
 }
 
+type PendingAction = {
+  type: "modify_reservation" | "cancel_reservation" | "late_note" | "save_preference";
+  payload: Record<string, unknown>;
+  confirmation_text: string;
+};
+
+type AssistantPayload = {
+  conversation_id: string;
+  spoken_text: string;
+  intent: string;
+  step: string;
+  next_expected_input: string;
+  ui_actions: FollowUpAction[];
+  booking: Record<string, unknown> | null;
+  map: Record<string, unknown> | null;
+  filters: Record<string, unknown> | null;
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isAffirmativeText(transcript: string): boolean {
+  const isNegative =
+    /\b(no|nope|nah|don'?t|do not|not yet|wait|hold on|cancel|stop|change|modify|different|late|preorder|menu|send|share|remember|weather)\b/i.test(
+      transcript,
+    );
+  return !isNegative &&
+    (
+      /^\s*(yes|yeah|yep|yup|sure|ok|okay|alright|fine|please|yes please|yeah please|sounds good|go ahead|book it|do it|confirm|confirmed|let's do it)[\s.!,]*$/i.test(
+        transcript,
+      ) ||
+      /\b(yes|confirm|confirmed|book it|go ahead|do it|lock it in|make the reservation)\b/i.test(transcript)
+    );
+}
+
+function isNegativeText(transcript: string): boolean {
+  return /\b(no|nope|nah|don'?t|do not|not yet|wait|hold on|cancel|stop|different)\b/i.test(transcript);
+}
+
+function isSafeBookingConfirmationText(transcript: string): boolean {
+  return isAffirmativeText(transcript) &&
+    !/\b(change|modify|cancel|late|running late|preorder|menu|pay|payment|deposit|send|share|remember|weather|different)\b/i.test(transcript);
+}
+
+function makeAssistantPayload(opts: {
+  conversationId: string;
+  spokenText: string;
+  intent?: string;
+  step?: string;
+  nextExpectedInput?: string;
+  uiActions?: FollowUpAction[];
+  booking?: Record<string, unknown> | null;
+  map?: Record<string, unknown> | null;
+  filters?: Record<string, unknown> | null;
+}): AssistantPayload {
+  return {
+    conversation_id: opts.conversationId,
+    spoken_text: scrubGenericLookupPrompt(opts.spokenText),
+    intent: opts.intent ?? "discover_restaurants",
+    step: opts.step ?? "choose_restaurant",
+    next_expected_input: opts.nextExpectedInput ?? "restaurant",
+    ui_actions: opts.uiActions ?? [],
+    booking: opts.booking ?? null,
+    map: opts.map ?? null,
+    filters: opts.filters ?? null,
+  };
+}
+
+async function sendEarlyFinal(
+  send: SseSend,
+  conversationId: string,
+  userContent: string,
+  payload: AssistantPayload,
+): Promise<void> {
+  send({ type: "final", payload });
+  deferTask("deterministic_persist", (async () => {
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId,
+      role: "user",
+      content: userContent,
+      metadata: { kind: "orchestrator", deterministic: true },
+    });
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId,
+      role: "assistant",
+      content: payload.spoken_text,
+      metadata: { kind: "orchestrator", deterministic: true, full_response: payload },
+    });
+  })());
+}
+
+function parsePendingAction(value: unknown): PendingAction | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const type = raw.type;
+  if (
+    type !== "modify_reservation" &&
+    type !== "cancel_reservation" &&
+    type !== "late_note" &&
+    type !== "save_preference"
+  ) return null;
+  return {
+    type,
+    payload: raw.payload && typeof raw.payload === "object"
+      ? raw.payload as Record<string, unknown>
+      : {},
+    confirmation_text: typeof raw.confirmation_text === "string" ? raw.confirmation_text : "",
+  };
+}
+
+function bookingRestaurantId(bookingState: Record<string, unknown>, selectedRestaurantId: string | null): string | null {
+  return (bookingState.restaurant_id as string | null | undefined) ?? selectedRestaurantId ?? null;
+}
+
+function restaurantLabel(row: SearchRestaurantRow): string {
+  const bits = [row.name ?? "this restaurant"];
+  if (row.city) bits.push(`in ${row.city}`);
+  if (row.address) bits.push(`at ${row.address}`);
+  return bits.join(" ");
+}
+
+function buildOptionsPrompt(rows: SearchRestaurantRow[], prefix = ""): string {
+  const names = rows.slice(0, 3).map((row) => row.name).filter(Boolean) as string[];
+  if (names.length === 0) return `${prefix}I don't see matching restaurants near you yet. Try a different cuisine or area.`;
+  if (names.length === 1) return `${prefix}I found ${names[0]}. Want that one?`;
+  if (names.length === 2) return `${prefix}${names[0]} or ${names[1]} look good. Which one sounds best?`;
+  return `${prefix}${names[0]}, ${names[1]}, or ${names[2]} look good. Which one sounds best?`;
+}
+
+function formatTimeForSpeech(hhmm: string): string {
+  const [hRaw, mRaw] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(hRaw) || !Number.isFinite(mRaw)) return hhmm;
+  const period = hRaw >= 12 ? "PM" : "AM";
+  const hour12 = hRaw % 12 || 12;
+  return `${hour12}:${String(mRaw).padStart(2, "0")} ${period}`;
+}
+
+function directBookingIntent(transcript: string): boolean {
+  return /\b(book|reserve|get me a table|get me a spot|make a reservation)\b/i.test(transcript);
+}
+
+function discoveryIntent(transcript: string): boolean {
+  return /\b(find|show|where|what'?s good|best|recommend|plan|somewhere|restaurant|dinner|eat|cheap|deals|romantic|business|family|date|anniversary|open|near me)\b/i.test(transcript);
+}
+
+function offTopicIntent(transcript: string): boolean {
+  return /\b(weather|forecast|sports score|news|stock price|bitcoin|homework|essay|code|programming)\b/i.test(transcript) &&
+    !/\b(restaurant|reservation|book|dinner|eat|menu|food)\b/i.test(transcript);
+}
+
+function menuQuestionIntent(transcript: string): boolean {
+  return /\b(menu|have|serve|preorder|kids meals?|vegan|gluten[- ]free|steak|pasta|pizza|spicy|alcohol|tiramisu|no onions|onions)\b/i.test(transcript) &&
+    /\b(does|do|can|what|which|is|are)\b/i.test(transcript);
+}
+
+function allergyIntent(transcript: string): boolean {
+  return /\b(allerg(?:y|ic)|nut allergy|shellfish|serious allergy|no pork|halal|kosher|dairy[- ]free|gluten[- ]free|vegan)\b/i.test(transcript);
+}
+
+function accessibilityIntent(transcript: string): boolean {
+  return /\b(wheelchair|accessible|accessibility|without stairs|no stairs|sensory|accessible parking|washrooms?)\b/i.test(transcript) ||
+    (/\b(quiet|not too loud|low lighting)\b/i.test(transcript) && /\b(sensory|sensitivity|accessible|accessibility)\b/i.test(transcript));
+}
+
+function privateOrLargePartyIntent(transcript: string, partySize: number | null): boolean {
+  return /\b(private room|manager approval|restaurant approval|deposit|large party|large group)\b/i.test(transcript) ||
+    (partySize != null && partySize >= 8);
+}
+
+function requestedHotelLocation(transcript: string): boolean {
+  return /\bhotel\b/i.test(transcript) && /\bnear|walking distance|around\b/i.test(transcript);
+}
+
+function extractCuisineHint(transcript: string): string | null {
+  const normalized = normalizeSearchText(transcript);
+  const cuisines = [
+    "italian", "japanese", "sushi", "thai", "french", "egyptian", "mediterranean",
+    "steakhouse", "spanish", "canadian", "american", "indian", "halal",
+  ];
+  return cuisines.find((cuisine) => normalized.includes(cuisine)) ?? null;
+}
+
+const ACTIVE_RESTAURANTS_CACHE_TTL_MS = 2 * 60 * 1000;
+let activeRestaurantsCache: { rows: SearchRestaurantRow[]; expiresAt: number } | null = null;
+let activeRestaurantsInFlight: Promise<SearchRestaurantRow[]> | null = null;
+
+async function fetchActiveRestaurants(): Promise<SearchRestaurantRow[]> {
+  const now = Date.now();
+  if (activeRestaurantsCache && activeRestaurantsCache.expiresAt > now) {
+    return activeRestaurantsCache.rows;
+  }
+  if (activeRestaurantsInFlight) return activeRestaurantsInFlight;
+  activeRestaurantsInFlight = (async () => {
+    const { data, error } = await supabaseAdmin
+      .from("restaurants")
+      .select("id, name, cuisine_type, city, address, description, lat, lng, price_range, avg_rating")
+      .eq("is_active", true)
+      .limit(120);
+    if (error) {
+      if (activeRestaurantsCache) return activeRestaurantsCache.rows;
+      return [];
+    }
+    const rows = (data ?? []) as SearchRestaurantRow[];
+    activeRestaurantsCache = { rows, expiresAt: Date.now() + ACTIVE_RESTAURANTS_CACHE_TTL_MS };
+    return rows;
+  })().finally(() => {
+    activeRestaurantsInFlight = null;
+  });
+  return activeRestaurantsInFlight;
+}
+
+function restaurantNameMatchesTranscript(row: SearchRestaurantRow, normalizedTranscript: string): boolean {
+  const name = normalizeSearchText(row.name ?? "");
+  if (!name || name.length < 3) return false;
+  if (normalizedTranscript.includes(name)) return true;
+  const tokens = name.split(" ").filter((token) => token.length > 2 && token !== "the");
+  return tokens.length >= 2 && tokens.every((token) => normalizedTranscript.includes(token));
+}
+
+function findNamedRestaurants(transcript: string, rows: SearchRestaurantRow[]): SearchRestaurantRow[] {
+  const normalizedTranscript = normalizeSearchText(transcript);
+  if (!normalizedTranscript) return [];
+  const matches = rows
+    .filter((row) => restaurantNameMatchesTranscript(row, normalizedTranscript))
+    .sort((a, b) => normalizeSearchText(b.name ?? "").length - normalizeSearchText(a.name ?? "").length);
+  const deduped = new Map<string, SearchRestaurantRow>();
+  for (const row of matches) {
+    const key = [
+      normalizeSearchText(row.name ?? ""),
+      normalizeSearchText(row.city ?? ""),
+      normalizeSearchText(row.address ?? ""),
+    ].join("|");
+    if (!deduped.has(key)) deduped.set(key, row);
+  }
+  return [...deduped.values()];
+}
+
+function topRecommendationRows(
+  rows: SearchRestaurantRow[],
+  transcript: string,
+  userCity: string,
+): SearchRestaurantRow[] {
+  const cuisine = extractCuisineHint(transcript);
+  const normalizedCuisine = cuisine ? normalizeSearchText(cuisine) : "";
+  const normalizedCity = normalizeCityName(userCity);
+  const priceSensitive = /\b(cheap|affordable|not too expensive|under|budget|deals?|student)\b/i.test(transcript);
+  const cityFiltered = normalizedCity
+    ? rows.filter((row) => !row.city || normalizeCityName(row.city) === normalizedCity)
+    : rows;
+  let filtered = cityFiltered;
+  if (normalizedCuisine && normalizedCuisine !== "halal") {
+    filtered = filtered.filter((row) =>
+      normalizeSearchText(row.cuisine_type ?? "").includes(normalizedCuisine) ||
+      normalizeSearchText(row.description ?? "").includes(normalizedCuisine) ||
+      normalizeSearchText(row.name ?? "").includes(normalizedCuisine)
+    );
+  }
+  if (priceSensitive) {
+    filtered = filtered.filter((row) => (row.price_range ?? 2) <= 3);
+  }
+  if (!filtered.length) {
+    filtered = priceSensitive ? cityFiltered.filter((row) => (row.price_range ?? 2) <= 3) : cityFiltered;
+  }
+  if (!filtered.length) filtered = rows;
+  if (filtered.length < 3) {
+    const seen = new Set(filtered.map((row) => row.id));
+    const supplements = cityFiltered.filter((row) => !seen.has(row.id));
+    filtered = [...filtered, ...supplements];
+  }
+  const occasion = inferRecommendationOccasion(transcript);
+  return [...filtered]
+    .sort((a, b) =>
+      scoreRecommendationFit(b, occasion, transcript) - scoreRecommendationFit(a, occasion, transcript) ||
+      (b.avg_rating ?? 0) - (a.avg_rating ?? 0)
+    )
+    .slice(0, 8);
+}
+
+async function duplicateReservationForSlot(
+  userProfileId: string,
+  restaurantId: string,
+  slotIso: string,
+): Promise<{ id: string; confirmation_code?: string | null } | null> {
+  const { data: guests } = await supabaseAdmin
+    .from("guests")
+    .select("id")
+    .eq("user_profile_id", userProfileId)
+    .eq("restaurant_id", restaurantId);
+  const guestIds = (guests ?? []).map((guest) => guest.id as string).filter(Boolean);
+  if (!guestIds.length) return null;
+  const { data } = await supabaseAdmin
+    .from("reservations")
+    .select("id, confirmation_code")
+    .eq("restaurant_id", restaurantId)
+    .in("guest_id", guestIds)
+    .eq("reserved_at", slotIso)
+    .in("status", ["confirmed", "pending"])
+    .limit(1)
+    .maybeSingle();
+  return data as { id: string; confirmation_code?: string | null } | null;
+}
+
+async function confirmPendingAction(
+  opts: {
+    conversationId: string;
+    transcript: string;
+    userProfileId: string;
+    bookingState: Record<string, unknown>;
+  },
+): Promise<AssistantPayload | null> {
+  const pending = parsePendingAction(opts.bookingState.pending_action);
+  if (!pending) return null;
+  if (isNegativeText(opts.transcript)) {
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "No problem. I won't make that change.",
+      intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: { pending_action: null },
+    });
+  }
+  if (!isAffirmativeText(opts.transcript)) return null;
+
+  if (pending.type === "save_preference") {
+    const dietary = typeof pending.payload.dietary === "string" ? pending.payload.dietary : null;
+    if (dietary) {
+      const { data: profile } = await supabaseAdmin
+        .from("user_profiles")
+        .select("dietary_restrictions")
+        .eq("id", opts.userProfileId)
+        .single();
+      const current = Array.isArray(profile?.dietary_restrictions) ? profile.dietary_restrictions as string[] : [];
+      await supabaseAdmin
+        .from("user_profiles")
+        .update({ dietary_restrictions: Array.from(new Set([...current, dietary])) })
+        .eq("id", opts.userProfileId);
+    }
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "Saved. I'll use that preference for future recommendations.",
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: { pending_action: null },
+    });
+  }
+
+  const reservationId = String(pending.payload.reservation_id ?? opts.bookingState.reservation_id ?? "");
+  if (!UUID_RE.test(reservationId)) {
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "I can't update that reservation from here yet. Please open the reservation details.",
+      intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: { pending_action: null },
+    });
+  }
+
+  if (pending.type === "cancel_reservation") {
+    await supabaseAdmin.from("reservations").update({ status: "cancelled" }).eq("id", reservationId);
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "Cancelled. Your reservation has been marked cancelled.",
+      intent: "reservation_cancel",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: { pending_action: null, status: "confirmed" },
+    });
+  }
+
+  if (pending.type === "modify_reservation") {
+    const patch: Record<string, unknown> = {};
+    if (typeof pending.payload.slot_iso === "string") patch.reserved_at = pending.payload.slot_iso;
+    if (typeof pending.payload.shift_id === "string") patch.shift_id = pending.payload.shift_id;
+    if (typeof pending.payload.party_size === "number") patch.party_size = pending.payload.party_size;
+    if (typeof pending.payload.special_request === "string") patch.special_request = pending.payload.special_request;
+    if (Object.keys(patch).length) {
+      await supabaseAdmin.from("reservations").update(patch).eq("id", reservationId);
+    }
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "Updated. Your reservation change is confirmed.",
+      intent: "reservation_modify",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: {
+        pending_action: null,
+        ...(typeof pending.payload.party_size === "number" ? { party_size: pending.payload.party_size } : {}),
+        ...(typeof pending.payload.date === "string" ? { date: pending.payload.date } : {}),
+        ...(typeof pending.payload.time === "string" ? { time: pending.payload.time } : {}),
+        ...(typeof pending.payload.slot_iso === "string" ? { slot_iso: pending.payload.slot_iso } : {}),
+        ...(typeof pending.payload.shift_id === "string" ? { shift_id: pending.payload.shift_id } : {}),
+      },
+    });
+  }
+
+  if (pending.type === "late_note") {
+    const note = typeof pending.payload.note === "string" ? pending.payload.note : "Guest is running late.";
+    await supabaseAdmin.from("reservations").update({ special_request: note }).eq("id", reservationId);
+    return makeAssistantPayload({
+      conversationId: opts.conversationId,
+      spokenText: "I added the late-arrival note. I still recommend calling the restaurant.",
+      intent: "reservation_modify",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: { pending_action: null, special_request: note },
+    });
+  }
+
+  return null;
+}
+
+async function buildPreflightResponse(opts: {
+  conversationId: string;
+  transcript: string;
+  bookingState: Record<string, unknown>;
+  selectedRestaurantId: string | null;
+  userProfileId: string;
+  getUserCity: () => Promise<string>;
+  timezone: string;
+}): Promise<AssistantPayload | null> {
+  const { conversationId, transcript, bookingState, selectedRestaurantId } = opts;
+  const normalized = normalizeSearchText(transcript);
+  if (!normalized) return null;
+
+  const pendingResponse = await confirmPendingAction({
+    conversationId,
+    transcript,
+    userProfileId: opts.userProfileId,
+    bookingState,
+  });
+  if (pendingResponse) return pendingResponse;
+
+  if (offTopicIntent(transcript)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I can mainly help with restaurants, reservations, dinner planning, menus, and bookings.",
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "none",
+    });
+  }
+
+  const abusiveBookingIntent =
+    /\b(fake name|fake booking|10 tables|ten tables|spam|prank)\b/i.test(transcript) ||
+    /\b(?:two|multiple)\s+(?:reservations?|bookings?|tables?)\b/i.test(transcript) ||
+    /\bdifferent\s+(?:places|restaurants)\b[\s\S]{0,80}\b(?:choose|pick|decide)\s+later\b/i.test(transcript);
+  if (abusiveBookingIntent) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I can't make duplicate or fake reservations. I can help with one real booking.",
+      intent: "fallback_unknown",
+      step: "done",
+      nextExpectedInput: "none",
+    });
+  }
+
+  if (/\b(send|share|text|email)\b/i.test(transcript) && /\b(friend|girlfriend|boyfriend|someone|confirmation)\b/i.test(transcript)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I can't send it from here yet. I can show the confirmation details for you to share.",
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "none",
+    });
+  }
+
+  if (/\bremember|save\b/i.test(transcript) && /\bpreference|future|usually|halal|kosher|vegan|gluten|quiet|seating\b/i.test(transcript)) {
+    const dietary = /\bhalal\b/i.test(transcript) ? "halal" : null;
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: dietary
+        ? "I can save halal as a preference. Should I remember that?"
+        : "I can save that as a preference. Should I remember it?",
+      intent: "general_question",
+      step: "confirm",
+      nextExpectedInput: "confirmation",
+      booking: {
+        pending_action: {
+          type: "save_preference",
+          payload: dietary ? { dietary } : { preference: transcript },
+          confirmation_text: "Save this preference?",
+        },
+      },
+    });
+  }
+
+  const currentRestaurantId = bookingRestaurantId(bookingState, selectedRestaurantId);
+  const currentRestaurantName = typeof bookingState.restaurant_name === "string"
+    ? bookingState.restaurant_name
+    : "the restaurant";
+  const currentStatus = typeof bookingState.status === "string" ? bookingState.status : "idle";
+  const rawReservationId = typeof bookingState.reservation_id === "string" ? bookingState.reservation_id : null;
+  const reservationId = rawReservationId && UUID_RE.test(rawReservationId) ? rawReservationId : null;
+  const explicitPartySize = parsePartySize(transcript);
+  const explicitDate = parseDateInTimeZone(transcript, opts.timezone);
+  const explicitTime = parseTime(transcript);
+  const partySize =
+    (bookingState.party_size as number | null | undefined) ??
+    explicitPartySize;
+  const date = (bookingState.date as string | null | undefined) ?? explicitDate;
+  const time = (bookingState.time as string | null | undefined) ?? explicitTime;
+
+  if (currentStatus === "confirming" && currentRestaurantId && !reservationId && isSafeBookingConfirmationText(transcript)) {
+    const shiftId = typeof bookingState.shift_id === "string" ? bookingState.shift_id : null;
+    const slotIso = typeof bookingState.slot_iso === "string" ? bookingState.slot_iso : null;
+    if (!partySize || !date || !shiftId || !slotIso) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "I need the reservation details again. What date and time?",
+        intent: "reservation_create",
+        step: "choose_date",
+        nextExpectedInput: "date",
+        booking: { status: "collecting_minimum_fields" },
+      });
+    }
+
+    const live = await getAvailability(currentRestaurantId, date, partySize);
+    const liveSlot = (live.slots ?? []).find((slot) =>
+      slot.date_time === slotIso && slot.shift_id === shiftId
+    );
+    if (!liveSlot) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "That time is no longer available. What time should I check?",
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        uiActions: [{ type: "load_availability" }],
+        booking: { status: "loading_availability" },
+      });
+    }
+
+    const duplicate = await duplicateReservationForSlot(opts.userProfileId, currentRestaurantId, liveSlot.date_time);
+    if (duplicate) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `You already have ${currentRestaurantName} booked at ${liveSlot.display_time}.`,
+        intent: "confirm_booking",
+        step: "confirm",
+        nextExpectedInput: "preorder_choice",
+        uiActions: duplicate.confirmation_code
+          ? [
+            { type: "show_confirmation", confirmation_code: duplicate.confirmation_code },
+            { type: "show_exit_x" },
+          ]
+          : [{ type: "show_exit_x" }],
+        booking: {
+          restaurant_id: currentRestaurantId,
+          party_size: partySize,
+          date,
+          time: liveSlot.display_time,
+          shift_id: liveSlot.shift_id,
+          slot_iso: liveSlot.date_time,
+          reservation_id: duplicate.id,
+          confirmation_code: duplicate.confirmation_code ?? null,
+          status: "offering_preorder",
+        },
+      });
+    }
+
+    const result = await completeBooking({
+      user_profile_id: opts.userProfileId,
+      restaurant_id: currentRestaurantId,
+      order_type: "dine_in",
+      date_time: liveSlot.date_time,
+      shift_id: liveSlot.shift_id,
+      party_size: partySize,
+      special_request: bookingState.special_request as string | null | undefined,
+      occasion: bookingState.occasion as string | null | undefined,
+    });
+    if (!result.success || !result.reservation_id || !result.confirmation_code) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "I couldn't confirm that booking. Want another time?",
+        intent: "confirm_booking",
+        step: "confirm",
+        nextExpectedInput: "confirmation",
+        booking: { status: "confirming" },
+      });
+    }
+
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `You're booked for ${liveSlot.display_time}. Want to pre-order from the menu?`,
+      intent: "confirm_booking",
+      step: "confirm",
+      nextExpectedInput: "preorder_choice",
+      uiActions: [
+        { type: "show_confirmation", confirmation_code: result.confirmation_code },
+        { type: "show_exit_x" },
+      ],
+      booking: {
+        restaurant_id: currentRestaurantId,
+        party_size: partySize,
+        date,
+        time: liveSlot.display_time,
+        shift_id: liveSlot.shift_id,
+        slot_iso: liveSlot.date_time,
+        reservation_id: result.reservation_id,
+        confirmation_code: result.confirmation_code,
+        status: "offering_preorder",
+      },
+    });
+  }
+
+  const wantsPreConfirmationChange =
+    currentStatus === "confirming" &&
+    currentRestaurantId &&
+    !reservationId &&
+    !isSafeBookingConfirmationText(transcript) &&
+    (
+      explicitPartySize != null ||
+      explicitDate != null ||
+      explicitTime != null ||
+      isNegativeText(transcript) ||
+      /\b(change|edit|update|switch|different|another|wrong|details|make it)\b/i.test(transcript)
+    );
+
+  if (wantsPreConfirmationChange) {
+    if (explicitPartySize == null && !explicitDate && !explicitTime) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "What would you like to change?",
+        intent: "reservation_modify",
+        step: "choose_date",
+        nextExpectedInput: "date",
+        booking: { status: "confirming" },
+      });
+    }
+
+    const nextPartySize = explicitPartySize ?? partySize;
+    const nextDate = explicitDate ?? date;
+    const nextTime = explicitTime ?? time;
+    if (!nextPartySize) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "How many guests?",
+        intent: "reservation_create",
+        step: "choose_party",
+        nextExpectedInput: "party_size",
+        booking: { status: "collecting_minimum_fields" },
+      });
+    }
+    if (!nextDate) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "What date?",
+        intent: "reservation_create",
+        step: "choose_date",
+        nextExpectedInput: "date",
+        booking: { status: "collecting_minimum_fields", party_size: nextPartySize },
+      });
+    }
+    if (!nextTime) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "What time?",
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        booking: { status: "collecting_minimum_fields", party_size: nextPartySize, date: nextDate },
+      });
+    }
+
+    const availability = await getAvailability(currentRestaurantId, nextDate, nextPartySize);
+    const nearest = findNearestSlot(availability.slots ?? [], nextTime);
+    if (!nearest) {
+      const offered = (availability.slots ?? []).slice(0, 2).map((slot) => slot.display_time);
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: offered.length
+          ? `No tables at ${formatTimeForSpeech(nextTime)}. They have ${offered.join(" or ")}.`
+          : `No tables at ${formatTimeForSpeech(nextTime)}. What time should I check?`,
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        uiActions: [{ type: "load_availability" }],
+        booking: {
+          status: "loading_availability",
+          party_size: nextPartySize,
+          date: nextDate,
+          time: nextTime,
+        },
+      });
+    }
+
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: buildBookingConfirmationPrompt({
+        restaurantName: currentRestaurantName,
+        partySize: nextPartySize,
+        date: nextDate,
+        time: nearest.display_time,
+      }),
+      intent: "confirm_booking",
+      step: "confirm",
+      nextExpectedInput: "confirmation",
+      uiActions: [
+        { type: "load_availability" },
+        { type: "select_time_slot", slot_iso: nearest.date_time, shift_id: nearest.shift_id },
+        ...(explicitPartySize != null ? [{ type: "set_booking_field", field: "party_size", value: nextPartySize }] : []),
+        ...(explicitDate ? [{ type: "set_booking_field", field: "date", value: nextDate }] : []),
+        { type: "set_booking_field", field: "time", value: nearest.display_time },
+        { type: "confirm_booking" },
+      ],
+      booking: {
+        status: "confirming",
+        party_size: nextPartySize,
+        date: nextDate,
+        time: nearest.display_time,
+        shift_id: nearest.shift_id,
+        slot_iso: nearest.date_time,
+      },
+    });
+  }
+
+  if (/\b(running late|i'?m late|i am late|stuck in traffic|hold my table|\d+\s*minutes late|minutes late)\b/i.test(transcript)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I can't notify them from here yet. Call the restaurant too, since tables may be released.",
+      intent: "reservation_modify",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: reservationId ? {
+        pending_action: {
+          type: "late_note",
+          payload: { reservation_id: reservationId, note: transcript },
+          confirmation_text: "Add a late-arrival note?",
+        },
+      } : null,
+    });
+  }
+
+  if (/\bcancel\b/i.test(transcript) && /\b(booking|reservation|table|it)\b/i.test(transcript)) {
+    const summary = reservationId
+      ? `Just confirming: cancel your reservation at ${currentRestaurantName}?`
+      : "I can help cancel, but I need the reservation details first.";
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: summary,
+      intent: "reservation_cancel",
+      step: reservationId ? "confirm" : "done",
+      nextExpectedInput: reservationId ? "confirmation" : "none",
+      booking: reservationId ? {
+        pending_action: {
+          type: "cancel_reservation",
+          payload: { reservation_id: reservationId },
+          confirmation_text: summary,
+        },
+      } : null,
+    });
+  }
+
+  if (/\b(change|move|switch|update|make it|add)\b/i.test(transcript) &&
+    /\b(time|tomorrow|today|friday|saturday|sunday|monday|tuesday|wednesday|thursday|\d{1,2}:?\d{0,2}|people|guests?|outdoor|patio|note|birthday)\b/i.test(transcript) &&
+    (reservationId || currentRestaurantId)
+  ) {
+    const newDate = parseDateInTimeZone(transcript, opts.timezone) ?? date;
+    const newTime = parseTime(transcript) ?? time;
+    const newParty = parsePartySize(transcript) ?? partySize;
+    if (currentRestaurantId && newDate && newTime && newParty != null) {
+      const availability = await getAvailability(currentRestaurantId, newDate, newParty);
+      const slot = findNearestSlot(availability.slots ?? [], newTime);
+      if (slot) {
+        const requestedLabel = formatTimeForSpeech(newTime);
+        const requestedMinutes = displayTimeToMinutes(requestedLabel);
+        const slotMinutes = displayTimeToMinutes(slot.display_time);
+        const differsFromRequested =
+          slot.display_time !== requestedLabel ||
+          (requestedMinutes != null && slotMinutes != null && Math.abs(requestedMinutes - slotMinutes) > 15);
+        const prompt = differsFromRequested
+          ? `${requestedLabel} isn't available. They have ${slot.display_time}. Want that update?`
+          : `They have ${slot.display_time} available for ${newParty}. Want me to update it?`;
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: prompt,
+          intent: "reservation_modify",
+          step: "confirm",
+          nextExpectedInput: "confirmation",
+          booking: {
+            pending_action: {
+              type: "modify_reservation",
+              payload: {
+                reservation_id: reservationId,
+                restaurant_id: currentRestaurantId,
+                party_size: newParty,
+                date: newDate,
+                time: slot.display_time,
+                shift_id: slot.shift_id,
+                slot_iso: slot.date_time,
+              },
+              confirmation_text: prompt,
+            },
+          },
+        });
+      }
+    }
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I need to check that change before updating it. What date and time should I check?",
+      intent: "reservation_modify",
+      step: "choose_date",
+      nextExpectedInput: "date",
+    });
+  }
+
+  const restaurants = await fetchActiveRestaurants();
+  const namedRestaurants = findNamedRestaurants(transcript, restaurants);
+  const rawNamedMatchCount = restaurants.filter((row) =>
+    restaurantNameMatchesTranscript(row, normalized)
+  ).length;
+  const selectedRestaurant = currentRestaurantId
+    ? restaurants.find((row) => row.id === currentRestaurantId) ?? null
+    : null;
+  const looksLikeRestaurantSelection =
+    namedRestaurants.length > 0 &&
+    !menuQuestionIntent(transcript) &&
+    (
+      directBookingIntent(transcript) ||
+      bookingState.party_size != null ||
+      typeof bookingState.date === "string" ||
+      typeof bookingState.time === "string" ||
+      currentRestaurantId != null ||
+      currentStatus === "collecting_minimum_fields" ||
+      currentStatus === "loading_availability" ||
+      currentStatus === "awaiting_time_selection"
+    );
+
+  if (menuQuestionIntent(transcript)) {
+    if (/\bpre[- ]?order|pay|payment|deposit|apple pay|points|rewards?\b/i.test(transcript)) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "Preorder and payment are separate from booking. I can show the menu after the reservation is confirmed.",
+        intent: "preorder_food",
+        step: "done",
+        nextExpectedInput: "none",
+      });
+    }
+    const named = namedRestaurants[0] ?? selectedRestaurant;
+    if (!named) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "Which restaurant should I check the menu for?",
+        intent: "menu_question",
+        step: "choose_restaurant",
+        nextExpectedInput: "restaurant",
+      });
+    }
+    const keyword = /\b(steak|pasta|pizza|tiramisu|alcohol|kids meals?|vegan|gluten[- ]free|spicy|onions?)\b/i.exec(transcript)?.[1] ?? "";
+    const { data: items } = await supabaseAdmin
+      .from("menu_items")
+      .select("name, description, dietary_flags, allergens, is_available")
+      .eq("restaurant_id", named.id)
+      .eq("is_active", true)
+      .limit(80);
+    const match = keyword
+      ? (items ?? []).find((item) =>
+        normalizeSearchText(String(item.name ?? "")).includes(normalizeSearchText(keyword)) ||
+        normalizeSearchText(String(item.description ?? "")).includes(normalizeSearchText(keyword)) ||
+        JSON.stringify(item.dietary_flags ?? []).toLowerCase().includes(keyword.toLowerCase())
+      )
+      : null;
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: match
+        ? `${named.name} lists ${match.name}. I don't guarantee allergens, so confirm serious restrictions with the restaurant.`
+        : `I don't see that confirmed on ${named.name}'s menu. I can add it as a note or show similar restaurants.`,
+      intent: "menu_question",
+      step: "done",
+      nextExpectedInput: "none",
+    });
+  }
+
+  if (hasUncertainPartySize(transcript)) {
+    const range = parsePartySizeRange(transcript);
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: range ? `I can book for ${range.max} to be safe. Should I use ${range.max}?` : "What party size should I use?",
+      intent: "reservation_create",
+      step: "confirm",
+      nextExpectedInput: "confirmation",
+      booking: range ? {
+        pending_action: {
+          type: "modify_reservation",
+          payload: { party_size: range.max },
+          confirmation_text: `Use ${range.max} guests?`,
+        },
+      } : null,
+    });
+  }
+
+  if (allergyIntent(transcript)) {
+    const rows = topRecommendationRows(restaurants, transcript, await opts.getUserCity());
+    const warning = /\ballerg/i.test(transcript)
+      ? "For serious allergies, confirm with the restaurant; I can add a reservation note. "
+      : "I don't have certification confirmed, but I can use it as a preference. ";
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `${warning}${buildOptionsPrompt(rows).replace(/^I found /, "I found ")}`,
+      intent: "restaurant_search",
+      step: rows.length ? "choose_restaurant" : "choose_cuisine",
+      nextExpectedInput: rows.length ? "restaurant" : "cuisine",
+      uiActions: rows.length ? [
+        { type: "show_restaurant_cards", restaurant_ids: rows.map((row) => row.id) },
+        { type: "update_map_markers", restaurant_ids: rows.map((row) => row.id) },
+        { type: "highlight_restaurant", restaurant_id: rows[0].id },
+      ] : [],
+      booking: { special_request: transcript },
+      map: rows.length ? {
+        visible: true,
+        marker_restaurant_ids: rows.map((row) => row.id),
+        highlighted_restaurant_id: rows[0].id,
+      } : null,
+    });
+  }
+
+  if (accessibilityIntent(transcript)) {
+    if (directBookingIntent(transcript) || /\btable\b/i.test(transcript)) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "I can't verify accessibility here, but I can add it as a note. How many guests?",
+        intent: "reservation_create",
+        step: "choose_party",
+        nextExpectedInput: "party_size",
+        booking: { special_request: transcript },
+      });
+    }
+    const rows = topRecommendationRows(restaurants, transcript, await opts.getUserCity());
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `I can't verify accessibility here, but I can add a note. ${buildOptionsPrompt(rows)}`,
+      intent: "restaurant_search",
+      step: rows.length ? "choose_restaurant" : "choose_cuisine",
+      nextExpectedInput: rows.length ? "restaurant" : "cuisine",
+      uiActions: rows.length ? [
+        { type: "show_restaurant_cards", restaurant_ids: rows.map((row) => row.id) },
+        { type: "update_map_markers", restaurant_ids: rows.map((row) => row.id) },
+        { type: "highlight_restaurant", restaurant_id: rows[0].id },
+      ] : [],
+      booking: { special_request: transcript },
+      map: rows.length ? {
+        visible: true,
+        marker_restaurant_ids: rows.map((row) => row.id),
+        highlighted_restaurant_id: rows[0].id,
+      } : null,
+    });
+  }
+
+  if (requestedHotelLocation(transcript)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "What hotel or address should I search near?",
+      intent: "restaurant_search",
+      step: "choose_location",
+      nextExpectedInput: "location",
+    });
+  }
+
+  if (/\boffice\b/i.test(transcript) && /\bnear|around|close|by\b/i.test(transcript)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "What office address should I search near?",
+      intent: "reservation_create",
+      step: "choose_location",
+      nextExpectedInput: "location",
+      booking: {
+        ...(partySize != null ? { party_size: partySize } : {}),
+        ...(date ? { date } : {}),
+        ...(time ? { time } : {}),
+        ...(/\bcompany name\b/i.test(transcript) ? { special_request: "Book under company name." } : {}),
+      },
+    });
+  }
+
+  if (
+    directBookingIntent(transcript) &&
+    !namedRestaurants.length &&
+    /\b(italian|french|thai|japanese|sushi|steakhouse|mediterranean|nice|romantic|business|family|cheap|quiet|place|somewhere|restaurant)\b/i.test(transcript)
+  ) {
+    const rows = topRecommendationRows(restaurants, transcript, await opts.getUserCity());
+    if (rows.length) {
+      const bookingPatch = {
+        status: "collecting_minimum_fields",
+        ...(partySize != null ? { party_size: partySize } : {}),
+        ...(date ? { date } : {}),
+        ...(time ? { time } : {}),
+      };
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: buildOptionsPrompt(rows),
+        intent: "restaurant_search",
+        step: "choose_restaurant",
+        nextExpectedInput: "restaurant",
+        uiActions: [
+          { type: "show_restaurant_cards", restaurant_ids: rows.map((row) => row.id) },
+          { type: "update_map_markers", restaurant_ids: rows.map((row) => row.id) },
+          { type: "highlight_restaurant", restaurant_id: rows[0].id },
+          ...(partySize != null ? [{ type: "set_booking_field", field: "party_size", value: partySize }] : []),
+          ...(date ? [{ type: "set_booking_field", field: "date", value: date }] : []),
+          ...(time ? [{ type: "set_booking_field", field: "time", value: time }] : []),
+        ],
+        booking: bookingPatch,
+        map: {
+          visible: true,
+          marker_restaurant_ids: rows.map((row) => row.id),
+          highlighted_restaurant_id: rows[0].id,
+        },
+      });
+    }
+  }
+
+  if (
+    directBookingIntent(transcript) &&
+    !namedRestaurants.length &&
+    !/\b(cuisine|italian|french|thai|japanese|sushi|steakhouse|restaurant like|somewhere|something nice|nice place)\b/i.test(transcript)
+  ) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: partySize == null ? "How many guests?" : "Which restaurant or area should I check?",
+      intent: "reservation_create",
+      step: partySize == null ? "choose_party" : "choose_location",
+      nextExpectedInput: partySize == null ? "party_size" : "location",
+      booking: {
+        ...(partySize != null ? { party_size: partySize } : {}),
+        ...(date ? { date } : {}),
+        ...(time ? { time } : {}),
+      },
+    });
+  }
+
+  if (namedRestaurants.length > 1 && looksLikeRestaurantSelection) {
+    const labels = namedRestaurants.slice(0, 3).map(restaurantLabel);
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `I found a few: ${labels.join("; ")}. Which location did you mean?`,
+      intent: "select_restaurant",
+      step: "choose_restaurant",
+      nextExpectedInput: "restaurant",
+      uiActions: [
+        { type: "show_restaurant_cards", restaurant_ids: namedRestaurants.map((row) => row.id) },
+        { type: "update_map_markers", restaurant_ids: namedRestaurants.map((row) => row.id) },
+        { type: "highlight_restaurant", restaurant_id: namedRestaurants[0].id },
+      ],
+      map: {
+        visible: true,
+        marker_restaurant_ids: namedRestaurants.map((row) => row.id),
+        highlighted_restaurant_id: namedRestaurants[0].id,
+      },
+      booking: {
+        ...(partySize != null ? { party_size: partySize } : {}),
+        ...(date ? { date } : {}),
+        ...(time ? { time } : {}),
+      },
+    });
+  }
+
+  if (namedRestaurants.length === 1 && rawNamedMatchCount > 1 && looksLikeRestaurantSelection) {
+    const restaurant = namedRestaurants[0];
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `I found ${restaurantLabel(restaurant)}. Is that the location you mean?`,
+      intent: "select_restaurant",
+      step: "choose_restaurant",
+      nextExpectedInput: "confirmation",
+      uiActions: [
+        { type: "show_restaurant_cards", restaurant_ids: [restaurant.id] },
+        { type: "update_map_markers", restaurant_ids: [restaurant.id] },
+        { type: "highlight_restaurant", restaurant_id: restaurant.id },
+      ],
+      map: {
+        visible: true,
+        marker_restaurant_ids: [restaurant.id],
+        highlighted_restaurant_id: restaurant.id,
+      },
+      booking: {
+        ...(partySize != null ? { party_size: partySize } : {}),
+        ...(date ? { date } : {}),
+        ...(time ? { time } : {}),
+      },
+    });
+  }
+
+  if (namedRestaurants.length === 1 && looksLikeRestaurantSelection) {
+    const restaurant = namedRestaurants[0];
+    const bookingPatch: Record<string, unknown> = {
+      restaurant_id: restaurant.id,
+      restaurant_name: restaurant.name,
+      status: "collecting_minimum_fields",
+      ...(partySize != null ? { party_size: partySize } : {}),
+      ...(date ? { date } : {}),
+      ...(time ? { time } : {}),
+    };
+    const baseActions: FollowUpAction[] = [
+      { type: "highlight_restaurant", restaurant_id: restaurant.id },
+      { type: "start_booking", restaurant_id: restaurant.id },
+      ...(partySize != null ? [{ type: "set_booking_field", field: "party_size", value: partySize }] : []),
+      ...(date ? [{ type: "set_booking_field", field: "date", value: date }] : []),
+      ...(time ? [{ type: "set_booking_field", field: "time", value: time }] : []),
+    ];
+
+    if (privateOrLargePartyIntent(transcript, partySize)) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `Large or private-room bookings may need restaurant approval. I can add that request for ${restaurant.name}.`,
+        intent: "reservation_create",
+        step: "confirm",
+        nextExpectedInput: "confirmation",
+        uiActions: baseActions,
+        booking: {
+          ...bookingPatch,
+          special_request: transcript,
+          pending_action: {
+            type: "modify_reservation",
+            payload: { restaurant_id: restaurant.id, special_request: transcript },
+            confirmation_text: "Add private-room or large-party request?",
+          },
+        },
+      });
+    }
+
+    if (partySize == null && hasAmbiguousBareTwelve(transcript) && date) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `How many guests, and is 12 noon or midnight on ${formatBookingDateForSpeech(date)}?`,
+        intent: "reservation_create",
+        step: "choose_party",
+        nextExpectedInput: "party_size",
+        uiActions: baseActions,
+        booking: bookingPatch,
+      });
+    }
+    if (partySize == null) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "How many guests?",
+        intent: "reservation_create",
+        step: "choose_party",
+        nextExpectedInput: "party_size",
+        uiActions: baseActions,
+        booking: bookingPatch,
+      });
+    }
+    if (!date) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "What date and time?",
+        intent: "reservation_create",
+        step: "choose_date",
+        nextExpectedInput: "date",
+        uiActions: baseActions,
+        booking: bookingPatch,
+      });
+    }
+    if (hasAmbiguousBareTwelve(transcript)) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `Do you mean ${formatBookingDateForSpeech(date)} at noon or midnight?`,
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        uiActions: baseActions,
+        booking: bookingPatch,
+      });
+    }
+    if (!time) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "What time?",
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        uiActions: baseActions,
+        booking: bookingPatch,
+      });
+    }
+
+    const availability = await getAvailability(restaurant.id, date, partySize);
+    const nearest = findNearestSlot(availability.slots ?? [], time);
+    if (!nearest) {
+      const offered = (availability.slots ?? []).slice(0, 2).map((slot) => slot.display_time);
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: offered.length
+          ? `${restaurant.name} has no tables at ${formatTimeForSpeech(time)} for ${partySize}. They have ${offered.join(" or ")}.`
+          : `${restaurant.name} has no tables at ${formatTimeForSpeech(time)} for ${partySize}. What date and time would you like instead?`,
+        intent: "reservation_create",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        uiActions: [...baseActions, { type: "load_availability" }],
+        booking: bookingPatch,
+      });
+    }
+
+    const duplicate = await duplicateReservationForSlot(opts.userProfileId, restaurant.id, nearest.date_time);
+    if (duplicate) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `You already have ${restaurant.name} booked at ${nearest.display_time}. Keep that one or choose another time?`,
+        intent: "confirm_booking",
+        step: "confirm",
+        nextExpectedInput: "confirmation",
+        booking: {
+          ...bookingPatch,
+          reservation_id: duplicate.id,
+          confirmation_code: duplicate.confirmation_code ?? null,
+        },
+      });
+    }
+
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: buildBookingConfirmationPrompt({
+        restaurantName: restaurant.name ?? null,
+        partySize,
+        date,
+        time: nearest.display_time,
+      }),
+      intent: "confirm_booking",
+      step: "confirm",
+      nextExpectedInput: "confirmation",
+      uiActions: [
+        ...baseActions,
+        { type: "load_availability" },
+        { type: "select_time_slot", slot_iso: nearest.date_time, shift_id: nearest.shift_id },
+        { type: "set_booking_field", field: "time", value: nearest.display_time },
+        { type: "confirm_booking" },
+      ],
+      booking: {
+        ...bookingPatch,
+        time: nearest.display_time,
+        shift_id: nearest.shift_id,
+        slot_iso: nearest.date_time,
+        status: "confirming",
+      },
+    });
+  }
+
+  if (directBookingIntent(transcript) && partySize != null && date && time && !currentRestaurantId) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "Which restaurant or area should I check?",
+      intent: "reservation_create",
+      step: "choose_location",
+      nextExpectedInput: "location",
+      booking: { party_size: partySize, date, time },
+    });
+  }
+
+  if (discoveryIntent(transcript) && !directBookingIntent(transcript) && !namedRestaurants.length) {
+    const rows = topRecommendationRows(restaurants, transcript, await opts.getUserCity());
+    if (!rows.length) return null;
+    const prefix = extractCuisineHint(transcript) === "sushi" && !rows.some((row) => /sushi/i.test(`${row.name} ${row.cuisine_type}`))
+      ? "I don't see sushi near you yet. "
+      : "";
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: buildOptionsPrompt(rows, prefix),
+      intent: "restaurant_search",
+      step: "choose_restaurant",
+      nextExpectedInput: rows.length === 1 ? "confirmation" : "restaurant",
+      uiActions: [
+        { type: "show_restaurant_cards", restaurant_ids: rows.map((row) => row.id) },
+        { type: "update_map_markers", restaurant_ids: rows.map((row) => row.id) },
+        { type: "highlight_restaurant", restaurant_id: rows[0].id },
+      ],
+      map: {
+        visible: true,
+        marker_restaurant_ids: rows.map((row) => row.id),
+        highlighted_restaurant_id: rows[0].id,
+      },
+    });
+  }
+
+  return null;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -841,6 +2297,7 @@ Deno.serve(async (req) => {
   }
 
   return streamSse(async (send) => {
+    const latency = createLatencyTimer("cenaiva-orchestrate");
     // Auth — surfaced as in-band SSE error frames so the single response
     // type is always text/event-stream. Client orchestrator hook reads
     // the error frame and converts it back to the same error states the
@@ -850,16 +2307,20 @@ Deno.serve(async (req) => {
     const payload = decodeJwtPayload(token);
     if (!payload?.sub) {
       send({ type: "error", message: "Unauthorized", status: 401 });
+      latency.done({ path: "unauthorized" });
       return;
     }
 
-    const { data: userProfile } = await supabaseAdmin
-      .from("user_profiles")
-      .select("id, full_name, email")
-      .eq("auth_user_id", payload.sub as string)
-      .single();
+    const { data: userProfile } = await latency.time("profile", () =>
+      supabaseAdmin
+        .from("user_profiles")
+        .select("id, full_name, email")
+        .eq("auth_user_id", payload.sub as string)
+        .single()
+    );
     if (!userProfile) {
       send({ type: "error", message: "User profile not found", status: 401 });
+      latency.done({ path: "missing_profile" });
       return;
     }
 
@@ -909,10 +2370,16 @@ Deno.serve(async (req) => {
     // have to infer it (and, crucially, doesn't mistake the "yes" for yes-to-
     // preorder and jump straight to the menu).
     const currentStatus = (booking_state.status as string | null | undefined) ?? "idle";
-    const isAffirmative =
-      /^\s*(yes|yeah|yep|yup|sure|ok|okay|alright|fine|please|yes please|yeah please|sounds good|go ahead|book it|do it|confirm|let's do it)[\s.!,]*$/i.test(
-        transcript,
-      );
+    // Snapshot before transcript/history prefill mutates booking_state below.
+    // The retry guard later needs to know what was missing at request start.
+    const hadPartyAtRequestStart =
+      (booking_state.party_size as number | null | undefined) != null;
+    const hadDateAtRequestStart =
+      typeof booking_state.date === "string" && booking_state.date.trim().length > 0;
+    const hadTimeAtRequestStart =
+      typeof booking_state.time === "string" && booking_state.time.trim().length > 0;
+    const isNegativeConfirmation = isNegativeText(transcript);
+    const isAffirmative = isSafeBookingConfirmationText(transcript);
     if (
       !selected_restaurant_id &&
       isAffirmative &&
@@ -921,11 +2388,6 @@ Deno.serve(async (req) => {
     ) {
       selected_restaurant_id = visible_restaurant_ids[0];
     }
-
-    // Resolve city
-    const userCity = user_location
-      ? await resolveCity(user_location.lat, user_location.lng)
-      : "";
 
     // Pre-fill booking_state from the current transcript so the system prompt
     // sees party_size/date as SET. Without this the model was ignoring its own
@@ -962,26 +2424,82 @@ Deno.serve(async (req) => {
     // Conversation persistence
     let conversationId = incomingConvId;
     if (!conversationId) {
-      const { data: conv } = await supabaseAdmin
-        .from("chat_conversations")
-        .insert({ user_profile_id: userProfileId, language: "en", title: "Voice booking" })
-        .select("id")
-        .single();
+      const { data: conv } = await latency.time("conversation_create", () =>
+        supabaseAdmin
+          .from("chat_conversations")
+          .insert({ user_profile_id: userProfileId, language: "en", title: "Voice booking" })
+          .select("id")
+          .single()
+      );
       conversationId = conv?.id ?? crypto.randomUUID();
     }
 
-    // Load last 12 messages. 40 was paying ~30% extra LLM input tokens + DB
-    // load every turn for context the booking flow doesn't need — the system
-    // prompt + booking-state checklist already encode the state machine, and
-    // the regex parsers below catch the few facts (party_size, date) that
-    // need to survive longer than the window. Drop to 12 for tighter pacing;
-    // raise to 16 if a regression appears in QA.
-    const { data: history } = await supabaseAdmin
-      .from("chat_messages")
-      .select("role, content, metadata")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: false })
-      .limit(12);
+    const activeConversationId = conversationId!;
+    let userCityCache: string | null = null;
+    const getUserCity = async () => {
+      if (userCityCache != null) return userCityCache;
+      userCityCache = user_location
+        ? await latency.time("resolve_city", () => resolveCity(user_location.lat, user_location.lng))
+        : "";
+      return userCityCache;
+    };
+
+    type HistoryRow = { role: string; content: string; metadata: unknown };
+    let history: HistoryRow[] = [];
+    let historyLoaded = false;
+    const loadHistory = async () => {
+      if (historyLoaded) return history;
+      // Load last 12 messages. 40 was paying ~30% extra LLM input tokens + DB
+      // load every turn for context the booking flow doesn't need — the system
+      // prompt + booking-state checklist already encode the state machine.
+      const { data } = await latency.time("history", () =>
+        supabaseAdmin
+          .from("chat_messages")
+          .select("role, content, metadata")
+          .eq("conversation_id", activeConversationId)
+          .order("created_at", { ascending: false })
+          .limit(12)
+      );
+      history = (data ?? []) as HistoryRow[];
+      historyLoaded = true;
+      return history;
+    };
+
+    const userContentForPersistence = transcript
+      ? `User said: "${transcript}"`
+      : "User opened the assistant.";
+    const hasPendingAction = parsePendingAction(booking_state.pending_action) != null;
+    const needsHistoryBeforePreflight =
+      !hasPendingAction &&
+      !selected_restaurant_id &&
+      isAffirmative &&
+      (currentStatus === "idle" || currentStatus === "collecting_minimum_fields");
+    let triedPreflightBeforeHistory = false;
+
+    if (!needsHistoryBeforePreflight) {
+      triedPreflightBeforeHistory = true;
+      const preflightResponse = await latency.time("preflight", () => buildPreflightResponse({
+        conversationId: activeConversationId,
+        transcript,
+        bookingState: booking_state,
+        selectedRestaurantId: selected_restaurant_id,
+        userProfileId,
+        getUserCity,
+        timezone: effectiveTimeZone,
+      }));
+      if (preflightResponse) {
+        await sendEarlyFinal(
+          send,
+          activeConversationId,
+          userContentForPersistence,
+          preflightResponse,
+        );
+        latency.done({ path: "preflight" });
+        return;
+      }
+    }
+
+    history = await loadHistory();
 
     // Promote a "yes" to an explicit selection when the previous assistant
     // turn already proposed a specific restaurant via highlight_restaurant
@@ -1005,6 +2523,30 @@ Deno.serve(async (req) => {
         selected_restaurant_id = proposedId;
       }
     }
+
+    if (!triedPreflightBeforeHistory) {
+      const preflightResponse = await latency.time("preflight", () => buildPreflightResponse({
+        conversationId: activeConversationId,
+        transcript,
+        bookingState: booking_state,
+        selectedRestaurantId: selected_restaurant_id,
+        userProfileId,
+        getUserCity,
+        timezone: effectiveTimeZone,
+      }));
+      if (preflightResponse) {
+        await sendEarlyFinal(
+          send,
+          activeConversationId,
+          userContentForPersistence,
+          preflightResponse,
+        );
+        latency.done({ path: "preflight_after_history" });
+        return;
+      }
+    }
+
+    const userCity = await getUserCity();
 
     const rawMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
@@ -1132,10 +2674,17 @@ Deno.serve(async (req) => {
     // BookingSheet confirmation card has nothing to render without it.
     let resolvedRestaurantName: string | null = null;
     if (visible_restaurant_ids.length) {
-      const { data: visRows } = await supabaseAdmin
-        .from("restaurants")
-        .select("id, name, cuisine_type")
-        .in("id", visible_restaurant_ids.slice(0, 8));
+      const cachedRows = activeRestaurantsCache?.rows.filter((row) =>
+        visible_restaurant_ids.slice(0, 8).includes(row.id)
+      );
+      const visRows = cachedRows?.length
+        ? cachedRows.map((row) => ({ id: row.id, name: row.name ?? "", cuisine_type: row.cuisine_type ?? null }))
+        : (await latency.time("visible_restaurants", () =>
+          supabaseAdmin
+            .from("restaurants")
+            .select("id, name, cuisine_type")
+            .in("id", visible_restaurant_ids.slice(0, 8))
+        )).data;
       if (visRows?.length) {
         const rowsById = new Map(
           (visRows as Array<{ id: string; name: string; cuisine_type: string | null }>)
@@ -1237,12 +2786,14 @@ Deno.serve(async (req) => {
 
     messages.push({ role: "user", content: userContent });
 
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: conversationId,
-      role: "user",
-      content: userContent,
-      metadata: { kind: "orchestrator" },
-    });
+    await latency.time("user_persist", () =>
+      supabaseAdmin.from("chat_messages").insert({
+        conversation_id: conversationId,
+        role: "user",
+        content: userContent,
+        metadata: { kind: "orchestrator" },
+      })
+    );
 
     const systemPrompt = buildSystemPrompt({
       firstName,
@@ -1272,7 +2823,7 @@ Deno.serve(async (req) => {
     let lastTextReply = "";
 
     // Derived UI actions + deltas accumulated during tool execution.
-    const derivedActions: Array<Record<string, unknown>> = [];
+    const derivedActions: FollowUpAction[] = [];
     const bookingDelta: Record<string, unknown> = {};
     if (resolvedRestaurantName) {
       bookingDelta.restaurant_name = resolvedRestaurantName;
@@ -1309,14 +2860,16 @@ Deno.serve(async (req) => {
       // perceived-latency win on conversational turns. Tool-call deltas
       // are accumulated and reconstructed back into a non-streaming
       // `choice` shape for the existing tool-execution branches below.
-      const llmStream = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        max_tokens: 600,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
-        tools: TOOLS,
-        tool_choice: isFirstTurnNoRestaurant ? "required" : "auto",
-        stream: true,
-      });
+      const llmStream = await latency.time("openai_stream_open", () =>
+        openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          max_tokens: 600,
+          messages: [{ role: "system", content: systemPrompt }, ...messages],
+          tools: TOOLS,
+          tool_choice: isFirstTurnNoRestaurant ? "required" : "auto",
+          stream: true,
+        })
+      );
 
       let accContent = "";
       let accFinishReason: string | null = null;
@@ -1371,18 +2924,25 @@ Deno.serve(async (req) => {
               const flushed = takeSentenceChunk(speechBuffer);
               if (!flushed.chunk) break;
               speechBuffer = flushed.remainder;
-              send({ type: "speech_chunk", text: flushed.chunk });
-              chunksEmittedThisIter++;
+              const safeChunk = safeStreamingSpeechChunk(flushed.chunk);
+              if (safeChunk) {
+                send({ type: "speech_chunk", text: safeChunk });
+                chunksEmittedThisIter++;
+              }
             }
           }
         }
       }
+      latency.mark("openai_stream_read");
 
       // Flush any residual buffered text as a final speech chunk for this
       // iteration. Skipped when tool_calls were emitted (audio was discarded).
       if (!iterationHasToolCalls && speechBuffer.trim().length) {
-        send({ type: "speech_chunk", text: speechBuffer.trim() });
-        chunksEmittedThisIter++;
+        const safeChunk = safeStreamingSpeechChunk(speechBuffer);
+        if (safeChunk) {
+          send({ type: "speech_chunk", text: safeChunk });
+          chunksEmittedThisIter++;
+        }
         speechBuffer = "";
       }
 
@@ -1679,19 +3239,123 @@ Deno.serve(async (req) => {
 
           // ── complete_booking ──────────────────────────────────────────────
           else if (toolName === "complete_booking") {
-            const matchedSlot =
-              typeof toolInput.date_time === "string"
-                ? lastAvailabilitySlots.find((slot) => slot.date_time === toolInput.date_time)
-                : null;
+            const authoritativeRestaurantId =
+              (booking_state.restaurant_id as string | null | undefined) ??
+              selected_restaurant_id ??
+              toolInput.restaurant_id;
+            const authoritativeShiftId =
+              (booking_state.shift_id as string | null | undefined) ??
+              toolInput.shift_id;
+            const authoritativeSlotIso =
+              (booking_state.slot_iso as string | null | undefined) ??
+              toolInput.date_time;
+            const authoritativePartySize =
+              (booking_state.party_size as number | null | undefined) ??
+              toolInput.party_size;
+            const authoritativeDate =
+              (booking_state.date as string | null | undefined) ??
+              toolInput.date;
+            const canFinalizeBooking =
+              currentStatus === "confirming" &&
+              isAffirmative &&
+              !!authoritativeRestaurantId &&
+              !!authoritativeShiftId &&
+              !!authoritativeSlotIso &&
+              !!authoritativeDate &&
+              authoritativePartySize != null;
+
+            if (!canFinalizeBooking) {
+              toolResult = JSON.stringify({
+                error:
+                  "Cannot create the reservation yet. A live slot must be selected, booking_state.status must be confirming, and the latest user message must clearly confirm the exact booking summary. Do not call complete_booking yet.",
+              });
+              messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_call",
+                content: JSON.stringify(toolInput),
+                metadata: { kind: "orchestrator", tool_use_id: tc.id, tool_name: toolName, input: toolInput },
+              });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_result",
+                content: toolResult,
+                metadata: { kind: "orchestrator", tool_use_id: tc.id },
+              });
+              continue;
+            }
+            const liveAvailability = await getAvailability(
+              authoritativeRestaurantId,
+              authoritativeDate,
+              authoritativePartySize,
+            );
+            const matchedSlot = (liveAvailability.slots ?? []).find(
+              (slot) => slot.date_time === authoritativeSlotIso,
+            );
+            if (!matchedSlot) {
+              toolResult = JSON.stringify({
+                error:
+                  "That slot is no longer available. Re-check availability and ask the user to choose a different time before confirming.",
+              });
+              derivedActions.push({ type: "load_availability" });
+              bookingDelta.status = "loading_availability";
+              messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_call",
+                content: JSON.stringify(toolInput),
+                metadata: { kind: "orchestrator", tool_use_id: tc.id, tool_name: toolName, input: toolInput },
+              });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_result",
+                content: toolResult,
+                metadata: { kind: "orchestrator", tool_use_id: tc.id },
+              });
+              continue;
+            }
+            const duplicate = await duplicateReservationForSlot(
+              userProfileId,
+              authoritativeRestaurantId,
+              authoritativeSlotIso,
+            );
+            if (duplicate) {
+              toolResult = JSON.stringify({
+                error:
+                  "The user already has a reservation at this restaurant and time. Do not create a duplicate booking; ask whether to keep it or choose another time.",
+                reservation_id: duplicate.id,
+                confirmation_code: duplicate.confirmation_code ?? null,
+              });
+              bookingDelta.reservation_id = duplicate.id;
+              bookingDelta.confirmation_code = duplicate.confirmation_code ?? null;
+              messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_call",
+                content: JSON.stringify(toolInput),
+                metadata: { kind: "orchestrator", tool_use_id: tc.id, tool_name: toolName, input: toolInput },
+              });
+              await supabaseAdmin.from("chat_messages").insert({
+                conversation_id: conversationId,
+                role: "tool_result",
+                content: toolResult,
+                metadata: { kind: "orchestrator", tool_use_id: tc.id },
+              });
+              continue;
+            }
             const result = await completeBooking({
               user_profile_id: userProfileId,
-              restaurant_id: toolInput.restaurant_id,
+              restaurant_id: authoritativeRestaurantId,
               order_type: "dine_in",
-              date_time: toolInput.date_time,
-              shift_id: toolInput.shift_id,
-              party_size: toolInput.party_size,
-              special_request: toolInput.special_request,
-              occasion: toolInput.occasion,
+              date_time: authoritativeSlotIso,
+              shift_id: authoritativeShiftId,
+              party_size: authoritativePartySize,
+              special_request:
+                toolInput.special_request ??
+                (booking_state.special_request as string | null | undefined),
+              occasion:
+                toolInput.occasion ??
+                (booking_state.occasion as string | null | undefined),
               seating_preference: toolInput.seating_preference,
             });
             if (result.reservation_id) lastReservationId = result.reservation_id;
@@ -1702,8 +3366,8 @@ Deno.serve(async (req) => {
               derivedActions.push({ type: "show_exit_x" });
               bookingDelta.reservation_id = result.reservation_id;
               bookingDelta.confirmation_code = result.confirmation_code;
-              if (typeof toolInput.shift_id === "string") bookingDelta.shift_id = toolInput.shift_id;
-              if (typeof toolInput.date_time === "string") bookingDelta.slot_iso = toolInput.date_time;
+              if (typeof authoritativeShiftId === "string") bookingDelta.shift_id = authoritativeShiftId;
+              if (typeof authoritativeSlotIso === "string") bookingDelta.slot_iso = authoritativeSlotIso;
               if (matchedSlot?.display_time) {
                 bookingDelta.time = matchedSlot.display_time;
               } else if (typeof booking_state.time === "string" && booking_state.time.trim()) {
@@ -1972,7 +3636,7 @@ Deno.serve(async (req) => {
 
                   if (stripeSecretKey) {
                     const { default: Stripe } = await import("npm:stripe@17");
-                    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2024-11-20.acacia" });
+                    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2025-02-24.acacia" });
 
                     const { data: profile } = await supabaseAdmin
                       .from("user_profiles")
@@ -2120,16 +3784,84 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Auto-match a voice time + auto-complete the booking (Bug #1) ─────────
-    // When the user replies with a time after slots have been shown, the LLM
-    // sometimes regresses to "store is open X to Y. What time?" instead of
-    // matching the time to a slot. Server-side: parse the time, match it to
-    // the nearest slot, and run completeBooking directly so the user lands on
-    // the confirmation card without an extra round-trip.
-    let autoBookedSlot: { shift_id: string; date_time: string; display_time: string } | null = null;
-    let autoBookingResult:
-      | { reservation_id: string; confirmation_code: string; restaurant_id: string; party_size: number; date: string }
+    // ── Final confirmation + slot matching safety nets ──────────────────────
+    // A matched time should never write a reservation immediately. We select
+    // the live slot and move into `confirming`; only a later explicit yes
+    // creates the reservation.
+    let autoSelectedSlot: { shift_id: string; date_time: string; display_time: string } | null = null;
+    let finalizedBooking:
+      | { reservation_id: string; confirmation_code: string; display_time: string | null }
       | null = null;
+    {
+      const bsRestaurantId = (booking_state.restaurant_id as string | null | undefined) ?? selected_restaurant_id;
+      const bsPartySize = booking_state.party_size as number | null | undefined;
+      const bsDate = booking_state.date as string | null | undefined;
+      const bsShiftId = booking_state.shift_id as string | null | undefined;
+      const bsSlotIso = booking_state.slot_iso as string | null | undefined;
+      const bsReservationId = booking_state.reservation_id as string | null | undefined;
+      const canFinalize =
+        currentStatus === "confirming" &&
+        isAffirmative &&
+        !!bsRestaurantId &&
+        !!bsPartySize &&
+        !!bsDate &&
+        !!bsShiftId &&
+        !!bsSlotIso &&
+        !bsReservationId &&
+        !lastReservationId;
+
+      if (canFinalize) {
+        const live = await getAvailability(bsRestaurantId!, bsDate!, bsPartySize!);
+        const liveSlot = (live.slots ?? []).find((slot) => slot.date_time === bsSlotIso);
+        if (!liveSlot) {
+          derivedActions.push({ type: "load_availability" });
+          bookingDelta.status = "loading_availability";
+          lastTextReply = "That time is no longer available. Checking again.";
+        } else {
+          const duplicate = await duplicateReservationForSlot(userProfileId, bsRestaurantId!, liveSlot.date_time);
+          if (duplicate) {
+            bookingDelta.reservation_id = duplicate.id;
+            bookingDelta.confirmation_code = duplicate.confirmation_code ?? null;
+            lastTextReply = "You already have that booking. Keep it or choose another time?";
+          } else {
+            const result = await completeBooking({
+              user_profile_id: userProfileId,
+              restaurant_id: bsRestaurantId!,
+              order_type: "dine_in",
+              date_time: liveSlot.date_time,
+              shift_id: liveSlot.shift_id,
+              party_size: bsPartySize!,
+              special_request: booking_state.special_request as string | null | undefined,
+              occasion: booking_state.occasion as string | null | undefined,
+            });
+            if (result.success && result.reservation_id && result.confirmation_code) {
+              lastReservationId = result.reservation_id;
+              if (result.guest_id) lastGuestId = result.guest_id;
+              finalizedBooking = {
+                reservation_id: result.reservation_id,
+                confirmation_code: result.confirmation_code,
+                display_time: liveSlot.display_time,
+              };
+              derivedActions.push({
+                type: "show_confirmation",
+                confirmation_code: result.confirmation_code,
+              });
+              derivedActions.push({ type: "show_exit_x" });
+              bookingDelta.reservation_id = result.reservation_id;
+              bookingDelta.confirmation_code = result.confirmation_code;
+              bookingDelta.shift_id = liveSlot.shift_id;
+              bookingDelta.slot_iso = liveSlot.date_time;
+              bookingDelta.time = liveSlot.display_time;
+              bookingDelta.date = bsDate;
+              bookingDelta.status = "offering_preorder";
+            } else if (result.error) {
+              lastTextReply = "I couldn't confirm that booking. Want another time?";
+            }
+          }
+        }
+      }
+    }
+
     {
       const bsRestaurantId = (booking_state.restaurant_id as string | null | undefined) ?? selected_restaurant_id;
       const bsPartySize = booking_state.party_size as number | null | undefined;
@@ -2150,42 +3882,18 @@ Deno.serve(async (req) => {
         if (parsedTimeHHMM) {
           const nearest = findNearestSlot(lastAvailabilitySlots, parsedTimeHHMM);
           if (nearest) {
-            autoBookedSlot = nearest;
-            const result = await completeBooking({
-              user_profile_id: userProfileId,
-              restaurant_id: bsRestaurantId!,
-              order_type: "dine_in",
-              date_time: nearest.date_time,
+            autoSelectedSlot = nearest;
+            derivedActions.push({
+              type: "select_time_slot",
+              slot_iso: nearest.date_time,
               shift_id: nearest.shift_id,
-              party_size: bsPartySize!,
             });
-            if (result.success && result.reservation_id && result.confirmation_code) {
-              lastReservationId = result.reservation_id;
-              if (result.guest_id) lastGuestId = result.guest_id;
-              autoBookingResult = {
-                reservation_id: result.reservation_id,
-                confirmation_code: result.confirmation_code,
-                restaurant_id: bsRestaurantId!,
-                party_size: bsPartySize!,
-                date: bsDate!,
-              };
-              // Push the same actions a normal complete_booking flow would —
-              // shift_id / slot_iso / time / status flow through bookingDelta
-              // below, so we only need the confirmation + exit actions here.
-              derivedActions.push({
-                type: "show_confirmation",
-                confirmation_code: result.confirmation_code,
-              });
-              derivedActions.push({ type: "show_exit_x" });
-              bookingDelta.reservation_id = result.reservation_id;
-              bookingDelta.confirmation_code = result.confirmation_code;
-              bookingDelta.shift_id = nearest.shift_id;
-              bookingDelta.slot_iso = nearest.date_time;
-              bookingDelta.time = nearest.display_time;
-              // Move the booking past the time-selection gate so the
-              // menuPhaseAllowed guard doesn't strip our show_confirmation.
-              bookingDelta.status = "offering_preorder";
-            }
+            derivedActions.push({ type: "confirm_booking" });
+            bookingDelta.shift_id = nearest.shift_id;
+            bookingDelta.slot_iso = nearest.date_time;
+            bookingDelta.time = nearest.display_time;
+            bookingDelta.date = bsDate;
+            bookingDelta.status = "confirming";
           }
         }
       }
@@ -2197,7 +3905,7 @@ Deno.serve(async (req) => {
     // tool-driven turn. The tool-loop call already produced spoken_text in
     // `lastTextReply`, the tools we ran are tracked in `toolsExecuted` /
     // `derivedActions` / `bookingDelta`, and the post-processing chain
-    // immediately below (auto-book hard-override, prefilled-field emitter,
+    // immediately below (confirmation hard-overrides, prefilled-field emitter,
     // anti-repetition rewriter, transcript parsers, derived-action merge,
     // menu-phase guard) already does the work of turning all that into the
     // shape the client expects. So the second LLM round-trip was always
@@ -2238,11 +3946,55 @@ Deno.serve(async (req) => {
       next_expected_input: followUp.next_expected_input,
     };
 
-    // Hard-override spoken_text when we auto-booked from a voice time reply.
-    // The LLM regressed and re-asked for the time; we already created the
-    // reservation, so speak the confirmation instead and prompt the preorder.
-    if (autoBookingResult && autoBookedSlot) {
-      parsed.spoken_text = `You're booked for ${autoBookedSlot.display_time}. Want to pre-order from the menu?`;
+    // Hard-override spoken_text for the safety rails above. A matched voice
+    // time asks for final confirmation; only a later clear yes books it.
+    if (finalizedBooking) {
+      parsed.spoken_text = `You're booked for ${finalizedBooking.display_time ?? "that time"}. Want to pre-order from the menu?`;
+      parsed.intent = "confirm_booking";
+      parsed.step = "confirm";
+      parsed.next_expected_input = "preorder_choice";
+    } else if (
+      bookingDelta.reservation_id &&
+      bookingDelta.confirmation_code &&
+      currentStatus === "confirming" &&
+      isAffirmative
+    ) {
+      const confirmedTime =
+        (bookingDelta.time as string | null | undefined) ??
+        (booking_state.time as string | null | undefined) ??
+        "that time";
+      parsed.spoken_text = `You're booked for ${confirmedTime}. Want to pre-order from the menu?`;
+      parsed.intent = "confirm_booking";
+      parsed.step = "confirm";
+      parsed.next_expected_input = "preorder_choice";
+      parsed.booking = {
+        ...((parsed.booking as Record<string, unknown> | null) ?? {}),
+        status: "offering_preorder",
+        reservation_id: bookingDelta.reservation_id,
+        confirmation_code: bookingDelta.confirmation_code,
+      };
+      derivedActions.push({
+        type: "show_confirmation",
+        confirmation_code: bookingDelta.confirmation_code as string,
+      });
+      derivedActions.push({ type: "show_exit_x" });
+    } else if (autoSelectedSlot) {
+      const partyForPrompt =
+        (booking_state.party_size as number | null | undefined) ??
+        (preFilled.party_size as number | undefined) ??
+        1;
+      const dateForPrompt =
+        (booking_state.date as string | null | undefined) ??
+        (preFilled.date as string | undefined) ??
+        "";
+      parsed.spoken_text = buildBookingConfirmationPrompt({
+        restaurantName: resolvedRestaurantName,
+        partySize: partyForPrompt,
+        date: dateForPrompt,
+        time: autoSelectedSlot.display_time,
+      });
+      parsed.intent = "confirm_booking";
+      parsed.step = "confirm";
       parsed.next_expected_input = "confirmation";
     }
 
@@ -2294,23 +4046,12 @@ Deno.serve(async (req) => {
       lastReservationId ??
       null;
     const hasRestaurant = !!(selected_restaurant_id || bsRestaurantAfter);
-    const hadPartyBeforeTurn =
-      (booking_state.party_size as number | null | undefined) != null;
-    const hadDateBeforeTurn =
-      !!(booking_state.date as string | null | undefined);
+    const hadPartyBeforeTurn = hadPartyAtRequestStart;
+    const hadDateBeforeTurn = hadDateAtRequestStart;
     const attemptedReplyThisTurn = typeof transcript === "string" && transcript.trim().length > 0;
-    const priorPartySize =
-      (booking_state.party_size as number | null | undefined) ??
-      null;
-    const priorDate =
-      (booking_state.date as string | null | undefined) ??
-      null;
-    const priorTime =
-      (booking_state.time as string | null | undefined) ??
-      null;
-    const capturedPartyThisTurn = priorPartySize == null && bsPartyAfter != null;
-    const capturedDateThisTurn = !priorDate && !!bsDateAfter;
-    const capturedTimeThisTurn = !priorTime && !!bsTimeAfter;
+    const capturedPartyThisTurn = !hadPartyAtRequestStart && bsPartyAfter != null;
+    const capturedDateThisTurn = !hadDateAtRequestStart && !!bsDateAfter;
+    const capturedTimeThisTurn = !hadTimeAtRequestStart && !!bsTimeAfter;
     const lastAssistantContent =
       ((history ?? []).find((m) => m.role === "assistant")?.content ?? "").toLowerCase();
     const lastAskedParty =
@@ -2324,21 +4065,33 @@ Deno.serve(async (req) => {
     const dateTimeRetryPrompt = "What date and time?";
     const timeRetryPrompt = "What time?";
     const retryingRequestedField =
-      (attemptedReplyThisTurn && lastAskedParty && !capturedPartyThisTurn) ||
-      (attemptedReplyThisTurn && lastAskedDateTime && !capturedDateThisTurn && !capturedTimeThisTurn) ||
-      (attemptedReplyThisTurn && lastAskedTime && !capturedTimeThisTurn);
+      (attemptedReplyThisTurn && lastAskedParty && !hadPartyAtRequestStart && !capturedPartyThisTurn) ||
+      (
+        attemptedReplyThisTurn &&
+        lastAskedDateTime &&
+        (!hadDateAtRequestStart || !hadTimeAtRequestStart) &&
+        !capturedDateThisTurn &&
+        !capturedTimeThisTurn
+      ) ||
+      (attemptedReplyThisTurn && lastAskedTime && !hadTimeAtRequestStart && !capturedTimeThisTurn);
 
-    if (attemptedReplyThisTurn && lastAskedParty && !capturedPartyThisTurn) {
+    if (attemptedReplyThisTurn && lastAskedParty && !hadPartyAtRequestStart && !capturedPartyThisTurn) {
       parsed.spoken_text = partyRetryPrompt;
       parsed.intent = "select_restaurant";
       parsed.step = "choose_party";
       parsed.next_expected_input = "party_size";
-    } else if (attemptedReplyThisTurn && lastAskedDateTime && !capturedDateThisTurn && !capturedTimeThisTurn) {
+    } else if (
+      attemptedReplyThisTurn &&
+      lastAskedDateTime &&
+      (!hadDateAtRequestStart || !hadTimeAtRequestStart) &&
+      !capturedDateThisTurn &&
+      !capturedTimeThisTurn
+    ) {
       parsed.spoken_text = dateTimeRetryPrompt;
       parsed.intent = "choose_date";
       parsed.step = "choose_date";
       parsed.next_expected_input = "date";
-    } else if (attemptedReplyThisTurn && lastAskedTime && !capturedTimeThisTurn) {
+    } else if (attemptedReplyThisTurn && lastAskedTime && !hadTimeAtRequestStart && !capturedTimeThisTurn) {
       parsed.spoken_text = timeRetryPrompt;
       parsed.intent = "choose_time";
       parsed.step = "choose_time";
@@ -2442,7 +4195,7 @@ Deno.serve(async (req) => {
       responseActions.some((a) =>
         a.type === type && (matchKey == null || a[matchKey] === matchVal),
       );
-    for (const d of derivedActions) {
+    for (const d of [...derivedActions].reverse()) {
       const type = d.type as string;
       // Match on the distinguishing field for ids, so we don't collapse two
       // different set_booking_field actions into one.
@@ -2469,10 +4222,12 @@ Deno.serve(async (req) => {
     // A real reservation_id is the single source of truth — require it.
     const responseReservationId =
       ((parsed.booking as Record<string, unknown> | null)?.reservation_id as string | null | undefined) ?? null;
+    const existingReservationId =
+      (booking_state.reservation_id as string | null | undefined) ?? null;
     const hasRealReservation =
       !!lastReservationId ||
-      !!responseReservationId ||
-      !!(booking_state.reservation_id as string | null | undefined);
+      (!!responseReservationId && UUID_RE.test(responseReservationId)) ||
+      (!!existingReservationId && UUID_RE.test(existingReservationId));
     const mergedStatus =
       (bookingDelta.status as string | undefined) ??
       ((parsed.booking as Record<string, unknown> | null)?.status as string | undefined) ??
@@ -2502,6 +4257,7 @@ Deno.serve(async (req) => {
         "choosing_tip_timing",
         "choosing_tip_amount",
         "choosing_payment_split",
+        "collecting_payment",
         "charging",
         "paid",
         "post_booking",
@@ -2656,16 +4412,21 @@ Deno.serve(async (req) => {
     // supply a schema-valid prompt, but keep one last guard so the user never
     // gets dead silence if a later rewrite clears spoken_text unexpectedly.
     if (!parsed.spoken_text || !(parsed.spoken_text as string).trim()) {
-      parsed.spoken_text = "Got it. What would you like to do next?";
+      parsed.spoken_text = "What kind of restaurant are you looking for?";
+    } else if (typeof parsed.spoken_text === "string") {
+      parsed.spoken_text = scrubGenericLookupPrompt(parsed.spoken_text);
     }
 
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: conversationId,
-      role: "assistant",
-      content: (parsed.spoken_text as string) ?? "",
-      metadata: { kind: "orchestrator", full_response: parsed },
-    });
+    await latency.time("assistant_persist", () =>
+      supabaseAdmin.from("chat_messages").insert({
+        conversation_id: conversationId,
+        role: "assistant",
+        content: (parsed.spoken_text as string) ?? "",
+        metadata: { kind: "orchestrator", full_response: parsed },
+      })
+    );
 
     send({ type: "final", payload: parsed });
+    latency.done({ path: "llm" });
   });
 });

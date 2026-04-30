@@ -1,10 +1,9 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 
 import { AuthProvider } from "@/contexts/auth-context";
-// New voice-first customer assistant
 import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantProvider";
-import { CenaivaVoiceShell } from "@/components/cenaiva/CenaivaVoiceShell";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
 import { DevSupabaseBanner } from "@/components/layout/DevSupabaseBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -13,6 +12,11 @@ import { useUser } from "@/hooks/useUser";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 
 const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password"]);
+const CenaivaVoiceShell = lazy(() =>
+  import("@/components/cenaiva/CenaivaVoiceShell").then((module) => ({
+    default: module.CenaivaVoiceShell,
+  })),
+);
 
 function AuthedCenaivaUI() {
   const { user } = useUser();
@@ -31,7 +35,9 @@ function AuthedCenaivaUI() {
   return (
     <>
       <CustomerVoiceOrbFAB />
-      <CenaivaVoiceShell initialGreeting />
+      <Suspense fallback={null}>
+        <CenaivaVoiceShell initialGreeting />
+      </Suspense>
     </>
   );
 }

@@ -50,6 +50,7 @@ const initialBooking: BookingState = {
   tip_amount: null,
   tip_percent: null,
   payment_split: null,
+  pending_action: null,
   order_id: null,
   payment_status: "idle",
   has_saved_card: false,
@@ -137,6 +138,7 @@ function beginBookingForRestaurant(
     tip_amount: null,
     tip_percent: null,
     payment_split: null,
+    pending_action: null,
     order_id: null,
     payment_status: "idle",
   };

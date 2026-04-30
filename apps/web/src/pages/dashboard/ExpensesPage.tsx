@@ -32,7 +32,7 @@ export default function ExpensesPage() {
   const { t } = useTranslation();
   const { selectedRestaurant, selectedRestaurantId } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
-  const [categoryFilter, setCategoryFilter] = useState<string | undefined>();
+  const [categoryFilter] = useState<string | undefined>();
   const { expenses, loading, refetch } = useExpenses({ category: categoryFilter });
 
   const monthTotal = expenses.reduce((sum, e) => sum + e.total_amount, 0);

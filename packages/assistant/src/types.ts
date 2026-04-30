@@ -11,6 +11,12 @@ export interface CartItem {
   note: string | null;
 }
 
+export interface PendingAction {
+  type: "modify_reservation" | "cancel_reservation" | "late_note" | "save_preference";
+  payload: Record<string, unknown>;
+  confirmation_text: string;
+}
+
 export interface BookingState {
   restaurant_id: string | null;
   restaurant_name: string | null;
@@ -35,6 +41,7 @@ export interface BookingState {
     | "choosing_tip_timing"
     | "choosing_tip_amount"
     | "choosing_payment_split"
+    | "collecting_payment"
     | "charging"
     | "paid";
   confirmation_code: string | null;
@@ -47,6 +54,7 @@ export interface BookingState {
   tip_amount: number | null; // dollars
   tip_percent: number | null; // 0–100
   payment_split: "single" | "split" | null;
+  pending_action: PendingAction | null;
   order_id: string | null;
   payment_status: "idle" | "pending" | "paid" | "failed";
   has_saved_card: boolean;
@@ -86,6 +94,7 @@ export interface BookingDelta {
   tip_amount?: number | null;
   tip_percent?: number | null;
   payment_split?: "single" | "split" | null;
+  pending_action?: PendingAction | null;
   order_id?: string | null;
   payment_status?: BookingState["payment_status"];
   has_saved_card?: boolean;

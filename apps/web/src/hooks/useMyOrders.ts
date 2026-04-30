@@ -70,7 +70,21 @@ export function useMyOrders() {
       return;
     }
 
-    setOrders((data ?? []) as MyOrderRow[]);
+    type RawOrderRow = Omit<MyOrderRow, "restaurant"> & {
+      restaurant:
+        | MyOrderRow["restaurant"]
+        | NonNullable<MyOrderRow["restaurant"]>[];
+    };
+    const rows = (data ?? []).map((row) => {
+      const raw = row as unknown as RawOrderRow;
+      return {
+        ...raw,
+        restaurant: Array.isArray(raw.restaurant)
+          ? raw.restaurant[0] ?? null
+          : raw.restaurant,
+      };
+    });
+    setOrders(rows);
     setLoading(false);
   }, [profile?.id]);
 

@@ -63,11 +63,15 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
     void (async () => {
       try {
         const client = getSupabaseBrowserClient();
+        const query = client
+          .from("restaurants")
+          .select("id, name, slug, currency, timezone, settings_json, has_bar")
+          .in("id", ids);
         const { data, error: qErr } = await promiseWithTimeout(
-          client
-            .from("restaurants")
-            .select("id, name, slug, currency, timezone, settings_json, has_bar")
-            .in("id", ids),
+          Promise.resolve(query) as Promise<{
+            data: StaffRestaurantRow[] | null;
+            error: { message: string } | null;
+          }>,
           STAFF_RESTAURANTS_FETCH_TIMEOUT_MS,
           "Restaurants list",
         );

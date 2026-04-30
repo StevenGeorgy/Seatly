@@ -27,7 +27,7 @@ interface AssistantContextValue {
   sayGoodbyeAndClose: (message?: string, redirectAfter?: string) => Promise<void>;
   sendTranscript: (
     transcript: string,
-    opts?: { restaurantId?: string; silent?: boolean },
+    opts?: { restaurantId?: string; silent?: boolean; force?: boolean },
   ) => Promise<void>;
   startListening: () => Promise<void>;
   shouldAutoListenOnOpen: () => boolean;
@@ -170,9 +170,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const sendTranscript = useCallback(
     async (
       transcript: string,
-      opts?: { restaurantId?: string; silent?: boolean },
+      opts?: { restaurantId?: string; silent?: boolean; force?: boolean },
     ) => {
-      if (processingRef.current) return;
+      if (processingRef.current) {
+        if (!opts?.force) return;
+        orchestrator.cancel();
+        processingRef.current = false;
+      }
       processingRef.current = true;
 
       // Hard-stop any active recognition before processing. This must happen on
@@ -199,6 +203,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
           time: current.booking.time,
           shift_id: current.booking.shift_id,
           slot_iso: current.booking.slot_iso,
+          special_request: current.booking.special_request,
+          occasion: current.booking.occasion,
           status: current.booking.status,
           confirmation_code: current.booking.confirmation_code,
           reservation_id: current.booking.reservation_id,
@@ -233,7 +239,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // they match we skip the trailing voice.speak() (avoiding a double-
       // speak), otherwise we discard the queued audio and speak the override.
       let streamedText = "";
-      let streamingActive = voice.isStreamingTTSAvailable && !opts?.silent;
+      const streamingActive = voice.isStreamingTTSAvailable && !opts?.silent;
       const streamCallbacks = streamingActive
         ? {
             onSpeechChunk: (text: string) => {

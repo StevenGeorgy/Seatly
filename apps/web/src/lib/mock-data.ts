@@ -16,7 +16,6 @@ import type { ExpenseRow } from "@/hooks/useExpenses";
 import type { EventRow } from "@/hooks/useEvents";
 
 const RID = "mock-restaurant-id";
-const today = new Date().toISOString().split("T")[0];
 
 function todayAt(hour: number, min = 0): string {
   const d = new Date();
@@ -117,7 +116,7 @@ export const MOCK_SECTIONS: SectionRow[] = [
   { id: "sec-3", restaurant_id: RID, name: "Bar Area", sort_order: 2, is_active: true },
 ];
 
-export const MOCK_TABLES: TableRow[] = [
+export const MOCK_TABLES: TableRow[] = ([
   { id: "t-1", restaurant_id: RID, table_number: "T1", label: "T1", capacity: 4, min_party: 2, section: "Main Dining", section_id: "sec-1", position_x: 100, position_y: 80, shape: "circle", status: "reserved", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
   { id: "t-2", restaurant_id: RID, table_number: "T2", label: "T2", capacity: 4, min_party: 2, section: "Main Dining", section_id: "sec-1", position_x: 260, position_y: 80, shape: "circle", status: "empty", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
   { id: "t-3", restaurant_id: RID, table_number: "T3", label: "T3", capacity: 6, min_party: 3, section: "Main Dining", section_id: "sec-1", position_x: 80, position_y: 240, shape: "rectangle", status: "occupied", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
@@ -126,7 +125,7 @@ export const MOCK_TABLES: TableRow[] = [
   { id: "t-6", restaurant_id: RID, table_number: "B1", label: "B1", capacity: 4, min_party: 2, section: "Booths", section_id: "sec-2", position_x: 60, position_y: 380, shape: "booth", status: "occupied", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
   { id: "t-7", restaurant_id: RID, table_number: "B2", label: "B2", capacity: 4, min_party: 2, section: "Booths", section_id: "sec-2", position_x: 200, position_y: 380, shape: "booth", status: "empty", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
   { id: "t-8", restaurant_id: RID, table_number: "Bar", label: "Bar", capacity: 6, min_party: 1, section: "Bar Area", section_id: "sec-3", position_x: 380, position_y: 380, shape: "bar", status: "occupied", combined_with: null, qr_code_url: null, notes: null, is_active: true, updated_at: null },
-];
+]).map((table) => ({ seated_count: 0, ...table }));
 
 // ─── Waitlist ───────────────────────────────────────────────────
 export const MOCK_WAITLIST: WaitlistRow[] = [
@@ -138,7 +137,7 @@ export const MOCK_WAITLIST: WaitlistRow[] = [
 ];
 
 // ─── Orders (KDS) ───────────────────────────────────────────────
-export const MOCK_ORDERS: OrderRow[] = [
+export const MOCK_ORDERS: OrderRow[] = ([
   {
     id: "ord-1", reservation_id: "res-7", restaurant_id: RID, guest_id: null,
     is_preorder: false, order_type: "dine_in", status: "pending",
@@ -184,7 +183,16 @@ export const MOCK_ORDERS: OrderRow[] = [
     ],
     reservations: { table_id: "t-2", tables: { table_number: "2" } },
   },
-];
+]).map((order) => ({
+  confirmation_code: null,
+  notes: null,
+  source: "mock",
+  ...order,
+  order_items: order.order_items.map((item) => ({
+    name: item.menu_items?.name ?? "Menu item",
+    ...item,
+  })),
+}));
 
 // ─── Menu ───────────────────────────────────────────────────────
 export const MOCK_CATEGORIES: MenuCategoryRow[] = [
@@ -272,9 +280,9 @@ export const MOCK_EXPENSES: ExpenseRow[] = [
 ];
 
 // ─── Events ─────────────────────────────────────────────────────
-export const MOCK_EVENTS: EventRow[] = [
+export const MOCK_EVENTS: EventRow[] = ([
   { id: "ev-1", restaurant_id: RID, name: "Wine & Dine Tasting", description: "5-course tasting menu paired with sommelier-selected wines from Burgundy. Limited to 30 guests.", date: daysFromNow(5), start_time: "19:00", end_time: "22:00", price_per_person: 95.00, capacity: 30, tickets_sold: 22, is_recurring: false, cover_image_url: null, min_age: 18, dress_code: "Smart casual", is_private: false, created_at: daysAgo(14) },
   { id: "ev-2", restaurant_id: RID, name: "Jazz & Cocktails Night", description: "Live jazz trio with handcrafted cocktail specials all evening.", date: daysFromNow(12), start_time: "20:00", end_time: "23:30", price_per_person: null, capacity: 60, tickets_sold: 0, is_recurring: true, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(7) },
   { id: "ev-3", restaurant_id: RID, name: "Chef's Table Experience", description: "Intimate 8-seat dinner cooked tableside by Chef Marco. Weekly rotating menu.", date: daysFromNow(3), start_time: "19:30", end_time: "22:30", price_per_person: 150.00, capacity: 8, tickets_sold: 7, is_recurring: true, cover_image_url: null, min_age: null, dress_code: "Business casual", is_private: true, created_at: daysAgo(21) },
   { id: "ev-4", restaurant_id: RID, name: "Easter Brunch Buffet", description: "Family-friendly brunch featuring a live carving station, omelette bar, and kids activities.", date: daysFromNow(20), start_time: "10:30", end_time: "14:00", price_per_person: 45.00, capacity: 80, tickets_sold: 34, is_recurring: false, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(10) },
-];
+]).map((event) => ({ theme: null, ...event }));

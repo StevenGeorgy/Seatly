@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useCenaivaChat, type ChatMessage, type ActionTaken } from "@/hooks/useCenaivaChat";
+import { useCenaivaChat, type ChatMessage } from "@/hooks/useCenaivaChat";
 import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
 import { useUser } from "@/hooks/useUser";
@@ -73,7 +73,6 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [mode, setMode] = useState<"customer" | "owner">("customer");
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   // voiceMode = continuous STT loop; true when session was started via wake word
   const [voiceMode, setVoiceMode] = useState(false);
@@ -99,7 +98,6 @@ export function CenaivaProvider({ children }: { children: ReactNode }) {
       (pos) => {
         const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         userLocationRef.current = loc;
-        setUserLocation(loc);
       },
       () => {}, // fail silently — location is optional
       { timeout: 5000, maximumAge: 300_000 },
