@@ -15,14 +15,14 @@ export function ExitButton({ onExit, className }: ExitButtonProps) {
       exit={{ opacity: 0, scale: 0.8 }}
       onClick={onExit}
       className={cn(
-        "absolute top-4 left-4 z-50 flex items-center justify-center",
-        "w-9 h-9 rounded-full bg-black/60 backdrop-blur-sm border border-white/10",
-        "text-white hover:bg-black/80 transition-colors",
+        "absolute left-4 top-4 z-50 flex size-12 items-center justify-center",
+        "rounded-full border border-gold/40 bg-gold/15 text-gold shadow-lg shadow-black/30 backdrop-blur-sm",
+        "transition-colors hover:bg-gold/25",
         className,
       )}
       aria-label="Close"
     >
-      <X className="w-4 h-4" />
+      <X className="size-6" />
     </motion.button>
   );
 }

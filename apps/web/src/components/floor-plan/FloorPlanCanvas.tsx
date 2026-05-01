@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import type Konva from "konva";
-import { Circle, Layer, Line, Rect, Stage, Transformer } from "react-konva";
+import { Circle, Layer, Line, Rect, Stage, Text, Transformer } from "react-konva";
 
 import type {
   DecorationItem as DecorationModel,
@@ -1119,7 +1119,7 @@ export function FloorPlanCanvas({
   return (
     <div
       ref={canvasContainerRef}
-      className="relative h-full w-full min-h-0 overflow-hidden rounded-sm ring-1 ring-inset ring-gold/20"
+      className="relative h-full w-full min-h-0 overflow-hidden rounded-xl border border-border/70 bg-bg-base shadow-2xl shadow-black/40"
       style={{ cursor: cursorStyle, backgroundColor: CANVAS_COLORS.zoneBodyFill }}
       onMouseEnter={() => {
         canvasHoveredRef.current = true;
@@ -1136,6 +1136,9 @@ export function FloorPlanCanvas({
         }}
         aria-hidden
       />
+      <div className="pointer-events-none absolute left-1/2 top-3 z-[8] -translate-x-1/2 rounded-full border border-border/60 bg-bg-base/80 px-3 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted shadow-lg shadow-black/30">
+        Hold ⌘ + scroll to zoom · drag empty space to pan
+      </div>
       <Stage
         ref={stageRef}
         width={viewportW}
@@ -1180,6 +1183,38 @@ export function FloorPlanCanvas({
               stagePixelRatio={pixelRatio}
             />
           )}
+
+          <Rect
+            x={40}
+            y={54}
+            width={Math.max(1, worldW - 80)}
+            height={Math.max(1, worldH - 108)}
+            stroke="rgba(255, 255, 255, 0.08)"
+            strokeWidth={1.2}
+            fill="transparent"
+            listening={false}
+          />
+          <Text
+            text="ENTRANCE"
+            x={worldW / 2 - 54}
+            y={34}
+            width={108}
+            align="center"
+            fontSize={10}
+            fontStyle="bold"
+            fontFamily="Inter, system-ui, sans-serif"
+            letterSpacing={3}
+            fill={CANVAS_COLORS.textMuted}
+            listening={false}
+          />
+          <Line
+            points={[worldW / 2 - 28, 52, worldW / 2 + 28, 52]}
+            stroke={CANVAS_COLORS.gold}
+            strokeWidth={2}
+            opacity={0.5}
+            lineCap="round"
+            listening={false}
+          />
 
           {/* Room zones — under furniture, above grid */}
           {zones.map((z) => (

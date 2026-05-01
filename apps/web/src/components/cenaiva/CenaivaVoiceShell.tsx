@@ -239,10 +239,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           {!showConfirmationOrPostBooking && (
             <button
               onClick={handleClose}
-              className="absolute top-4 left-4 z-50 flex items-center justify-center w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+              className="absolute left-4 top-4 z-50 flex size-12 items-center justify-center rounded-full border border-gold/40 bg-gold/15 text-gold shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:bg-gold/25"
               aria-label="Close assistant"
             >
-              <X className="w-4 h-4 text-white" />
+              <X className="size-6" />
             </button>
           )}
 

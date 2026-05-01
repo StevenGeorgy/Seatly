@@ -104,7 +104,7 @@ export function FloorPlanToolbar({ activeTool, onToolChange }: FloorPlanToolbarP
   const { t } = useTranslation();
 
   return (
-    <div className="flex w-52 shrink-0 flex-col gap-0 rounded-xl border border-border/50 bg-bg-elevated/30 shadow-lg shadow-black/30">
+    <div className="flex w-full shrink-0 flex-col gap-0 rounded-xl border border-border/50 bg-bg-base/50 shadow-lg shadow-black/30">
       <ToolSection
         title={t("dashboard.floorPlan.toolbarTables")}
         items={TABLE_TOOLS}

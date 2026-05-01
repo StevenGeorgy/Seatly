@@ -21,6 +21,9 @@ import {
   Lock,
   AlertTriangle,
   Split,
+  Heart,
+  Bookmark,
+  X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -33,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
+import type { Restaurant } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import {
   getSupabaseAnonKey,
@@ -43,6 +47,7 @@ import {
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
+import { cn } from "@/lib/utils";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -171,7 +176,7 @@ const MENU: MenuItem[] = [
 ];
 
 const CATEGORIES = ["All", "Starters", "Mains", "Desserts", "Drinks"];
-const TIMES = ["5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM","7:30 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM"];
+const TIMES = ["5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM","7:30 PM","7:45 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM"];
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
 const SEATING_PREFERENCES = [
   "",
@@ -302,6 +307,326 @@ function StepBar({
   );
 }
 
+function PreviewArt({ label }: { label: string }) {
+  return (
+    <div className="relative flex size-full min-h-24 items-center justify-center overflow-hidden rounded-xl border border-gold/15 bg-bg-base">
+      <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.22)_0,rgba(201,168,76,0.22)_1px,transparent_1px,transparent_16px)]" />
+      <span className="relative flex size-10 items-center justify-center rounded-full border border-gold/30 bg-gold/15 font-mono text-[9px] uppercase tracking-[0.28em] text-gold/70">
+        {label.slice(0, 3)}
+      </span>
+    </div>
+  );
+}
+
+function PreviewDishCard({ item, compact = false }: { item: MenuItem; compact?: boolean }) {
+  return (
+    <article
+      className={cn(
+        "overflow-hidden rounded-2xl border border-border bg-bg-elevated/70 shadow-xl shadow-black/20",
+        compact ? "grid grid-cols-[78px_minmax(0,1fr)] gap-3 p-3" : "",
+      )}
+    >
+      <div className={compact ? "h-full min-h-20" : "h-32"}>
+        <PreviewArt label={item.name} />
+      </div>
+      <div className={compact ? "min-w-0" : "p-4"}>
+        {!compact && (
+          <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
+            {item.category}
+          </p>
+        )}
+        <div className="mt-1 flex items-start justify-between gap-3">
+          <h3 className="line-clamp-2 font-serif text-lg leading-tight text-white">{item.name}</h3>
+          <span className="shrink-0 font-serif text-base text-gold">
+            {formatCurrency(item.price, "cad")}
+          </span>
+        </div>
+        <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">{item.description}</p>
+        {!compact && item.popular && (
+          <span className="mt-3 inline-flex rounded-full bg-gold/15 px-2 py-0.5 text-[10px] text-gold">
+            Popular
+          </span>
+        )}
+      </div>
+    </article>
+  );
+}
+
+const STAFF_PREVIEW_TABS = ["Menu", "Photos", "Reviews", "About", "Events"] as const;
+type StaffPreviewTab = (typeof STAFF_PREVIEW_TABS)[number];
+
+const STAFF_PREVIEW_TIMES = [
+  { label: "7:45p", value: "7:45 PM" },
+  { label: "8p", value: "8:00 PM" },
+  { label: "8:30p", value: "8:30 PM" },
+  { label: "9p", value: "9:00 PM" },
+  { label: "5:30p", value: "5:30 PM" },
+  { label: "6:45p", value: "6:45 PM" },
+];
+
+function RestaurantStaffPreview({
+  restaurant,
+  menuItems,
+  onBack,
+  onStartBooking,
+}: {
+  restaurant: Restaurant;
+  menuItems: MenuItem[];
+  onBack: () => void;
+  onStartBooking: (time: string) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<StaffPreviewTab>("Menu");
+  const [favorite, setFavorite] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [selectedTime, setSelectedTime] = useState(STAFF_PREVIEW_TIMES[0].value);
+
+  const popular = menuItems.filter((item) => item.popular).slice(0, 4);
+  const snacks = menuItems.slice(0, 2);
+  const firstCourse = menuItems.slice(2, 4);
+  const cuisine = restaurant.cuisine_type ?? "Spanish Tapas";
+  const priceLabel = PRICE_LABELS[restaurant.price_range ?? 3] ?? "$$$";
+  const rating = restaurant.avg_rating?.toFixed(1) ?? "4.6";
+  const reviewCount = restaurant.total_reviews ?? 927;
+  const selectedTimeLabel = STAFF_PREVIEW_TIMES.find((time) => time.value === selectedTime)?.label ?? selectedTime;
+
+  return (
+    <div className="min-h-screen bg-bg-base text-text-primary">
+      <button
+        type="button"
+        onClick={onBack}
+        className="fixed right-5 top-5 z-50 flex size-10 items-center justify-center rounded-full border border-border bg-bg-elevated/90 text-text-muted shadow-xl shadow-black/40 transition-colors hover:text-white"
+        aria-label="Back to dashboard"
+      >
+        <X className="size-5" />
+      </button>
+
+      <div className="relative h-48 border-b border-border bg-bg-base">
+        {restaurant.cover_photo_url ? (
+          <img src={restaurant.cover_photo_url} alt="" className="size-full object-cover opacity-45" />
+        ) : (
+          <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.24)_0,rgba(201,168,76,0.24)_1px,transparent_1px,transparent_18px)]" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-bg-base via-bg-base/55 to-transparent" />
+      </div>
+
+      <main className="mx-auto -mt-16 grid max-w-6xl grid-cols-1 gap-5 px-5 pb-16 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="lg:col-span-2">
+          <div className="rounded-3xl border border-border bg-bg-surface p-6 shadow-2xl shadow-black/40">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full border border-gold/30 bg-gold/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-gold">
+                    Tasting menu
+                  </span>
+                  <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-text-secondary">
+                    Patio
+                  </span>
+                  <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-success">
+                    Tables tonight
+                  </span>
+                </div>
+                <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+                  <span>{cuisine}</span>
+                  <span className="font-semibold text-gold">{priceLabel}</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Star className="size-3 fill-gold text-gold" />
+                    {rating} · {reviewCount} reviews
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin className="size-3" />
+                    {restaurant.city ?? "Toronto"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  aria-pressed={favorite}
+                  onClick={() => setFavorite((value) => !value)}
+                  className={cn(
+                    "flex size-10 items-center justify-center rounded-full border border-border bg-bg-elevated transition-colors",
+                    favorite ? "text-gold" : "text-text-muted hover:text-white",
+                  )}
+                >
+                  <Heart className={cn("size-4", favorite ? "fill-gold" : "")} />
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={saved}
+                  onClick={() => setSaved((value) => !value)}
+                  className={cn(
+                    "flex size-10 items-center justify-center rounded-full border border-border bg-bg-elevated transition-colors",
+                    saved ? "text-gold" : "text-text-muted hover:text-white",
+                  )}
+                >
+                  <Bookmark className={cn("size-4", saved ? "fill-gold" : "")} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-5">
+          <div className="grid grid-cols-5 rounded-full border border-border bg-bg-surface p-1 text-xs">
+            {STAFF_PREVIEW_TABS.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={cn(
+                  "rounded-full px-4 py-2 transition-colors",
+                  activeTab === tab ? "bg-gold text-bg-base" : "text-text-secondary hover:text-white",
+                )}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "Menu" ? (
+            <>
+              <div className="rounded-3xl border border-border bg-bg-surface p-5">
+                <div className="mb-5 flex items-end justify-between">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Popular tonight</p>
+                    <h2 className="mt-2 font-serif text-2xl text-white">Most-ordered this week</h2>
+                  </div>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
+                    {popular.length} dishes
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {popular.map((item) => <PreviewDishCard key={item.id} item={item} />)}
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-border bg-bg-surface p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="font-serif text-2xl text-white">Snacks & Bread</h2>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">{snacks.length} items</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {snacks.map((item) => <PreviewDishCard key={item.id} item={item} compact />)}
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-border bg-bg-surface p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="font-serif text-2xl text-white">First Course</h2>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">{firstCourse.length} items</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {firstCourse.map((item) => <PreviewDishCard key={item.id} item={item} compact />)}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-3xl border border-border bg-bg-surface p-6">
+              {activeTab === "Photos" && (
+                <>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Dining room</p>
+                  <h2 className="mt-2 font-serif text-2xl text-white">Photos</h2>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    {["Dining", "Bar", "Patio", "Chef", "Table", "Dessert"].map((label) => (
+                      <div key={label} className="h-36"><PreviewArt label={label} /></div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {activeTab === "Reviews" && (
+                <>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Guest sentiment</p>
+                  <h2 className="mt-2 font-serif text-2xl text-white">{rating} from {reviewCount} reviews</h2>
+                  <div className="mt-5 space-y-3 text-sm text-text-secondary">
+                    <p className="rounded-2xl bg-bg-elevated p-4">"The pacing, lighting, and hospitality made the room feel special from the first course."</p>
+                    <p className="rounded-2xl bg-bg-elevated p-4">"Great for a celebratory dinner. The staff remembered our preferences."</p>
+                  </div>
+                </>
+              )}
+              {activeTab === "About" && (
+                <>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">About</p>
+                  <h2 className="mt-2 font-serif text-2xl text-white">{restaurant.name}</h2>
+                  <p className="mt-4 leading-relaxed text-text-secondary">
+                    {restaurant.description ?? `${restaurant.name} is a polished ${cuisine.toLowerCase()} room with warm service, seasonal dishes, and tables available tonight.`}
+                  </p>
+                  <div className="mt-5 grid gap-3 text-sm text-text-secondary sm:grid-cols-2">
+                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.address ?? "Downtown Toronto"}</p>
+                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.phone ?? "Concierge available after booking"}</p>
+                  </div>
+                </>
+              )}
+              {activeTab === "Events" && (
+                <>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Upcoming</p>
+                  <h2 className="mt-2 font-serif text-2xl text-white">Events</h2>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                    {["Chef's counter tasting", "Late-night tapas", "Wine pairing weekend"].map((eventName) => (
+                      <button key={eventName} type="button" className="rounded-2xl border border-border bg-bg-elevated p-4 text-left transition-colors hover:border-gold/40">
+                        <p className="font-serif text-lg text-white">{eventName}</p>
+                        <p className="mt-2 text-xs text-text-secondary">Tap to preview event details.</p>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+
+        <aside className="space-y-4 lg:sticky lg:top-5 lg:self-start">
+          <div className="rounded-3xl border border-border bg-bg-surface p-6">
+            <h2 className="font-serif text-2xl text-white">Reserve a table</h2>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-bg-elevated p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Date</p>
+                <p className="mt-2 text-sm text-white">Sat · Apr 27</p>
+              </div>
+              <div className="rounded-2xl bg-bg-elevated p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Party</p>
+                <p className="mt-2 text-sm text-white">2 guests</p>
+              </div>
+            </div>
+            <p className="mt-5 font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Available times</p>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {STAFF_PREVIEW_TIMES.map((time) => (
+                <button
+                  key={time.value}
+                  type="button"
+                  onClick={() => setSelectedTime(time.value)}
+                  className={cn(
+                    "rounded-xl px-3 py-3 text-xs transition-colors",
+                    selectedTime === time.value ? "bg-gold text-bg-base" : "bg-bg-elevated text-text-secondary hover:text-white",
+                  )}
+                >
+                  {time.label}
+                </button>
+              ))}
+            </div>
+            <Button className="mt-4 h-12 w-full rounded-xl" onClick={() => onStartBooking(selectedTime)}>
+              Continue with {selectedTimeLabel}
+            </Button>
+            <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs">
+              <div className="flex justify-between"><span className="text-text-muted">Deposit (refundable)</span><span className="text-white">$40.00 / guest</span></div>
+              <div className="flex justify-between"><span className="text-text-muted">Cancellation</span><span className="text-white">24h notice</span></div>
+              <div className="flex justify-between"><span className="text-text-muted">Loyalty earned</span><span className="text-gold">+185 pts</span></div>
+            </div>
+            <p className="mt-5 rounded-xl bg-bg-elevated/60 p-3 text-xs leading-relaxed text-text-muted">
+              Your last visit was 6 weeks ago. The team remembers your nut allergy.
+            </p>
+          </div>
+          <div className="rounded-3xl border border-border bg-bg-surface p-5 text-xs text-text-secondary">
+            <p>Booked 85 times today</p>
+            <p className="mt-3">Concierge notes available after booking</p>
+            <p className="mt-3">Great for parties of 2–6</p>
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function RestaurantPublicPage() {
   const { t } = useTranslation();
@@ -312,6 +637,12 @@ export default function RestaurantPublicPage() {
    *  checkout confirms we want to drop them back on their dashboard rather
    *  than the generic "Back to Discover" CTA. */
   const cameFromCenaivaPrepay = !!searchParams.get("order_id");
+  const isStaffPreview = searchParams.get("preview") === "dashboard";
+  const backTarget = searchParams.get("back") === "dashboard" ? "/dashboard" : "/discover";
+  const requestedBookingTime = searchParams.get("time") ?? searchParams.get("slot");
+  const initialBookingTime = requestedBookingTime && TIMES.includes(requestedBookingTime)
+    ? requestedBookingTime
+    : "7:00 PM";
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
@@ -350,7 +681,7 @@ export default function RestaurantPublicPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
 
   const [dineIn, setDineIn] = useState<DineInDetails>({
-    date: "", time: "7:00 PM", party_size: 2,
+    date: "", time: initialBookingTime, party_size: 2,
     seating_preference: "",
     name: "", email: "", phone: "", allergies: "", occasion: "",
   });
@@ -363,6 +694,7 @@ export default function RestaurantPublicPage() {
     const phone = profile.phone ?? "";
     const allergies = profile.allergies?.join(", ") ?? "";
     const seating = profile.seating_preference ?? "";
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- prefill form from asynchronously loaded profile once available
     setDineIn((d) => ({
       ...d,
       name: d.name || name,
@@ -371,7 +703,6 @@ export default function RestaurantPublicPage() {
       allergies: d.allergies || allergies,
       seating_preference: d.seating_preference || seating,
     }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 
   // Apply this restaurant's theme while on its public page; reset on leave.
@@ -522,6 +853,7 @@ export default function RestaurantPublicPage() {
   useEffect(() => {
     if (paymentSplitMode !== "split") return;
     if (!Number.isFinite(splitPartyCount) || splitPartyCount < 2 || splitPartyCount > 10) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- keep split card rows in sync with selected split count
     setSplitCardRows((prev) => {
       if (prev.length === splitPartyCount) return prev;
       const next = prev.slice(0, splitPartyCount);
@@ -861,7 +1193,7 @@ export default function RestaurantPublicPage() {
     } finally {
       setPlacing(false);
     }
-  }, [restaurant, cart, profile, dineIn, cartTotal, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, restaurantPromos, existingReservationId, existingOrderId]);
+  }, [restaurant, cart, profile, dineIn, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, existingReservationId, existingOrderId]);
 
   if (loading) {
     return (
@@ -883,6 +1215,21 @@ export default function RestaurantPublicPage() {
     );
   }
 
+  if (isStaffPreview) {
+    return (
+      <RestaurantStaffPreview
+        restaurant={restaurant}
+        menuItems={menuItems}
+        onBack={() => navigate("/dashboard")}
+        onStartBooking={(time) => {
+          setDineIn((details) => ({ ...details, time }));
+          setStep("details");
+          navigate(`/${restaurant.slug || restaurant.id}?back=dashboard&time=${encodeURIComponent(time)}`);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
@@ -890,7 +1237,7 @@ export default function RestaurantPublicPage() {
         <div className="absolute inset-0 bg-gradient-to-t from-bg-base via-bg-base/20 to-transparent" />
         <div className="absolute left-4 top-4">
           <Button variant="ghost" size="sm" className="gap-1.5 bg-black/30 backdrop-blur-sm hover:bg-black/50" asChild>
-            <Link to="/discover"><ArrowLeft className="size-4" />Back</Link>
+            <Link to={backTarget}><ArrowLeft className="size-4" />Back</Link>
           </Button>
         </div>
       </div>

@@ -12,7 +12,7 @@ export function SectionTabs({ sections, selected, onChange, disabled = false }: 
   if (sections.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+    <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
       {sections.map((tab) => {
         const active = tab.id === selected;
         return (
@@ -22,12 +22,12 @@ export function SectionTabs({ sections, selected, onChange, disabled = false }: 
             disabled={disabled}
             onClick={() => onChange(tab.id)}
             className={[
-              "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+              "shrink-0 rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors",
               disabled
-                ? "cursor-not-allowed border border-border/60 bg-bg-surface text-text-muted opacity-70"
+                ? "cursor-not-allowed border border-border/50 bg-bg-surface/50 text-text-muted opacity-70"
                 : active
-                  ? "bg-gold text-bg-base shadow-sm shadow-gold/25"
-                  : "border border-border bg-bg-surface text-text-secondary hover:border-border/80 hover:text-text-primary",
+                  ? "border border-gold/40 bg-gold/15 text-gold shadow-sm shadow-gold/10"
+                  : "border border-transparent bg-transparent text-text-secondary hover:border-border/60 hover:text-text-primary",
             ].join(" ")}
           >
             {tab.name}

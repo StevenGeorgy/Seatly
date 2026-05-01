@@ -1,29 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { LucideIcon } from "lucide-react";
-import {
-  Armchair,
-  Ban,
-  CalendarClock,
-  Link2,
-  MapPin,
-  Pencil,
-  UserRound,
-  Users,
-} from "lucide-react";
+import { Armchair, Ban, Minus, Pencil, Plus, Users } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import type { SectionRow, TableRow } from "@/hooks/useFloorPlan";
-import { cn } from "@/lib/utils";
 import { getStatusColor } from "@/lib/canvas-colors";
+import { cn } from "@/lib/utils";
 
 import { tableFloorPlanTitle } from "./table-title";
 
@@ -35,339 +17,167 @@ const STATUS_LABEL_KEYS: Record<string, string> = {
   blocked: "dashboard.floorPlan.statusBlocked",
 };
 
-const EM_DASH = "—";
-
 export type LiveServiceTablePanelProps = {
   table: TableRow;
   sections: SectionRow[];
-  /** From layout zones — null if table center is outside all zones */
   zoneLabel: string | null;
   onUpdateStatus: (tableId: string, status: string, seatedCount?: number) => void;
   onCombine: () => void;
   onEditTable?: () => void;
+  onClose?: () => void;
   canEdit: boolean;
-  /** Live = in-service; edit = floor plan edit session (draft updates) */
   variant?: "live" | "edit";
 };
 
-const outlineAction =
-  "h-10 w-full gap-2 border-gold/35 bg-bg-elevated/55 text-text-primary shadow-sm shadow-black/30 transition-all hover:border-gold/55 hover:bg-gold/[0.07] hover:shadow-gold/5";
-const primaryAction =
-  "h-11 w-full gap-2 bg-gold text-bg-base shadow-md shadow-gold/25 transition-all hover:bg-gold/90";
-
-function DetailRow({
-  icon: Icon,
-  label,
-  value,
-  valueClassName,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: ReactNode;
-  valueClassName?: string;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
-      <div className="flex min-w-0 items-center gap-2 text-text-muted">
-        <Icon className="size-3.5 shrink-0 text-gold/65" aria-hidden />
-        <span className="text-[11px] font-semibold uppercase tracking-wide">{label}</span>
-      </div>
-      <div className={cn("max-w-[60%] text-right text-sm font-medium text-text-primary", valueClassName)}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Table control board — right rail and mobile sheet. Distinct layout from floor overview.
- */
 export function LiveServiceTablePanel({
   table,
   sections,
   zoneLabel,
   onUpdateStatus,
-  onCombine,
   onEditTable,
+  onClose,
   canEdit,
   variant = "live",
 }: LiveServiceTablePanelProps) {
   const { t } = useTranslation();
-  const [guestCount, setGuestCount] = useState<number | null>(null);
+  const [guestCount, setGuestCount] = useState(table.seated_count ?? table.capacity ?? 1);
 
-  const sectionName =
-    sections.find((s) => s.id === table.section_id)?.name ?? table.section ?? EM_DASH;
   const statusColor = getStatusColor(table.status);
-  const effectiveGuestCount = guestCount ?? table.capacity ?? 1;
   const statusLabel = t(STATUS_LABEL_KEYS[table.status] ?? table.status);
+  const tableTitle = table.table_number?.trim() || table.label?.trim() || tableFloorPlanTitle(t, table);
+  const sectionName = sections.find((section) => section.id === table.section_id)?.name ?? table.section;
+  const capacity = table.capacity ?? 1;
+  const isEdit = variant === "edit";
 
-  const displayParty =
-    table.status === "occupied"
-      ? table.seated_count ?? 0
-      : table.status === "reserved"
-        ? table.capacity
-        : effectiveGuestCount;
-
-  const notesText = table.notes?.trim() ? table.notes : t("dashboard.floorPlan.inspectorNotesEmpty");
-
-  const turnLine =
-    table.status === "occupied"
-      ? t("dashboard.floorPlan.inspectorTurnOccupied", { duration: EM_DASH })
-      : t("dashboard.floorPlan.inspectorTurnAvailable");
-
-  const zoneDisplay = zoneLabel ?? t("dashboard.floorPlan.inspectorZoneUnplaced");
-  const eyebrow =
-    variant === "edit"
-      ? t("dashboard.floorPlan.tableControlEyebrowEdit")
-      : t("dashboard.floorPlan.tableControlEyebrow");
+  const updateGuestCount = (next: number) => {
+    const clamped = Math.max(1, Math.min(20, next));
+    setGuestCount(clamped);
+    if (table.status === "occupied") {
+      onUpdateStatus(table.id, "occupied", Math.min(capacity, clamped));
+    }
+  };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-bg-surface">
-      {/* TOP — distinct control header */}
-      <header className="shrink-0 border-b border-gold/25 bg-gradient-to-b from-gold/[0.07] via-bg-elevated/50 to-bg-surface px-5 pb-5 pt-5">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-gold/85">{eyebrow}</p>
-        <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0">
-            <h2 className="text-2xl font-bold tracking-tight text-text-primary">
-              {tableFloorPlanTitle(t, table)}
-            </h2>
-            {table.label?.trim() ? (
-              <p className="mt-1 truncate text-sm text-text-secondary">{table.label.trim()}</p>
-            ) : null}
-            <p className="mt-2 text-lg font-semibold text-gold/90">
-              {t("dashboard.floorPlan.inspectorSeatCount", { count: table.capacity })}
+    <div className="flex h-full min-h-0 flex-col bg-bg-base p-4">
+      <section
+        className="rounded-xl border border-border/70 bg-bg-surface p-5 shadow-xl shadow-black/25"
+        style={{ borderTopColor: statusColor }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-text-muted">
+              {t("dashboard.floorPlan.tableNumber")}
             </p>
+            <h2 className="mt-1 font-serif text-5xl leading-none text-white">{tableTitle}</h2>
           </div>
-          <Badge
-            variant="outline"
-            className="shrink-0 gap-2 self-start border-gold/40 bg-gold/12 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-gold-light sm:self-end"
+          <button
+            type="button"
+            className="text-lg leading-none text-text-muted transition-colors hover:text-white"
+            onClick={onClose}
+            aria-label={t("common.actions.close")}
           >
-            <span
-              className="size-2.5 rounded-full ring-2 ring-gold/45"
-              style={{ backgroundColor: statusColor }}
-              aria-hidden
-            />
-            {statusLabel}
-          </Badge>
+            ×
+          </button>
         </div>
-      </header>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {/* DETAIL — single session card */}
-        <Card size="sm" className="border-border/80 bg-bg-elevated/40 shadow-inner shadow-black/25">
-          <CardHeader className="pb-1">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-              {t("dashboard.floorPlan.inspectorSessionDetailTitle")}
-            </CardTitle>
-            <CardDescription className="text-[11px] text-text-muted">
-              {t("dashboard.floorPlan.inspectorSessionDetailSubtitle")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="divide-y divide-border/60 pt-0">
-            <DetailRow
-              icon={CalendarClock}
-              label={t("dashboard.floorPlan.inspectorReservationTime")}
-              value={EM_DASH}
-              valueClassName="tabular-nums"
-            />
-            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.guestName")} value={EM_DASH} />
-            <DetailRow
-              icon={Users}
-              label={t("dashboard.floorPlan.inspectorPartySizeLabel")}
-              value={displayParty}
-              valueClassName="tabular-nums"
-            />
-            <DetailRow icon={MapPin} label={t("dashboard.floorPlan.section")} value={sectionName} />
-            <DetailRow icon={Armchair} label={t("dashboard.floorPlan.inspectorZoneLabel")} value={zoneDisplay} />
-            <DetailRow icon={UserRound} label={t("dashboard.floorPlan.serverAssigned")} value={EM_DASH} />
-            <div className="py-2.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-                {t("dashboard.floorPlan.notes")}
-              </p>
-              <p className="mt-1.5 text-sm leading-relaxed text-text-secondary">{notesText}</p>
-            </div>
-            <div className="py-2.5">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-                {t("dashboard.floorPlan.inspectorTurnTitle")}
-              </p>
-              <p className="mt-1.5 text-sm font-medium text-text-primary">{turnLine}</p>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
+            {statusLabel}
+          </span>
+          <span>{t("dashboard.floorPlan.inspectorSeatCount", { count: capacity })}</span>
+        </div>
 
-        {/* ACTIONS */}
-        <div>
-          <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-            {t("dashboard.floorPlan.inspectorQuickActions")}
+        {(sectionName || zoneLabel) && (
+          <p className="mt-3 text-xs text-text-muted">
+            {[sectionName, zoneLabel].filter(Boolean).join(" · ")}
           </p>
-          <div className="flex flex-col gap-2.5">
-            {table.status === "empty" && (
-              <>
-                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-bg-elevated/30 px-3 py-2">
-                  <span className="text-xs font-medium text-text-muted">
-                    {t("dashboard.floorPlan.guestsLabel")}
-                  </span>
-                  <div className="ml-auto flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-base text-sm font-medium text-text-primary transition-colors hover:bg-bg-elevated"
-                      onClick={() => setGuestCount(Math.max(1, effectiveGuestCount - 1))}
-                    >
-                      −
-                    </button>
-                    <span className="w-8 text-center text-sm font-semibold tabular-nums text-text-primary">
-                      {effectiveGuestCount}
-                    </span>
-                    <button
-                      type="button"
-                      className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-base text-sm font-medium text-text-primary transition-colors hover:bg-bg-elevated"
-                      onClick={() =>
-                        setGuestCount(Math.min(table.capacity, effectiveGuestCount + 1))
-                      }
-                    >
-                      +
-                    </button>
-                  </div>
-                  <span className="text-xs text-text-muted">/ {table.capacity}</span>
-                </div>
-                <Button
-                  className={primaryAction}
-                  onClick={() => {
-                    onUpdateStatus(table.id, "occupied", effectiveGuestCount);
-                    setGuestCount(null);
-                  }}
-                >
-                  <Users className="size-4" aria-hidden />
-                  {t("dashboard.floorPlan.seatGuest")}
-                </Button>
-              </>
-            )}
+        )}
 
-            {(table.status === "empty" || table.status === "reserved") && (
-              <Button
-                variant="outline"
-                className={outlineAction}
-                onClick={() =>
-                  onUpdateStatus(
-                    table.id,
-                    "occupied",
-                    table.status === "reserved" ? table.capacity : effectiveGuestCount,
-                  )
-                }
-              >
-                <Armchair className="size-4 text-gold" aria-hidden />
-                {t("dashboard.floorPlan.actionMarkOccupied")}
-              </Button>
-            )}
+        <div className="mt-6 border-t border-border/60 pt-5">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
+            {t(isEdit ? "dashboard.floorPlan.seats" : "dashboard.floorPlan.inspectorQuickActions")}
+          </p>
 
-            {table.status === "occupied" && (
-              <>
-                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-bg-elevated/30 px-3 py-2">
-                  <span className="text-xs font-medium text-text-muted">
-                    {t("dashboard.floorPlan.seatedLabel")}
-                  </span>
-                  <div className="ml-auto flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-base text-sm font-medium text-text-primary transition-colors hover:bg-bg-elevated"
-                      onClick={() => {
-                        const newCount = Math.max(1, (table.seated_count ?? table.capacity) - 1);
-                        onUpdateStatus(table.id, "occupied", newCount);
-                      }}
-                    >
-                      −
-                    </button>
-                    <span className="w-8 text-center text-sm font-semibold tabular-nums text-text-primary">
-                      {table.seated_count ?? table.capacity}
-                    </span>
-                    <button
-                      type="button"
-                      className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-base text-sm font-medium text-text-primary transition-colors hover:bg-bg-elevated"
-                      onClick={() => {
-                        const newCount = Math.min(
-                          table.capacity,
-                          (table.seated_count ?? 0) + 1,
-                        );
-                        onUpdateStatus(table.id, "occupied", newCount);
-                      }}
-                    >
-                      +
-                    </button>
-                  </div>
-                  <span className="text-xs text-text-muted">/ {table.capacity}</span>
-                </div>
+          {isEdit ? (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="w-10 font-serif text-3xl text-white">{guestCount}</span>
+              <div className="ml-auto flex items-center gap-2">
                 <Button
+                  type="button"
                   variant="outline"
-                  className={outlineAction}
-                  onClick={() => onUpdateStatus(table.id, "cleaning", 0)}
+                  size="icon-sm"
+                  className="rounded-lg bg-bg-base"
+                  onClick={() => updateGuestCount(guestCount - 1)}
                 >
-                  {t("dashboard.floorPlan.markCleaning")}
-                </Button>
-              </>
-            )}
-
-            {table.status === "cleaning" && (
-              <Button
-                variant="outline"
-                className={outlineAction}
-                onClick={() => onUpdateStatus(table.id, "empty", 0)}
-              >
-                {t("dashboard.floorPlan.clearTable")}
-              </Button>
-            )}
-
-            {table.status === "blocked" ? (
-              <Button
-                variant="outline"
-                className={outlineAction}
-                onClick={() => onUpdateStatus(table.id, "empty", 0)}
-              >
-                {t("dashboard.floorPlan.unblockTable")}
-              </Button>
-            ) : table.status === "empty" ? (
-              <Button variant="outline" className={outlineAction} onClick={() => onUpdateStatus(table.id, "blocked", 0)}>
-                <Ban className="size-3.5" aria-hidden />
-                {t("dashboard.floorPlan.blockTable")}
-              </Button>
-            ) : table.status === "cleaning" ? (
-              <Button variant="outline" className={outlineAction} onClick={() => onUpdateStatus(table.id, "blocked", 0)}>
-                <Ban className="size-3.5" aria-hidden />
-                {t("dashboard.floorPlan.blockTable")}
-              </Button>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  className={cn(outlineAction, "w-auto")}
-                  onClick={() => onUpdateStatus(table.id, "empty", 0)}
-                >
-                  {t("dashboard.floorPlan.actionMarkEmpty")}
+                  <Minus className="size-3.5" />
                 </Button>
                 <Button
+                  type="button"
                   variant="outline"
-                  className={cn(outlineAction, "w-auto")}
-                  onClick={() => onUpdateStatus(table.id, "blocked", 0)}
+                  size="icon-sm"
+                  className="rounded-lg bg-bg-base"
+                  onClick={() => updateGuestCount(guestCount + 1)}
                 >
-                  <Ban className="size-3.5" aria-hidden />
-                  {t("dashboard.floorPlan.blockTable")}
+                  <Plus className="size-3.5" />
                 </Button>
               </div>
-            )}
-
-            <Button variant="outline" className={outlineAction} onClick={onCombine}>
-              <Link2 className="size-4 text-gold" aria-hidden />
-              {t("dashboard.floorPlan.actionCombineTable")}
-            </Button>
-
-            {canEdit && onEditTable ? (
-              <Button variant="outline" className={outlineAction} onClick={onEditTable}>
-                <Pencil className="size-4 text-gold/90" aria-hidden />
-                {t("dashboard.floorPlan.actionEditTable")}
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2">
+              {(table.status === "empty" || table.status === "reserved") && (
+                <Button
+                  className="h-10 justify-start gap-2"
+                  onClick={() => onUpdateStatus(table.id, "occupied", capacity)}
+                >
+                  <Users className="size-4" />
+                  {t("dashboard.floorPlan.actionMarkOccupied")}
+                </Button>
+              )}
+              {table.status === "occupied" && (
+                <Button
+                  variant="outline"
+                  className="h-10 justify-start gap-2 border-border/70 bg-bg-base"
+                  onClick={() => onUpdateStatus(table.id, "cleaning", 0)}
+                >
+                  <Armchair className="size-4 text-gold" />
+                  {t("dashboard.floorPlan.markCleaning")}
+                </Button>
+              )}
+              {table.status === "cleaning" && (
+                <Button
+                  variant="outline"
+                  className="h-10 justify-start gap-2 border-border/70 bg-bg-base"
+                  onClick={() => onUpdateStatus(table.id, "empty", 0)}
+                >
+                  <Armchair className="size-4 text-gold" />
+                  {t("dashboard.floorPlan.clearTable")}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className={cn("h-10 justify-start gap-2 border-border/70 bg-bg-base", table.status === "blocked" && "text-gold")}
+                onClick={() =>
+                  onUpdateStatus(table.id, table.status === "blocked" ? "empty" : "blocked", 0)
+                }
+              >
+                <Ban className="size-4 text-text-muted" />
+                {t(table.status === "blocked" ? "dashboard.floorPlan.actionMarkEmpty" : "dashboard.floorPlan.blockTable")}
               </Button>
-            ) : null}
-          </div>
+              {canEdit && onEditTable && (
+                <Button
+                  variant="outline"
+                  className="h-10 justify-start gap-2 border-border/70 bg-bg-base"
+                  onClick={onEditTable}
+                >
+                  <Pencil className="size-4 text-gold" />
+                  {t("dashboard.floorPlan.editLayout")}
+                </Button>
+              )}
+            </div>
+          )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }

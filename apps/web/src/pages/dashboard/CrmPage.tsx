@@ -1,251 +1,229 @@
-import { useState } from "react";
-import { useTranslation } from "react-i18next";
-import { UserCircle, Search, Star, Ban } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { format } from "date-fns";
-import { toast } from "sonner";
+import { useMemo, useState } from "react";
+import { Heart, Mail, Plus, Search } from "lucide-react";
+import { motion } from "framer-motion";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
-import { PageHeader } from "@/components/dashboard/PageHeader";
-import { SectionCard } from "@/components/dashboard/SectionCard";
-import { StatusBadge } from "@/components/dashboard/StatusBadge";
-import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useGuests, type GuestRow } from "@/hooks/useGuests";
-import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { cn } from "@/lib/utils";
+
+type Segment = "vip" | "loyalty" | "returning" | "new";
+
+type GuestRow = {
+  initials: string;
+  name: string;
+  segment: Segment;
+  subline?: string;
+  visits: number;
+  lastVisit: string;
+  lifetime: string;
+  avgTicket: string;
+  notes: string[];
+};
+
+const GUESTS: GuestRow[] = [
+  { initials: "PJ", name: "Park, Ji-soo", segment: "vip", visits: 14, lastVisit: "2 days", lifetime: "$4,280", avgTicket: "$306", notes: ["Loire wines", "Quiet table"] },
+  { initials: "LC", name: "Lefebvre, Camille", segment: "loyalty", visits: 6, lastVisit: "tonight", lifetime: "$2,410", avgTicket: "$402", notes: ["Birthday", "Patio"] },
+  { initials: "CD", name: "Chen, David", segment: "vip", visits: 11, lastVisit: "tonight", lifetime: "$3,120", avgTicket: "$284", notes: ["Pre-orders", "Dessert"] },
+  { initials: "TM", name: "Tremblay, Marc", segment: "loyalty", visits: 8, lastVisit: "tonight", lifetime: "$1,980", avgTicket: "$248", notes: ["Shellfish allergy"] },
+  { initials: "SA", name: "Singh, Aanya", segment: "new", subline: "Deposit pending", visits: 3, lastVisit: "tonight", lifetime: "$840", avgTicket: "$280", notes: ["Large parties"] },
+  { initials: "WK", name: "Wong, Karen", segment: "loyalty", visits: 9, lastVisit: "1 wk", lifetime: "$2,340", avgTicket: "$260", notes: ["Wine pairings"] },
+  { initials: "AR", name: "Anand, Riya", segment: "returning", visits: 4, lastVisit: "2 wk", lifetime: "$780", avgTicket: "$195", notes: ["Birthday brought"] },
+  { initials: "CR", name: "Cohen, Rachel", segment: "new", visits: 1, lastVisit: "today", lifetime: "$184", avgTicket: "$184", notes: ["Vegetarian", "GF"] },
+  { initials: "HM", name: "Hassan, Mira", segment: "new", visits: 2, lastVisit: "today", lifetime: "$312", avgTicket: "$156", notes: ["Walk-in"] },
+  { initials: "PA", name: "Park, Anand", segment: "vip", visits: 5, lastVisit: "tonight", lifetime: "$1,640", avgTicket: "$328", notes: ["Anniversary", "Champagne"] },
+];
+
+const STATS = [
+  { label: "Guests in book", value: "10", caption: "this month", delta: "6%", deltaTone: "up" as const },
+  { label: "Active VIPs", value: "3", caption: "≥10 visits", delta: null, deltaTone: null },
+  { label: "Total LTV", value: "$17.9k", caption: "this month", delta: "$1.2k", deltaTone: "up" as const },
+  { label: "Repeat rate", value: "48%", caption: "vs Q1", delta: "3pt", deltaTone: "up" as const },
+];
+
+const SEGMENT_CLASSES: Record<Segment, string> = {
+  vip: "border-gold/40 bg-gold/10 text-gold",
+  loyalty: "border-info/40 bg-info/10 text-info",
+  returning: "border-[#8B7BD8]/40 bg-[#8B7BD8]/10 text-[#B6A8E8]",
+  new: "border-border bg-bg-elevated text-text-muted",
+};
+
+const AVATAR_CLASSES: Record<Segment, string> = {
+  vip: "border-gold/40 bg-gold/10 text-gold",
+  loyalty: "border-gold/40 bg-gold/10 text-gold",
+  returning: "border-gold/40 bg-gold/10 text-gold",
+  new: "border-gold/40 bg-gold/10 text-gold",
+};
+
+type TabKey = "all" | "vip" | "loyalty" | "returning" | "new";
 
 export default function CrmPage() {
-  const { t } = useTranslation();
-  const { selectedRestaurant } = useRestaurantScope();
-  const currency = selectedRestaurant?.currency ?? "cad";
-  const [search, setSearch] = useState("");
-  const { guests, loading, refetch } = useGuests({ search: search || undefined });
-  const [selectedGuest, setSelectedGuest] = useState<GuestRow | null>(null);
-  const [editingNote, setEditingNote] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const [savingNote, setSavingNote] = useState(false);
+  const [tab, setTab] = useState<TabKey>("all");
+  const [query, setQuery] = useState("");
 
-  const handleSaveNote = async () => {
-    if (!selectedGuest || !isSupabaseConfigured()) return;
-    setSavingNote(true);
-    const client = getSupabaseBrowserClient();
-    const { error } = await client
-      .from("guests")
-      .update({ internal_notes: noteText.trim() || null })
-      .eq("id", selectedGuest.id);
-    if (error) { toast.error("Could not save note."); setSavingNote(false); return; }
-    setSelectedGuest((prev) => prev ? { ...prev, internal_notes: noteText.trim() || null } : prev);
-    setEditingNote(false);
-    setSavingNote(false);
-    toast.success("Note saved.");
-    void refetch();
-  };
+  const counts = useMemo(() => ({
+    all: GUESTS.length,
+    vip: GUESTS.filter((g) => g.segment === "vip").length,
+    loyalty: GUESTS.filter((g) => g.segment === "loyalty").length,
+    returning: GUESTS.filter((g) => g.segment === "returning").length,
+    new: GUESTS.filter((g) => g.segment === "new").length,
+  }), []);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return GUESTS.filter((row) => {
+      if (tab !== "all" && row.segment !== tab) return false;
+      if (!q) return true;
+      return row.name.toLowerCase().includes(q) || row.notes.join(" ").toLowerCase().includes(q);
+    });
+  }, [tab, query]);
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
-      <PageHeader title={t("dashboard.crm.title")} />
+      <motion.header
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"
+      >
+        <div className="min-w-0">
+          <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+            <Heart className="size-3.5" />
+            Guest book
+          </p>
+          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Your regulars</h1>
+          <p className="mt-1 text-sm italic text-text-muted">
+            Every guest, every visit, every preference — quietly remembered.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" size="default" className="gap-2">
+            <Mail className="size-4" />
+            Send campaign
+          </Button>
+          <Button size="default" className="gap-2">
+            <Plus className="size-4" />
+            Add guest
+          </Button>
+        </div>
+      </motion.header>
 
-      <div className="relative w-full sm:max-w-sm">
-        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
-        <Input
-          placeholder={t("dashboard.crm.searchPlaceholder")}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-9"
-        />
-      </div>
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {STATS.map((stat) => (
+          <article key={stat.label} className="rounded-2xl border border-border bg-bg-surface p-5">
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+              {stat.label}
+            </p>
+            <p className="mt-3 font-serif text-4xl text-white">{stat.value}</p>
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-text-muted">
+              {stat.deltaTone && (
+                <span className={cn("font-medium", stat.deltaTone === "up" ? "text-success" : "text-danger")}>
+                  ↑ {stat.delta}
+                </span>
+              )}
+              <span>{stat.caption}</span>
+            </p>
+          </article>
+        ))}
+      </section>
 
-      <SectionCard noPadding>
-        {loading ? (
-          <div className="flex flex-col gap-2 p-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 rounded-lg" />
+      <section className="rounded-2xl border border-border bg-bg-surface">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-bg-elevated/40 p-1">
+            {(["all", "vip", "loyalty", "returning", "new"] as const).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors",
+                  tab === key ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
+                )}
+              >
+                {key === "vip" ? "VIP" : key}
+                <span className={cn("font-mono text-[10px]", tab === key ? "text-gold/80" : "text-text-muted")}>
+                  {counts[key]}
+                </span>
+              </button>
             ))}
           </div>
-        ) : guests.length === 0 ? (
-          <EmptyState
-            icon={<UserCircle className="size-5" />}
-            title={t("dashboard.crm.noGuests")}
-            description={t("dashboard.crm.noGuestsDesc")}
-          />
-        ) : (
-          <div className="divide-y divide-border">
-            <AnimatePresence mode="popLayout">
-              {guests.map((guest, i) => (
-                <motion.button
-                  key={guest.id}
-                  type="button"
-                  layout
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2, delay: i * 0.02 }}
-                  onClick={() => setSelectedGuest(guest)}
-                  className="group flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-bg-elevated/50"
-                >
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-bg-elevated text-xs font-semibold text-text-secondary">
-                    {(guest.full_name ?? "?")[0]?.toUpperCase()}
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-text-primary">
-                        {guest.full_name ?? "\u2014"}
-                      </span>
-                      {guest.is_vip ? (
-                        <Star className="size-3.5 fill-gold text-gold" />
-                      ) : null}
-                      {guest.is_blocked ? (
-                        <Ban className="size-3.5 text-danger" />
-                      ) : null}
-                    </div>
-                    <span className="text-xs text-text-muted">
-                      {guest.total_visits} visits · {formatCurrency(guest.total_spend, currency)}
-                    </span>
-                  </div>
-                  <div className="hidden flex-wrap gap-1 sm:flex">
-                    {guest.tags?.slice(0, 3).map((tag) => (
-                      <StatusBadge key={tag} status="active" label={tag} />
-                    ))}
-                  </div>
-                  <div className="hidden flex-col items-end gap-0.5 md:flex">
-                    <span className="text-xs font-medium text-gold">
-                      {guest.loyalty_points_balance} pts
-                    </span>
-                    {guest.last_visit_at ? (
-                      <span className="text-xs text-text-muted">
-                        {format(new Date(guest.last_visit_at), "MMM d")}
-                      </span>
-                    ) : null}
-                  </div>
-                </motion.button>
-              ))}
-            </AnimatePresence>
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search guests…"
+              className="h-9 w-full rounded-md border border-border bg-bg-elevated/50 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-gold/40 focus:outline-none"
+            />
           </div>
-        )}
-      </SectionCard>
+        </div>
 
-      {/* Guest Profile Drawer */}
-      <Sheet open={!!selectedGuest} onOpenChange={() => { setSelectedGuest(null); setEditingNote(false); }}>
-        <SheetContent className="w-full border-border bg-bg-surface sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle className="text-text-primary">
-              {t("dashboard.crm.guestProfile")}
-            </SheetTitle>
-          </SheetHeader>
-          {selectedGuest ? (
-            <div className="mt-6 flex flex-col gap-5">
-              {/* Guest header */}
-              <div className="flex items-center gap-4">
-                <div className="flex size-14 items-center justify-center rounded-full border-2 border-gold/30 bg-gold/10 text-lg font-bold text-gold">
-                  {(selectedGuest.full_name ?? "?")[0]?.toUpperCase()}
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-base font-semibold text-text-primary">
-                    {selectedGuest.full_name ?? "\u2014"}
-                  </p>
-                  <p className="text-sm text-text-muted">{selectedGuest.email}</p>
-                </div>
-              </div>
-
-              {/* Stats grid */}
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: t("dashboard.crm.visits"), value: String(selectedGuest.total_visits) },
-                  { label: t("dashboard.crm.totalSpend"), value: formatCurrency(selectedGuest.total_spend, currency) },
-                  { label: t("dashboard.crm.loyaltyPoints"), value: String(selectedGuest.loyalty_points_balance) },
-                  { label: t("dashboard.analytics.noShowRate"), value: String(selectedGuest.no_show_count) },
-                ].map((stat) => (
-                  <div key={stat.label} className="rounded-lg border border-border bg-bg-elevated px-3 py-2.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{stat.label}</p>
-                    <p className="mt-0.5 text-base font-semibold text-text-primary">{stat.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Tags */}
-              {selectedGuest.tags && selectedGuest.tags.length > 0 ? (
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    {t("dashboard.crm.tags")}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {selectedGuest.tags.map((tag) => (
-                      <StatusBadge key={tag} status="active" label={tag} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Preferences */}
-              {selectedGuest.dietary_restrictions && selectedGuest.dietary_restrictions.length > 0 ? (
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Dietary
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {selectedGuest.dietary_restrictions.map((dr) => (
-                      <StatusBadge key={dr} status="inactive" label={dr} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Notes */}
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    {t("dashboard.crm.notes")}
-                  </p>
-                  {!editingNote && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-xs"
-                      onClick={() => {
-                        setNoteText(selectedGuest.internal_notes ?? "");
-                        setEditingNote(true);
-                      }}
-                    >
-                      {selectedGuest.internal_notes ? "Edit" : t("dashboard.crm.addNote")}
-                    </Button>
-                  )}
-                </div>
-                {editingNote ? (
-                  <div className="flex flex-col gap-2">
-                    <Textarea
-                      rows={3}
-                      autoFocus
-                      value={noteText}
-                      onChange={(e) => setNoteText(e.target.value)}
-                      placeholder="Internal notes about this guest…"
-                    />
-                    <div className="flex gap-2">
-                      <Button size="sm" disabled={savingNote} onClick={() => void handleSaveNote()}>
-                        {savingNote ? "Saving…" : "Save"}
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setEditingNote(false)}>
-                        Cancel
-                      </Button>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[960px] text-left">
+            <thead>
+              <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                <th className="px-5 py-3 font-medium">Guest</th>
+                <th className="px-5 py-3 font-medium">Segment</th>
+                <th className="px-5 py-3 font-medium">Visits</th>
+                <th className="px-5 py-3 font-medium">Last visit</th>
+                <th className="px-5 py-3 font-medium">Lifetime</th>
+                <th className="px-5 py-3 font-medium">Avg ticket</th>
+                <th className="px-5 py-3 font-medium">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/50">
+              {visible.map((row) => (
+                <tr key={row.name} className="text-sm transition-colors hover:bg-bg-elevated/30">
+                  <td className="px-5 py-4">
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={cn(
+                          "flex size-9 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold",
+                          AVATAR_CLASSES[row.segment],
+                        )}
+                      >
+                        {row.initials}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-text-primary">{row.name}</p>
+                        {row.subline && (
+                          <p className="text-xs text-warning">{row.subline}</p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ) : selectedGuest.internal_notes ? (
-                  <div className="rounded-lg border border-border bg-bg-elevated p-3">
-                    <p className="text-sm text-text-secondary">{selectedGuest.internal_notes}</p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-text-muted">No notes yet.</p>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+                  </td>
+                  <td className="px-5 py-4">
+                    <span
+                      className={cn(
+                        "inline-flex rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider",
+                        SEGMENT_CLASSES[row.segment],
+                      )}
+                    >
+                      {row.segment === "vip" ? "VIP" : row.segment}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4 text-text-secondary">{row.visits}</td>
+                  <td className="px-5 py-4 text-text-secondary">{row.lastVisit}</td>
+                  <td className="px-5 py-4 text-text-primary">{row.lifetime}</td>
+                  <td className="px-5 py-4 text-text-secondary">{row.avgTicket}</td>
+                  <td className="px-5 py-4">
+                    <div className="flex flex-wrap gap-1.5">
+                      {row.notes.map((note) => (
+                        <span
+                          key={note}
+                          className="rounded-md border border-border bg-bg-elevated/60 px-2 py-0.5 text-[11px] text-text-secondary"
+                        >
+                          {note}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </AnimatedPage>
   );
 }

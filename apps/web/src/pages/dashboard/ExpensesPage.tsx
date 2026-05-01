@@ -1,223 +1,197 @@
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
-import { Receipt, Plus, Camera } from "lucide-react";
-import { format } from "date-fns";
-import { motion, AnimatePresence } from "framer-motion";
-import { toast } from "sonner";
+import { Coins, Plus } from "lucide-react";
+import { motion } from "framer-motion";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
-import { PageHeader } from "@/components/dashboard/PageHeader";
-import { SectionCard } from "@/components/dashboard/SectionCard";
-import { StatusBadge } from "@/components/dashboard/StatusBadge";
-import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
-import { useExpenses } from "@/hooks/useExpenses";
-import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { cn } from "@/lib/utils";
 
-const EXPENSE_CATEGORIES = [
-  "food_supplies", "beverages", "utilities", "rent", "payroll",
-  "marketing", "equipment", "maintenance", "insurance", "other",
+type DeltaTone = "up" | "down" | "flat";
+
+const STATS = [
+  { label: "Total spend", value: "$114.4k", delta: "2.4%", deltaTone: "down" as DeltaTone, caption: "vs last month" },
+  { label: "Food cost %", value: "29%", delta: "0.4pt", deltaTone: "down" as DeltaTone, caption: "target 28%" },
+  { label: "Labor cost %", value: "22%", delta: "1pt", deltaTone: "up" as DeltaTone, caption: "under target" },
+  { label: "Net margin", value: "14.8%", delta: "1.2pt", deltaTone: "up" as DeltaTone, caption: "this month" },
 ];
 
+type Category = {
+  name: string;
+  amount: string;
+  pct: number;
+  delta: string;
+  deltaTone: DeltaTone;
+};
+
+const CATEGORIES: Category[] = [
+  { name: "Food & beverage", amount: "$48.2k", pct: 100, delta: "+3%", deltaTone: "up" },
+  { name: "Labor", amount: "$32.1k", pct: 67, delta: "-2%", deltaTone: "down" },
+  { name: "Rent & utilities", amount: "$14.8k", pct: 31, delta: "0", deltaTone: "flat" },
+  { name: "Operations", amount: "$9.4k", pct: 20, delta: "+5%", deltaTone: "up" },
+  { name: "Marketing", amount: "$5.6k", pct: 12, delta: "+12%", deltaTone: "up" },
+  { name: "Other", amount: "$4.2k", pct: 9, delta: "-1%", deltaTone: "down" },
+];
+
+type Txn = {
+  date: string;
+  vendor: string;
+  category: string;
+  description: string;
+  amount: string;
+  pending?: boolean;
+};
+
+const TXNS: Txn[] = [
+  { date: "Apr 26", vendor: "Daniel Boulud Sourcing", category: "Food & beverage", description: "Lamb saddle · 24kg", amount: "$1,840.00" },
+  { date: "Apr 26", vendor: "Loire Maison", category: "Food & beverage", description: "Sancerre case · 12 btl", amount: "$684.00" },
+  { date: "Apr 25", vendor: "Toronto Hydro", category: "Rent & utilities", description: "Electric · April", amount: "$2,180.40" },
+  { date: "Apr 25", vendor: "Maison Berthelot", category: "Food & beverage", description: "Truffle · 600g", amount: "$1,240.00", pending: true },
+  { date: "Apr 24", vendor: "Square POS", category: "Operations", description: "Monthly subscription", amount: "$280.00" },
+  { date: "Apr 24", vendor: "Fresh Market", category: "Food & beverage", description: "Produce · weekly", amount: "$1,420.50" },
+  { date: "Apr 23", vendor: "Globe & Mail", category: "Marketing", description: "Spring tasting menu ad", amount: "$840.00" },
+  { date: "Apr 23", vendor: "Ontario Linen Service", category: "Operations", description: "Weekly linen", amount: "$312.00" },
+  { date: "Apr 22", vendor: "Yorkville Realty", category: "Rent & utilities", description: "May rent", amount: "$8,400.00", pending: true },
+  { date: "Apr 22", vendor: "Payroll · Wave", category: "Labor", description: "Bi-weekly · 24 staff", amount: "$14,820.00" },
+];
+
+const RANGES = ["Week", "Month", "Quarter", "Year"] as const;
+type RangeKey = (typeof RANGES)[number];
+
+function deltaText(delta: string, tone: DeltaTone): { text: string; className: string } {
+  if (tone === "flat") return { text: delta, className: "text-text-muted" };
+  const arrow = tone === "up" ? "↑" : "↓";
+  return {
+    text: `${arrow} ${delta}`,
+    className: tone === "up" ? "text-success" : "text-danger",
+  };
+}
+
 export default function ExpensesPage() {
-  const { t } = useTranslation();
-  const { selectedRestaurant, selectedRestaurantId } = useRestaurantScope();
-  const currency = selectedRestaurant?.currency ?? "cad";
-  const [categoryFilter] = useState<string | undefined>();
-  const { expenses, loading, refetch } = useExpenses({ category: categoryFilter });
-
-  const monthTotal = expenses.reduce((sum, e) => sum + e.total_amount, 0);
-
-  const [addOpen, setAddOpen] = useState(false);
-  const [scanOpen, setScanOpen] = useState(false);
-  const [calOpen, setCalOpen] = useState(false);
-
-  // Form state
-  const [vendorName, setVendorName] = useState("");
-  const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("food_supplies");
-  const [amount, setAmount] = useState("");
-  const [expenseDate, setExpenseDate] = useState<Date | undefined>(new Date());
-  const [saving, setSaving] = useState(false);
-
-  const resetForm = () => {
-    setVendorName(""); setDescription(""); setCategory("food_supplies");
-    setAmount(""); setExpenseDate(new Date());
-  };
-
-  const handleAdd = async () => {
-    if (!amount || parseFloat(amount) <= 0) { toast.error("Amount is required."); return; }
-    if (!expenseDate) { toast.error("Please select a date."); return; }
-    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
-    setSaving(true);
-    const client = getSupabaseBrowserClient();
-    const { error } = await client.from("expenses").insert({
-      restaurant_id: selectedRestaurantId,
-      vendor_name: vendorName.trim() || null,
-      description: description.trim() || null,
-      category,
-      amount: parseFloat(amount),
-      total_amount: parseFloat(amount),
-      tax_amount: null,
-      currency: currency.toLowerCase(),
-      expense_date: format(expenseDate, "yyyy-MM-dd"),
-      ai_categorized: false,
-    });
-    if (error) { toast.error("Could not add expense."); setSaving(false); return; }
-    toast.success("Expense added.");
-    setSaving(false);
-    setAddOpen(false);
-    resetForm();
-    void refetch();
-  };
+  const [range, setRange] = useState<RangeKey>("Month");
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
-      <PageHeader
-        title={t("dashboard.expenses.title")}
-        description={`${t("dashboard.expenses.monthlyTotal")}: ${formatCurrency(monthTotal, currency)}`}
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="default" className="gap-2" onClick={() => setScanOpen(true)}>
-              <Camera className="size-4" />
-              {t("dashboard.expenses.scanReceipt")}
-            </Button>
-            <Button size="default" className="gap-2" onClick={() => setAddOpen(true)}>
-              <Plus className="size-4" />
-              {t("dashboard.expenses.addExpense")}
-            </Button>
-          </div>
-        }
-      />
-
-      <SectionCard noPadding>
-        {loading ? (
-          <div className="flex flex-col gap-2 p-4">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 rounded-lg" />
+      <motion.header
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"
+      >
+        <div className="min-w-0">
+          <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+            <Coins className="size-3.5" />
+            Cost ledger
+          </p>
+          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Expenses</h1>
+          <p className="mt-1 text-sm italic text-text-muted">
+            What it actually costs to run the room — by category, by vendor, by week.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <div className="flex items-center rounded-lg border border-border bg-bg-elevated/40 p-1">
+            {RANGES.map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setRange(key)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  range === key ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
+                )}
+              >
+                {key}
+              </button>
             ))}
           </div>
-        ) : expenses.length === 0 ? (
-          <EmptyState
-            icon={<Receipt className="size-5" />}
-            title={t("dashboard.expenses.noExpenses")}
-            description={t("dashboard.expenses.noExpensesDesc")}
-          />
-        ) : (
-          <div className="divide-y divide-border">
-            <AnimatePresence mode="popLayout">
-              {expenses.map((expense, i) => (
-                <motion.div
-                  key={expense.id}
-                  layout
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2, delay: i * 0.02 }}
-                  className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-bg-elevated/50"
-                >
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm font-medium text-text-primary">
-                      {expense.vendor_name ?? expense.description ?? "\u2014"}
-                    </span>
-                    <span className="text-xs text-text-muted">
-                      {format(new Date(expense.expense_date), "MMM d, yyyy")}
+          <Button size="default" className="gap-2">
+            <Plus className="size-4" />
+            Log expense
+          </Button>
+        </div>
+      </motion.header>
+
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {STATS.map((stat) => {
+          const d = deltaText(stat.delta, stat.deltaTone);
+          return (
+            <article key={stat.label} className="rounded-2xl border border-border bg-bg-surface p-5">
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">{stat.label}</p>
+              <p className="mt-3 font-serif text-4xl text-white">{stat.value}</p>
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-text-muted">
+                <span className={cn("font-medium", d.className)}>{d.text}</span>
+                <span>{stat.caption}</span>
+              </p>
+            </article>
+          );
+        })}
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-3">
+        <article className="rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
+          <h2 className="font-serif text-2xl text-white">By category</h2>
+          <p className="mt-1 text-xs text-text-muted">Where the money went · April</p>
+          <div className="mt-6 space-y-5">
+            {CATEGORIES.map((cat) => {
+              const d = deltaText(cat.delta, cat.deltaTone);
+              return (
+                <div key={cat.name}>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-text-primary">{cat.name}</span>
+                    <span className="flex items-baseline gap-2">
+                      <span className="font-mono text-xs text-gold">{cat.amount}</span>
+                      <span className={cn("font-mono text-[10px]", d.className)}>{d.text.replace("↑ ", "+").replace("↓ ", "-")}</span>
                     </span>
                   </div>
-                  <StatusBadge status="active" label={expense.category.replace(/_/g, " ")} />
-                  <span className="text-sm font-semibold text-text-primary">
-                    {formatCurrency(expense.total_amount, currency)}
-                  </span>
-                </motion.div>
-              ))}
-            </AnimatePresence>
+                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-bg-elevated">
+                    <div className="h-full rounded-full bg-gold" style={{ width: `${cat.pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        )}
-      </SectionCard>
+        </article>
 
-      {/* Add Expense Dialog */}
-      <Dialog open={addOpen} onOpenChange={(o) => { setAddOpen(o); if (!o) resetForm(); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("dashboard.expenses.addExpense")}</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label>Vendor / supplier</Label>
-              <Input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="e.g. Sysco Foods" />
+        <article className="rounded-2xl border border-border bg-bg-surface lg:col-span-2">
+          <div className="flex items-start justify-between gap-4 px-5 py-5 lg:px-6">
+            <div>
+              <h2 className="font-serif text-2xl text-white">Recent transactions</h2>
+              <p className="mt-1 text-xs text-text-muted">Last 30 days · 10 of 142 entries</p>
             </div>
-            <div className="flex flex-col gap-2">
-              <Label>Description</Label>
-              <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Invoice #123, weekly order…" />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
-                <Label>Category</Label>
-                <Select value={category} onValueChange={setCategory}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {EXPENSE_CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c} className="capitalize">{c.replace(/_/g, " ")}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label>Amount ({currency.toUpperCase()}) *</Label>
-                <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label>Date *</Label>
-                <Popover open={calOpen} onOpenChange={setCalOpen}>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className="justify-start text-left font-normal">
-                      {expenseDate ? format(expenseDate, "MMM d, yyyy") : "Pick a date"}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-auto p-0">
-                    <Calendar
-                      mode="single"
-                      selected={expenseDate}
-                      onSelect={(d) => { setExpenseDate(d); setCalOpen(false); }}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-            </div>
+            <Button variant="outline" size="sm">Export CSV</Button>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setAddOpen(false); resetForm(); }}>Cancel</Button>
-            <Button disabled={saving} onClick={() => void handleAdd()}>
-              {saving ? "Saving…" : "Add Expense"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Scan Receipt stub */}
-      <Dialog open={scanOpen} onOpenChange={setScanOpen}>
-        <DialogContent showCloseButton>
-          <DialogHeader>
-            <DialogTitle>{t("dashboard.expenses.scanReceipt")}</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col items-center gap-4 py-4">
-            <Camera className="size-12 text-text-muted" />
-            <p className="text-center text-sm text-text-secondary">
-              Receipt OCR coming soon. Cenaiva will automatically parse vendor, amount, and category from your receipt photos.
-            </p>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left">
+              <thead>
+                <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  <th className="px-5 py-3 font-medium lg:px-6">Date</th>
+                  <th className="px-5 py-3 font-medium">Vendor</th>
+                  <th className="px-5 py-3 font-medium">Category</th>
+                  <th className="px-5 py-3 font-medium">Description</th>
+                  <th className="px-5 py-3 text-right font-medium lg:px-6">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/50">
+                {TXNS.map((txn, i) => (
+                  <tr key={i} className="text-sm transition-colors hover:bg-bg-elevated/30">
+                    <td className="px-5 py-4 font-mono text-text-muted lg:px-6">{txn.date}</td>
+                    <td className="px-5 py-4 text-text-primary">{txn.vendor}</td>
+                    <td className="px-5 py-4 text-text-secondary">{txn.category}</td>
+                    <td className="px-5 py-4 text-text-secondary">{txn.description}</td>
+                    <td className="px-5 py-4 text-right lg:px-6">
+                      <div className="text-text-primary">{txn.amount}</div>
+                      {txn.pending && (
+                        <div className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-warning">
+                          Pending
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <DialogFooter showCloseButton />
-        </DialogContent>
-      </Dialog>
+        </article>
+      </section>
     </AnimatedPage>
   );
 }

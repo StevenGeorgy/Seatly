@@ -146,10 +146,7 @@ function TableShapeInner({
   const size = getTableSize(table);
   const sx = tableTransform?.scaleX ?? 1;
   const sy = tableTransform?.scaleY ?? 1;
-  const titleText = tableFloorPlanTitle(t, table);
-  const capText = t("dashboard.floorPlan.seatsShort", {
-    count: table.capacity ?? 0,
-  });
+  const titleText = table.table_number?.trim() || table.label?.trim() || tableFloorPlanTitle(t, table);
 
   const chairs =
     table.shape === "circle"
@@ -170,15 +167,15 @@ function TableShapeInner({
     onMouseLeave();
   }
 
-  const borderWidth = hovered || isSelected ? 2.75 : 1.5;
-  const borderColor = isSelected && isEditing ? CANVAS_COLORS.gold : color;
+  const borderWidth = hovered || isSelected ? 2.2 : 1.25;
+  const borderColor = isSelected ? CANVAS_COLORS.gold : color;
   const fillColor = CANVAS_COLORS.bgElevated;
   const fillOpacity = 1;
-  const tintOpacity = 0.12;
-  const shadowBlur = hovered || isSelected ? 14 : 6;
-  const shadowOpacity = isSelected && isEditing ? 0.32 : isEditing ? 0.22 : 0.18;
+  const tintOpacity = 0.18;
+  const shadowBlur = hovered || isSelected ? 18 : 8;
+  const shadowOpacity = isSelected ? 0.36 : isEditing ? 0.22 : 0.2;
   const hoverLift = hovered && !dragging ? 1.028 : dragging ? 1.012 : 1;
-  const statusGlow = 0.09;
+  const statusGlow = 0.1;
 
   const dragBoundFunc =
     draggable && dragBounds
@@ -261,12 +258,11 @@ function TableShapeInner({
               listening={false}
             />
             {/* Selection indicator */}
-            {isSelected && isEditing && (
+            {isSelected && (
               <Circle
                 radius={size.radius + 7}
                 stroke={CANVAS_COLORS.gold}
                 strokeWidth={2}
-                dash={[5, 4]}
                 fill="transparent"
                 listening={false}
               />
@@ -322,7 +318,7 @@ function TableShapeInner({
               listening={false}
             />
             {/* Selection indicator */}
-            {isSelected && isEditing && (
+            {isSelected && (
               <Rect
                 x={-size.width / 2 - 7}
                 y={-size.height / 2 - 7}
@@ -331,7 +327,6 @@ function TableShapeInner({
                 cornerRadius={9}
                 stroke={CANVAS_COLORS.gold}
                 strokeWidth={2}
-                dash={[5, 4]}
                 fill="transparent"
                 listening={false}
               />
@@ -339,30 +334,18 @@ function TableShapeInner({
           </>
         )}
 
-        {/* Table title: Table(x) */}
+        {/* Table number */}
         <Text
           text={titleText}
           x={-72}
-          y={-14}
+          y={-12}
           width={144}
           align="center"
-          fontSize={13}
+          fontSize={22}
           fontStyle="bold"
-          letterSpacing={0.2}
-          fontFamily="Inter, system-ui, sans-serif"
+          letterSpacing={0.1}
+          fontFamily="Georgia, ui-serif, serif"
           fill={CANVAS_COLORS.textPrimary}
-          listening={false}
-        />
-        {/* Capacity indicator */}
-        <Text
-          text={capText}
-          x={-52}
-          y={3}
-          width={104}
-          align="center"
-          fontSize={10}
-          fontFamily="Inter, system-ui, sans-serif"
-          fill={CANVAS_COLORS.textSecondary}
           listening={false}
         />
         </Group>

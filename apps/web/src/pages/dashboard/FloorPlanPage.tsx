@@ -1,1880 +1,2006 @@
+/**
+ * Floor plan — editorial, content-first design ported from the CenaIva
+ * mobile prototype. SVG canvas with pan/zoom, draggable tables/walls/entrance,
+ * undo/redo, mini-map, and a context-aware right rail.
+ */
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
-import type Konva from "konva";
-import { useTranslation } from "react-i18next";
-import { AnimatePresence, motion } from "framer-motion";
-import { toast } from "sonner";
-import { Check, Loader2, Plus } from "lucide-react";
 
-import { AddFloorDialog } from "@/components/floor-plan/AddFloorDialog";
-import { AddZoneDialog } from "@/components/floor-plan/AddZoneDialog";
-import { FloorPlanCommandBar } from "@/components/floor-plan/FloorPlanCommandBar";
-import { FloorPlanCanvas } from "@/components/floor-plan/FloorPlanCanvas";
-import { FloorPlanEmptyState } from "@/components/floor-plan/FloorPlanEmptyState";
-import { FloorInspectorEmpty } from "@/components/floor-plan/FloorInspectorEmpty";
-import { FloorPlanNoSectionState } from "@/components/floor-plan/FloorPlanNoSectionState";
-import { FloorPlanToolbar } from "@/components/floor-plan/FloorPlanToolbar";
-import { LiveServiceTablePanel } from "@/components/floor-plan/LiveServiceTablePanel";
-import { SectionTabs } from "@/components/floor-plan/SectionTabs";
-import { StatusLegend } from "@/components/floor-plan/StatusLegend";
-import { TableDetailDrawer } from "@/components/floor-plan/TableDetailDrawer";
-import { TablePropertiesPanel } from "@/components/floor-plan/TablePropertiesPanel";
-import { TableTooltip } from "@/components/floor-plan/TableTooltip";
-import { ZoomControls } from "@/components/floor-plan/ZoomControls";
-import type {
-  FloorPlanMode,
-  HoveredTableInfo,
-  ToolMode,
-} from "@/components/floor-plan/types";
-import { getZoneLabelForTable } from "@/lib/floor-plan-zone";
-import {
-  FLOOR_PLAN_DEFAULT_WORLD_HEIGHT,
-  FLOOR_PLAN_DEFAULT_WORLD_WIDTH,
-  FLOOR_PLAN_GRID_STEP,
-} from "@/components/floor-plan/types";
-import {
-  computeFloorPlanContentBounds,
-  computeZoneUnionBounds,
-  shouldFrameRoomInViewport,
-  zoneUnionCoversEnoughOfWorld,
-} from "@/lib/floor-plan-content-bounds";
-import {
-  clampFloorPlanStagePosition,
-  FLOOR_PLAN_VIEWPORT_CONTAIN_PAD,
-  FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
-  getFloorPlanScaleBounds,
-  scaleWorldToContainViewport,
-  stagePositionAfterZoomAtScreenPoint,
-} from "@/lib/floor-plan-viewport";
-import { CANVAS_COLORS } from "@/lib/canvas-colors";
-import { ensureTableNumbersForSave, nextSequentialTableNumber } from "@/lib/table-number";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
-import { useUser } from "@/hooks/useUser";
-import { useFloorPlan, isDatabaseUuid } from "@/hooks/useFloorPlan";
-import type { FloorPlanLayout, FloorPlanZone, SectionRow, TableRow } from "@/hooks/useFloorPlan";
-import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
-// ─── Undo / redo reducer ──────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────
+type Status = "free" | "reserved" | "occupied" | "cleaning";
 
-type HistoryEntry = { tables: TableRow[]; layout: FloorPlanLayout };
+type TableShape = "round" | "rect";
 
-type HistoryState = {
-  past: HistoryEntry[];
-  present: HistoryEntry;
-  future: HistoryEntry[];
+type FloorTable = {
+  id: string;
+  shape: TableShape;
+  x: number;
+  y: number;
+  size: number;
+  cap: number;
+  status: Status;
+  guest: string | null;
+  party: number;
+  time: string | null;
+  long?: boolean;
 };
 
-type HistoryAction =
-  | { type: "PUSH"; entry: HistoryEntry }
-  | { type: "UNDO" }
-  | { type: "REDO" }
-  | { type: "RESET"; entry: HistoryEntry };
+type Wall = { id: string; x1: number; y1: number; x2: number; y2: number };
 
-const MAX_HISTORY = 30;
+type EntranceSide = "top" | "right" | "bottom" | "left";
+type Entrance = { side: EntranceSide; pos: number; width: number };
 
-function historyReducer(state: HistoryState, action: HistoryAction): HistoryState {
-  switch (action.type) {
-    case "PUSH": {
-      const past = [...state.past, state.present].slice(-MAX_HISTORY);
-      return { past, present: action.entry, future: [] };
+type Floor = { id: string; name: string };
+type Room = { w: number; h: number };
+
+type Selection =
+  | { kind: "table"; id: string }
+  | { kind: "wall"; id: string }
+  | { kind: "entrance" }
+  | null;
+
+type Snapshot = {
+  floor: string;
+  tables: Record<string, FloorTable[]>;
+  walls: Record<string, Wall[]>;
+  entrance: Record<string, Entrance>;
+  rooms: Record<string, Room>;
+  floors: Floor[];
+};
+
+type DragState =
+  | { kind: "table"; id: string; sx: number; sy: number; ox: number; oy: number }
+  | {
+      kind: "wall";
+      id: string;
+      sx: number;
+      sy: number;
+      ox1: number;
+      oy1: number;
+      ox2: number;
+      oy2: number;
     }
-    case "UNDO": {
-      if (state.past.length === 0) return state;
-      const previous = state.past[state.past.length - 1];
-      return {
-        past: state.past.slice(0, -1),
-        present: previous,
-        future: [state.present, ...state.future],
-      };
+  | {
+      kind: "wall-pt";
+      id: string;
+      end: "start" | "end";
+      sx: number;
+      sy: number;
+      ox: number;
+      oy: number;
     }
-    case "REDO": {
-      if (state.future.length === 0) return state;
-      const next = state.future[0];
-      return {
-        past: [...state.past, state.present],
-        present: next,
-        future: state.future.slice(1),
-      };
+  | { kind: "entrance"; sx: number; sy: number; opos: number };
+
+// ─── Seed data ─────────────────────────────────────────────────────────────
+const FLOORS: Floor[] = [
+  { id: "main", name: "Main Dining" },
+  { id: "patio", name: "Patio" },
+  { id: "private", name: "Private Room" },
+  { id: "banquet", name: "Banquet Hall" },
+];
+
+const ROOMS: Record<string, Room> = {
+  main: { w: 720, h: 560 },
+  patio: { w: 480, h: 380 },
+  private: { w: 520, h: 440 },
+  banquet: { w: 1400, h: 900 },
+};
+
+const BANQUET_TABLES: FloorTable[] = (() => {
+  const out: FloorTable[] = [];
+  let n = 1;
+  const cols = 8,
+    rows = 7;
+  const startX = 90,
+    startY = 90,
+    gapX = 150,
+    gapY = 110;
+  const statuses: Status[] = [
+    "free",
+    "reserved",
+    "occupied",
+    "free",
+    "free",
+    "reserved",
+    "occupied",
+    "cleaning",
+  ];
+  const guests = [
+    "Patel",
+    "Nakamura",
+    "Brown",
+    "Singh",
+    "Rivera",
+    "Cohen",
+    "Martin",
+    "Park",
+    "Lee",
+    "Adams",
+    "Khan",
+    "Webb",
+    "Diaz",
+    "Hall",
+    "Yang",
+    "Roy",
+  ];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const status = statuses[(r * cols + c) % statuses.length];
+      const cap = (r + c) % 3 === 0 ? 2 : 4;
+      const guest =
+        status === "occupied" || status === "reserved"
+          ? guests[(r * cols + c) % guests.length]
+          : null;
+      out.push({
+        id: `B${n}`,
+        shape: "round",
+        x: startX + c * gapX,
+        y: startY + r * gapY,
+        size: cap === 2 ? 70 : 85,
+        cap,
+        status,
+        guest,
+        party: guest ? cap : 0,
+        time: guest
+          ? `${5 + ((r * cols + c) % 4)}:${(c % 4) * 15 || "00"}`
+              .replace(":0", "0:00")
+              .replace("00:", "7:")
+          : null,
+      });
+      n++;
     }
-    case "RESET":
-      return { past: [], present: action.entry, future: [] };
-    default:
-      return state;
   }
-}
+  return out;
+})();
 
-function emptyLayout(): FloorPlanLayout {
-  return {
-    walls: [],
-    doors: [],
-    windows: [],
-    tableTransforms: {},
-    decorations: [],
-    zones: [],
-  };
-}
+const TABLES: Record<string, FloorTable[]> = {
+  main: [
+    { id: "1", shape: "round", x: 80, y: 80, size: 80, cap: 2, status: "occupied", guest: "M. Chen", party: 2, time: "6:00" },
+    { id: "2", shape: "round", x: 200, y: 80, size: 80, cap: 2, status: "free", guest: null, party: 0, time: null },
+    { id: "3", shape: "rect", x: 320, y: 80, size: 90, cap: 4, status: "reserved", guest: "Tremblay", party: 4, time: "7:00" },
+    { id: "4", shape: "rect", x: 450, y: 80, size: 90, cap: 4, status: "occupied", guest: "Anand", party: 3, time: "5:30" },
+    { id: "5", shape: "rect", x: 580, y: 80, size: 90, cap: 4, status: "free", guest: null, party: 0, time: null },
+    { id: "6", shape: "round", x: 80, y: 230, size: 90, cap: 4, status: "reserved", guest: "Khoury", party: 4, time: "7:15" },
+    { id: "7", shape: "round", x: 210, y: 230, size: 90, cap: 4, status: "cleaning", guest: null, party: 0, time: null },
+    { id: "8", shape: "rect", x: 340, y: 230, size: 120, cap: 6, status: "occupied", guest: "Wong", party: 5, time: "6:30" },
+    { id: "9", shape: "rect", x: 490, y: 230, size: 120, cap: 6, status: "reserved", guest: "Foster", party: 6, time: "7:30" },
+    { id: "10", shape: "rect", x: 80, y: 380, size: 220, cap: 6, status: "occupied", guest: "Schaefer", party: 6, time: "5:45", long: true },
+    { id: "11", shape: "rect", x: 330, y: 380, size: 220, cap: 6, status: "free", guest: null, party: 0, time: null, long: true },
+  ],
+  patio: [
+    { id: "P1", shape: "round", x: 90, y: 90, size: 75, cap: 2, status: "reserved", guest: "Reyes", party: 2, time: "7:00" },
+    { id: "P2", shape: "round", x: 220, y: 90, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
+    { id: "P3", shape: "round", x: 350, y: 90, size: 75, cap: 2, status: "occupied", guest: "O’Hara", party: 2, time: "6:45" },
+    { id: "P4", shape: "round", x: 90, y: 230, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
+    { id: "P5", shape: "round", x: 220, y: 230, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
+    { id: "P6", shape: "round", x: 350, y: 230, size: 75, cap: 2, status: "reserved", guest: "Bauer", party: 2, time: "8:00" },
+  ],
+  private: [
+    { id: "PR1", shape: "rect", x: 120, y: 120, size: 280, cap: 12, status: "reserved", guest: "Foster", party: 12, time: "7:30", long: true },
+    { id: "PR2", shape: "rect", x: 120, y: 280, size: 280, cap: 12, status: "free", guest: null, party: 0, time: null, long: true },
+  ],
+  banquet: BANQUET_TABLES,
+};
 
-function normalizeLayout(layout: FloorPlanLayout): FloorPlanLayout {
-  const z = layout.zones;
-  return {
-    ...layout,
-    zones: Array.isArray(z) ? z : [],
-  };
-}
+const WALLS: Record<string, Wall[]> = {
+  main: [
+    { id: "w1", x1: 30, y1: 340, x2: 300, y2: 340 },
+    { id: "w2", x1: 430, y1: 340, x2: 690, y2: 340 },
+    { id: "w3", x1: 625, y1: 60, x2: 625, y2: 200 },
+  ],
+  patio: [],
+  private: [],
+  banquet: [],
+};
 
-function parseLayoutFromFloorPlanRow(
-  row: { layout: unknown } | null | undefined,
-): FloorPlanLayout {
-  const rawLayout = row?.layout as unknown;
-  if (rawLayout == null) {
-    return emptyLayout();
-  }
-  if (typeof rawLayout === "string") {
-    try {
-      const parsed = JSON.parse(rawLayout) as FloorPlanLayout;
-      return parsed && typeof parsed === "object"
-        ? normalizeLayout(parsed)
-        : emptyLayout();
-    } catch {
-      return emptyLayout();
-    }
-  }
-  if (typeof rawLayout === "object") {
-    return normalizeLayout(structuredClone(rawLayout) as FloorPlanLayout);
-  }
-  return emptyLayout();
-}
+const ENTRANCES: Record<string, Entrance> = {
+  main: { side: "top", pos: 360, width: 50 },
+  patio: { side: "left", pos: 190, width: 50 },
+  private: { side: "top", pos: 260, width: 50 },
+  banquet: { side: "top", pos: 700, width: 80 },
+};
 
-const LOCAL_TABLE_ID_PREFIX = "local-" as const;
+const TBL_STATUS: Record<
+  Status,
+  { color: string; soft: string; edge: string; label: string; hint: string }
+> = {
+  free: {
+    color: "#7DB87D",
+    soft: "rgba(125,184,125,0.08)",
+    edge: "rgba(125,184,125,0.35)",
+    label: "Open",
+    hint: "Available now",
+  },
+  reserved: {
+    color: "#C9A84C",
+    soft: "rgba(201,168,76,0.10)",
+    edge: "rgba(201,168,76,0.45)",
+    label: "Reserved",
+    hint: "Booked",
+  },
+  occupied: {
+    color: "#C97A6F",
+    soft: "rgba(201,122,111,0.10)",
+    edge: "rgba(201,122,111,0.40)",
+    label: "Seated",
+    hint: "Guests dining",
+  },
+  cleaning: {
+    color: "#6b6b66",
+    soft: "rgba(107,107,102,0.10)",
+    edge: "rgba(107,107,102,0.35)",
+    label: "Resetting",
+    hint: "Being cleared",
+  },
+};
 
-function buildLocalDraftTable(
-  shape: string,
-  x: number,
-  y: number,
-  restaurantId: string,
-  sectionList: SectionRow[],
-  existingTables: TableRow[],
-  preferredSectionId: string | null,
-): TableRow {
-  const sectionId =
-    preferredSectionId && sectionList.some((s) => s.id === preferredSectionId)
-      ? preferredSectionId
-      : sectionList[0]?.id ?? "";
-  const sectionName = sectionList.find((s) => s.id === sectionId)?.name ?? null;
-  return {
-    id: `${LOCAL_TABLE_ID_PREFIX}${globalThis.crypto.randomUUID()}`,
-    restaurant_id: restaurantId,
-    table_number: nextSequentialTableNumber(existingTables),
-    label: null,
-    capacity: 4,
-    min_party: 1,
-    section: sectionName,
-    section_id: sectionId || null,
-    position_x: x,
-    position_y: y,
-    shape,
-    status: "empty",
-    seated_count: 0,
-    combined_with: null,
-    qr_code_url: null,
-    notes: null,
-    is_active: true,
-    updated_at: null,
-  };
-}
+const BORDER_SOFT = "rgba(255,255,255,0.07)";
+const SURFACE_BG = "rgba(20,20,22,0.85)";
 
-// ─── Autosave indicator (self-contained — never re-renders the parent) ────────
-
-type SaveStatus = "idle" | "saving" | "saved" | "error";
-
-function AutosaveIndicator({
-  statusRef,
-  listenersRef,
+// ─── Seat dots ─────────────────────────────────────────────────────────────
+function SeatDots({
+  t,
+  w,
+  h,
+  cx,
+  cy,
+  color,
 }: {
-  statusRef: React.RefObject<SaveStatus>;
-  listenersRef: React.RefObject<Set<() => void>>;
+  t: FloorTable;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+  color: string;
 }) {
-  const { t } = useTranslation();
-  const [status, setStatus] = useState<SaveStatus>("idle");
-
-  useEffect(() => {
-    const update = () => setStatus(statusRef.current ?? "idle");
-    listenersRef.current?.add(update);
-    return () => {
-      listenersRef.current?.delete(update);
+  const isRound = t.shape === "round";
+  const seats: Array<{ x: number; y: number }> = [];
+  const r = 4,
+    gap = 8;
+  if (isRound) {
+    const radius = w / 2 + gap;
+    for (let i = 0; i < t.cap; i++) {
+      const a = (i / t.cap) * Math.PI * 2 - Math.PI / 2;
+      seats.push({ x: cx + Math.cos(a) * radius, y: cy + Math.sin(a) * radius });
+    }
+  } else {
+    const top = Math.ceil(t.cap / 2);
+    const bot = t.cap - top;
+    const place = (count: number, y: number) => {
+      for (let i = 0; i < count; i++) {
+        const x = t.x + (w / (count + 1)) * (i + 1);
+        seats.push({ x, y });
+      }
     };
-  }, [statusRef, listenersRef]);
-
-  if (status === "idle") return null;
-
+    place(top, t.y - gap);
+    place(bot, t.y + h + gap);
+  }
   return (
-    <span className="flex items-center gap-1.5 text-xs text-text-muted">
-      {status === "saving" && (
-        <>
-          <Loader2 className="size-3 animate-spin text-gold" />
-          <span className="text-text-secondary">{t("dashboard.floorPlan.statusSaving")}</span>
-        </>
-      )}
-      {status === "saved" && (
-        <>
-          <Check className="size-3 text-success" />
-          <span className="text-success">{t("dashboard.floorPlan.statusSaved")}</span>
-        </>
-      )}
-      {status === "error" && (
-        <span className="text-danger">{t("dashboard.floorPlan.saveFailed")}</span>
-      )}
-    </span>
+    <g style={{ pointerEvents: "none" }}>
+      {seats.map((s, i) => (
+        <circle
+          key={i}
+          cx={s.x}
+          cy={s.y}
+          r={r}
+          fill="rgba(255,255,255,0.06)"
+          stroke={color}
+          strokeWidth="1"
+          strokeOpacity="0.55"
+        />
+      ))}
+    </g>
   );
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+type Density = "full" | "compact" | "minimal";
 
-export default function FloorPlanPage() {
-  const { t } = useTranslation();
-  const { rolesAtRestaurant } = useUser();
-  const { selectedRestaurantId } = useRestaurantScope();
-
-  // ── Page mode (declared before useFloorPlan so pauseRealtime can read it) ──
-  const [mode, setMode] = useState<FloorPlanMode>("live");
-
-  const {
-    tables: dbTables,
-    sections,
-    floorPlans,
-    loading,
-    error,
-    updateTable,
-    createTable,
-    deleteTable,
-    updateLayout,
-    refetch,
-    createSectionAndFloor,
-  } = useFloorPlan({ pauseRealtime: mode === "edit" });
-
-  // ── Derived permissions (scoped to selected restaurant; matches dashboard floor-plan route) ──
-  const rolesHere = selectedRestaurantId
-    ? rolesAtRestaurant(selectedRestaurantId)
-    : [];
-  const canEdit = rolesHere.some(
-    (r) =>
-      r.role === "owner" ||
-      r.role === "manager" ||
-      r.role === "host" ||
-      r.role === "server",
+function TableNode({
+  t,
+  selected,
+  editing,
+  focused,
+  density = "full",
+  onClick,
+  onDragStart,
+}: {
+  t: FloorTable;
+  selected: boolean;
+  editing: boolean;
+  focused: boolean;
+  density?: Density;
+  onClick: (t: FloorTable) => void;
+  onDragStart: (e: ReactPointerEvent<SVGElement>, t: FloorTable) => void;
+}) {
+  const s = TBL_STATUS[t.status];
+  const isRound = t.shape === "round";
+  const w = t.size;
+  const h = isRound ? t.size : t.long ? 70 : 80;
+  const cx = t.x + w / 2,
+    cy = t.y + h / 2;
+  const showGuest = density === "full" && !!t.guest;
+  const showSeats = density !== "minimal";
+  const idSize = density === "minimal" ? 26 : 22;
+  return (
+    <g
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(t);
+      }}
+      onPointerDown={editing ? (e) => onDragStart(e, t) : undefined}
+      style={{ cursor: editing ? "move" : "pointer" }}
+    >
+      {(selected || focused) &&
+        (isRound ? (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={w / 2 + 18}
+            fill="rgba(201,168,76,0.05)"
+            stroke={focused ? "rgba(201,168,76,0.85)" : "rgba(201,168,76,0.5)"}
+            strokeWidth={focused ? 1.5 : 1}
+          />
+        ) : (
+          <rect
+            x={t.x - 18}
+            y={t.y - 18}
+            width={w + 36}
+            height={h + 36}
+            rx="16"
+            fill="rgba(201,168,76,0.05)"
+            stroke={focused ? "rgba(201,168,76,0.85)" : "rgba(201,168,76,0.5)"}
+            strokeWidth={focused ? 1.5 : 1}
+          />
+        ))}
+      {showSeats && <SeatDots t={t} w={w} h={h} cx={cx} cy={cy} color={s.color} />}
+      {isRound ? (
+        <circle cx={cx} cy={cy} r={w / 2} fill={s.soft} stroke={s.edge} strokeWidth="1" />
+      ) : (
+        <rect x={t.x} y={t.y} width={w} height={h} rx="8" fill={s.soft} stroke={s.edge} strokeWidth="1" />
+      )}
+      <circle cx={t.x + w - 10} cy={t.y + 10} r="2.5" fill={s.color} />
+      <text
+        x={cx}
+        y={cy + (showGuest ? 0 : 6)}
+        textAnchor="middle"
+        fontSize={idSize}
+        fontWeight="500"
+        fill="rgba(255,255,255,0.92)"
+        fontFamily="Fraunces, serif"
+        style={{ pointerEvents: "none", letterSpacing: "-0.02em" }}
+      >
+        {t.id}
+      </text>
+      {showGuest && (
+        <text
+          x={cx}
+          y={cy + 18}
+          textAnchor="middle"
+          fontSize="10.5"
+          fill="rgba(255,255,255,0.55)"
+          style={{ pointerEvents: "none", letterSpacing: "0.01em" }}
+          fontFamily="Geist, system-ui"
+        >
+          {t.guest} · {t.time}
+        </text>
+      )}
+    </g>
   );
-  const canResizeTables = rolesHere.some((r) => r.role === "owner");
-  const [activeTool, setActiveTool] = useState<ToolMode>("select");
-  const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
-  /** Drives right panel: single focused table (independent of multi-select for canvas). */
-  const [selectedPanelTableId, setSelectedPanelTableId] = useState<string | null>(null);
-  const [selectedDecorationId, setSelectedDecorationId] = useState<string | null>(null);
-  const [selectedWallIds, setSelectedWallIds] = useState<string[]>([]);
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
-  const [selectedSection, setSelectedSection] = useState<string>("");
-  const [addFloorOpen, setAddFloorOpen] = useState(false);
-  const [pendingZone, setPendingZone] = useState<{ x: number; y: number; w: number; h: number; defaultName: string } | null>(null);
-  const [addFloorPending, setAddFloorPending] = useState(false);
-  const [hoveredTable, setHoveredTable] = useState<HoveredTableInfo | null>(null);
-  const pendingHoverRef = useRef<HoveredTableInfo | null>(null);
-  const hoverFlushRafRef = useRef<number | null>(null);
+}
 
-  /** Coalesce hover updates to one React commit per frame (fewer full-page re-renders while skimming tables). */
-  const queueTableHover = useCallback((info: HoveredTableInfo | null) => {
-    pendingHoverRef.current = info;
-    if (hoverFlushRafRef.current != null) return;
-    hoverFlushRafRef.current = requestAnimationFrame(() => {
-      hoverFlushRafRef.current = null;
-      setHoveredTable(pendingHoverRef.current);
-    });
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (hoverFlushRafRef.current != null) {
-        cancelAnimationFrame(hoverFlushRafRef.current);
-      }
-    },
-    [],
+function WallNode({
+  w,
+  selected,
+  editing,
+  onClick,
+  onDragStart,
+  onEndpointDrag,
+}: {
+  w: Wall;
+  selected: boolean;
+  editing: boolean;
+  onClick: (w: Wall) => void;
+  onDragStart: (e: ReactPointerEvent<SVGElement>, w: Wall) => void;
+  onEndpointDrag: (e: ReactPointerEvent<SVGElement>, w: Wall, end: "start" | "end") => void;
+}) {
+  return (
+    <g
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(w);
+      }}
+      style={{ cursor: editing ? "move" : "pointer" }}
+    >
+      <line
+        x1={w.x1}
+        y1={w.y1}
+        x2={w.x2}
+        y2={w.y2}
+        stroke="transparent"
+        strokeWidth="14"
+        onPointerDown={editing ? (e) => onDragStart(e, w) : undefined}
+      />
+      <line
+        x1={w.x1}
+        y1={w.y1}
+        x2={w.x2}
+        y2={w.y2}
+        stroke={selected ? "rgba(201,168,76,0.85)" : "rgba(255,255,255,0.22)"}
+        strokeWidth={selected ? 4 : 3}
+        strokeLinecap="round"
+      />
+      {selected && editing && (
+        <>
+          <circle
+            cx={w.x1}
+            cy={w.y1}
+            r="6"
+            fill="#0E0E0F"
+            stroke="var(--gold)"
+            strokeWidth="1.5"
+            style={{ cursor: "crosshair" }}
+            onPointerDown={(e) => onEndpointDrag(e, w, "start")}
+          />
+          <circle
+            cx={w.x2}
+            cy={w.y2}
+            r="6"
+            fill="#0E0E0F"
+            stroke="var(--gold)"
+            strokeWidth="1.5"
+            style={{ cursor: "crosshair" }}
+            onPointerDown={(e) => onEndpointDrag(e, w, "end")}
+          />
+        </>
+      )}
+    </g>
   );
-  const [showGrid, setShowGrid] = useState(true);
-  const [snapEnabled, setSnapEnabled] = useState(true);
-  /** Edit mode: right rail tabs (service control vs layout form) */
-  const [editRightTab, setEditRightTab] = useState<"control" | "layout">("control");
+}
 
-  // ── Zoom / pan ─────────────────────────────────────────────────────────────
-  const [stageScale, setStageScale] = useState(1);
-  /** Scale after last "full view" fit — zoom % is shown relative to this so 100% = proportional to the fitted view. */
-  const [fullViewBaselineScale, setFullViewBaselineScale] = useState(1);
-  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+type EntranceLine = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  labelX: number;
+  labelY: number;
+  labelAnchor: "middle";
+  rotate?: number;
+};
 
-  /** Snapshot when entering edit mode — used on Save to diff creates/updates/deletes (draft stays local until then). */
-  const editBaselineRef = useRef<{ tables: TableRow[]; layout: FloorPlanLayout } | null>(null);
-
-  /** Konva viewport size — driven by {@link FloorPlanCanvas} ResizeObserver on the actual canvas wrapper (authoritative). */
-  const canvasSlotRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
-  const onCanvasViewportSize = useCallback((w: number, h: number) => {
-    const nw = Math.max(0, Math.round(w));
-    const nh = Math.max(0, Math.round(h));
-    setContainerSize((prev) => (prev.w === nw && prev.h === nh ? prev : { w: nw, h: nh }));
-  }, []);
-
-  // Keep a valid floor tab selected whenever sections load or change
-  useEffect(() => {
-    const active = sections.filter((s) => s.is_active);
-    if (active.length === 0) {
-      setSelectedSection("");
-      return;
-    }
-    setSelectedSection((prev) => {
-      if (prev && active.some((s) => s.id === prev)) return prev;
-      return active[0].id;
-    });
-  }, [sections]);
-
-  const needsFloorFirst =
-    isSupabaseConfigured() &&
-    selectedRestaurantId != null &&
-    sections.filter((s) => s.is_active).length === 0;
-
-  // ── Undo / redo — active layout row follows selected section tab (never fall back to another floor) ──
-  const activeFloorPlan = useMemo(() => {
-    if (floorPlans.length === 0 || !selectedSection) return null;
-    return floorPlans.find((fp) => fp.section_id === selectedSection) ?? null;
-  }, [floorPlans, selectedSection]);
-
-  /** Matches FloorPlanCanvas world size (floor_plans.canvas_* or compact defaults). */
-  const worldBounds = useMemo(() => {
-    const w = Math.max(320, activeFloorPlan?.canvas_width ?? FLOOR_PLAN_DEFAULT_WORLD_WIDTH);
-    const h = Math.max(240, activeFloorPlan?.canvas_height ?? FLOOR_PLAN_DEFAULT_WORLD_HEIGHT);
-    return { w, h };
-  }, [activeFloorPlan?.canvas_width, activeFloorPlan?.canvas_height]);
-
-  const initialLayout = useMemo(
-    () => parseLayoutFromFloorPlanRow(activeFloorPlan),
-    [activeFloorPlan],
-  );
-
-  const [historyState, dispatch] = useReducer(historyReducer, {
-    past: [],
-    present: { tables: dbTables, layout: initialLayout },
-    future: [],
-  });
-
-  // Sync history present when DB data loads, section tab changes, or layout row changes (live mode).
-  // Skip the very first run — useReducer already initialised with these values, no wasted redraw.
-  const skipFirstSyncRef = useRef(true);
-  useEffect(() => {
-    if (mode !== "live") return;
-    if (skipFirstSyncRef.current) {
-      skipFirstSyncRef.current = false;
-      return;
-    }
-    dispatch({ type: "RESET", entry: { tables: dbTables, layout: initialLayout } });
-  }, [dbTables, mode, initialLayout]);
-
-  const tablesDraft = historyState.present.tables;
-  const layoutDraft = historyState.present.layout;
-
-  /**
-   * Zoom limits and “full view” baseline are always tied to the **full DB canvas**, not the zone
-   * union. Switching to zone-based min/max when zones appear caused {@link setStageScale} clamp
-   * effects to jump the camera (often zoom in) on every new zone — see second-room-zone report.
-   * Zone-only cover scale is computed only inside {@link fitWorldToViewport} when framing zones.
-   */
-  const floorPlanScaleBounds = useMemo(() => {
-    const cw = Math.max(1, containerSize.w);
-    const ch = Math.max(1, containerSize.h);
-    return getFloorPlanScaleBounds(cw, ch, worldBounds.w, worldBounds.h);
-  }, [containerSize.w, containerSize.h, worldBounds.w, worldBounds.h]);
-
-  /**
-   * Editable floor size: at least DB canvas, and large enough that at minimum zoom the scaled world
-   * still covers the viewport. Otherwise letterboxing maps the bottom/top margins to coordinates
-   * outside 0…world (tables cannot be dropped there).
-   */
-  const effectiveWorld = useMemo(() => {
-    const baseW = worldBounds.w;
-    const baseH = worldBounds.h;
-    const cw = Math.max(1, containerSize.w);
-    const ch = Math.max(1, containerSize.h);
-    const minScale = floorPlanScaleBounds.min;
-    if (cw < 2 || ch < 2 || minScale < 1e-9) {
-      return { w: baseW, h: baseH };
-    }
-    const needW = Math.ceil(cw / minScale);
-    const needH = Math.ceil(ch / minScale);
+function entranceLine(entrance: Entrance, room: Room): EntranceLine {
+  const { side, pos, width } = entrance;
+  const half = width / 2;
+  if (side === "top")
+    return { x1: pos - half, y1: 30, x2: pos + half, y2: 30, labelX: pos, labelY: 20, labelAnchor: "middle" };
+  if (side === "bottom")
     return {
-      w: Math.max(baseW, needW),
-      h: Math.max(baseH, needH),
+      x1: pos - half,
+      y1: room.h - 30,
+      x2: pos + half,
+      y2: room.h - 30,
+      labelX: pos,
+      labelY: room.h - 14,
+      labelAnchor: "middle",
     };
-  }, [worldBounds.w, worldBounds.h, containerSize.w, containerSize.h, floorPlanScaleBounds.min]);
-
-  const clampedSetStageScale = useCallback(
-    (s: number) => {
-      setStageScale(
-        Math.max(floorPlanScaleBounds.min, Math.min(floorPlanScaleBounds.max, s)),
-      );
-    },
-    [floorPlanScaleBounds.min, floorPlanScaleBounds.max],
-  );
-
-  /** After resize, keep zoom inside the current band (same limits as wheel / buttons). */
-  useEffect(() => {
-    setStageScale((s) =>
-      Math.max(floorPlanScaleBounds.min, Math.min(floorPlanScaleBounds.max, s)),
-    );
-  }, [floorPlanScaleBounds.min, floorPlanScaleBounds.max]);
-
-  /** Viewport: one floor at a time (state still holds all tables for save). */
-  const tablesForCanvas = useMemo(() => {
-    if (!selectedSection) return [];
-    return tablesDraft.filter((t) => t.section_id === selectedSection);
-  }, [tablesDraft, selectedSection]);
-
-  const tablesForCanvasRef = useRef(tablesForCanvas);
-  tablesForCanvasRef.current = tablesForCanvas;
-  const layoutDraftRef = useRef(layoutDraft);
-  layoutDraftRef.current = layoutDraft;
-
-  // Drop selection / hover when they reference tables hidden on another floor.
-  useEffect(() => {
-    setSelectedTableIds((prev) =>
-      prev.filter((id) => {
-        const row = tablesDraft.find((t) => t.id === id);
-        if (!row) return false;
-        return row.section_id === selectedSection;
-      }),
-    );
-    setSelectedPanelTableId((pid) => {
-      if (!pid) return null;
-      const row = tablesDraft.find((t) => t.id === pid);
-      if (!row || row.section_id !== selectedSection) return null;
-      return pid;
-    });
-  }, [selectedSection, tablesDraft]);
-
-  // If the focused table row disappears from draft, clear panel selection.
-  useEffect(() => {
-    if (!selectedPanelTableId) return;
-    if (!tablesDraft.some((t) => t.id === selectedPanelTableId)) {
-      setSelectedPanelTableId(null);
-    }
-  }, [tablesDraft, selectedPanelTableId]);
-
-  // Hover tooltip: clear if table removed, or if that table belongs to another floor tab.
-  useEffect(() => {
-    setHoveredTable((prev) => {
-      if (!prev) return null;
-      if (!tablesDraft.some((t) => t.id === prev.table.id)) return null;
-      if (!selectedSection) return null;
-      return prev.table.section_id === selectedSection ? prev : null;
-    });
-  }, [tablesDraft, selectedSection]);
-
-  function pushHistory(tables: TableRow[], layout: FloorPlanLayout) {
-    dispatch({ type: "PUSH", entry: { tables, layout } });
-    setEditSeq((n) => n + 1);
-  }
-
-  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      const meta = e.metaKey || e.ctrlKey;
-      if (!meta) return;
-      if (e.key === "z" && !e.shiftKey) {
-        e.preventDefault();
-        dispatch({ type: "UNDO" });
-        setEditSeq((n) => n + 1);
-      }
-      if ((e.key === "Z" || (e.key === "z" && e.shiftKey))) {
-        e.preventDefault();
-        dispatch({ type: "REDO" });
-        setEditSeq((n) => n + 1);
-      }
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, []);
-
-  // ── Selected table for right panel (explicit id → always matches user click) ──
-  const selectedTable = useMemo((): TableRow | null => {
-    if (!selectedPanelTableId) return null;
-    return tablesDraft.find((t) => t.id === selectedPanelTableId) ?? null;
-  }, [selectedPanelTableId, tablesDraft]);
-
-  const floorStatusCounts = useMemo(() => {
-    const c = { empty: 0, reserved: 0, occupied: 0, cleaning: 0, blocked: 0 };
-    for (const row of tablesForCanvas) {
-      const k = row.status as keyof typeof c;
-      if (k in c) c[k]++;
-    }
-    return c;
-  }, [tablesForCanvas]);
-
-  const zoneCountForInspector = (layoutDraft.zones ?? []).length;
-
-  const totalSeatsForInspector = useMemo(
-    () => tablesForCanvas.reduce((sum, t) => sum + (t.capacity ?? 0), 0),
-    [tablesForCanvas],
-  );
-
-  const selectedZoneLabel = useMemo(() => {
-    if (!selectedTable) return null;
-    return getZoneLabelForTable(selectedTable, layoutDraft.zones ?? []);
-  }, [selectedTable, layoutDraft.zones]);
-
-  useEffect(() => {
-    setEditRightTab("control");
-  }, [selectedTable?.id]);
-
-  /**
-   * Fit the view: when room zones exist, frame **only the zone union** (the floor surface) so it fills
-   * the editor — walls/tables must not inflate bounds to the full canvas. Otherwise fall back to
-   * content union or full world.
-   */
-  const fitWorldToViewport = useCallback(() => {
-    const w = effectiveWorld.w;
-    const h = effectiveWorld.h;
-    const cw = containerSize.w;
-    const ch = containerSize.h;
-    if (cw < 1 || ch < 1 || w < 1 || h < 1) return;
-
-    const bounds = floorPlanScaleBounds;
-    const layout = layoutDraftRef.current;
-    const tables = tablesForCanvasRef.current;
-
-    const zoneFrame = computeZoneUnionBounds(layout.zones ?? [], w, h, 4);
-    const zoneSubstantial =
-      zoneFrame != null && zoneUnionCoversEnoughOfWorld(zoneFrame, w, h);
-    if (zoneFrame && zoneSubstantial) {
-      const zoneBounds = getFloorPlanScaleBounds(cw, ch, zoneFrame.width, zoneFrame.height, {
-        containPadding: FLOOR_PLAN_ZONE_VIEWPORT_CONTAIN_PAD,
-        useCoverFit: true,
-      });
-      /** Zone cover “fit” but never outside world zoom band (bounds = full canvas). */
-      const targetScale = zoneBounds.fitScale;
-      const scale = Math.min(bounds.max, Math.max(bounds.min, targetScale));
-      const focusCx = zoneFrame.left + zoneFrame.width / 2;
-      const focusCy = zoneFrame.top + zoneFrame.height / 2;
-      const px = cw / 2 - focusCx * scale;
-      const py = ch / 2 - focusCy * scale;
-      setFullViewBaselineScale(scale);
-      setStageScale(scale);
-      setStagePos(
-        clampFloorPlanStagePosition({ x: px, y: py }, scale, w, h, cw, ch),
-      );
-      return;
-    }
-
-    const content = computeFloorPlanContentBounds(
-      tables,
-      {
-        walls: layout.walls,
-        doors: layout.doors,
-        windows: layout.windows,
-        decorations: layout.decorations,
-        zones: layout.zones ?? [],
-      },
-      layout.tableTransforms,
-      w,
-      h,
-    );
-
-    const hasZones = (layout.zones?.length ?? 0) > 0;
-    /** Avoid aggressive “has zones” framing until the union is a meaningful slice of the floor. */
-    const hasEstablishedZoneViewport = hasZones && zoneSubstantial;
-
-    let scale: number;
-    let focusCx: number;
-    let focusCy: number;
-
-    if (content && shouldFrameRoomInViewport(content, w, h, hasEstablishedZoneViewport)) {
-      const effW = Math.max(content.width, 200);
-      const effH = Math.max(content.height, 140);
-      scale = scaleWorldToContainViewport(cw, ch, effW, effH, FLOOR_PLAN_VIEWPORT_CONTAIN_PAD);
-      scale = Math.max(bounds.min, Math.min(bounds.max, scale));
-      focusCx = content.left + content.width / 2;
-      focusCy = content.top + content.height / 2;
-    } else {
-      scale = Math.max(bounds.min, Math.min(bounds.max, bounds.fitScale));
-      focusCx = w / 2;
-      focusCy = h / 2;
-    }
-
-    const px = cw / 2 - focusCx * scale;
-    const py = ch / 2 - focusCy * scale;
-
-    setFullViewBaselineScale(scale);
-    setStageScale(scale);
-    setStagePos(
-      clampFloorPlanStagePosition({ x: px, y: py }, scale, w, h, cw, ch),
-    );
-  }, [
-    containerSize.w,
-    containerSize.h,
-    effectiveWorld.w,
-    effectiveWorld.h,
-    floorPlanScaleBounds.fitScale,
-    floorPlanScaleBounds.max,
-    floorPlanScaleBounds.min,
-  ]);
-
-  /** Keep stage position valid when zoom buttons change scale or layout resizes (canvas only clamps during drag/wheel). */
-  useEffect(() => {
-    if (containerSize.w < 1 || containerSize.h < 1) return;
-    setStagePos((prev) =>
-      clampFloorPlanStagePosition(
-        prev,
-        stageScale,
-        effectiveWorld.w,
-        effectiveWorld.h,
-        containerSize.w,
-        containerSize.h,
-      ),
-    );
-  }, [
-    stageScale,
-    effectiveWorld.w,
-    effectiveWorld.h,
-    containerSize.w,
-    containerSize.h,
-  ]);
-
-  const selectedKey =
-    selectedTableIds.length === 1 ? (selectedTableIds[0] ?? "") : "";
-
-  const prevModeForFitRef = useRef<FloorPlanMode>(mode);
-  useEffect(() => {
-    if (!selectedKey) return;
-    if (containerSize.w < 20) return;
-    fitWorldToViewport();
-  }, [selectedKey, containerSize.w, containerSize.h, fitWorldToViewport]);
-
-  useEffect(() => {
-    if (containerSize.w < 20) return;
-    fitWorldToViewport();
-  }, [selectedSection, effectiveWorld.w, effectiveWorld.h, containerSize.w, containerSize.h, fitWorldToViewport]);
-
-  useEffect(() => {
-    const wasEdit = prevModeForFitRef.current === "edit";
-    const nowEdit = mode === "edit";
-    if (!wasEdit && nowEdit) {
-      const t = window.setTimeout(() => fitWorldToViewport(), 0);
-      const t2 = window.setTimeout(() => fitWorldToViewport(), 150);
-      prevModeForFitRef.current = mode;
-      return () => {
-        clearTimeout(t);
-        clearTimeout(t2);
-      };
-    }
-    prevModeForFitRef.current = mode;
-  }, [mode, fitWorldToViewport]);
-
-  // Restore edit mode after navigating away / refresh while sessionStorage still marks edit (not on tab blur alone).
-  useEffect(() => {
-    if (!selectedRestaurantId || loading) return;
-    if (mode !== "live") return;
-    let shouldRestore = false;
-    try {
-      shouldRestore = sessionStorage.getItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`) === "1";
-    } catch {
-      return;
-    }
-    if (!shouldRestore) return;
-    enterEditMode();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot when layout data is ready
-  }, [loading, selectedRestaurantId, mode]);
-
-  // ── Mode switching ─────────────────────────────────────────────────────────
-  function enterEditMode() {
-    const layoutSnapshot = parseLayoutFromFloorPlanRow(activeFloorPlan);
-    editBaselineRef.current = {
-      tables: dbTables.map((row) => ({ ...row })),
-      layout: JSON.parse(JSON.stringify(layoutSnapshot)) as FloorPlanLayout,
-    };
-    dispatch({ type: "RESET", entry: { tables: dbTables, layout: layoutSnapshot } });
-    hasEditedRef.current = false;
-    idMapRef.current.clear();
-    notifySaveStatus("idle");
-    setMode("edit");
-    setActiveTool("select");
-    setSelectedTableIds([]);
-    setSelectedPanelTableId(null);
-    setSelectedDecorationId(null);
-    setSelectedWallIds([]);
-    setSelectedZoneId(null);
-    try {
-      if (selectedRestaurantId) {
-        sessionStorage.setItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`, "1");
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function exitEditMode() {
-    try {
-      if (selectedRestaurantId) {
-        sessionStorage.removeItem(`cenaiva:floor-plan-edit-${selectedRestaurantId}`);
-      }
-    } catch {
-      /* ignore */
-    }
-    // Flush any pending autosave
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      await persistDraftRef.current();
-    }
-    editBaselineRef.current = null;
-    hasEditedRef.current = false;
-    idMapRef.current.clear();
-    setEditSeq(0);
-    setMode("live");
-    setActiveTool("select");
-    setSelectedTableIds([]);
-    setSelectedPanelTableId(null);
-    setSelectedDecorationId(null);
-    setSelectedWallIds([]);
-    setSelectedZoneId(null);
-    // Refetch once on exit so live mode has fresh DB data (no full-page loading flash)
-    await refetch({ silent: true });
-  }
-
-  // Session restore or edge cases: cannot stay in edit mode without a real section row
-  useEffect(() => {
-    if (loading || mode !== "edit") return;
-    if (sections.filter((s) => s.is_active).length > 0) return;
-    void exitEditMode();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: run when sections/mode/loading change
-  }, [loading, mode, sections]);
-
-  async function handleAddFloor(name: string) {
-    setAddFloorPending(true);
-    try {
-      const result = await createSectionAndFloor(name);
-      if (!result) {
-        toast.error(t("dashboard.floorPlan.addFloorFailed"));
-        return;
-      }
-      if (mode === "live") {
-        toast.success(t("dashboard.floorPlan.floorAdded"));
-        setSelectedSection(result.sectionId);
-      } else {
-        toast.success(t("dashboard.floorPlan.floorAddedWhileEditing"));
-      }
-      setAddFloorOpen(false);
-    } finally {
-      setAddFloorPending(false);
-    }
-  }
-
-  // ── Autosave ──────────────────────────────────────────────────────────────────
-
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasEditedRef = useRef(false);
-  const draftRef = useRef({ tables: tablesDraft, layout: layoutDraft });
-  draftRef.current = { tables: tablesDraft, layout: layoutDraft };
-
-  const idMapRef = useRef<Map<string, string>>(new Map());
-  const isSavingRef = useRef(false);
-
-  // Mutable refs for values the save closure reads — no dependency churn.
-  const sectionsRef = useRef(sections);
-  sectionsRef.current = sections;
-  const activeFloorPlanRef = useRef(activeFloorPlan);
-  activeFloorPlanRef.current = activeFloorPlan;
-
-  /** Notify the status indicator without re-rendering the page. */
-  const saveStatusRef = useRef<SaveStatus>("idle");
-  const saveStatusListenersRef = useRef<Set<() => void>>(new Set());
-  function notifySaveStatus(status: SaveStatus) {
-    saveStatusRef.current = status;
-    saveStatusListenersRef.current.forEach((fn) => fn());
-  }
-
-  /** Persist current draft to DB. Zero state updates in this component. */
-  async function persistDraft() {
-    if (isSavingRef.current) return;
-    const draft = draftRef.current;
-    const baseline = editBaselineRef.current;
-    if (!baseline) return;
-
-    isSavingRef.current = true;
-    notifySaveStatus("saving");
-    try {
-      const idMap = idMapRef.current;
-      const curSections = sectionsRef.current;
-      const curFloorPlan = activeFloorPlanRef.current;
-
-      const hasRealSection = curSections.some((s) => isDatabaseUuid(s.id));
-      const draftHasNewLocalTables = draft.tables.some((t) =>
-        t.id.startsWith(LOCAL_TABLE_ID_PREFIX),
-      );
-      if (draftHasNewLocalTables && !hasRealSection) {
-        notifySaveStatus("error");
-        toast.error(t("dashboard.floorPlan.saveNeedsFloor"));
-        return;
-      }
-
-      const resolvedTables = draft.tables.map((t) => {
-        const realId = idMap.get(t.id);
-        return realId ? { ...t, id: realId } : t;
-      });
-
-      const tablesToPersist = ensureTableNumbersForSave(resolvedTables, baseline.tables);
-
-      const draftIds = new Set(tablesToPersist.map((t) => t.id));
-      const baselineIds = new Set(baseline.tables.map((t) => t.id));
-
-      for (const tbl of baseline.tables) {
-        if (!draftIds.has(tbl.id) && isDatabaseUuid(tbl.id)) {
-          await deleteTable(tbl.id, { refetchAfter: false });
-        }
-      }
-
-      for (const tbl of tablesToPersist) {
-        if (tbl.id.startsWith(LOCAL_TABLE_ID_PREFIX)) {
-          const created = await createTable({
-            sectionId: tbl.section_id ?? curSections[0]?.id ?? "",
-            label: tbl.label ?? "",
-            tableNumber: tbl.table_number,
-            shape: tbl.shape,
-            capacity: tbl.capacity,
-            x: tbl.position_x ?? 0,
-            y: tbl.position_y ?? 0,
-            minParty: tbl.min_party,
-            status: tbl.status,
-            notes: tbl.notes,
-          });
-          if (!created) throw new Error("create failed");
-          const originalLocalId = draft.tables.find(
-            (d) => (idMap.get(d.id) ?? d.id) === tbl.id,
-          )?.id ?? tbl.id;
-          idMap.set(originalLocalId, created.id);
-          continue;
-        }
-        if (isDatabaseUuid(tbl.id) && baselineIds.has(tbl.id)) {
-          await updateTable(tbl.id, {
-            position_x: tbl.position_x,
-            position_y: tbl.position_y,
-            shape: tbl.shape,
-            capacity: tbl.capacity,
-            min_party: tbl.min_party,
-            label: tbl.label,
-            table_number: tbl.table_number,
-            section_id: tbl.section_id,
-            notes: tbl.notes,
-            status: tbl.status,
-            seated_count: tbl.seated_count,
-          });
-        }
-      }
-
-      if (curFloorPlan) {
-        await updateLayout(curFloorPlan.id, draft.layout);
-      }
-
-      editBaselineRef.current = {
-        tables: tablesToPersist.map((row) => {
-          const realId = row.id.startsWith(LOCAL_TABLE_ID_PREFIX)
-            ? (idMap.get(row.id) ?? row.id)
-            : row.id;
-          return { ...row, id: realId };
-        }),
-        layout: JSON.parse(JSON.stringify(draft.layout)) as FloorPlanLayout,
-      };
-
-      notifySaveStatus("saved");
-      setTimeout(() => notifySaveStatus("idle"), 2000);
-    } catch {
-      notifySaveStatus("error");
-      toast.error(t("dashboard.floorPlan.saveFailed"));
-    } finally {
-      isSavingRef.current = false;
-    }
-  }
-
-  const persistDraftRef = useRef(persistDraft);
-  persistDraftRef.current = persistDraft;
-
-  const [editSeq, setEditSeq] = useState(0);
-
-  // Debounced autosave: triggers 1s after the last edit
-  useEffect(() => {
-    if (mode !== "edit" || editSeq === 0) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      void persistDraftRef.current();
-    }, 1000);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [editSeq, mode]);
-
-  useEffect(() => {
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (mode === "edit" && saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        void persistDraftRef.current();
-      }
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [mode]);
-
-  // ── Table interactions ─────────────────────────────────────────────────────
-
-  const deleteTablesFromDraft = useCallback(
-    (ids: string[]) => {
-      if (ids.length === 0) return;
-      const idSet = new Set(ids);
-      const updated = tablesDraft.filter((t) => !idSet.has(t.id));
-      dispatch({ type: "PUSH", entry: { tables: updated, layout: layoutDraft } });
-      setSelectedTableIds((prev) => prev.filter((tid) => !idSet.has(tid)));
-      setSelectedPanelTableId((pid) => (pid && idSet.has(pid) ? null : pid));
-    },
-    [tablesDraft, layoutDraft],
-  );
-
-  const handleDeleteTable = useCallback(
-    (id: string) => {
-      deleteTablesFromDraft([id]);
-    },
-    [deleteTablesFromDraft],
-  );
-
-  const removeDecoration = useCallback(
-    (id: string) => {
-      const decorations = layoutDraft.decorations.filter((d) => d.id !== id);
-      dispatch({
-        type: "PUSH",
-        entry: { tables: tablesDraft, layout: { ...layoutDraft, decorations } },
-      });
-      setSelectedDecorationId((prev) => (prev === id ? null : prev));
-    },
-    [tablesDraft, layoutDraft],
-  );
-
-  const removeWallsFromDraft = useCallback(
-    (ids: string[]) => {
-      if (ids.length === 0) return;
-      const idSet = new Set(ids);
-      const updatedWalls = layoutDraft.walls.filter((w) => !idSet.has(w.id));
-      dispatch({
-        type: "PUSH",
-        entry: { tables: tablesDraft, layout: { ...layoutDraft, walls: updatedWalls } },
-      });
-      setSelectedWallIds((prev) => prev.filter((wid) => !idSet.has(wid)));
-    },
-    [tablesDraft, layoutDraft],
-  );
-
-  const removeZoneFromDraft = useCallback(
-    (id: string) => {
-      const zones = (layoutDraft.zones ?? []).filter((z) => z.id !== id);
-      dispatch({
-        type: "PUSH",
-        entry: { tables: tablesDraft, layout: { ...layoutDraft, zones } },
-      });
-      setSelectedZoneId((prev) => (prev === id ? null : prev));
-    },
-    [tablesDraft, layoutDraft],
-  );
-
-  function handleZoneDragEnd(id: string, x: number, y: number) {
-    const zones = (layoutDraft.zones ?? []).map((z) => (z.id === id ? { ...z, x, y } : z));
-    pushHistory(tablesDraft, { ...layoutDraft, zones });
-  }
-
-  function handleZoneTransformEnd(
-    id: string,
-    patch: Partial<Pick<FloorPlanZone, "x" | "y" | "width" | "height">>,
-  ) {
-    const zones = (layoutDraft.zones ?? []).map((z) => (z.id === id ? { ...z, ...patch } : z));
-    pushHistory(tablesDraft, { ...layoutDraft, zones });
-  }
-
-  const handleZoneSelect = useCallback(
-    (id: string) => {
-      if (mode !== "edit" || !canEdit) return;
-      if (activeTool === "delete") {
-        removeZoneFromDraft(id);
-        return;
-      }
-      setSelectedZoneId(id);
-      setSelectedTableIds([]);
-      setSelectedPanelTableId(null);
-      setSelectedDecorationId(null);
-      setSelectedWallIds([]);
-    },
-    [mode, canEdit, activeTool, removeZoneFromDraft],
-  );
-
-  useEffect(() => {
-    setSelectedZoneId(null);
-  }, [selectedSection]);
-
-  useEffect(() => {
-    if (mode !== "edit" || !canEdit) return;
-    if (
-      selectedTableIds.length === 0 &&
-      !selectedDecorationId &&
-      selectedWallIds.length === 0 &&
-      !selectedZoneId
-    )
-      return;
-
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.isComposing) return;
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
-      const target = e.target;
-      if (
-        target instanceof HTMLElement &&
-        target.closest("input, textarea, select, [contenteditable=true]")
-      ) {
-        return;
-      }
-      if (selectedDecorationId) {
-        e.preventDefault();
-        removeDecoration(selectedDecorationId);
-        return;
-      }
-      if (selectedWallIds.length > 0) {
-        e.preventDefault();
-        removeWallsFromDraft(selectedWallIds);
-        return;
-      }
-      if (selectedZoneId) {
-        e.preventDefault();
-        removeZoneFromDraft(selectedZoneId);
-        return;
-      }
-      if (selectedTableIds.length > 0) {
-        e.preventDefault();
-        deleteTablesFromDraft(selectedTableIds);
-      }
-    }
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    mode,
-    canEdit,
-    selectedTableIds,
-    selectedDecorationId,
-    selectedWallIds,
-    selectedZoneId,
-    deleteTablesFromDraft,
-    removeDecoration,
-    removeWallsFromDraft,
-    removeZoneFromDraft,
-  ]);
-
-  function handleDecorationClick(id: string) {
-    if (activeTool === "delete") {
-      removeDecoration(id);
-      return;
-    }
-    setSelectedTableIds([]);
-    setSelectedPanelTableId(null);
-    setSelectedWallIds([]);
-    setSelectedZoneId(null);
-    setSelectedDecorationId((prev) => (prev === id ? null : id));
-  }
-
-  function handleWallClick(wallId: string) {
-    setSelectedTableIds([]);
-    setSelectedPanelTableId(null);
-    setSelectedDecorationId(null);
-    setSelectedZoneId(null);
-    if (activeTool === "delete") {
-      removeWallsFromDraft([wallId]);
-      return;
-    }
-    setSelectedWallIds((prev) => (prev.length === 1 && prev[0] === wallId ? [] : [wallId]));
-  }
-
-  function handleTableClick(id: string, e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
-    setSelectedDecorationId(null);
-    setSelectedWallIds([]);
-    setSelectedZoneId(null);
-    if (activeTool === "delete") {
-      handleDeleteTable(id);
-      setSelectedPanelTableId(null);
-      return;
-    }
-    const shiftHeld = "shiftKey" in e.evt && e.evt.shiftKey;
-    setSelectedTableIds((prev) => {
-      let next: string[];
-      if (mode === "live") {
-        next = prev.length === 1 && prev[0] === id ? [] : [id];
-      } else if (shiftHeld && canResizeTables) {
-        next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      } else {
-        next = prev.length === 1 && prev[0] === id ? [] : [id];
-      }
-      setSelectedPanelTableId(next.length === 1 ? next[0]! : null);
-      return next;
-    });
-  }
-
-  function handleCanvasClick(worldX: number, worldY: number) {
-    // Place new table when an add-tool is active (draft-only until Save)
-    if (
-      mode !== "edit" ||
-      activeTool === "select" ||
-      activeTool === "add-wall" ||
-      activeTool === "delete"
-    ) {
-      setSelectedTableIds([]);
-      setSelectedPanelTableId(null);
-      setSelectedDecorationId(null);
-      setSelectedWallIds([]);
-      setSelectedZoneId(null);
-      return;
-    }
-    if (activeTool === "add-zone") {
-      if (!selectedRestaurantId) return;
-      const presetKeys = [
-        "dashboard.floorPlan.zoneMainDining",
-        "dashboard.floorPlan.zonePatio",
-        "dashboard.floorPlan.zoneBar",
-        "dashboard.floorPlan.zoneVip",
-      ] as const;
-      const zones = layoutDraft.zones ?? [];
-      const defaultName = t(presetKeys[zones.length % presetKeys.length]);
-      const w = 240;
-      const h = 168;
-      const gx = snapEnabled
-        ? Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
-        : worldX;
-      const gy = snapEnabled
-        ? Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
-        : worldY;
-      let px = gx - w / 2;
-      let py = gy - h / 2;
-      px = Math.max(0, Math.min(effectiveWorld.w - w, px));
-      py = Math.max(0, Math.min(effectiveWorld.h - h, py));
-      // Open naming dialog instead of placing immediately
-      setPendingZone({ x: px, y: py, w, h, defaultName });
-      return;
-    }
-    const shapeMap: Record<string, string> = {
-      "add-rect-table": "rectangle",
-      "add-circle-table": "circle",
-      "add-square-table": "square",
-    };
-    const shape = shapeMap[activeTool];
-    if (!shape || !selectedRestaurantId) return;
-
-    const gx = snapEnabled
-      ? Math.round(worldX / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
-      : worldX;
-    const gy = snapEnabled
-      ? Math.round(worldY / FLOOR_PLAN_GRID_STEP) * FLOOR_PLAN_GRID_STEP
-      : worldY;
-    const px = Math.max(0, Math.min(effectiveWorld.w, gx));
-    const py = Math.max(0, Math.min(effectiveWorld.h, gy));
-
-    const newTable = buildLocalDraftTable(
-      shape,
-      px,
-      py,
-      selectedRestaurantId,
-      sections,
-      tablesDraft,
-      selectedSection || null,
-    );
-    pushHistory([...tablesDraft, newTable], layoutDraft);
-  }
-
-  function handleTableDragEnd(id: string, x: number, y: number) {
-    const isMulti = selectedTableIds.length > 1 && selectedTableIds.includes(id);
-    if (isMulti) {
-      const dragged = tablesDraft.find((t) => t.id === id);
-      if (!dragged) return;
-      const dx = x - (dragged.position_x ?? 0);
-      const dy = y - (dragged.position_y ?? 0);
-      const selectedSet = new Set(selectedTableIds);
-      const updated = tablesDraft.map((t) =>
-        selectedSet.has(t.id)
-          ? { ...t, position_x: (t.position_x ?? 0) + dx, position_y: (t.position_y ?? 0) + dy }
-          : t,
-      );
-      pushHistory(updated, layoutDraft);
-    } else {
-      const updated = tablesDraft.map((t) =>
-        t.id === id ? { ...t, position_x: x, position_y: y } : t,
-      );
-      pushHistory(updated, layoutDraft);
-    }
-  }
-
-  function handleTablePatch(id: string, patch: Partial<TableRow>) {
-    const updated = tablesDraft.map((t) => (t.id === id ? { ...t, ...patch } : t));
-    pushHistory(updated, layoutDraft);
-  }
-
-  const handleDuplicateTable = useCallback(
-    (id: string) => {
-      const row = tablesDraft.find((r) => r.id === id);
-      if (!row || !selectedRestaurantId) return;
-      const newTable = buildLocalDraftTable(
-        row.shape,
-        (row.position_x ?? 0) + FLOOR_PLAN_GRID_STEP * 2,
-        (row.position_y ?? 0) + FLOOR_PLAN_GRID_STEP * 2,
-        selectedRestaurantId,
-        sections,
-        tablesDraft,
-        row.section_id ?? (selectedSection || null),
-      );
-      const merged: TableRow = {
-        ...newTable,
-        table_number: nextSequentialTableNumber([...tablesDraft, newTable]),
-        capacity: row.capacity,
-        min_party: row.min_party,
-        label: row.label,
-        notes: row.notes,
-        shape: row.shape,
-      };
-      pushHistory([...tablesDraft, merged], layoutDraft);
-      setSelectedTableIds([merged.id]);
-      setSelectedPanelTableId(merged.id);
-    },
-    [tablesDraft, selectedRestaurantId, sections, layoutDraft, selectedSection],
-  );
-
-  const handleCombineTable = useCallback(() => {
-    toast.info(t("dashboard.floorPlan.combineComingSoon"));
-  }, [t]);
-
-  // ── Editor keyboard shortcuts (edit-mode only) ─────────────────────────────
-  useEffect(() => {
-    if (mode !== "edit" || !canEdit) return;
-
-    function handleKey(e: KeyboardEvent) {
-      if (e.isComposing) return;
-      const meta = e.metaKey || e.ctrlKey;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
-
-      // Ctrl/Cmd + D — duplicate selected table
-      if (meta && (e.key === "d" || e.key === "D")) {
-        if (!selectedPanelTableId) return;
-        e.preventDefault();
-        handleDuplicateTable(selectedPanelTableId);
-        return;
-      }
-
-      // Non-modifier shortcuts only below
-      if (meta || e.altKey) return;
-
-      switch (e.key) {
-        case "Escape":
-          e.preventDefault();
-          setActiveTool("select");
-          setSelectedTableIds([]);
-          setSelectedPanelTableId(null);
-          setSelectedWallIds([]);
-          setSelectedDecorationId(null);
-          setSelectedZoneId(null);
-          break;
-        case "1":
-          e.preventDefault();
-          setActiveTool("add-rect-table");
-          break;
-        case "2":
-          e.preventDefault();
-          setActiveTool("add-circle-table");
-          break;
-        case "3":
-          e.preventDefault();
-          setActiveTool("add-square-table");
-          break;
-        case "g":
-        case "G":
-          if (e.shiftKey) break;
-          e.preventDefault();
-          setShowGrid((v) => !v);
-          break;
-        case "s":
-        case "S":
-          if (e.shiftKey) break;
-          e.preventDefault();
-          setSnapEnabled((v) => !v);
-          break;
-      }
-    }
-
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [
-    mode, canEdit,
-    selectedPanelTableId, handleDuplicateTable,
-    setActiveTool, setSelectedTableIds, setSelectedPanelTableId,
-    setSelectedWallIds, setSelectedDecorationId, setSelectedZoneId,
-    setShowGrid, setSnapEnabled,
-  ]);
-
-  function handleTableTransformEnd(tableId: string, scaleX: number, scaleY: number) {
-    const prev = layoutDraft.tableTransforms[tableId] ?? {
-      scaleX: 1,
-      scaleY: 1,
-      rotation: 0,
-    };
-    const tableTransforms = {
-      ...layoutDraft.tableTransforms,
-      [tableId]: { ...prev, scaleX, scaleY },
-    };
-    pushHistory(tablesDraft, { ...layoutDraft, tableTransforms });
-  }
-
-  async function handleLiveStatusChange(tableId: string, status: string, seatedCount?: number) {
-    const patch: Partial<TableRow> = { status };
-    if (seatedCount !== undefined) patch.seated_count = seatedCount;
-    await updateTable(tableId, patch);
-    await refetch({ silent: true });
-  }
-
-  function handleControlStatusChange(tableId: string, status: string, seatedCount?: number) {
-    if (mode === "edit") {
-      const patch: Partial<TableRow> = { status };
-      if (seatedCount !== undefined) patch.seated_count = seatedCount;
-      handleTablePatch(tableId, patch);
-      return;
-    }
-    void handleLiveStatusChange(tableId, status, seatedCount);
-  }
-
-  // ── Wall / decoration ──────────────────────────────────────────────────────
-
-  type Wall = { id: string; x1: number; y1: number; x2: number; y2: number };
-
-  function handleWallDrawn(wall: Wall) {
-    const updatedLayout = { ...layoutDraft, walls: [...layoutDraft.walls, wall] };
-    pushHistory(tablesDraft, updatedLayout);
-  }
-
-  function handleWallEndpointUpdate(wallId: string, endpoint: "start" | "end", x: number, y: number) {
-    const updatedWalls = layoutDraft.walls.map((w) => {
-      if (w.id !== wallId) return w;
-      return endpoint === "start"
-        ? { ...w, x1: x, y1: y }
-        : { ...w, x2: x, y2: y };
-    });
-    pushHistory(tablesDraft, { ...layoutDraft, walls: updatedWalls });
-  }
-
-  function handleWallDragEnd(wallId: string, dx: number, dy: number) {
-    const ww = effectiveWorld.w;
-    const wh = effectiveWorld.h;
-    const updatedWalls = layoutDraft.walls.map((w) => {
-      if (w.id !== wallId) return w;
-      // Clamp so neither endpoint goes outside the world boundary
-      const minDx = Math.max(-w.x1, -w.x2);
-      const maxDx = Math.min(ww - w.x1, ww - w.x2);
-      const minDy = Math.max(-w.y1, -w.y2);
-      const maxDy = Math.min(wh - w.y1, wh - w.y2);
-      const cdx = Math.max(minDx, Math.min(maxDx, dx));
-      const cdy = Math.max(minDy, Math.min(maxDy, dy));
-      return { ...w, x1: w.x1 + cdx, y1: w.y1 + cdy, x2: w.x2 + cdx, y2: w.y2 + cdy };
-    });
-    pushHistory(tablesDraft, { ...layoutDraft, walls: updatedWalls });
-  }
-
-  function handleDecorationDragEnd(id: string, x: number, y: number) {
-    const w = effectiveWorld.w;
-    const h = effectiveWorld.h;
-    const updatedDecorations = layoutDraft.decorations.map((d) => {
-      if (d.id !== id) return d;
-      const hw = d.width / 2;
-      const hh = d.height / 2;
-      const nx = Math.max(hw, Math.min(w - hw, x));
-      const ny = Math.max(hh, Math.min(h - hh, y));
-      return { ...d, x: nx, y: ny };
-    });
-    pushHistory(tablesDraft, { ...layoutDraft, decorations: updatedDecorations });
-  }
-
-  // ── Zoom helpers ───────────────────────────────────────────────────────────
-  /** Toolbar +/- steps match the zoom label: 10% per click vs last full-view fit (see ZoomControls). */
-  const ZOOM_DISPLAY_STEP_PCT = 10;
-  const ZOOM_STEP_MULT = 1 + ZOOM_DISPLAY_STEP_PCT / 100;
-
-  function readZoomViewportSize(): { cw: number; ch: number } {
+  if (side === "left")
     return {
-      cw: Math.max(
-        1,
-        Math.round((containerSize.w || canvasSlotRef.current?.clientWidth) ?? 0),
-      ),
-      ch: Math.max(
-        1,
-        Math.round((containerSize.h || canvasSlotRef.current?.clientHeight) ?? 0),
-      ),
+      x1: 30,
+      y1: pos - half,
+      x2: 30,
+      y2: pos + half,
+      labelX: 14,
+      labelY: pos,
+      labelAnchor: "middle",
+      rotate: -90,
     };
-  }
+  return {
+    x1: room.w - 30,
+    y1: pos - half,
+    x2: room.w - 30,
+    y2: pos + half,
+    labelX: room.w - 14,
+    labelY: pos,
+    labelAnchor: "middle",
+    rotate: 90,
+  };
+}
 
-  function zoomIn() {
-    const { cw, ch } = readZoomViewportSize();
-    const w = effectiveWorld.w;
-    const h = effectiveWorld.h;
-    const base = fullViewBaselineScale;
-    if (base < 1e-9) return;
-    const curPct = (stageScale / base) * 100;
-    const maxPct = (floorPlanScaleBounds.max / base) * 100;
-    const nextPct = Math.min(
-      maxPct,
-      Math.floor(curPct / ZOOM_DISPLAY_STEP_PCT) * ZOOM_DISPLAY_STEP_PCT + ZOOM_DISPLAY_STEP_PCT,
-    );
-    let newScale = Math.min(
-      floorPlanScaleBounds.max,
-      Math.max(floorPlanScaleBounds.min, base * (nextPct / 100)),
-    );
-    const zoomEps = Math.max(1e-9, stageScale * 1e-9);
-    if (newScale <= stageScale + zoomEps) {
-      newScale = Math.min(floorPlanScaleBounds.max, stageScale * ZOOM_STEP_MULT);
-    }
-    newScale = Math.min(
-      floorPlanScaleBounds.max,
-      Math.max(floorPlanScaleBounds.min, newScale),
-    );
-    const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
-    setStageScale(newScale);
-    setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
-  }
+function EntranceNode({
+  entrance,
+  room,
+  selected,
+  editing,
+  onClick,
+  onDragStart,
+}: {
+  entrance: Entrance;
+  room: Room;
+  selected: boolean;
+  editing: boolean;
+  onClick: () => void;
+  onDragStart: (e: ReactPointerEvent<SVGElement>) => void;
+}) {
+  const g = entranceLine(entrance, room);
+  return (
+    <g
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{ cursor: editing ? "move" : "pointer" }}
+    >
+      <line
+        x1={g.x1}
+        y1={g.y1}
+        x2={g.x2}
+        y2={g.y2}
+        stroke="transparent"
+        strokeWidth="20"
+        onPointerDown={editing ? (e) => onDragStart(e) : undefined}
+      />
+      {selected && (
+        <line
+          x1={g.x1}
+          y1={g.y1}
+          x2={g.x2}
+          y2={g.y2}
+          stroke="rgba(201,168,76,0.20)"
+          strokeWidth="14"
+          strokeLinecap="round"
+        />
+      )}
+      <line
+        x1={g.x1}
+        y1={g.y1}
+        x2={g.x2}
+        y2={g.y2}
+        stroke={selected ? "var(--gold-light)" : "rgba(201,168,76,0.6)"}
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+      <text
+        x={g.labelX}
+        y={g.labelY}
+        textAnchor={g.labelAnchor}
+        fontSize="9"
+        fill={selected ? "rgba(229,203,124,0.9)" : "rgba(255,255,255,0.30)"}
+        letterSpacing="2.5"
+        fontFamily="Geist, system-ui"
+        transform={g.rotate ? `rotate(${g.rotate} ${g.labelX} ${g.labelY})` : undefined}
+      >
+        ENTRANCE
+      </text>
+    </g>
+  );
+}
 
-  function zoomOut() {
-    const { cw, ch } = readZoomViewportSize();
-    const w = effectiveWorld.w;
-    const h = effectiveWorld.h;
-    const base = fullViewBaselineScale;
-    if (base < 1e-9) return;
-    const curPct = (stageScale / base) * 100;
-    const minPct = (floorPlanScaleBounds.min / base) * 100;
-    const nextPct = Math.max(
-      minPct,
-      Math.ceil(curPct / ZOOM_DISPLAY_STEP_PCT) * ZOOM_DISPLAY_STEP_PCT - ZOOM_DISPLAY_STEP_PCT,
-    );
-    let newScale = Math.min(
-      floorPlanScaleBounds.max,
-      Math.max(floorPlanScaleBounds.min, base * (nextPct / 100)),
-    );
-    const zoomEps = Math.max(1e-9, stageScale * 1e-9);
-    if (newScale >= stageScale - zoomEps) {
-      newScale = Math.max(floorPlanScaleBounds.min, stageScale / ZOOM_STEP_MULT);
-    }
-    newScale = Math.min(
-      floorPlanScaleBounds.max,
-      Math.max(floorPlanScaleBounds.min, newScale),
-    );
-    const raw = stagePositionAfterZoomAtScreenPoint(cw / 2, ch / 2, stagePos, stageScale, newScale);
-    setStageScale(newScale);
-    setStagePos(clampFloorPlanStagePosition(raw, newScale, w, h, cw, ch));
-  }
-
-  function resetZoom() {
-    fitWorldToViewport();
-  }
-
-  // ── Loading / error ────────────────────────────────────────────────────────
-
-  if (loading) {
-    return (
-      <div className="flex h-full min-h-0 flex-1 flex-col gap-4 bg-bg-surface p-6">
-        <div className="flex items-center justify-between">
-          <div className="h-7 w-44 animate-pulse rounded-lg bg-bg-elevated" />
-          <div className="h-9 w-28 animate-pulse rounded-lg bg-bg-elevated" />
-        </div>
-        <div className="flex-1 animate-pulse rounded-xl bg-bg-elevated" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-bg-surface p-8 text-center">
-        <p className="text-sm text-danger">{error.message}</p>
-        <Button variant="outline" onClick={() => void refetch()}>
-          {t("common.actions.retry")}
-        </Button>
-      </div>
-    );
-  }
-
-  const hasActiveSections = sections.filter((s) => s.is_active).length > 0;
-  const isEmpty = hasActiveSections && dbTables.length === 0;
-
-  const showRightColumn = !needsFloorFirst && !(isEmpty && mode === "live");
-  const rightPanelKey = selectedPanelTableId ? `table-${selectedPanelTableId}` : "overview";
-
+function MiniMap({
+  tables,
+  walls,
+  room,
+  viewport,
+}: {
+  tables: FloorTable[];
+  walls: Wall[];
+  room: Room;
+  viewport: { x: number; y: number; w: number; h: number } | null;
+}) {
+  const W = 140;
+  const H = Math.round((W * room.h) / room.w);
+  const sx = W / room.w;
+  const sy = H / room.h;
   return (
     <div
-      className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
-      style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
+      className="absolute bottom-3 right-3 overflow-hidden rounded-md"
+      style={{
+        padding: 4,
+        background: "rgba(14,14,15,0.85)",
+        backdropFilter: "blur(8px)",
+        border: `1px solid ${BORDER_SOFT}`,
+      }}
     >
-      <FloorPlanCommandBar
-        mode={mode}
-        canEdit={canEdit}
-        needsFloorFirst={needsFloorFirst}
-        sectionTabsSlot={
-          <SectionTabs
-            sections={sections.filter((s) => s.is_active)}
-            selected={selectedSection}
-            onChange={setSelectedSection}
-            disabled={mode === "edit"}
+      <svg width={W} height={H} style={{ display: "block" }}>
+        <rect width={W} height={H} fill="rgba(255,255,255,0.02)" />
+        {walls.map((w) => (
+          <line
+            key={w.id}
+            x1={w.x1 * sx}
+            y1={w.y1 * sy}
+            x2={w.x2 * sx}
+            y2={w.y2 * sy}
+            stroke="rgba(255,255,255,0.25)"
+            strokeWidth="0.8"
           />
-        }
-        addFloorSlot={
-          canEdit &&
-          isSupabaseConfigured() &&
-          selectedRestaurantId != null &&
-          !needsFloorFirst ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1"
-              onClick={() => setAddFloorOpen(true)}
-              aria-label={t("dashboard.floorPlan.addFloorAriaLabel")}
-            >
-              <Plus className="size-4 shrink-0" />
-              <span className="hidden sm:inline">{t("dashboard.floorPlan.addFloor")}</span>
-            </Button>
-          ) : undefined
-        }
-        undoDisabled={historyState.past.length === 0}
-        redoDisabled={historyState.future.length === 0}
-        onUndo={() => {
-          dispatch({ type: "UNDO" });
-          setEditSeq((n) => n + 1);
-        }}
-        onRedo={() => {
-          dispatch({ type: "REDO" });
-          setEditSeq((n) => n + 1);
-        }}
-        saveIndicatorSlot={
-          <AutosaveIndicator statusRef={saveStatusRef} listenersRef={saveStatusListenersRef} />
-        }
-        onEnterEdit={enterEditMode}
-        onExitEdit={() => void exitEditMode()}
-      />
+        ))}
+        {tables.map((t) => {
+          const tw = t.size * sx;
+          const th = (t.shape === "round" ? t.size : t.long ? 70 : 80) * sy;
+          return (
+            <rect
+              key={t.id}
+              x={t.x * sx}
+              y={t.y * sy}
+              width={tw}
+              height={th}
+              rx="1.5"
+              fill={TBL_STATUS[t.status].color}
+              fillOpacity="0.55"
+            />
+          );
+        })}
+        {viewport && (
+          <rect
+            x={viewport.x * sx}
+            y={viewport.y * sy}
+            width={viewport.w * sx}
+            height={viewport.h * sy}
+            fill="none"
+            stroke="rgba(201,168,76,0.85)"
+            strokeWidth="1.2"
+          />
+        )}
+      </svg>
+    </div>
+  );
+}
 
-      {/* Canvas + side rails — floor editor uses one continuous floor colour (matches Konva world). */}
-      <div
-        className="relative z-0 flex min-h-0 min-w-0 flex-1 overflow-hidden"
-        style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
-      >
-        {mode === "edit" && (
-          <div className="flex shrink-0 flex-col overflow-y-auto border-r border-border/80 bg-bg-surface/95 px-3 py-3">
-            <FloorPlanToolbar activeTool={activeTool} onToolChange={setActiveTool} />
+// ─── Side-rail cards ───────────────────────────────────────────────────────
+const cardStyle: React.CSSProperties = {
+  background: SURFACE_BG,
+  border: `1px solid ${BORDER_SOFT}`,
+  backdropFilter: "blur(8px)",
+};
+const eyebrowCls = "text-[10px] uppercase tracking-[0.16em] text-text-muted";
+const softBtnCls =
+  "rounded-md text-[13px] text-text-secondary hover:text-white hover:bg-white/5 transition-colors";
+const goldBtnCls = "rounded-md font-medium text-[13.5px] hover:opacity-90 transition-opacity";
+
+type ActionKind =
+  | "walkin"
+  | "reserve"
+  | "seat"
+  | "text"
+  | "cancel"
+  | "paid"
+  | "check"
+  | "move"
+  | "ready";
+
+function TableCard({
+  t,
+  editing,
+  onAction,
+  onClose,
+  onSeatChange,
+  onDelete,
+}: {
+  t: FloorTable;
+  editing: boolean;
+  onAction: (a: ActionKind, t: FloorTable) => void;
+  onClose: () => void;
+  onSeatChange: (t: FloorTable, n: number) => void;
+  onDelete: (t: FloorTable) => void;
+}) {
+  const s = TBL_STATUS[t.status];
+  return (
+    <div className="overflow-hidden rounded-xl" style={cardStyle}>
+      <div style={{ height: 2, background: s.color, opacity: 0.7 }} />
+      <div className="p-6">
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <div className={cn(eyebrowCls, "mb-1.5")}>Table</div>
+            <div className="font-serif text-[42px] leading-none" style={{ letterSpacing: "-0.04em" }}>
+              {t.id}
+            </div>
+            <div className="mt-2 flex items-center gap-2 text-[12px]">
+              <span className="size-1.5 rounded-full" style={{ background: s.color }} />
+              <span style={{ color: s.color }}>{s.label}</span>
+              <span className="text-text-muted">·</span>
+              <span className="text-text-secondary">Seats {t.cap}</span>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="-mr-1 -mt-1 size-7 rounded text-[20px] leading-none text-text-muted hover:bg-white/5 hover:text-text-secondary"
+          >
+            ×
+          </button>
+        </div>
+
+        {editing && (
+          <div className="mb-5 border-y py-4" style={{ borderColor: BORDER_SOFT }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className={cn(eyebrowCls, "mb-1")}>Seats</div>
+                <div
+                  className="font-serif text-[24px] leading-none tabular-nums"
+                  style={{ letterSpacing: "-0.02em" }}
+                >
+                  {t.cap}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => onSeatChange(t, t.cap - 1)}
+                  className="size-9 rounded-md text-[16px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                  style={{ border: `1px solid ${BORDER_SOFT}` }}
+                >
+                  −
+                </button>
+                <button
+                  onClick={() => onSeatChange(t, t.cap + 1)}
+                  className="size-9 rounded-md text-[16px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                  style={{ border: `1px solid ${BORDER_SOFT}` }}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <button
+              onClick={() => onDelete(t)}
+              className="mt-3 text-[12px] text-text-muted transition-colors hover:text-[#C97A6F]"
+            >
+              Remove this table
+            </button>
           </div>
         )}
 
-        {/* Main canvas — ref on flex slot (not absolute child) so width tracks the row. */}
-        <div
-          ref={canvasSlotRef}
-          className="relative min-h-0 min-w-0 flex-1 overflow-hidden"
-          style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
-        >
-          <div
-            className="absolute inset-0 flex min-h-0 min-w-0 flex-col overflow-hidden"
-            style={{ backgroundColor: CANVAS_COLORS.zoneBodyFill }}
-          >
-          {needsFloorFirst ? (
-            <FloorPlanNoSectionState
-              canEdit={
-                canEdit && isSupabaseConfigured() && selectedRestaurantId != null
-              }
-              onAddFloor={() => setAddFloorOpen(true)}
-            />
-          ) : isEmpty && mode === "live" ? (
-            <FloorPlanEmptyState canEdit={canEdit} onEnterEdit={enterEditMode} />
-          ) : (
-            <FloorPlanCanvas
-              tables={tablesForCanvas}
-              walls={layoutDraft.walls}
-              decorations={layoutDraft.decorations}
-              sections={sections}
-              selectedSection={selectedSection}
-              mode={mode}
-              selectedTableIds={selectedTableIds}
-              selectedDecorationId={selectedDecorationId}
-              activeTool={activeTool}
-              stageScale={stageScale}
-              stagePos={stagePos}
-              scaleMin={floorPlanScaleBounds.min}
-              scaleMax={floorPlanScaleBounds.max}
-              worldWidth={effectiveWorld.w}
-              worldHeight={effectiveWorld.h}
-              containerWidth={Math.max(1, containerSize.w)}
-              containerHeight={Math.max(1, containerSize.h)}
-              onViewportPixelSize={onCanvasViewportSize}
-              onTableClick={handleTableClick}
-              onTableHover={queueTableHover}
-              onCanvasClick={(x, y) => void handleCanvasClick(x, y)}
-              onTableDragEnd={handleTableDragEnd}
-              onWallDrawn={handleWallDrawn}
-              onWallEndpointUpdate={handleWallEndpointUpdate}
-              onWallDragEnd={handleWallDragEnd}
-              onDecorationClick={mode === "edit" && canEdit ? handleDecorationClick : undefined}
-              onDecorationDragEnd={handleDecorationDragEnd}
-              onStageScaleChange={clampedSetStageScale}
-              onStagePosChange={setStagePos}
-              tableTransforms={layoutDraft.tableTransforms}
-              resizeEnabled={canResizeTables}
-              onTableTransformEnd={handleTableTransformEnd}
-              marqueeSelectEnabled={canEdit}
-              onMarqueeSelect={({ tableIds, wallIds }) => {
-                setSelectedTableIds(tableIds);
-                setSelectedPanelTableId(tableIds.length === 1 ? tableIds[0]! : null);
-                setSelectedWallIds(wallIds);
-                setSelectedDecorationId(null);
-              }}
-              selectedWallIds={selectedWallIds}
-              onWallClick={mode === "edit" && canEdit ? handleWallClick : undefined}
-              showGrid={showGrid}
-              snapEnabled={snapEnabled}
-              zones={layoutDraft.zones ?? []}
-              selectedZoneId={selectedZoneId}
-              onZoneSelect={handleZoneSelect}
-              onZoneDragEnd={handleZoneDragEnd}
-              onZoneTransformEnd={handleZoneTransformEnd}
-              zoneTransformEnabled={canEdit}
-            />
-          )}
-
-          {/* Mobile: legend when the right rail is hidden */}
-          {!needsFloorFirst && !(isEmpty && mode === "live") && (
-            <div className="pointer-events-none absolute bottom-4 left-4 lg:hidden">
-              <div className="pointer-events-auto">
-                <StatusLegend />
-              </div>
+        {!editing && t.guest ? (
+          <div className="mb-5 border-y py-4" style={{ borderColor: BORDER_SOFT }}>
+            <div className={cn(eyebrowCls, "mb-1.5")}>Guest</div>
+            <div className="font-serif text-[20px] leading-tight" style={{ letterSpacing: "-0.02em" }}>
+              {t.guest}
             </div>
-          )}
+            <div className="mt-1 text-[12px] tabular-nums text-text-secondary">
+              Party of {t.party} · {t.time}
+            </div>
           </div>
+        ) : !editing ? (
+          <div className="mb-5 border-y py-4" style={{ borderColor: BORDER_SOFT }}>
+            <div className="text-[13px] leading-relaxed text-text-secondary">{s.hint}.</div>
+          </div>
+        ) : null}
 
-          {/* ── Floating canvas controls: zoom · grid · snap ────────────────── */}
-          {!needsFloorFirst && !(isEmpty && mode === "live") && (
-            <div className="pointer-events-none absolute bottom-4 right-4 z-50 flex items-center gap-2">
-              {/* Grid + Snap icon toggles */}
-              <div className="pointer-events-auto flex items-center gap-0.5 rounded-lg border border-border/70 bg-bg-surface/90 px-1 py-1 shadow-md shadow-black/30 backdrop-blur-sm">
-                <button
-                  type="button"
-                  title={`Grid (G) — ${showGrid ? "on" : "off"}`}
-                  aria-label={t("dashboard.floorPlan.toggleGrid")}
-                  aria-pressed={showGrid}
-                  onClick={() => setShowGrid((v) => !v)}
-                  className={`flex size-7 items-center justify-center rounded-md transition-colors ${
-                    showGrid
-                      ? "bg-gold/15 text-gold"
-                      : "text-text-muted hover:bg-bg-elevated hover:text-text-secondary"
-                  }`}
-                >
-                  <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-                    <path d="M1 5.5h14M1 10.5h14M5.5 1v14M10.5 1v14" />
-                  </svg>
+        <div className="space-y-2">
+          {!editing && t.status === "free" && (
+            <>
+              <button
+                onClick={() => onAction("walkin", t)}
+                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
+              >
+                Seat a walk-in
+              </button>
+              <button onClick={() => onAction("reserve", t)} className={cn(softBtnCls, "w-full py-2.5")}>
+                Add a reservation
+              </button>
+            </>
+          )}
+          {!editing && t.status === "reserved" && (
+            <>
+              <button
+                onClick={() => onAction("seat", t)}
+                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
+              >
+                Seat them now
+              </button>
+              <div className="grid grid-cols-2 gap-1">
+                <button onClick={() => onAction("text", t)} className={cn(softBtnCls, "py-2.5")}>
+                  Text guest
                 </button>
-                <button
-                  type="button"
-                  title={`Snap (S) — ${snapEnabled ? "on" : "off"}`}
-                  aria-label={t("dashboard.floorPlan.toggleSnap")}
-                  aria-pressed={snapEnabled}
-                  onClick={() => setSnapEnabled((v) => !v)}
-                  className={`flex size-7 items-center justify-center rounded-md transition-colors ${
-                    snapEnabled
-                      ? "bg-gold/15 text-gold"
-                      : "text-text-muted hover:bg-bg-elevated hover:text-text-secondary"
-                  }`}
-                >
-                  <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="8" cy="8" r="2.5" />
-                    <path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
-                    <path d="M3.5 3.5l1.2 1.2M11.3 11.3l1.2 1.2M11.3 4.7l-1.2 1.2M4.7 11.3l-1.2 1.2" />
-                  </svg>
+                <button onClick={() => onAction("cancel", t)} className={cn(softBtnCls, "py-2.5")}>
+                  No-show
                 </button>
               </div>
-              {/* Zoom controls */}
-              <div className="pointer-events-auto">
-                <ZoomControls
-                  scale={stageScale}
-                  baselineScale={fullViewBaselineScale}
-                  onZoomIn={zoomIn}
-                  onZoomOut={zoomOut}
-                  onReset={resetZoom}
-                />
+            </>
+          )}
+          {!editing && t.status === "occupied" && (
+            <>
+              <button
+                onClick={() => onAction("paid", t)}
+                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
+              >
+                Mark paid &amp; close
+              </button>
+              <div className="grid grid-cols-2 gap-1">
+                <button onClick={() => onAction("check", t)} className={cn(softBtnCls, "py-2.5")}>
+                  Drop check
+                </button>
+                <button onClick={() => onAction("move", t)} className={cn(softBtnCls, "py-2.5")}>
+                  Move table
+                </button>
               </div>
-            </div>
+            </>
+          )}
+          {!editing && t.status === "cleaning" && (
+            <button
+              onClick={() => onAction("ready", t)}
+              className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
+            >
+              Mark ready
+            </button>
           )}
         </div>
 
-        {showRightColumn && (
-          <div className="relative hidden min-h-0 w-[min(26rem,40vw)] max-w-md shrink-0 lg:flex lg:flex-col">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={rightPanelKey}
-                role="region"
-                aria-label={
-                  selectedTable
-                    ? t("dashboard.floorPlan.ariaTableControl")
-                    : t("dashboard.floorPlan.ariaFloorOverview")
-                }
-                initial={{ opacity: 0, x: 18 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -14 }}
-                transition={{ duration: 0.24, ease: [0.33, 1, 0.68, 1] }}
-                className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-border/80 bg-bg-surface"
+        {!editing && (
+          <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${BORDER_SOFT}` }}>
+            <div className={cn(eyebrowCls, "mb-2")}>Adjust seats</div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => onSeatChange(t, t.cap - 1)}
+                className="size-8 rounded-md text-[14px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                style={{ border: `1px solid ${BORDER_SOFT}` }}
               >
-                {selectedTable ? (
-                  mode === "edit" ? (
-                    <Tabs
-                      value={editRightTab}
-                      onValueChange={(v) => setEditRightTab(v as "control" | "layout")}
-                      className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden"
-                    >
-                      <div className="shrink-0 border-b border-gold/15 bg-bg-elevated/50 px-3 pt-3">
-                        <TabsList className="h-10 w-full gap-1 border border-border/60 bg-bg-base/90 p-1">
-                          <TabsTrigger
-                            value="control"
-                            className="flex-1 text-xs font-semibold data-[state=active]:border data-[state=active]:border-gold/35 data-[state=active]:bg-gold/12 data-[state=active]:text-gold data-[state=active]:shadow-none"
-                          >
-                            {t("dashboard.floorPlan.floorPlanRightTabControl")}
-                          </TabsTrigger>
-                          <TabsTrigger
-                            value="layout"
-                            className="flex-1 text-xs font-semibold data-[state=active]:border data-[state=active]:border-gold/35 data-[state=active]:bg-gold/12 data-[state=active]:text-gold data-[state=active]:shadow-none"
-                          >
-                            {t("dashboard.floorPlan.floorPlanRightTabLayout")}
-                          </TabsTrigger>
-                        </TabsList>
-                      </div>
-                      <TabsContent
-                        value="control"
-                        className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden p-0 outline-none"
-                      >
-                        <LiveServiceTablePanel
-                          variant="edit"
-                          table={selectedTable}
-                          sections={sections}
-                          zoneLabel={selectedZoneLabel}
-                          onUpdateStatus={handleControlStatusChange}
-                          onCombine={handleCombineTable}
-                          onEditTable={canEdit ? () => setEditRightTab("layout") : undefined}
-                          canEdit={canEdit}
-                        />
-                      </TabsContent>
-                      <TabsContent
-                        value="layout"
-                        className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden p-0 outline-none"
-                      >
-                        <TablePropertiesPanel
-                          embedded
-                          table={selectedTable}
-                          sections={sections}
-                          onPatch={handleTablePatch}
-                          onDelete={handleDeleteTable}
-                          onDuplicate={handleDuplicateTable}
-                          onCombine={handleCombineTable}
-                        />
-                      </TabsContent>
-                    </Tabs>
-                  ) : (
-                    <LiveServiceTablePanel
-                      variant="live"
-                      table={selectedTable}
-                      sections={sections}
-                      zoneLabel={selectedZoneLabel}
-                      onUpdateStatus={handleControlStatusChange}
-                      onCombine={handleCombineTable}
-                      onEditTable={canEdit ? () => enterEditMode() : undefined}
-                      canEdit={canEdit}
-                    />
-                  )
-                ) : (
-                  <FloorInspectorEmpty
-                    mode={mode}
-                    sections={sections}
-                    selectedSectionId={selectedSection}
-                    showGrid={showGrid}
-                    snapEnabled={snapEnabled}
-                    tableCount={tablesForCanvas.length}
-                    totalSeats={totalSeatsForInspector}
-                    zoneCount={zoneCountForInspector}
-                    statusCounts={floorStatusCounts}
-                  />
-                )}
-              </motion.div>
-            </AnimatePresence>
+                −
+              </button>
+              <span
+                className="mx-3 font-serif text-[18px] tabular-nums"
+                style={{ letterSpacing: "-0.02em" }}
+              >
+                {t.cap}
+              </span>
+              <button
+                onClick={() => onSeatChange(t, t.cap + 1)}
+                className="size-8 rounded-md text-[14px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                style={{ border: `1px solid ${BORDER_SOFT}` }}
+              >
+                +
+              </button>
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      {mode === "live" && (
-        <div className="lg:hidden">
-          <TableDetailDrawer
-            table={selectedTable}
-            sections={sections}
-            zoneLabel={selectedZoneLabel}
-            onClose={() => {
-              setSelectedTableIds([]);
-              setSelectedPanelTableId(null);
-            }}
-            onUpdateStatus={handleControlStatusChange}
-            onCombine={handleCombineTable}
-            onEditTable={canEdit ? () => enterEditMode() : undefined}
-            canEdit={canEdit}
-          />
+function WallCard({ w, onDelete, onClose }: { w: Wall; onDelete: (w: Wall) => void; onClose: () => void }) {
+  const length = Math.round(Math.hypot(w.x2 - w.x1, w.y2 - w.y1));
+  return (
+    <div className="overflow-hidden rounded-xl" style={cardStyle}>
+      <div style={{ height: 2, background: "rgba(255,255,255,0.3)" }} />
+      <div className="p-6">
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <div className={cn(eyebrowCls, "mb-1.5")}>Divider</div>
+            <div className="font-serif text-[26px] leading-none" style={{ letterSpacing: "-0.025em" }}>
+              Wall
+            </div>
+            <div className="mt-2 text-[12px] tabular-nums text-text-secondary">{length} units long</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="-mr-1 -mt-1 size-7 rounded text-[20px] leading-none text-text-muted hover:bg-white/5 hover:text-text-secondary"
+          >
+            ×
+          </button>
         </div>
-      )}
+        <p
+          className="mb-3 border-t py-3 text-[12.5px] leading-relaxed text-text-secondary"
+          style={{ borderColor: BORDER_SOFT }}
+        >
+          Drag the wall to move it, or pull either endpoint to reshape.
+        </p>
+        <button
+          onClick={() => onDelete(w)}
+          className="w-full rounded-md py-2.5 text-[13px] text-text-secondary transition-colors hover:bg-[rgba(201,122,111,0.05)] hover:text-[#C97A6F]"
+          style={{ border: `1px solid ${BORDER_SOFT}` }}
+        >
+          Remove wall
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      {/* Tooltip */}
-      <TableTooltip info={hoveredTable} />
+function EntranceCard({
+  entrance,
+  onChangeSide,
+  onChangeWidth,
+  onClose,
+}: {
+  entrance: Entrance;
+  onChangeSide: (s: EntranceSide) => void;
+  onChangeWidth: (w: number) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl" style={cardStyle}>
+      <div style={{ height: 2, background: "var(--gold)", opacity: 0.7 }} />
+      <div className="p-6">
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <div className={cn(eyebrowCls, "mb-1.5")}>Floor entry</div>
+            <div className="font-serif text-[26px] leading-none" style={{ letterSpacing: "-0.025em" }}>
+              Entrance
+            </div>
+            <div className="mt-2 text-[12px] capitalize text-text-secondary">On the {entrance.side}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="-mr-1 -mt-1 size-7 rounded text-[20px] leading-none text-text-muted hover:bg-white/5 hover:text-text-secondary"
+          >
+            ×
+          </button>
+        </div>
+        <div className={cn(eyebrowCls, "mb-2")}>Side</div>
+        <div className="mb-5 grid grid-cols-4 gap-1">
+          {(["top", "right", "bottom", "left"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => onChangeSide(s)}
+              className="rounded-md py-2 text-[11.5px] capitalize transition-colors"
+              style={{
+                border: `1px solid ${BORDER_SOFT}`,
+                background: entrance.side === s ? "rgba(201,168,76,0.1)" : "transparent",
+                color: entrance.side === s ? "var(--gold-light)" : "var(--text-secondary)",
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+        <div className={cn(eyebrowCls, "mb-2")}>
+          Width <span className="ml-2 normal-case tabular-nums text-text-secondary">{entrance.width}</span>
+        </div>
+        <div className="mb-3 flex items-center gap-1">
+          <button
+            onClick={() => onChangeWidth(entrance.width - 10)}
+            className="size-9 rounded-md text-[16px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+            style={{ border: `1px solid ${BORDER_SOFT}` }}
+          >
+            −
+          </button>
+          <button
+            onClick={() => onChangeWidth(entrance.width + 10)}
+            className="size-9 rounded-md text-[16px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+            style={{ border: `1px solid ${BORDER_SOFT}` }}
+          >
+            +
+          </button>
+        </div>
+        <p className="text-[12px] leading-relaxed text-text-muted">
+          Drag the entrance along its side to reposition.
+        </p>
+      </div>
+    </div>
+  );
+}
 
-      <AddFloorDialog
-        open={addFloorOpen}
-        onOpenChange={setAddFloorOpen}
-        onConfirm={handleAddFloor}
-        isPending={addFloorPending}
-      />
+function IdleCard({
+  summary,
+  onSearch,
+  query,
+  onJump,
+  results,
+}: {
+  summary: string;
+  onSearch: (q: string) => void;
+  query: string;
+  onJump: (t: FloorTable) => void;
+  results: FloorTable[];
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-xl p-6" style={cardStyle}>
+        <div className={cn(eyebrowCls, "mb-3")}>This evening</div>
+        <p className="font-serif text-[19px] leading-snug text-white" style={{ letterSpacing: "-0.015em" }}>
+          {summary}
+        </p>
+        <p className="mt-3 text-[12.5px] leading-relaxed text-text-muted">
+          Select any table to see who's there or take an action.
+        </p>
+      </div>
+      <div className="overflow-hidden rounded-xl p-5" style={cardStyle}>
+        <div className={cn(eyebrowCls, "mb-2")}>Find a table</div>
+        <input
+          value={query}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Table number or guest name"
+          className="w-full rounded-md bg-transparent px-3 py-2.5 text-[13px] outline-none transition-colors focus:bg-white/[0.03]"
+          style={{ border: `1px solid ${BORDER_SOFT}`, color: "var(--text-primary)" }}
+        />
+        {query && results.length > 0 && (
+          <div className="mt-3 max-h-48 space-y-1 overflow-y-auto">
+            {results.slice(0, 8).map((t) => {
+              const s = TBL_STATUS[t.status];
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => onJump(t)}
+                  className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-white/5"
+                >
+                  <span className="size-1.5 shrink-0 rounded-full" style={{ background: s.color }} />
+                  <span
+                    className="w-8 font-serif text-[15px] tabular-nums"
+                    style={{ letterSpacing: "-0.02em" }}
+                  >
+                    {t.id}
+                  </span>
+                  <span className="flex-1 truncate text-[12px] text-text-secondary">
+                    {t.guest || s.label} {t.time ? `· ${t.time}` : ""}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {query && results.length === 0 && <p className="mt-3 text-[12px] text-text-muted">No matches.</p>}
+      </div>
+    </div>
+  );
+}
 
-      <AddZoneDialog
-        open={pendingZone !== null}
-        defaultName={pendingZone?.defaultName ?? ""}
-        onOpenChange={(open) => { if (!open) setPendingZone(null); }}
-        onConfirm={(name) => {
-          if (!pendingZone) return;
-          const newZone: FloorPlanZone = {
-            id: `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            x: pendingZone.x,
-            y: pendingZone.y,
-            width: pendingZone.w,
-            height: pendingZone.h,
-            label: name,
-          };
-          pushHistory(tablesDraft, { ...layoutDraft, zones: [...(layoutDraft.zones ?? []), newZone] });
-          setSelectedZoneId(newZone.id);
-          setSelectedTableIds([]);
-          setSelectedPanelTableId(null);
-          setSelectedDecorationId(null);
-          setSelectedWallIds([]);
-          setPendingZone(null);
-        }}
-      />
+function EditCard({
+  onAddTable,
+  onAddWall,
+  onAddFloor,
+  onSave,
+  onCancel,
+}: {
+  onAddTable: (shape: TableShape, cap: number) => void;
+  onAddWall: () => void;
+  onAddFloor: () => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl" style={cardStyle}>
+      <div style={{ height: 2, background: "var(--gold)", opacity: 0.7 }} />
+      <div className="p-6">
+        <div className={cn(eyebrowCls, "mb-1.5")}>Editing layout</div>
+        <p className="mb-4 font-serif text-[18px] leading-snug" style={{ letterSpacing: "-0.02em" }}>
+          Add and arrange your tables.
+        </p>
+
+        <div className={cn(eyebrowCls, "mb-2")}>Add a table</div>
+        <div className="mb-5 grid grid-cols-2 gap-1.5">
+          {[
+            { k: "r2", shape: "round" as const, cap: 2, label: "Round · 2" },
+            { k: "r4", shape: "round" as const, cap: 4, label: "Round · 4" },
+            { k: "s4", shape: "rect" as const, cap: 4, label: "Square · 4" },
+            { k: "l6", shape: "rect" as const, cap: 6, label: "Long · 6" },
+          ].map((p) => (
+            <button
+              key={p.k}
+              onClick={() => onAddTable(p.shape, p.cap)}
+              className="flex items-center justify-center gap-2 rounded-md py-3 text-[12px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+              style={{ border: `1px solid ${BORDER_SOFT}` }}
+            >
+              <span
+                className={cn("block", p.shape === "round" ? "rounded-full" : "rounded-sm")}
+                style={{
+                  width: p.cap > 4 ? 16 : 12,
+                  height: p.shape === "round" ? (p.cap > 4 ? 16 : 12) : 8,
+                  border: "1px solid rgba(201,168,76,0.45)",
+                  background: "rgba(201,168,76,0.08)",
+                }}
+              />
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        <div className={cn(eyebrowCls, "mb-2")}>Walls &amp; dividers</div>
+        <button
+          onClick={onAddWall}
+          className="mb-3 flex w-full items-center justify-center gap-2 rounded-md py-2.5 text-[12.5px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+          style={{ border: `1px solid ${BORDER_SOFT}` }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 18,
+              height: 2,
+              background: "rgba(255,255,255,0.4)",
+              borderRadius: 1,
+            }}
+          />
+          Add a wall
+        </button>
+
+        <button
+          onClick={onAddFloor}
+          className="mb-5 w-full rounded-md py-2.5 text-[13px] text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+          style={{ border: `1px solid ${BORDER_SOFT}` }}
+        >
+          + Add another floor
+        </button>
+
+        <p className="mb-5 text-[11.5px] leading-relaxed text-text-muted">
+          Tip: click the entrance to move it.
+        </p>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={onCancel} className={cn(softBtnCls, "py-2.5")}>
+            Cancel
+          </button>
+          <button onClick={onSave} className={cn(goldBtnCls, "bg-gold py-2.5 text-black")}>
+            Save layout
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main page ─────────────────────────────────────────────────────────────
+export default function FloorPlanPage() {
+  const [floors, setFloors] = useState<Floor[]>(FLOORS);
+  const [activeFloor, setActiveFloor] = useState("main");
+  const [rooms, setRooms] = useState<Record<string, Room>>(ROOMS);
+  const [tablesByFloor, setTables] = useState<Record<string, FloorTable[]>>(TABLES);
+  const [wallsByFloor, setWalls] = useState<Record<string, Wall[]>>(WALLS);
+  const [entranceByFloor, setEntrance] = useState<Record<string, Entrance>>(ENTRANCES);
+  const [sel, setSel] = useState<Selection>(null);
+  const [editing, setEditing] = useState(false);
+  const [query, setQuery] = useState("");
+  const [focusId, setFocusId] = useState<string | null>(null);
+
+  // Visual scale for "100%". Lower = smaller default rendering of the
+  // tables. The percent indicator is displayed relative to this base, so
+  // the user always sees 100% at the default size.
+  const BASE_ZOOM = 0.8;
+  const [zoom, setZoom] = useState(BASE_ZOOM);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+
+  const [past, setPast] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
+
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+
+  const tables = tablesByFloor[activeFloor] || [];
+  const walls = wallsByFloor[activeFloor] || [];
+  const entrance = entranceByFloor[activeFloor];
+  const baseRoom = rooms[activeFloor] || { w: 720, h: 560 };
+
+  const room = useMemo(() => {
+    const PAD = 90;
+    let maxX = baseRoom.w;
+    let maxY = baseRoom.h;
+    tables.forEach((t) => {
+      const w = t.size;
+      const h = t.shape === "round" ? t.size : t.long ? 70 : 80;
+      maxX = Math.max(maxX, t.x + w + PAD);
+      maxY = Math.max(maxY, t.y + h + PAD);
+    });
+    walls.forEach((w) => {
+      maxX = Math.max(maxX, w.x1 + 30, w.x2 + 30);
+      maxY = Math.max(maxY, w.y1 + 30, w.y2 + 30);
+    });
+    return { w: Math.round(maxX), h: Math.round(maxY) };
+  }, [tables, walls, baseRoom.w, baseRoom.h]);
+
+  const selTable = sel?.kind === "table" ? tables.find((t) => t.id === sel.id) ?? null : null;
+  const selWall = sel?.kind === "wall" ? walls.find((w) => w.id === sel.id) ?? null : null;
+  const selEntrance = sel?.kind === "entrance" ? entrance : null;
+
+  const snapshot = useCallback(
+    (): Snapshot => ({
+      floor: activeFloor,
+      tables: JSON.parse(JSON.stringify(tablesByFloor)) as Record<string, FloorTable[]>,
+      walls: JSON.parse(JSON.stringify(wallsByFloor)) as Record<string, Wall[]>,
+      entrance: JSON.parse(JSON.stringify(entranceByFloor)) as Record<string, Entrance>,
+      rooms: JSON.parse(JSON.stringify(rooms)) as Record<string, Room>,
+      floors: JSON.parse(JSON.stringify(floors)) as Floor[],
+    }),
+    [activeFloor, tablesByFloor, wallsByFloor, entranceByFloor, rooms, floors],
+  );
+
+  const pushHistory = useCallback(() => {
+    setPast((p) => [...p.slice(-49), snapshot()]);
+    setFuture([]);
+  }, [snapshot]);
+
+  const restore = (snap: Snapshot) => {
+    setTables(snap.tables);
+    setWalls(snap.walls);
+    setEntrance(snap.entrance);
+    setRooms(snap.rooms);
+    setFloors(snap.floors);
+    if (snap.floors.find((f) => f.id === snap.floor)) setActiveFloor(snap.floor);
+  };
+
+  const undo = useCallback(() => {
+    if (past.length === 0) return;
+    const prev = past[past.length - 1];
+    const cur = snapshot();
+    setPast((p) => p.slice(0, -1));
+    setFuture((f) => [...f, cur]);
+    restore(prev);
+  }, [past, snapshot]);
+
+  const redo = useCallback(() => {
+    if (future.length === 0) return;
+    const nxt = future[future.length - 1];
+    const cur = snapshot();
+    setFuture((f) => f.slice(0, -1));
+    setPast((p) => [...p, cur]);
+    restore(nxt);
+  }, [future, snapshot]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!editing) return;
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (meta && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, undo, redo]);
+
+  const updateTable = (id: string, patch: Partial<FloorTable>, skipHistory?: boolean) => {
+    if (!skipHistory) pushHistory();
+    setTables((byF) => ({
+      ...byF,
+      [activeFloor]: (byF[activeFloor] || []).map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    }));
+  };
+  const updateWall = (id: string, patch: Partial<Wall>, skipHistory?: boolean) => {
+    if (!skipHistory) pushHistory();
+    setWalls((byF) => ({
+      ...byF,
+      [activeFloor]: (byF[activeFloor] || []).map((w) => (w.id === id ? { ...w, ...patch } : w)),
+    }));
+  };
+  const updateEntrance = (patch: Partial<Entrance>, skipHistory?: boolean) => {
+    if (!skipHistory) pushHistory();
+    setEntrance((byF) => ({ ...byF, [activeFloor]: { ...byF[activeFloor], ...patch } }));
+  };
+  const deleteTable = (id: string) => {
+    pushHistory();
+    setTables((byF) => ({
+      ...byF,
+      [activeFloor]: (byF[activeFloor] || []).filter((t) => t.id !== id),
+    }));
+    setSel(null);
+  };
+  const deleteWall = (id: string) => {
+    pushHistory();
+    setWalls((byF) => ({
+      ...byF,
+      [activeFloor]: (byF[activeFloor] || []).filter((w) => w.id !== id),
+    }));
+    setSel(null);
+  };
+
+  const addWall = () => {
+    pushHistory();
+    const id = "w" + Date.now().toString(36);
+    const cx = room.w / 2;
+    const cy = room.h / 2;
+    const newW: Wall = { id, x1: cx - 90, y1: cy, x2: cx + 90, y2: cy };
+    setWalls((byF) => ({ ...byF, [activeFloor]: [...(byF[activeFloor] || []), newW] }));
+    setSel({ kind: "wall", id });
+  };
+
+  const setSeats = (t: FloorTable, n: number) => {
+    const cap = Math.max(1, Math.min(20, n));
+    let size = t.size;
+    let long = t.long;
+    if (t.shape === "round") size = cap > 4 ? Math.max(90, 70 + cap * 4) : cap > 2 ? 90 : 75;
+    else {
+      long = cap > 4;
+      size = long ? Math.max(140, 90 + cap * 12) : 90;
+    }
+    updateTable(t.id, { cap, size, long });
+  };
+
+  const handleAction = (action: ActionKind, t: FloorTable) => {
+    if (action === "walkin" || action === "seat")
+      updateTable(
+        t.id,
+        { status: "occupied", guest: t.guest || "Walk-in", party: t.party || 2, time: t.time || "now" },
+        true,
+      );
+    if (action === "paid") updateTable(t.id, { status: "cleaning", guest: null, party: 0, time: null }, true);
+    if (action === "ready") updateTable(t.id, { status: "free" }, true);
+    if (action === "cancel") updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
+  };
+
+  const addTable = (shape: TableShape, cap: number) => {
+    pushHistory();
+    const idx = (tables.length || 0) + 1;
+    const id = activeFloor === "patio" ? `P${idx}` : activeFloor === "private" ? `PR${idx}` : String(idx);
+    const long = cap > 4;
+    const newT: FloorTable = {
+      id,
+      shape,
+      x: 140,
+      y: 140,
+      size: shape === "round" ? (cap > 2 ? 90 : 75) : long ? Math.max(140, 90 + cap * 12) : 90,
+      cap,
+      status: "free",
+      guest: null,
+      party: 0,
+      time: null,
+      long,
+    };
+    setTables((byF) => ({ ...byF, [activeFloor]: [...(byF[activeFloor] || []), newT] }));
+    setSel({ kind: "table", id });
+  };
+
+  const addFloor = () => {
+    pushHistory();
+    const n = floors.length + 1;
+    const id = `floor${n}`;
+    setFloors((f) => [...f, { id, name: `Floor ${n}` }]);
+    setTables((byF) => ({ ...byF, [id]: [] }));
+    setWalls((byF) => ({ ...byF, [id]: [] }));
+    setEntrance((byF) => ({ ...byF, [id]: { side: "top", pos: 360, width: 50 } }));
+    setRooms((r) => ({ ...r, [id]: { w: 720, h: 560 } }));
+    setActiveFloor(id);
+  };
+
+  const setZoomClamped = (z: number, originX?: number, originY?: number) => {
+    const newZoom = Math.max(0.4, Math.min(3, z));
+    if (originX != null && originY != null) {
+      const ratio = newZoom / zoom;
+      setPan((p) => ({
+        x: originX - (originX - p.x) * ratio,
+        y: originY - (originY - p.y) * ratio,
+      }));
+    }
+    setZoom(newZoom);
+  };
+
+  /**
+   * Reset to 100% zoom and center the *visible outline* of the floor plan
+   * in the canvas.
+   *
+   * Centers on the bounding box of the actual content the user sees
+   * (tables + walls), not the abstract room rectangle. This means the
+   * eye lands on the middle of the plan even when the room has uneven
+   * padding around its content.
+   *
+   * Math is in viewBox units. SVG uses `preserveAspectRatio="xMinYMin
+   * meet"` so it scales uniformly to fit but doesn't auto-center; we
+   * convert canvas pixels to viewBox units via `meetScale` and place the
+   * content's center at the canvas center.
+   */
+  const fitToRoom = useCallback(() => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    // Bail without touching state if the SVG hasn't been laid out yet —
+    // a follow-up RAF / ResizeObserver call will run once it has, and
+    // we don't want a transient 0×0 measurement to stomp the user's
+    // current pan back to (0,0).
+    if (!rect || rect.width === 0 || rect.height === 0) return;
+
+    // Bounding box of every visible element on this floor.
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    tables.forEach((t) => {
+      const w = t.size;
+      const h = t.shape === "round" ? t.size : t.long ? 70 : 80;
+      if (t.x < minX) minX = t.x;
+      if (t.y < minY) minY = t.y;
+      if (t.x + w > maxX) maxX = t.x + w;
+      if (t.y + h > maxY) maxY = t.y + h;
+    });
+    walls.forEach((w) => {
+      minX = Math.min(minX, w.x1, w.x2);
+      minY = Math.min(minY, w.y1, w.y2);
+      maxX = Math.max(maxX, w.x1, w.x2);
+      maxY = Math.max(maxY, w.y1, w.y2);
+    });
+    // Fallback to outline rect if floor is empty.
+    if (!Number.isFinite(minX)) {
+      minX = 30;
+      minY = 30;
+      maxX = room.w - 30;
+      maxY = room.h - 30;
+    }
+    const contentCenterX = (minX + maxX) / 2;
+    const contentCenterY = (minY + maxY) / 2;
+
+    const meetScale = Math.min(rect.width / room.w, rect.height / room.h);
+    const visW = rect.width / meetScale;
+    const visH = rect.height / meetScale;
+    setZoom(BASE_ZOOM);
+    setPan({
+      x: visW / 2 - contentCenterX * BASE_ZOOM,
+      y: visH / 2 - contentCenterY * BASE_ZOOM,
+    });
+  }, [room.w, room.h, tables, walls]);
+
+  // Stable reference to the latest fitToRoom so the ResizeObserver
+  // doesn't get torn down and recreated every render (which was causing
+  // it to fire with stale rect measurements and stomp `pan` back to 0,0).
+  const fitToRoomRef = useRef(fitToRoom);
+  useLayoutEffect(() => {
+    fitToRoomRef.current = fitToRoom;
+  }, [fitToRoom]);
+
+  // Center on mount and on every floor change. useLayoutEffect runs
+  // synchronously after layout so the centered state is applied before
+  // the browser paints — no flash of an off-center plan.
+  //
+  // We call via the ref so we always use the closure that has the new
+  // floor's tables/walls — and we re-run on the next frame as a safety
+  // net (e.g. if the SVG hasn't been laid out yet on initial mount).
+  useLayoutEffect(() => {
+    fitToRoomRef.current();
+    const id = requestAnimationFrame(() => fitToRoomRef.current());
+    return () => cancelAnimationFrame(id);
+  }, [activeFloor]);
+
+  // Re-center when the canvas itself resizes (window resize, sidebar
+  // toggle). Subscribed once — uses the ref so it always calls the
+  // latest fit.
+  useEffect(() => {
+    const el = svgRef.current?.parentElement;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const obs = new ResizeObserver(() => fitToRoomRef.current());
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const onWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const ox = e.clientX - rect.left;
+    const oy = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.1 : 0.9;
+    setZoomClamped(zoom * factor, ox, oy);
+  };
+
+  const onCanvasPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const target = e.target as Element;
+    if (target.tagName !== "svg" && !target.classList?.contains("fp-bg")) return;
+    panRef.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const svgPoint = (e: ReactPointerEvent<SVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    return pt.matrixTransform(ctm.inverse());
+  };
+
+  const onTableDragStart = (e: ReactPointerEvent<SVGElement>, t: FloorTable) => {
+    e.stopPropagation();
+    setSel({ kind: "table", id: t.id });
+    pushHistory();
+    const p = svgPoint(e);
+    if (!p) return;
+    dragRef.current = { kind: "table", id: t.id, sx: p.x, sy: p.y, ox: t.x, oy: t.y };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  const onWallDragStart = (e: ReactPointerEvent<SVGElement>, w: Wall) => {
+    e.stopPropagation();
+    setSel({ kind: "wall", id: w.id });
+    pushHistory();
+    const p = svgPoint(e);
+    if (!p) return;
+    dragRef.current = {
+      kind: "wall",
+      id: w.id,
+      sx: p.x,
+      sy: p.y,
+      ox1: w.x1,
+      oy1: w.y1,
+      ox2: w.x2,
+      oy2: w.y2,
+    };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  const onEndpointDrag = (e: ReactPointerEvent<SVGElement>, w: Wall, end: "start" | "end") => {
+    e.stopPropagation();
+    setSel({ kind: "wall", id: w.id });
+    pushHistory();
+    const p = svgPoint(e);
+    if (!p) return;
+    dragRef.current = {
+      kind: "wall-pt",
+      id: w.id,
+      end,
+      sx: p.x,
+      sy: p.y,
+      ox: end === "start" ? w.x1 : w.x2,
+      oy: end === "start" ? w.y1 : w.y2,
+    };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  const onEntranceDragStart = (e: ReactPointerEvent<SVGElement>) => {
+    e.stopPropagation();
+    setSel({ kind: "entrance" });
+    pushHistory();
+    const p = svgPoint(e);
+    if (!p) return;
+    dragRef.current = { kind: "entrance", sx: p.x, sy: p.y, opos: entrance.pos };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+
+  const onMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (panRef.current) {
+      const dx = e.clientX - panRef.current.sx;
+      const dy = e.clientY - panRef.current.sy;
+      setPan({ x: panRef.current.ox + dx, y: panRef.current.oy + dy });
+      return;
+    }
+    const d = dragRef.current;
+    if (!d) return;
+    const p = svgPoint(e);
+    if (!p) return;
+    const snap = (v: number) => Math.max(20, Math.round(v / 10) * 10);
+    if (d.kind === "table") {
+      updateTable(d.id, { x: snap(d.ox + (p.x - d.sx)), y: snap(d.oy + (p.y - d.sy)) }, true);
+    } else if (d.kind === "wall") {
+      const dx = p.x - d.sx;
+      const dy = p.y - d.sy;
+      updateWall(
+        d.id,
+        {
+          x1: snap(d.ox1 + dx),
+          y1: snap(d.oy1 + dy),
+          x2: snap(d.ox2 + dx),
+          y2: snap(d.oy2 + dy),
+        },
+        true,
+      );
+    } else if (d.kind === "wall-pt") {
+      const nx = snap(d.ox + (p.x - d.sx));
+      const ny = snap(d.oy + (p.y - d.sy));
+      updateWall(d.id, d.end === "start" ? { x1: nx, y1: ny } : { x2: nx, y2: ny }, true);
+    } else if (d.kind === "entrance") {
+      const isHorizontal = entrance.side === "top" || entrance.side === "bottom";
+      const delta = isHorizontal ? p.x - d.sx : p.y - d.sy;
+      const max = isHorizontal ? room.w : room.h;
+      const half = entrance.width / 2;
+      const newPos = Math.max(half + 10, Math.min(max - half - 10, d.opos + delta));
+      updateEntrance({ pos: Math.round(newPos / 10) * 10 }, true);
+    }
+  };
+  const onUp = () => {
+    dragRef.current = null;
+    panRef.current = null;
+  };
+
+  const searchResults = useMemo(() => {
+    if (!query) return [];
+    const q = query.toLowerCase().trim();
+    return tables.filter(
+      (t) => t.id.toLowerCase().includes(q) || (t.guest && t.guest.toLowerCase().includes(q)),
+    );
+  }, [query, tables]);
+
+  const jumpTo = (t: FloorTable) => {
+    setSel({ kind: "table", id: t.id });
+    setFocusId(t.id);
+    setQuery("");
+    const w = t.size;
+    const h = t.shape === "round" ? t.size : t.long ? 70 : 80;
+    const cx = t.x + w / 2;
+    const cy = t.y + h / 2;
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (rect) {
+      setZoom(1.5);
+      setPan({ x: rect.width / 2 - cx * 1.5, y: rect.height / 2 - cy * 1.5 });
+    }
+    setTimeout(() => setFocusId(null), 1800);
+  };
+
+  const totals = useMemo(() => {
+    const all = Object.values(tablesByFloor).flat();
+    const seated = all.filter((t) => t.status === "occupied");
+    return {
+      total: all.length,
+      seated: seated.length,
+      reserved: all.filter((t) => t.status === "reserved").length,
+      guests: seated.reduce((a, t) => a + (t.party || 0), 0),
+    };
+  }, [tablesByFloor]);
+
+  const summary = (() => {
+    if (totals.seated === 0 && totals.reserved === 0) return "A quiet evening so far.";
+    const parts: string[] = [];
+    parts.push(`${totals.seated} of ${totals.total} tables seated`);
+    if (totals.guests) parts.push(`${totals.guests} guests dining`);
+    if (totals.reserved)
+      parts.push(`${totals.reserved} reservation${totals.reserved === 1 ? "" : "s"} ahead`);
+    return parts.join(" · ") + ".";
+  })();
+
+  const today = new Date();
+  const dateStr = today.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
+  const viewportRect = (() => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const visW = rect.width / zoom;
+    const visH = rect.height / zoom;
+    const visX = -pan.x / zoom;
+    const visY = -pan.y / zoom;
+    return { x: visX, y: visY, w: visW, h: visH };
+  })();
+
+  const density: Density = zoom < 0.55 ? "minimal" : zoom < 0.85 ? "compact" : "full";
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-y-auto">
+      {/* Editorial header */}
+      <div className="px-10 pb-7 pt-10" style={{ borderBottom: `1px solid ${BORDER_SOFT}` }}>
+        <div className="flex items-end justify-between gap-6">
+          <div>
+            <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+              Floor Plan · Dinner Service
+            </div>
+            <h1
+              className="font-serif text-[40px] leading-[1.05] tracking-tight"
+              style={{ letterSpacing: "-0.025em" }}
+            >
+              {dateStr}
+            </h1>
+          </div>
+          <div className="flex items-center gap-2">
+            {editing && (
+              <>
+                <button
+                  onClick={undo}
+                  disabled={past.length === 0}
+                  className="flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] text-text-secondary transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-text-muted"
+                  style={{ border: `1px solid ${BORDER_SOFT}`, opacity: past.length === 0 ? 0.4 : 1 }}
+                  title="Undo (⌘Z)"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 7v6h6" />
+                    <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+                  </svg>
+                  Undo
+                </button>
+                <button
+                  onClick={redo}
+                  disabled={future.length === 0}
+                  className="flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] text-text-secondary transition-colors hover:text-white disabled:cursor-not-allowed disabled:text-text-muted"
+                  style={{ border: `1px solid ${BORDER_SOFT}`, opacity: future.length === 0 ? 0.4 : 1 }}
+                  title="Redo (⌘⇧Z)"
+                >
+                  Redo
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 7v6h-6" />
+                    <path d="M3 17a9 9 0 0 1 15-6.7L21 13" />
+                  </svg>
+                </button>
+                <div className="mx-1 h-6 w-px" style={{ background: BORDER_SOFT }} />
+              </>
+            )}
+            {!editing ? (
+              <button
+                onClick={() => {
+                  setEditing(true);
+                  setSel(null);
+                }}
+                className="rounded-md px-3.5 py-2 text-[13px] text-text-secondary transition-colors hover:text-white"
+                style={{ border: `1px solid ${BORDER_SOFT}` }}
+              >
+                Edit layout
+              </button>
+            ) : (
+              <button
+                onClick={() => setEditing(false)}
+                className="rounded-md bg-gold px-4 py-2 text-[13px] font-medium text-black transition-opacity hover:opacity-90"
+              >
+                Done editing
+              </button>
+            )}
+          </div>
+        </div>
+
+        <p
+          className="mt-5 max-w-2xl font-serif text-[17px] text-text-secondary"
+          style={{ letterSpacing: "-0.01em", fontStyle: "italic", opacity: 0.85 }}
+        >
+          {summary}
+        </p>
+      </div>
+
+      {/* Floor switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-10 pb-4 pt-6">
+        <div className="flex flex-wrap items-center gap-1">
+          {floors.map((f) => {
+            const fc = (tablesByFloor[f.id] || []).length;
+            const isActive = activeFloor === f.id;
+            return (
+              <button
+                key={f.id}
+                onClick={() => {
+                  setActiveFloor(f.id);
+                  setSel(null);
+                  // Centering is handled by useLayoutEffect[activeFloor]
+                  // which uses the up-to-date tables/walls for the new
+                  // floor. Calling fitToRoom() directly here would use
+                  // the stale closure from this render.
+                }}
+                className="rounded-full px-4 py-2 text-[13px] transition-all"
+                style={{
+                  background: isActive ? "rgba(201,168,76,0.10)" : "transparent",
+                  color: isActive ? "var(--gold-light)" : "var(--text-secondary)",
+                  border: isActive ? "1px solid rgba(201,168,76,0.30)" : "1px solid transparent",
+                }}
+              >
+                {f.name}
+                <span
+                  className="ml-2 text-[11px] tabular-nums"
+                  style={{ color: isActive ? "rgba(229,203,124,0.7)" : "var(--text-muted)" }}
+                >
+                  {fc}
+                </span>
+              </button>
+            );
+          })}
+          {editing && (
+            <button onClick={addFloor} className="ml-1 px-3 py-2 text-[13px] text-gold hover:underline">
+              + Add floor
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-5 text-[11.5px] text-text-muted">
+          {(
+            [
+              ["free", "Open"],
+              ["reserved", "Reserved"],
+              ["occupied", "Seated"],
+              ["cleaning", "Resetting"],
+            ] as const
+          ).map(([k, l]) => (
+            <div key={k} className="flex items-center gap-1.5">
+              <span className="size-1.5 rounded-full" style={{ background: TBL_STATUS[k].color }} />
+              <span>{l}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Canvas + side rail */}
+      <div className="grid gap-6 px-10 pb-10" style={{ gridTemplateColumns: "1fr 340px" }}>
+        <div
+          className="relative overflow-hidden rounded-xl"
+          style={{
+            background: "radial-gradient(ellipse at 30% 20%, #131312 0%, #0c0c0c 60%, #080808 100%)",
+            border: `1px solid ${BORDER_SOFT}`,
+            height: 660,
+            touchAction: "none",
+          }}
+          onWheel={onWheel}
+        >
+          <div
+            className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-md"
+            style={{
+              background: "rgba(14,14,15,0.85)",
+              backdropFilter: "blur(8px)",
+              border: `1px solid ${BORDER_SOFT}`,
+              padding: 3,
+            }}
+          >
+            <button
+              onClick={() => setZoomClamped(zoom + BASE_ZOOM * 0.1)}
+              className="size-7 rounded text-[15px] text-text-secondary transition-colors hover:bg-white/[0.06] hover:text-white"
+              title="Zoom in (+10%)"
+            >
+              +
+            </button>
+            <button
+              onClick={() => setZoomClamped(zoom - BASE_ZOOM * 0.1)}
+              className="size-7 rounded text-[15px] text-text-secondary transition-colors hover:bg-white/[0.06] hover:text-white"
+              title="Zoom out (−10%)"
+            >
+              −
+            </button>
+            <div className="h-4 w-px" style={{ background: BORDER_SOFT }} />
+            <button
+              onClick={fitToRoom}
+              className="h-7 rounded px-2 text-[11px] text-text-secondary transition-colors hover:bg-white/[0.06] hover:text-white"
+              title="Fit floor to view"
+            >
+              Fit
+            </button>
+            <span className="px-2 text-[11px] tabular-nums text-text-muted">
+              {Math.round((zoom / BASE_ZOOM) * 100)}%
+            </span>
+          </div>
+          {(zoom !== BASE_ZOOM || pan.x !== 0 || pan.y !== 0) && (
+            <div
+              className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted"
+              style={{ background: "rgba(14,14,15,0.7)", border: `1px solid ${BORDER_SOFT}` }}
+            >
+              Hold ⌘ + scroll to zoom · drag empty space to pan
+            </div>
+          )}
+
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${room.w} ${room.h}`}
+            preserveAspectRatio="xMinYMin meet"
+            className="size-full"
+            style={{
+              display: "block",
+              cursor: panRef.current ? "grabbing" : "default",
+            }}
+            onPointerMove={onMove}
+            onPointerUp={onUp}
+            onPointerDown={onCanvasPointerDown}
+            onClick={() => setSel(null)}
+          >
+            <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+              <rect className="fp-bg" x="0" y="0" width={room.w} height={room.h} fill="transparent" />
+
+              {editing && (
+                <>
+                  <defs>
+                    <pattern id="fp-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                      <path
+                        d="M 20 0 L 0 0 0 20"
+                        fill="none"
+                        stroke="rgba(255,255,255,0.025)"
+                        strokeWidth="1"
+                      />
+                    </pattern>
+                  </defs>
+                  <rect width={room.w} height={room.h} fill="url(#fp-grid)" />
+                </>
+              )}
+
+              {(() => {
+                const e = entrance;
+                const half = e.width / 2;
+                const segs: Array<[number, number, number, number]> = [];
+                if (e.side === "top") {
+                  segs.push([30, 30, e.pos - half, 30]);
+                  segs.push([e.pos + half, 30, room.w - 30, 30]);
+                } else segs.push([30, 30, room.w - 30, 30]);
+                if (e.side === "right") {
+                  segs.push([room.w - 30, 30, room.w - 30, e.pos - half]);
+                  segs.push([room.w - 30, e.pos + half, room.w - 30, room.h - 30]);
+                } else segs.push([room.w - 30, 30, room.w - 30, room.h - 30]);
+                if (e.side === "bottom") {
+                  segs.push([room.w - 30, room.h - 30, e.pos + half, room.h - 30]);
+                  segs.push([e.pos - half, room.h - 30, 30, room.h - 30]);
+                } else segs.push([room.w - 30, room.h - 30, 30, room.h - 30]);
+                if (e.side === "left") {
+                  segs.push([30, room.h - 30, 30, e.pos + half]);
+                  segs.push([30, e.pos - half, 30, 30]);
+                } else segs.push([30, room.h - 30, 30, 30]);
+                return segs.map((s, i) => (
+                  <line
+                    key={i}
+                    x1={s[0]}
+                    y1={s[1]}
+                    x2={s[2]}
+                    y2={s[3]}
+                    stroke="rgba(255,255,255,0.06)"
+                    strokeWidth="1"
+                  />
+                ));
+              })()}
+
+              <EntranceNode
+                entrance={entrance}
+                room={room}
+                selected={sel?.kind === "entrance"}
+                editing={editing}
+                onClick={() => setSel({ kind: "entrance" })}
+                onDragStart={onEntranceDragStart}
+              />
+
+              {walls.map((w) => (
+                <WallNode
+                  key={w.id}
+                  w={w}
+                  selected={sel?.kind === "wall" && sel.id === w.id}
+                  editing={editing}
+                  onClick={(ww) => setSel({ kind: "wall", id: ww.id })}
+                  onDragStart={onWallDragStart}
+                  onEndpointDrag={onEndpointDrag}
+                />
+              ))}
+
+              {tables.map((t) => (
+                <TableNode
+                  key={t.id}
+                  t={t}
+                  selected={sel?.kind === "table" && sel.id === t.id}
+                  focused={focusId === t.id}
+                  editing={editing}
+                  density={density}
+                  onClick={(tt) => setSel({ kind: "table", id: tt.id })}
+                  onDragStart={onTableDragStart}
+                />
+              ))}
+            </g>
+          </svg>
+
+          {tables.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="text-center">
+                <p
+                  className="mb-1 font-serif text-[18px] text-text-secondary"
+                  style={{ letterSpacing: "-0.015em" }}
+                >
+                  This floor is empty.
+                </p>
+                {editing && (
+                  <p className="text-[12px] text-text-muted">Add a table from the panel on the right.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(zoom > 1.05 || tables.length > 20) && (
+            <MiniMap tables={tables} walls={walls} room={room} viewport={viewportRect} />
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {selTable ? (
+            <TableCard
+              t={selTable}
+              editing={editing}
+              onAction={handleAction}
+              onSeatChange={setSeats}
+              onDelete={(t) => deleteTable(t.id)}
+              onClose={() => setSel(null)}
+            />
+          ) : selWall ? (
+            <WallCard w={selWall} onDelete={(w) => deleteWall(w.id)} onClose={() => setSel(null)} />
+          ) : selEntrance ? (
+            <EntranceCard
+              entrance={entrance}
+              onChangeSide={(s) =>
+                updateEntrance({
+                  side: s,
+                  pos: s === "top" || s === "bottom" ? room.w / 2 : room.h / 2,
+                })
+              }
+              onChangeWidth={(w) => updateEntrance({ width: Math.max(30, Math.min(180, w)) })}
+              onClose={() => setSel(null)}
+            />
+          ) : editing ? (
+            <EditCard
+              onAddTable={addTable}
+              onAddWall={addWall}
+              onAddFloor={addFloor}
+              onSave={() => setEditing(false)}
+              onCancel={() => setEditing(false)}
+            />
+          ) : (
+            <IdleCard
+              summary={summary}
+              query={query}
+              onSearch={setQuery}
+              onJump={jumpTo}
+              results={searchResults}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -22,10 +22,18 @@ import {
   Menu,
   X,
   User,
+  Eye,
+  Bell,
+  LogOut,
 } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { RestaurantPreviewModal, type RestaurantPreviewSummary } from "@/components/customer/RestaurantPreviewModal";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
+import { useNotifications } from "@/hooks/useNotifications";
 import {
   DASHBOARD_NAV_ITEMS,
   canAccessDashboardPath,
@@ -33,6 +41,8 @@ import {
 } from "@/lib/auth/dashboard-access";
 import { cn } from "@/lib/utils";
 import type { StaffRole } from "@/types/auth";
+
+const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
 const ICONS: Record<string, typeof LayoutDashboard> = {
   "/dashboard": LayoutDashboard,
@@ -57,10 +67,14 @@ export function DashboardSidebar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const isFloorPlanRoute = pathname.includes("/floor-plan");
-  const { restaurantRoles, canUseCustomerView, switchToCustomerView } = useUser();
+  const { profile, restaurantRoles, canUseCustomerView, switchToCustomerView, signOut } = useUser();
+  const { notifications, unreadCount, markRead } = useNotifications();
   const { selectedRestaurantId, restaurants, setSelectedRestaurantId } =
     useRestaurantScope();
+  const { restaurants: publicRestaurants } = usePublicRestaurants();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFavorite, setPreviewFavorite] = useState(false);
 
   const roleSet = useMemo((): Set<StaffRole> => {
     if (!selectedRestaurantId) return new Set();
@@ -77,6 +91,41 @@ export function DashboardSidebar() {
   const settingsItem = visibleItems.find((i) => i.path === "/dashboard/settings");
   const mainItems = visibleItems.filter((i) => i.path !== "/dashboard/settings");
 
+  const selectedRestaurant = restaurants.find((r) => r.id === selectedRestaurantId) ?? restaurants[0];
+  const publicRestaurant =
+    publicRestaurants.find((r) => r.id === selectedRestaurant?.id || r.slug === selectedRestaurant?.slug) ?? null;
+  const restaurantInitials = (selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "??")
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const ROLE_PRIORITY: StaffRole[] = ["owner", "manager", "host", "server", "kitchen", "bar", "staff"];
+  const primaryRole = ROLE_PRIORITY.find((r) => roleSet.has(r));
+  const roleLabel = primaryRole ? primaryRole.charAt(0).toUpperCase() + primaryRole.slice(1) : null;
+  const previewRestaurant = selectedRestaurant
+    ? ({
+        id: selectedRestaurant.id,
+        name: publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug,
+        reviews: publicRestaurant?.total_reviews ?? 927,
+        rating: publicRestaurant?.avg_rating ?? 4.6,
+        cuisine: publicRestaurant?.cuisine_type ?? "Restaurant",
+        price: PRICE_LABELS[publicRestaurant?.price_range ?? 3] ?? "$$$",
+        area: publicRestaurant?.city ?? "Toronto",
+        bookedToday: 85,
+        slots: ["6:45 PM", "7:00 PM", "7:30 PM", "7:45 PM", "8:30 PM", "9:00 PM"],
+        initials: (publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug)
+          .split(/\s+/)
+          .slice(0, 2)
+          .join(" ")
+          .toUpperCase(),
+        badge: "POPULAR",
+        city: publicRestaurant?.city ?? "Toronto",
+        distanceKm: 0.4,
+        features: ["Patio", "Tasting menu"],
+      } satisfies RestaurantPreviewSummary)
+    : null;
+
   const sidebarContent = (
     <div className="flex h-full flex-col">
       {/* Brand */}
@@ -84,14 +133,34 @@ export function DashboardSidebar() {
         <span className="text-sm font-bold tracking-[0.25em] text-gold">CENAIVA</span>
       </div>
 
-      {/* Restaurant switcher — only when multiple */}
-      {restaurants.length > 1 && (
-        <div className="px-4 pb-3">
-          <div className="relative">
+      {/* Restaurant switcher card */}
+      <div className="px-4 pb-2 pt-1">
+        <div className="relative rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 transition-colors hover:border-gold/30">
+          <div className="flex items-center gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 font-mono text-xs font-semibold text-gold">
+              {restaurantInitials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-text-primary">
+                {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
+              </p>
+              {roleLabel && (
+                <p className="truncate text-xs text-text-muted">{roleLabel}</p>
+              )}
+            </div>
+            <ChevronDown
+              className={cn(
+                "size-4 shrink-0 transition-colors",
+                restaurants.length > 1 ? "text-text-muted" : "text-transparent",
+              )}
+            />
+          </div>
+          {restaurants.length > 1 && (
             <select
-              className="w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 py-2 pr-8 text-sm font-medium text-foreground outline-none transition-all focus:border-gold/40"
+              aria-label="Switch restaurant"
               value={selectedRestaurantId ?? ""}
               onChange={(e) => setSelectedRestaurantId(e.target.value)}
+              className="absolute inset-0 cursor-pointer appearance-none bg-transparent text-transparent opacity-0 outline-none"
             >
               {restaurants.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -99,13 +168,15 @@ export function DashboardSidebar() {
                 </option>
               ))}
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Navigation */}
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2 scrollbar-thin" aria-label={t("dashboard.shell.navLabel")}>
+      <p className="px-5 pb-2 pt-3 font-mono text-[10px] uppercase tracking-[0.22em] text-gold">
+        Tonight
+      </p>
+      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-1 scrollbar-thin" aria-label={t("dashboard.shell.navLabel")}>
         {mainItems.map((item, i) => {
           const Icon = ICONS[item.path] ?? LayoutDashboard;
           return (
@@ -152,9 +223,97 @@ export function DashboardSidebar() {
         })}
       </nav>
 
-      {/* Settings pinned at bottom */}
-      {settingsItem && (
-        <div className="border-t border-border px-3 py-2">
+      {/* Account actions pinned at bottom */}
+      <div className="border-t border-border px-3 py-2">
+        <div className="mb-2 flex items-center gap-2 border-b border-border px-2 pb-2 pt-2">
+          <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
+            {profile?.full_name ?? profile?.email ?? ""}
+          </span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="relative flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-text-primary"
+                aria-label="Notifications"
+              >
+                <Bell className="size-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute right-1 top-1 size-1.5 rounded-full bg-danger" />
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" side="top" className="w-80 p-0">
+              <div className="border-b border-border px-4 py-3">
+                <p className="text-sm font-semibold text-text-primary">Notifications</p>
+                {unreadCount > 0 && (
+                  <p className="text-xs text-text-muted">{unreadCount} unread</p>
+                )}
+              </div>
+              <div className="max-h-80 overflow-y-auto">
+                {notifications.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-sm text-text-muted">No notifications yet.</p>
+                ) : (
+                  notifications.map((n) => (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() => {
+                        void markRead(n.id);
+                        if (n.data?.route && typeof n.data.route === "string") {
+                          navigate(n.data.route);
+                        }
+                      }}
+                      className={cn(
+                        "flex w-full flex-col gap-0.5 border-b border-border px-4 py-3 text-left transition-colors last:border-0 hover:bg-bg-elevated/60",
+                        !n.is_read && "bg-gold/5",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className={cn("text-xs font-medium", !n.is_read ? "text-text-primary" : "text-text-secondary")}>
+                          {n.title}
+                        </span>
+                        {!n.is_read && (
+                          <span className="mt-0.5 size-1.5 shrink-0 rounded-full bg-gold" />
+                        )}
+                      </div>
+                      {n.body ? (
+                        <span className="line-clamp-2 text-xs text-text-muted">{n.body}</span>
+                      ) : null}
+                      <span className="text-[10px] text-text-muted">
+                        {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
+          <span className="h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            className="flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-danger"
+            aria-label="Sign out"
+          >
+            <LogOut className="size-4" />
+          </button>
+        </div>
+
+        {settingsItem && (
+          <>
+          {(selectedRestaurant?.slug ?? selectedRestaurant?.id) && (
+            <button
+              type="button"
+              onClick={() => {
+                setPreviewOpen(true);
+                setMobileOpen(false);
+              }}
+              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
+            >
+              <Eye className="size-[18px] shrink-0 text-gold" />
+              <span className="truncate">{t("dashboard.shell.previewRestaurant")}</span>
+            </button>
+          )}
           {canUseCustomerView && (
             <button
               type="button"
@@ -163,9 +322,9 @@ export function DashboardSidebar() {
                 void navigate("/discover");
                 setMobileOpen(false);
               }}
-              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-all duration-150 hover:bg-white/[0.03] hover:text-text-secondary"
+              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
             >
-              <User className="size-[18px] shrink-0 text-text-muted transition-colors duration-150 group-hover:text-text-secondary" />
+              <User className="size-[18px] shrink-0 text-gold" />
               <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
             </button>
           )}
@@ -174,10 +333,8 @@ export function DashboardSidebar() {
             onClick={() => setMobileOpen(false)}
             className={({ isActive }) =>
               cn(
-                "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
-                isActive
-                  ? "bg-gold/8 text-gold"
-                  : "text-text-muted hover:bg-white/[0.03] hover:text-text-secondary",
+                "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10",
+                isActive && "bg-gold/10",
               )
             }
           >
@@ -190,18 +347,14 @@ export function DashboardSidebar() {
                     transition={{ type: "spring", stiffness: 400, damping: 30 }}
                   />
                 )}
-                <Settings
-                  className={cn(
-                    "size-[18px] shrink-0 transition-colors duration-150",
-                    isActive ? "text-gold" : "text-text-muted group-hover:text-text-secondary",
-                  )}
-                />
+                <Settings className="size-[18px] shrink-0 text-gold" />
                 <span className="truncate">{t(settingsItem.labelKey)}</span>
               </>
             )}
           </NavLink>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 
@@ -261,6 +414,24 @@ export function DashboardSidebar() {
       >
         {sidebarContent}
       </aside>
+      <RestaurantPreviewModal
+        restaurant={previewOpen ? previewRestaurant : null}
+        favorite={previewFavorite}
+        partySize="2"
+        currencyCode={selectedRestaurant?.currency ?? "cad"}
+        onClose={() => setPreviewOpen(false)}
+        onToggleFavorite={() => setPreviewFavorite((value) => !value)}
+        onReserve={(slot) => {
+          if (!selectedRestaurant) return;
+          const publicPath = `/${selectedRestaurant.slug ?? selectedRestaurant.id}`;
+          const query =
+            slot === "waitlist"
+              ? "back=dashboard"
+              : `slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(slot)}&people=2&back=dashboard`;
+          setPreviewOpen(false);
+          void navigate(`${publicPath}?${query}`);
+        }}
+      />
     </>
   );
 }

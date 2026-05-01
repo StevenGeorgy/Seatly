@@ -64,6 +64,7 @@ export function TableDetailDrawer({
             onUpdateStatus={onUpdateStatus}
             onCombine={onCombine}
             onEditTable={onEditTable}
+            onClose={onClose}
             canEdit={canEdit}
           />
         ) : null}

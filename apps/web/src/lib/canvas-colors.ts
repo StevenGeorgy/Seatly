@@ -8,7 +8,7 @@ export const CANVAS_COLORS = {
   bgBase: "#0A0A0A",
   /** Match Tailwind `bg-bg-surface` — must match HTML editor chrome so Konva doesn’t show a second “frame”. */
   bgSurface: "#1A1A1A",
-  bgElevated: "#222222",
+  bgElevated: "#141414",
   border: "#2E2E2E",
   textPrimary: "#FFFFFF",
   textSecondary: "#AAAAAA",
@@ -30,17 +30,17 @@ export const CANVAS_COLORS = {
    * Dot grid — slightly lighter than surface so it doesn’t read as a second “black”
    * against `bgSurface` (dark-on-dark looked like two shades).
    */
-  gridDot: "rgba(255, 255, 255, 0.05)",
+  gridDot: "rgba(255, 255, 255, 0.035)",
   /** Subtle radial wash — floor “zone” warmth without busy overlays */
   zoneAmbientCenter: "rgba(201, 168, 76, 0.055)",
   zoneAmbientEdge: "rgba(26, 26, 26, 0)",
   /** Same as room body — single flat floor colour (no darker “gutter” band). */
-  zoneOuterGutter: "#2A2622",
+  zoneOuterGutter: "#0A0A0A",
   /**
    * Floor canvas + zone body — warm charcoal (wood/stone), distinct from `bgSurface` / chrome.
    * Mirrors the venue-floor intent; not a second UI panel grey.
    */
-  zoneBodyFill: "#2A2622",
+  zoneBodyFill: "#0A0A0A",
   /** Gold wash — warm room tint (not subtle) */
   zoneBodyGoldWash: "rgba(201, 168, 76, 0.38)",
   /** Outer frame — premium gold rail; reads in thumbnails */

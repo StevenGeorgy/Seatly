@@ -2,32 +2,19 @@ import type { StaffRole, UserRestaurantRole } from "@/types/auth";
 
 /**
  * Dashboard route → roles allowed (CENAIVA-MASTER-BIBLE.md — Web Dashboard matrix).
- * `/dashboard/schedule` includes all staff roles for clock / hours (product rule).
  */
 export const DASHBOARD_PATH_ROLES: Record<string, readonly StaffRole[]> = {
   "/dashboard": ["owner", "manager"],
   "/dashboard/reservations": ["owner", "manager", "server", "host"],
   "/dashboard/floor-plan": ["owner", "manager", "server", "host"],
-  "/dashboard/waitlist": ["owner", "manager", "host"],
   "/dashboard/orders": ["owner", "manager", "server", "kitchen", "bar"],
   "/dashboard/menu": ["owner", "manager"],
-  "/dashboard/staff": ["owner", "manager"],
-  "/dashboard/schedule": [
-    "owner",
-    "manager",
-    "server",
-    "host",
-    "kitchen",
-    "bar",
-    "staff",
-  ],
   "/dashboard/crm": ["owner", "manager"],
   "/dashboard/analytics": ["owner", "manager"],
   "/dashboard/expenses": ["owner", "manager"],
   "/dashboard/events": ["owner", "manager"],
   "/dashboard/export": ["owner"],
-  "/dashboard/settings": ["owner"],
-  "/dashboard/promotions": ["owner", "manager"],
+  "/dashboard/settings": ["owner", "manager"],
 };
 
 /** Sidebar order — must match keys in `DASHBOARD_PATH_ROLES`. */
@@ -35,18 +22,14 @@ export const DASHBOARD_NAV_ITEMS: readonly { path: string; labelKey: string }[] 
   { path: "/dashboard", labelKey: "routes.dashboard.overview.title" },
   { path: "/dashboard/reservations", labelKey: "routes.dashboard.reservations.title" },
   { path: "/dashboard/floor-plan", labelKey: "routes.dashboard.floorPlan.title" },
-  { path: "/dashboard/waitlist", labelKey: "routes.dashboard.waitlist.title" },
   { path: "/dashboard/orders", labelKey: "routes.dashboard.orders.title" },
   { path: "/dashboard/menu", labelKey: "routes.dashboard.menu.title" },
-  { path: "/dashboard/staff", labelKey: "routes.dashboard.staff.title" },
-  { path: "/dashboard/schedule", labelKey: "routes.dashboard.schedule.title" },
   { path: "/dashboard/crm", labelKey: "routes.dashboard.crm.title" },
   { path: "/dashboard/analytics", labelKey: "routes.dashboard.analytics.title" },
   { path: "/dashboard/expenses", labelKey: "routes.dashboard.expenses.title" },
   { path: "/dashboard/events", labelKey: "routes.dashboard.events.title" },
   { path: "/dashboard/export", labelKey: "routes.dashboard.export.title" },
   { path: "/dashboard/settings", labelKey: "routes.dashboard.settings.title" },
-  { path: "/dashboard/promotions", labelKey: "routes.dashboard.promotions.title" },
 ];
 
 export function normalizeDashboardPath(pathname: string): string {
@@ -80,11 +63,10 @@ export function canAccessDashboardPath(
   return allowed.some((role) => roleSet.has(role));
 }
 
-/** First permitted screen after login / unauthorised redirect (Bible + staff clock default). */
+/** First permitted screen after login / unauthorised redirect. */
 export function getStaffDefaultPath(roleSet: ReadonlySet<StaffRole>): string {
   if (roleSet.has("owner") || roleSet.has("manager")) return "/dashboard";
   if (roleSet.has("kitchen") || roleSet.has("bar")) return "/dashboard/orders";
   if (roleSet.has("server") || roleSet.has("host")) return "/dashboard/reservations";
-  if (roleSet.has("staff")) return "/dashboard/schedule";
-  return "/dashboard/schedule";
+  return "/dashboard/reservations";
 }

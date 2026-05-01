@@ -13,6 +13,7 @@ const HomePage = lazy(() => import("@/pages/marketing/HomePage"));
 const FeaturesPage = lazy(() => import("@/pages/marketing/FeaturesPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
+const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
 const DiscoverPage = lazy(() => import("@/pages/customer/DiscoverPage"));
 const DealsPage = lazy(() => import("@/pages/customer/DealsPage"));
 const RestaurantPublicPage = lazy(() => import("@/pages/customer/RestaurantPublicPage"));
@@ -24,14 +25,10 @@ const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage"));
 const SetupPage = lazy(() => import("@/pages/auth/SetupPage"));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage"));
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
-const PromotionsPage = lazy(() => import("@/pages/dashboard/PromotionsPage"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
-const WaitlistPage = lazy(() => import("@/pages/dashboard/WaitlistPage"));
 const OrdersPage = lazy(() => import("@/pages/dashboard/OrdersPage"));
 const MenuPage = lazy(() => import("@/pages/dashboard/MenuPage"));
-const StaffPage = lazy(() => import("@/pages/dashboard/StaffPage"));
-const SchedulePage = lazy(() => import("@/pages/dashboard/SchedulePage"));
 const CrmPage = lazy(() => import("@/pages/dashboard/CrmPage"));
 const AnalyticsPage = lazy(() => import("@/pages/dashboard/AnalyticsPage"));
 const ExpensesPage = lazy(() => import("@/pages/dashboard/ExpensesPage"));
@@ -95,8 +92,16 @@ export function AppRoutes() {
           path="/account"
           element={
             <RequireAuth>
+              <AccountPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/bookings"
+          element={
+            <RequireAuth>
               <RequireCustomer>
-                <AccountPage />
+                <BookingsPage />
               </RequireCustomer>
             </RequireAuth>
           }
@@ -129,18 +134,14 @@ export function AppRoutes() {
           <Route index element={<OverviewPage />} />
           <Route path="reservations" element={<ReservationsPage />} />
           <Route path="floor-plan" element={<FloorPlanPage />} />
-          <Route path="waitlist" element={<WaitlistPage />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="menu" element={<MenuPage />} />
-          <Route path="staff" element={<StaffPage />} />
-          <Route path="schedule" element={<SchedulePage />} />
           <Route path="crm" element={<CrmPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="expenses" element={<ExpensesPage />} />
           <Route path="events" element={<EventsPage />} />
           <Route path="export" element={<ExportPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="promotions" element={<PromotionsPage />} />
         </Route>
 
         <Route path="/:restaurantSlug" element={<RestaurantPublicPage />} />
