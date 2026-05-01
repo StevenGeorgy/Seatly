@@ -345,7 +345,7 @@ export default function HomePage() {
       {/* ── HERO ───────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_10%,rgba(201,168,76,0.10)_0%,transparent_55%)]" />
-        <div className="relative mx-auto grid w-full max-w-7xl gap-12 px-5 py-20 lg:grid-cols-[1.15fr_1fr] lg:gap-16 lg:px-8 lg:py-28">
+        <div className="relative mx-auto grid w-full max-w-[1680px] gap-12 px-6 py-20 sm:px-8 lg:grid-cols-[1.15fr_1fr] lg:gap-16 lg:px-10 lg:py-28 xl:px-12">
           <div className="flex flex-col">
             <motion.span
               initial={{ opacity: 0, y: 12 }}
@@ -622,7 +622,7 @@ export default function HomePage() {
 
       {/* ── Available tonight ─────────────────────────────────── */}
       <section className="border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-7xl px-5 lg:px-8">
+        <div className="mx-auto w-full max-w-[1680px] px-6 sm:px-8 lg:px-10 xl:px-12">
           <div className="flex items-end justify-between gap-6">
             <div>
               <SectionEyebrow>Available tonight near you</SectionEyebrow>
@@ -706,7 +706,7 @@ export default function HomePage() {
         id="for-restaurants"
         className="scroll-mt-24 border-t border-border/40 bg-bg-surface/30 py-20"
       >
-        <div className="mx-auto grid w-full max-w-7xl gap-12 px-5 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-8">
+        <div className="mx-auto grid w-full max-w-[1680px] gap-12 px-6 sm:px-8 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-10 xl:px-12">
           <div>
             <SectionEyebrow>For restaurants</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
@@ -861,7 +861,7 @@ export default function HomePage() {
         id="hey-cenaiva"
         className="scroll-mt-24 border-t border-border/40 py-20"
       >
-        <div className="mx-auto grid w-full max-w-7xl gap-12 px-5 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-8">
+        <div className="mx-auto grid w-full max-w-[1680px] gap-12 px-6 sm:px-8 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-10 xl:px-12">
           <div>
             <SectionEyebrow>Hey Cenaiva</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
@@ -1022,7 +1022,7 @@ export default function HomePage() {
 
       {/* ── For Diners ─────────────────────────────────── */}
       <section id="loyalty" className="scroll-mt-24 border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-7xl px-5 lg:px-8">
+        <div className="mx-auto w-full max-w-[1680px] px-6 sm:px-8 lg:px-10 xl:px-12">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.4fr]">
             <div>
               <SectionEyebrow>For diners</SectionEyebrow>
@@ -1095,7 +1095,7 @@ export default function HomePage() {
 
       {/* ── Pricing ─────────────────────────────────────── */}
       <section id="pricing" className="scroll-mt-24 border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-7xl px-5 text-center lg:px-8">
+        <div className="mx-auto w-full max-w-[1680px] px-6 text-center sm:px-8 lg:px-10 xl:px-12">
           <SectionEyebrow>Pricing</SectionEyebrow>
           <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
             Free for diners. Honest for restaurants.

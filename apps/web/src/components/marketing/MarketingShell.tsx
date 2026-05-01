@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X, Store } from "lucide-react";
+import { Menu, X, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -17,10 +17,9 @@ const navLinkActive = "text-white";
 
 function MarketingNavLinks({ onClick }: { onClick?: () => void }) {
   const links = [
-    { to: "/#hey-cenaiva", label: "Hey Cenaiva" },
-    { to: "/discover", label: "Discover" },
+    { to: "/#hey-cenaiva", label: "Hey Ceiva" },
     { to: "/#loyalty", label: "Loyalty" },
-    { to: "/#pricing", label: "Cities" },
+    { to: "/#for-restaurants", label: "For Restaurants" },
   ];
 
   return (
@@ -74,7 +73,7 @@ export function MarketingShell({ children }: MarketingShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-7xl items-center px-5 lg:px-8">
+        <div className="mx-auto flex h-16 w-full max-w-[1680px] items-center px-6 sm:px-8 lg:px-10 xl:px-12">
           <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
             <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
               <span className="block size-2.5 rounded-sm bg-gold" />
@@ -92,13 +91,13 @@ export function MarketingShell({ children }: MarketingShellProps) {
           </nav>
 
           <div className="hidden shrink-0 items-center gap-3 md:flex">
-            <a
-              href="#for-restaurants"
+            <Link
+              to="/discover"
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-surface/60 px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:text-white"
             >
-              <Store className="size-3.5 text-gold" />
-              For restaurants
-            </a>
+              <Search className="size-3.5 text-gold" />
+              Discover
+            </Link>
             <LangToggle />
             <Link
               to="/login"
@@ -132,13 +131,13 @@ export function MarketingShell({ children }: MarketingShellProps) {
             >
               <div className="flex flex-col gap-1 px-5 py-3">
                 <MarketingNavLinks onClick={() => setMobileOpen(false)} />
-                <a
-                  href="#for-restaurants"
+                <Link
+                  to="/discover"
                   className="px-3 py-1.5 text-sm text-text-secondary"
                   onClick={() => setMobileOpen(false)}
                 >
-                  For restaurants
-                </a>
+                  Discover
+                </Link>
                 <div className="my-2 h-px bg-border/50" />
                 <div className="flex items-center gap-2">
                   <Button variant="outline" size="sm" className="flex-1" asChild>
@@ -210,7 +209,7 @@ function MarketingFooter() {
 
   return (
     <footer className="border-t border-border/40 bg-background py-16">
-      <div className="mx-auto grid w-full max-w-7xl gap-10 px-5 md:grid-cols-[1.4fr_repeat(4,1fr)] lg:px-8">
+      <div className="mx-auto grid w-full max-w-[1680px] gap-10 px-6 sm:px-8 md:grid-cols-[1.4fr_repeat(4,1fr)] lg:px-10 xl:px-12">
         <div className="max-w-xs">
           <Link to="/" className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
@@ -257,7 +256,7 @@ function MarketingFooter() {
           </div>
         ))}
       </div>
-      <div className="mx-auto mt-12 flex w-full max-w-7xl flex-col items-start justify-between gap-2 border-t border-border/40 px-5 pt-6 text-xs text-text-muted sm:flex-row sm:items-center lg:px-8">
+      <div className="mx-auto mt-12 flex w-full max-w-[1680px] flex-col items-start justify-between gap-2 border-t border-border/40 px-6 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-8 lg:px-10 xl:px-12">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
         <span className="font-mono">v2.4.1</span>
       </div>
