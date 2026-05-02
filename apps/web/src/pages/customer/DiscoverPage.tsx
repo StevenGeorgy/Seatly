@@ -743,7 +743,7 @@ export default function DiscoverPage() {
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-border/40 bg-background/85 backdrop-blur-xl">
-        <div className="flex h-16 w-full items-center px-5 lg:px-8">
+        <div className="mx-auto flex h-16 w-full max-w-[1320px] items-center px-5 lg:px-8">
           <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
             <span className="flex size-7 items-center justify-center rounded-md bg-gold/15">
               <span className="block size-2.5 rounded-sm bg-gold" />
@@ -853,7 +853,7 @@ export default function DiscoverPage() {
         </div>
       </header>
 
-      <main className="w-full px-5 py-10 lg:px-8 lg:py-12">
+      <main className="mx-auto w-full max-w-[1320px] px-5 py-10 lg:px-8 lg:py-12">
         {/* Greeting */}
         <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
         <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">

@@ -17,9 +17,9 @@ const navLinkActive = "text-white";
 
 function MarketingNavLinks({ onClick }: { onClick?: () => void }) {
   const links = [
-    { to: "/#hey-cenaiva", label: "Hey Ceiva" },
-    { to: "/#loyalty", label: "Loyalty" },
-    { to: "/#for-restaurants", label: "For Restaurants" },
+    { to: "/hey-cenaiva", label: "Hey Cenaiva" },
+    { to: "/loyalty", label: "Loyalty" },
+    { to: "/restaurants", label: "For Restaurants" },
   ];
 
   return (
@@ -73,7 +73,7 @@ export function MarketingShell({ children }: MarketingShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-[1680px] items-center px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="mx-auto flex h-16 w-full max-w-[1320px] items-center px-6 sm:px-8 lg:px-10 xl:px-12">
           <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
             <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
               <span className="block size-2.5 rounded-sm bg-gold" />
@@ -209,7 +209,7 @@ function MarketingFooter() {
 
   return (
     <footer className="border-t border-border/40 bg-background py-16">
-      <div className="mx-auto grid w-full max-w-[1680px] gap-10 px-6 sm:px-8 md:grid-cols-[1.4fr_repeat(4,1fr)] lg:px-10 xl:px-12">
+      <div className="mx-auto grid w-full max-w-[1320px] gap-10 px-6 sm:px-8 md:grid-cols-[1.4fr_repeat(4,1fr)] lg:px-10 xl:px-12">
         <div className="max-w-xs">
           <Link to="/" className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
@@ -256,7 +256,7 @@ function MarketingFooter() {
           </div>
         ))}
       </div>
-      <div className="mx-auto mt-12 flex w-full max-w-[1680px] flex-col items-start justify-between gap-2 border-t border-border/40 px-6 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-8 lg:px-10 xl:px-12">
+      <div className="mx-auto mt-12 flex w-full max-w-[1320px] flex-col items-start justify-between gap-2 border-t border-border/40 px-6 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-8 lg:px-10 xl:px-12">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
         <span className="font-mono">v2.4.1</span>
       </div>

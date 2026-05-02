@@ -11,6 +11,9 @@ import { RouteFallback } from "@/components/routing/RouteFallback";
 
 const HomePage = lazy(() => import("@/pages/marketing/HomePage"));
 const FeaturesPage = lazy(() => import("@/pages/marketing/FeaturesPage"));
+const HeyCenaivaPage = lazy(() => import("@/pages/marketing/HeyCenaivaPage"));
+const LoyaltyPage = lazy(() => import("@/pages/marketing/LoyaltyPage"));
+const RestaurantsPage = lazy(() => import("@/pages/marketing/RestaurantsPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
@@ -43,6 +46,9 @@ export function AppRoutes() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/features" element={<FeaturesPage />} />
+        <Route path="/hey-cenaiva" element={<HeyCenaivaPage />} />
+        <Route path="/loyalty" element={<LoyaltyPage />} />
+        <Route path="/restaurants" element={<RestaurantsPage />} />
         <Route path="/about" element={<AboutPage />} />
 
         <Route

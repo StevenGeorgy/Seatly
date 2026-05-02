@@ -395,10 +395,7 @@ export function DashboardSidebar() {
             animate={{ x: 0 }}
             exit={{ x: "-100%" }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className={cn(
-              "fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border sm:hidden",
-              isFloorPlanRoute ? "bg-bg-surface" : "bg-card",
-            )}
+            className="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border bg-bg-base sm:hidden"
           >
             {sidebarContent}
           </motion.aside>
@@ -407,10 +404,7 @@ export function DashboardSidebar() {
 
       {/* Desktop sidebar */}
       <aside
-        className={cn(
-          "hidden w-56 shrink-0 flex-col border-r border-border sm:flex",
-          isFloorPlanRoute ? "bg-bg-surface" : "bg-card",
-        )}
+        className="hidden w-56 shrink-0 flex-col border-r border-border bg-bg-base sm:flex"
       >
         {sidebarContent}
       </aside>
