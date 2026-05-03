@@ -8,9 +8,6 @@ import {
   Receipt,
   Sparkles,
   Star,
-  Ticket,
-  Trophy,
-  Users,
   WalletCards,
 } from "lucide-react";
 

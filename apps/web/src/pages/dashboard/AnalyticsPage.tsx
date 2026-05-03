@@ -132,7 +132,10 @@ function RevenueChart() {
               }}
               labelStyle={{ color: "var(--text-muted)" }}
               itemStyle={{ color: "var(--text-primary)" }}
-              formatter={(value: number, name: string) => [`$${value.toLocaleString()}`, name]}
+              formatter={(value, name) => {
+                const amount = typeof value === "number" ? value : Number(value ?? 0);
+                return [`$${amount.toLocaleString()}`, String(name)];
+              }}
             />
             <Bar dataKey="food" stackId="rev" fill={COLORS.food} radius={[0, 0, 0, 0]} />
             <Bar dataKey="drinks" stackId="rev" fill={COLORS.drinks} radius={[0, 0, 0, 0]} />

@@ -16,6 +16,8 @@ import {
   X,
 } from "lucide-react";
 
+import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
+import type { EventPromotionDisplay } from "@/lib/customer/eventPromotionDisplay";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -155,6 +157,40 @@ const EVENT_ROWS = [
   },
 ];
 
+function previewEventToDisplay(
+  event: (typeof EVENT_ROWS)[number],
+  restaurant: RestaurantPreviewSummary,
+  currencyCode: string,
+): EventPromotionDisplay {
+  return {
+    id: `${restaurant.id}-${event.title}`,
+    source: "event",
+    restaurantName: restaurant.name,
+    restaurantSlug: null,
+    cuisineLabel: restaurant.cuisine,
+    cityLabel: restaurant.city,
+    priceRangeLabel: restaurant.price,
+    ratingLabel: `${restaurant.rating.toFixed(1)} stars`,
+    title: event.title,
+    description: "Hosted on-site with limited seats and a dedicated service experience.",
+    badgeLabel: event.type,
+    availabilityLabel: `${event.spots} left`,
+    imageUrl: null,
+    imageLabel: event.type,
+    mediaUrl: null,
+    mediaType: null,
+    mediaName: null,
+    dateLabel: event.when,
+    timeLabel: "Select a reservation time",
+    priceLabel: `${formatCurrency(event.price, currencyCode)} / person`,
+    perCoverLabel: `${formatCurrency(event.price, currencyCode)} / person`,
+    seatsLabel: `${event.spots} seats left`,
+    actionLabel: "Book",
+    promoCode: null,
+    isActive: true,
+  };
+}
+
 function shortTime(time: string): string {
   return time
     .replace(":00 PM", "p")
@@ -246,7 +282,7 @@ export function RestaurantPreviewModal({
     <AnimatePresence>
       {restaurant && (
         <motion.div
-          className="fixed inset-0 z-50 overflow-y-auto bg-black/85 px-4 py-6 backdrop-blur-md sm:px-6"
+          className="fixed inset-0 z-[80] overflow-y-auto bg-black/85 px-4 py-6 backdrop-blur-md sm:px-6"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -587,34 +623,14 @@ export function RestaurantPreviewModal({
                         <p className="mt-1 text-xs text-text-muted">
                           Tasting menus, wine evenings, and chef's table experiences hosted on-site.
                         </p>
-                        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <div className="mt-4 grid gap-4">
                           {EVENT_ROWS.map((event) => (
-                            <article key={event.title} className="overflow-hidden rounded-2xl border border-border bg-bg-elevated">
-                              <div className="relative">
-                                <StripeArt label={event.type} className="min-h-36 rounded-none" />
-                                <div className="absolute left-3 top-3 flex gap-2">
-                                  <span className="rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-gold">
-                                    {event.type}
-                                  </span>
-                                  <span className="rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-gold">
-                                    {event.spots} left
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="p-4">
-                                <p className="font-serif text-xl leading-tight text-white">{event.title}</p>
-                                <p className="mt-2 text-xs text-text-secondary">
-                                  {event.when} · {formatCurrency(event.price, currencyCode)} / person
-                                </p>
-                                <button
-                                  type="button"
-                                  onClick={() => onReserve(selectedTime)}
-                                  className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-md bg-gold text-xs font-semibold text-black transition-opacity hover:opacity-90"
-                                >
-                                  Reserve a spot
-                                </button>
-                              </div>
-                            </article>
+                            <EventPromotionDetailCard
+                              key={event.title}
+                              item={previewEventToDisplay(event, restaurant, currencyCode)}
+                              onReserve={() => onReserve(selectedTime)}
+                              className="shadow-none"
+                            />
                           ))}
                         </div>
                       </section>

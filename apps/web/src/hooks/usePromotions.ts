@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import {
+  EVENT_MEDIA_SUPPORT_MESSAGE,
+  resolveEventMedia,
+  type EventMediaUpload,
+} from "@/hooks/useEvents";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type PromoType = "bogo" | "percentage" | "fixed" | "free_item";
 export type AppliesTo = "all" | "dine_in";
 export type BadgeColor = "amber" | "green" | "red" | "blue";
+export type RecurrenceFrequency = "daily" | "weekly" | "monthly";
 
 export type PromotionRow = {
   id: string;
@@ -30,6 +36,15 @@ export type PromotionRow = {
   eligible_item_ids: string[];
   buy_quantity: number;
   get_quantity: number;
+  cover_image_url: string | null;
+  media_url: string | null;
+  media_type: "image" | "pdf" | null;
+  media_name: string | null;
+  is_recurring: boolean;
+  recurrence_frequency: RecurrenceFrequency | null;
+  recurrence_interval: number;
+  recurrence_days: number[];
+  recurrence_end_at: string | null;
   created_at: string;
 };
 
@@ -72,13 +87,14 @@ export function useAllActivePromotions() {
           name,
           slug,
           cuisine_type,
+          avg_rating,
           cover_photo_url,
           city,
           price_range
         )
       `)
       .eq("is_active", true)
-      .or("ends_at.is.null,ends_at.gt." + new Date().toISOString())
+      .or(`and(is_recurring.eq.false,or(ends_at.is.null,ends_at.gt.${new Date().toISOString()})),and(is_recurring.eq.true,or(recurrence_end_at.is.null,recurrence_end_at.gt.${new Date().toISOString()}))`)
       .order("created_at", { ascending: false });
 
     setPromotions((data ?? []) as unknown as PromotionWithRestaurant[]);
@@ -147,6 +163,29 @@ export function usePromotions() {
     return null;
   }, [fetch]);
 
+  const uploadPromotionMedia = useCallback(async (file: File): Promise<EventMediaUpload | string> => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return "No restaurant selected.";
+
+    const media = resolveEventMedia(file);
+    if (!media) return EVENT_MEDIA_SUPPORT_MESSAGE;
+
+    const client = getSupabaseBrowserClient();
+    const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
+    const path = `${selectedRestaurantId}/${crypto.randomUUID()}-${safeName}`;
+    const { error } = await client.storage
+      .from("event-media")
+      .upload(path, file, { cacheControl: "3600", contentType: media.mime, upsert: false });
+
+    if (error) return error.message;
+
+    const { data } = client.storage.from("event-media").getPublicUrl(path);
+    return {
+      url: data.publicUrl,
+      type: media.kind,
+      name: file.name,
+    };
+  }, [selectedRestaurantId]);
+
   const deletePromotion = useCallback(async (id: string) => {
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
@@ -159,7 +198,7 @@ export function usePromotions() {
     return true;
   }, [fetch]);
 
-  return { promotions, loading, saving, refetch: fetch, createPromotion, updatePromotion, deletePromotion };
+  return { promotions, loading, saving, refetch: fetch, createPromotion, updatePromotion, deletePromotion, uploadPromotionMedia };
 }
 
 export function getPromotionLabel(promo: Pick<PromotionRow, "promo_type" | "discount_value" | "discount_unit">): string {

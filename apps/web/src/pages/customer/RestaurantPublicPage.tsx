@@ -638,7 +638,16 @@ export default function RestaurantPublicPage() {
    *  than the generic "Back to Discover" CTA. */
   const cameFromCenaivaPrepay = !!searchParams.get("order_id");
   const isStaffPreview = searchParams.get("preview") === "dashboard";
-  const backTarget = searchParams.get("back") === "dashboard" ? "/dashboard" : "/discover";
+  const backParam = searchParams.get("back");
+  const returnDetail = searchParams.get("returnDetail");
+  const backTarget =
+    backParam === "dashboard"
+      ? "/dashboard"
+      : backParam === "deals"
+        ? returnDetail
+          ? `/deals?detail=${encodeURIComponent(returnDetail)}`
+          : "/deals"
+        : "/discover";
   const requestedBookingTime = searchParams.get("time") ?? searchParams.get("slot");
   const initialBookingTime = requestedBookingTime && TIMES.includes(requestedBookingTime)
     ? requestedBookingTime

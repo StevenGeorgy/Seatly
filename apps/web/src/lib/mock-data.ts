@@ -285,4 +285,12 @@ export const MOCK_EVENTS: EventRow[] = ([
   { id: "ev-2", restaurant_id: RID, name: "Jazz & Cocktails Night", description: "Live jazz trio with handcrafted cocktail specials all evening.", date: daysFromNow(12), start_time: "20:00", end_time: "23:30", price_per_person: null, capacity: 60, tickets_sold: 0, is_recurring: true, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(7) },
   { id: "ev-3", restaurant_id: RID, name: "Chef's Table Experience", description: "Intimate 8-seat dinner cooked tableside by Chef Marco. Weekly rotating menu.", date: daysFromNow(3), start_time: "19:30", end_time: "22:30", price_per_person: 150.00, capacity: 8, tickets_sold: 7, is_recurring: true, cover_image_url: null, min_age: null, dress_code: "Business casual", is_private: true, created_at: daysAgo(21) },
   { id: "ev-4", restaurant_id: RID, name: "Easter Brunch Buffet", description: "Family-friendly brunch featuring a live carving station, omelette bar, and kids activities.", date: daysFromNow(20), start_time: "10:30", end_time: "14:00", price_per_person: 45.00, capacity: 80, tickets_sold: 34, is_recurring: false, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(10) },
-]).map((event) => ({ theme: null, ...event }));
+]).map((event) => ({
+  end_date: null,
+  is_active: true,
+  media_url: null,
+  media_type: null,
+  media_name: null,
+  theme: null,
+  ...event,
+}));

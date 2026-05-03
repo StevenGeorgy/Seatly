@@ -8,7 +8,6 @@ import {
   Check,
   Home,
   MessageCircle,
-  Mic2,
   Smartphone,
   Sparkles,
   Watch,

@@ -9,13 +9,18 @@ export type EventRow = {
   name: string;
   description: string | null;
   date: string;
+  end_date: string | null;
   start_time: string | null;
   end_time: string | null;
   price_per_person: number | null;
   capacity: number | null;
   tickets_sold: number;
+  is_active: boolean;
   is_recurring: boolean;
   cover_image_url: string | null;
+  media_url: string | null;
+  media_type: "image" | "pdf" | null;
+  media_name: string | null;
   min_age: number | null;
   dress_code: string | null;
   is_private: boolean;
@@ -23,17 +28,116 @@ export type EventRow = {
   created_at: string | null;
 };
 
+export type EventWithRestaurant = EventRow & {
+  restaurants: {
+    name: string;
+    slug: string;
+    cuisine_type: string | null;
+    avg_rating: number | null;
+    cover_photo_url: string | null;
+    city: string | null;
+    price_range: number | null;
+  };
+};
+
 export type CreateEventPayload = {
   name: string;
   description?: string | null;
   date: string;
+  end_date?: string | null;
   start_time?: string | null;
   end_time?: string | null;
   price_per_person?: number | null;
   capacity?: number | null;
   theme?: string | null;
   cover_image_url?: string | null;
+  media_url?: string | null;
+  media_type?: "image" | "pdf" | null;
+  media_name?: string | null;
+  is_active?: boolean;
 };
+
+export type EventMediaUpload = {
+  url: string;
+  type: "image" | "pdf";
+  name: string;
+};
+
+type EventMediaKind = EventMediaUpload["type"];
+
+const SUPPORTED_EVENT_MEDIA_TYPES: Array<{
+  kind: EventMediaKind;
+  mime: string;
+  extensions: string[];
+}> = [
+  { kind: "image", mime: "image/jpeg", extensions: ["jpg", "jpeg"] },
+  { kind: "image", mime: "image/png", extensions: ["png"] },
+  { kind: "image", mime: "image/webp", extensions: ["webp"] },
+  { kind: "image", mime: "image/gif", extensions: ["gif"] },
+  { kind: "image", mime: "image/avif", extensions: ["avif"] },
+  { kind: "image", mime: "image/heic", extensions: ["heic"] },
+  { kind: "image", mime: "image/heif", extensions: ["heif"] },
+  { kind: "pdf", mime: "application/pdf", extensions: ["pdf"] },
+];
+
+export const EVENT_MEDIA_ACCEPT = SUPPORTED_EVENT_MEDIA_TYPES
+  .flatMap((type) => [type.mime, ...type.extensions.map((extension) => `.${extension}`)])
+  .join(",");
+
+export const EVENT_MEDIA_SUPPORT_MESSAGE = "Upload a JPG, PNG, WebP, GIF, AVIF, HEIC, HEIF, or PDF file.";
+
+export function resolveEventMedia(file: File): { kind: EventMediaKind; mime: string } | null {
+  const mime = file.type.toLowerCase();
+  const byMime = SUPPORTED_EVENT_MEDIA_TYPES.find((type) => type.mime === mime);
+  if (byMime) return { kind: byMime.kind, mime: byMime.mime };
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (!extension) return null;
+
+  const byExtension = SUPPORTED_EVENT_MEDIA_TYPES.find((type) => type.extensions.includes(extension));
+  return byExtension ? { kind: byExtension.kind, mime: byExtension.mime } : null;
+}
+
+export function useAllActiveEvents() {
+  const [events, setEvents] = useState<EventWithRestaurant[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchEvents = useCallback(async () => {
+    setLoading(true);
+    if (!isSupabaseConfigured()) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const client = getSupabaseBrowserClient();
+    const { data } = await client
+      .from("events")
+      .select(`
+        *,
+        restaurants (
+          name,
+          slug,
+          cuisine_type,
+          avg_rating,
+          cover_photo_url,
+          city,
+          price_range
+        )
+      `)
+      .eq("is_active", true)
+      .or(`end_date.gte.${today},and(end_date.is.null,date.gte.${today})`)
+      .order("date", { ascending: true });
+
+    setEvents((data ?? []) as unknown as EventWithRestaurant[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { void fetchEvents(); }, [fetchEvents]);
+
+  return { events, loading, refetch: fetchEvents };
+}
 
 export function useEvents() {
   const { selectedRestaurantId } = useRestaurantScope();
@@ -76,7 +180,14 @@ export function useEvents() {
     const client = getSupabaseBrowserClient();
     const { error } = await client
       .from("events")
-      .insert({ ...payload, restaurant_id: selectedRestaurantId, is_active: true, tickets_sold: 0, is_recurring: false, is_private: false });
+      .insert({
+        ...payload,
+        restaurant_id: selectedRestaurantId,
+        is_active: payload.is_active ?? true,
+        tickets_sold: 0,
+        is_recurring: false,
+        is_private: false,
+      });
     setSaving(false);
     if (error) return error.message;
     await fetchEvents();
@@ -94,6 +205,29 @@ export function useEvents() {
     return null;
   }, [fetchEvents]);
 
+  const uploadEventMedia = useCallback(async (file: File): Promise<EventMediaUpload | string> => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return "No restaurant selected.";
+
+    const media = resolveEventMedia(file);
+    if (!media) return EVENT_MEDIA_SUPPORT_MESSAGE;
+
+    const client = getSupabaseBrowserClient();
+    const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
+    const path = `${selectedRestaurantId}/${crypto.randomUUID()}-${safeName}`;
+    const { error } = await client.storage
+      .from("event-media")
+      .upload(path, file, { cacheControl: "3600", contentType: media.mime, upsert: false });
+
+    if (error) return error.message;
+
+    const { data } = client.storage.from("event-media").getPublicUrl(path);
+    return {
+      url: data.publicUrl,
+      type: media.kind,
+      name: file.name,
+    };
+  }, [selectedRestaurantId]);
+
   const deleteEvent = useCallback(async (id: string) => {
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
@@ -103,5 +237,5 @@ export function useEvents() {
     return true;
   }, [fetchEvents]);
 
-  return { events, loading, saving, error, refetch: fetchEvents, createEvent, updateEvent, deleteEvent };
+  return { events, loading, saving, error, refetch: fetchEvents, createEvent, updateEvent, deleteEvent, uploadEventMedia };
 }

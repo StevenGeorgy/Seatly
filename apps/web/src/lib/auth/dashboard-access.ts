@@ -13,6 +13,7 @@ export const DASHBOARD_PATH_ROLES: Record<string, readonly StaffRole[]> = {
   "/dashboard/analytics": ["owner", "manager"],
   "/dashboard/expenses": ["owner", "manager"],
   "/dashboard/events": ["owner", "manager"],
+  "/dashboard/promotions": ["owner", "manager"],
   "/dashboard/export": ["owner"],
   "/dashboard/settings": ["owner", "manager"],
 };
@@ -28,6 +29,7 @@ export const DASHBOARD_NAV_ITEMS: readonly { path: string; labelKey: string }[] 
   { path: "/dashboard/analytics", labelKey: "routes.dashboard.analytics.title" },
   { path: "/dashboard/expenses", labelKey: "routes.dashboard.expenses.title" },
   { path: "/dashboard/events", labelKey: "routes.dashboard.events.title" },
+  { path: "/dashboard/promotions", labelKey: "routes.dashboard.promotions.title" },
   { path: "/dashboard/export", labelKey: "routes.dashboard.export.title" },
   { path: "/dashboard/settings", labelKey: "routes.dashboard.settings.title" },
 ];

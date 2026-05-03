@@ -36,6 +36,7 @@ const CrmPage = lazy(() => import("@/pages/dashboard/CrmPage"));
 const AnalyticsPage = lazy(() => import("@/pages/dashboard/AnalyticsPage"));
 const ExpensesPage = lazy(() => import("@/pages/dashboard/ExpensesPage"));
 const EventsPage = lazy(() => import("@/pages/dashboard/EventsPage"));
+const PromotionsPage = lazy(() => import("@/pages/dashboard/PromotionsPage"));
 const ExportPage = lazy(() => import("@/pages/dashboard/ExportPage"));
 const SettingsPage = lazy(() => import("@/pages/dashboard/SettingsPage"));
 const FloorPlanPage = lazy(() => import("@/pages/dashboard/FloorPlanPage"));
@@ -146,6 +147,7 @@ export function AppRoutes() {
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="expenses" element={<ExpensesPage />} />
           <Route path="events" element={<EventsPage />} />
+          <Route path="promotions" element={<PromotionsPage />} />
           <Route path="export" element={<ExportPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
