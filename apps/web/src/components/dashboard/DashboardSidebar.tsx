@@ -25,6 +25,7 @@ import {
   Eye,
   Bell,
   LogOut,
+  Store,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -58,6 +59,7 @@ const ICONS: Record<string, typeof LayoutDashboard> = {
   "/dashboard/expenses": Receipt,
   "/dashboard/events": PartyPopper,
   "/dashboard/export": FileDown,
+  "/dashboard/restaurant": Store,
   "/dashboard/settings": Settings,
   "/dashboard/promotions": Tag,
 };

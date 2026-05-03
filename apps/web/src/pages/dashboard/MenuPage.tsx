@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ImageIcon, MoreVertical, Pencil, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
+import { ImageIcon, Pencil, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 
@@ -8,13 +8,6 @@ import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -22,12 +15,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { MenuSuggestionsPanel } from "@/components/dashboard/menu/MenuSuggestionsPanel";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { useMenuCategories, useMenuItems, type MenuCategoryRow, type MenuItemRow } from "@/hooks/useMenuItems";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  MENU_IMAGE_ACCEPT,
+  MENU_IMAGE_SUPPORT_MESSAGE,
+  resolveMenuItemImage,
+  useMenuCategories,
+  useMenuItems,
+  type MenuCategoryRow,
+  type MenuItemRow,
+} from "@/hooks/useMenuItems";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 const DEMO_RESTAURANT_ID = "demo-menu";
+const MENU_ITEM_DESCRIPTION_MAX_LENGTH = 120;
+const MENU_CATEGORY_DESCRIPTION_MAX_LENGTH = 90;
 
 const DEMO_CATEGORIES: MenuCategoryRow[] = [
   { id: "snacks", restaurant_id: DEMO_RESTAURANT_ID, name: "Snacks", name_fr: null, description: "Small bites", sort_order: 0, available_from: null, available_to: null, is_active: true },
@@ -50,23 +52,113 @@ const DEMO_ITEMS: MenuItemRow[] = [
 
 const TAG_OPTIONS = ["Vegetarian", "Vegan", "GF", "DF", "Spicy", "Signature"];
 
+function CharacterLimitStatus({ value, max, helper }: { value: string; max: number; helper: string }) {
+  const atLimit = value.length >= max;
+  return (
+    <div className="mt-2 text-[11px] text-text-muted">
+      <p>{helper}</p>
+      <p className={cn("mt-1 font-mono text-[10px]", atLimit && "text-warning")}>
+        {value.length}/{max}
+      </p>
+      {atLimit && <p className="mt-1 text-warning">Character limit reached.</p>}
+    </div>
+  );
+}
+
+function MenuImageDropzone({
+  file,
+  imageUrl,
+  onFile,
+  onImageUrl,
+  onClear,
+}: {
+  file: File | null;
+  imageUrl: string;
+  onFile: (file: File) => void;
+  onImageUrl: (url: string) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFiles = (files: FileList | null) => {
+    const next = files?.[0];
+    if (!next) return;
+    if (!resolveMenuItemImage(next)) {
+      toast.error(MENU_IMAGE_SUPPORT_MESSAGE);
+      return;
+    }
+    onFile(next);
+  };
+
+  return (
+    <div className="space-y-3">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          handleFiles(event.dataTransfer.files);
+        }}
+        className="flex min-h-48 w-full flex-col items-center justify-center overflow-hidden rounded-xl border border-dashed border-border bg-bg-base text-center text-text-muted transition-colors hover:border-gold/40 hover:text-text-secondary"
+      >
+        {imageUrl ? (
+          <img src={imageUrl} alt="" className="h-48 w-full object-cover" />
+        ) : (
+          <>
+            <Upload className="size-7" />
+            <p className="mt-3 text-sm">Upload image</p>
+            <p className="mt-1 max-w-52 text-xs leading-5">Drag an image here, or click to browse.</p>
+          </>
+        )}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={MENU_IMAGE_ACCEPT}
+        className="hidden"
+        onChange={(event) => handleFiles(event.target.files)}
+      />
+      <Input
+        value={file ? file.name : imageUrl}
+        onChange={(event) => onImageUrl(event.target.value)}
+        placeholder="Paste photo URL"
+      />
+      {(file || imageUrl) && (
+        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+          Clear image
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export default function MenuPage() {
   const { t } = useTranslation();
   const { selectedRestaurant, selectedRestaurantId } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
-  const { categories, loading: catLoading, refetch: refetchCats } = useMenuCategories();
-  const [selectedCategory, setSelectedCategory] = useState<string | undefined>("hors-doeuvre");
-  const { items, loading: itemsLoading, refetch } = useMenuItems(selectedCategory);
+  const { categories, loading: catLoading, createCategory, updateCategory, deleteCategory } = useMenuCategories();
+  const [selectedCategory, setSelectedCategory] = useState<string | undefined>(undefined);
+  const {
+    items,
+    loading: itemsLoading,
+    createItem,
+    updateItem,
+    deleteItem,
+    uploadMenuItemImage,
+  } = useMenuItems();
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
 
   const [localCategories, setLocalCategories] = useState<MenuCategoryRow[]>([]);
   const [localItems, setLocalItems] = useState<MenuItemRow[]>([]);
+  const [hiddenCategoryIds, setHiddenCategoryIds] = useState<Set<string>>(() => new Set());
   const [hiddenItemIds, setHiddenItemIds] = useState<Set<string>>(() => new Set());
-  const [availabilityOverrides, setAvailabilityOverrides] = useState<Record<string, boolean>>({});
 
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [newCatName, setNewCatName] = useState("");
   const [newCatDesc, setNewCatDesc] = useState("");
+  const [editCategory, setEditCategory] = useState<MenuCategoryRow | null>(null);
+  const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
   const [savingCat, setSavingCat] = useState(false);
 
   const [itemModalOpen, setItemModalOpen] = useState(false);
@@ -76,41 +168,73 @@ export default function MenuPage() {
   const [itemPrice, setItemPrice] = useState("");
   const [itemCategory, setItemCategory] = useState<string>("");
   const [itemTags, setItemTags] = useState<string[]>([]);
-  const [itemFeatured, setItemFeatured] = useState(false);
+  const [itemPhotoUrl, setItemPhotoUrl] = useState("");
+  const [selectedItemFile, setSelectedItemFile] = useState<File | null>(null);
+  const [itemPhotoPreviewUrl, setItemPhotoPreviewUrl] = useState("");
+  const itemPhotoObjectUrlRef = useRef<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const displayCategories = useMemo(() => {
-    const base = categories.length > 0 ? categories : DEMO_CATEGORIES;
-    return [...base, ...localCategories].sort((a, b) => a.sort_order - b.sort_order);
-  }, [categories, localCategories]);
+    const base = categories.length > 0 ? categories : selectedRestaurantId ? [] : DEMO_CATEGORIES;
+    const byId = new Map<string, MenuCategoryRow>();
+    [...base, ...localCategories].forEach((category) => {
+      if (!hiddenCategoryIds.has(category.id)) byId.set(category.id, category);
+    });
+    return [...byId.values()].sort((a, b) => a.sort_order - b.sort_order);
+  }, [categories, hiddenCategoryIds, localCategories, selectedRestaurantId]);
 
-  const activeCategoryId = selectedCategory ?? displayCategories[0]?.id;
+  const activeCategoryId = selectedCategory && displayCategories.some((category) => category.id === selectedCategory)
+    ? selectedCategory
+    : displayCategories[0]?.id;
   const activeCategory = displayCategories.find((category) => category.id === activeCategoryId) ?? displayCategories[0];
 
   const displayItems = useMemo(() => {
-    const baseItems = items.length > 0 ? items : DEMO_ITEMS;
-    const rows = [...baseItems, ...localItems]
-      .filter((item) => !hiddenItemIds.has(item.id))
-      .map((item) => ({
-        ...item,
-        is_available: availabilityOverrides[item.id] ?? item.is_available,
-      }));
+    const baseItems = items.length > 0 ? items : selectedRestaurantId ? [] : DEMO_ITEMS;
+    const rows = [...baseItems, ...localItems].filter((item) => !hiddenItemIds.has(item.id));
     return activeCategoryId ? rows.filter((item) => item.category_id === activeCategoryId) : rows;
-  }, [activeCategoryId, availabilityOverrides, hiddenItemIds, items, localItems]);
+  }, [activeCategoryId, hiddenItemIds, items, localItems, selectedRestaurantId]);
 
   const countsByCategory = useMemo(() => {
-    const rows = [...(items.length > 0 ? items : DEMO_ITEMS), ...localItems].filter(
+    const baseItems = items.length > 0 ? items : selectedRestaurantId ? [] : DEMO_ITEMS;
+    const rows = [...baseItems, ...localItems].filter(
       (item) => !hiddenItemIds.has(item.id),
     );
     return new Map(displayCategories.map((category) => [
       category.id,
       rows.filter((item) => item.category_id === category.id).length,
     ]));
-  }, [displayCategories, hiddenItemIds, items, localItems]);
+  }, [displayCategories, hiddenItemIds, items, localItems, selectedRestaurantId]);
 
   const loading = catLoading || itemsLoading;
-  const featuredCount = displayItems.filter((item) => item.is_featured).length;
+  const availableCount = displayItems.filter((item) => item.is_available).length;
+
+  const clearItemPhotoObjectUrl = () => {
+    if (itemPhotoObjectUrlRef.current) {
+      URL.revokeObjectURL(itemPhotoObjectUrlRef.current);
+      itemPhotoObjectUrlRef.current = null;
+    }
+  };
+
+  useEffect(() => () => clearItemPhotoObjectUrl(), []);
+
+  const resetCategoryForm = () => {
+    setNewCatName("");
+    setNewCatDesc("");
+    setEditCategory(null);
+  };
+
+  const openAddCategory = () => {
+    resetCategoryForm();
+    setCategoryModalOpen(true);
+  };
+
+  const openEditCategory = (category: MenuCategoryRow) => {
+    setEditCategory(category);
+    setNewCatName(category.name);
+    setNewCatDesc((category.description ?? "").slice(0, MENU_CATEGORY_DESCRIPTION_MAX_LENGTH));
+    setCategoryModalOpen(true);
+  };
 
   const resetItemForm = () => {
     setItemName("");
@@ -118,7 +242,10 @@ export default function MenuPage() {
     setItemPrice("");
     setItemCategory(activeCategory?.id ?? displayCategories[0]?.id ?? "");
     setItemTags([]);
-    setItemFeatured(false);
+    setItemPhotoUrl("");
+    setSelectedItemFile(null);
+    setItemPhotoPreviewUrl("");
+    clearItemPhotoObjectUrl();
   };
 
   const openAddItem = () => {
@@ -130,11 +257,14 @@ export default function MenuPage() {
   const openEditItem = (item: MenuItemRow) => {
     setEditItem(item);
     setItemName(item.name);
-    setItemDesc(item.description ?? "");
+    setItemDesc((item.description ?? "").slice(0, MENU_ITEM_DESCRIPTION_MAX_LENGTH));
     setItemPrice(String(item.price));
     setItemCategory(item.category_id ?? activeCategory?.id ?? "");
     setItemTags([...(item.dietary_flags ?? []), ...(item.allergens ?? [])]);
-    setItemFeatured(item.is_featured);
+    setItemPhotoUrl(item.photo_url ?? "");
+    setSelectedItemFile(null);
+    setItemPhotoPreviewUrl(item.photo_url ?? "");
+    clearItemPhotoObjectUrl();
     setItemModalOpen(true);
   };
 
@@ -144,52 +274,71 @@ export default function MenuPage() {
     );
   };
 
-  const handleAddCategory = async () => {
+  const handleSaveCategory = async () => {
     if (!newCatName.trim()) {
       toast.error("Category name is required.");
       return;
     }
     setSavingCat(true);
-    if (!selectedRestaurantId || !isSupabaseConfigured()) {
-      const category: MenuCategoryRow = {
-        id: `local-cat-${Date.now()}`,
-        restaurant_id: DEMO_RESTAURANT_ID,
+    try {
+      const payload = {
         name: newCatName.trim(),
-        name_fr: null,
-        description: newCatDesc.trim() || null,
-        sort_order: displayCategories.length,
-        available_from: null,
-        available_to: null,
-        is_active: true,
+        description: newCatDesc.trim().slice(0, MENU_CATEGORY_DESCRIPTION_MAX_LENGTH) || null,
+        sort_order: editCategory?.sort_order ?? displayCategories.length,
       };
-      setLocalCategories((current) => [...current, category]);
-      setSelectedCategory(category.id);
-      setSavingCat(false);
+
+      if (editCategory) {
+        await updateCategory(editCategory.id, payload);
+        if (!selectedRestaurantId || editCategory.id.startsWith("demo-") || editCategory.id.startsWith("local-")) {
+          const updatedCategory: MenuCategoryRow = {
+            ...editCategory,
+            name: payload.name,
+            description: payload.description,
+          };
+          setLocalCategories((current) => (
+            current.some((category) => category.id === editCategory.id)
+              ? current.map((category) => (category.id === editCategory.id ? updatedCategory : category))
+              : [...current, updatedCategory]
+          ));
+        }
+        setSelectedCategory(editCategory.id);
+        toast.success("Category updated.");
+      } else {
+        const category = await createCategory(payload);
+        if (category?.id.startsWith("local-")) {
+          setLocalCategories((current) => [...current, category]);
+        }
+        if (category) setSelectedCategory(category.id);
+        toast.success("Category added.");
+      }
       setCategoryModalOpen(false);
-      setNewCatName("");
-      setNewCatDesc("");
-      toast.success("Category added.");
+      resetCategoryForm();
+    } catch {
+      toast.error(editCategory ? "Could not update category." : "Could not add category.");
+    } finally {
+      setSavingCat(false);
+    }
+  };
+
+  const handleDeleteCategory = async (id: string) => {
+    const itemCount = countsByCategory.get(id) ?? 0;
+    if (itemCount > 0) {
+      toast.error("Move or delete this category's items first.");
       return;
     }
 
-    const client = getSupabaseBrowserClient();
-    const { error } = await client.from("menu_categories").insert({
-      restaurant_id: selectedRestaurantId,
-      name: newCatName.trim(),
-      description: newCatDesc.trim() || null,
-      sort_order: displayCategories.length,
-      is_active: true,
-    });
-    setSavingCat(false);
-    if (error) {
-      toast.error("Could not add category.");
-      return;
+    try {
+      if (id.startsWith("demo-") || id.startsWith("local-") || !selectedRestaurantId) {
+        setHiddenCategoryIds((current) => new Set(current).add(id));
+      } else {
+        await deleteCategory(id);
+      }
+      setSelectedCategory((current) => (current === id ? undefined : current));
+      setDeleteCategoryId(null);
+      toast.success("Category removed.");
+    } catch {
+      toast.error("Could not delete category.");
     }
-    setCategoryModalOpen(false);
-    setNewCatName("");
-    setNewCatDesc("");
-    void refetchCats();
-    toast.success("Category added.");
   };
 
   const handleSaveItem = async () => {
@@ -198,106 +347,72 @@ export default function MenuPage() {
       return;
     }
 
-    const payload = {
-      name: itemName.trim(),
-      description: itemDesc.trim() || null,
-      price: parseFloat(itemPrice) || 0,
-      category_id: itemCategory || null,
-      restaurant_id: selectedRestaurantId ?? DEMO_RESTAURANT_ID,
-      dietary_flags: itemTags.filter((tag) => !tag.includes("GF") && !tag.includes("DF")),
-      allergens: itemTags.filter((tag) => tag === "GF" || tag === "DF"),
-      is_featured: itemFeatured,
-    };
-
     setSavingItem(true);
-    if (!selectedRestaurantId || !isSupabaseConfigured()) {
-      if (editItem) {
-        setLocalItems((current) =>
-          current.map((item) => (item.id === editItem.id ? { ...item, ...payload } : item)),
-        );
-      } else {
-        setLocalItems((current) => [
-          ...current,
-          {
-            id: `local-item-${Date.now()}`,
-            name_fr: null,
-            description_fr: null,
-            cost_price: null,
-            photo_url: null,
-            calories: null,
-            is_available: true,
-            is_preorderable: false,
-            is_active: true,
-            preparation_time_minutes: null,
-            spice_level: itemTags.includes("Spicy") ? "medium" : null,
-            loyalty_points_value: null,
-            sort_order: displayItems.length,
-            category: displayCategories.find((category) => category.id === itemCategory)?.name ?? null,
-            ...payload,
-          },
-        ]);
+    try {
+      let photoUrl = itemPhotoUrl.trim() || null;
+      if (selectedItemFile) {
+        const uploadedUrl = await uploadMenuItemImage(selectedItemFile);
+        if (!uploadedUrl.startsWith("http")) {
+          toast.error(uploadedUrl);
+          return;
+        }
+        photoUrl = uploadedUrl;
       }
-      setSavingItem(false);
-      setItemModalOpen(false);
-      toast.success(editItem ? "Item updated." : "Item added.");
-      return;
-    }
 
-    const client = getSupabaseBrowserClient();
-    if (editItem) {
-      const { error } = await client.from("menu_items").update(payload).eq("id", editItem.id);
-      if (error) {
-        toast.error("Could not update item.");
-        setSavingItem(false);
-        return;
-      }
-      toast.success("Item updated.");
-    } else {
-      const { error } = await client.from("menu_items").insert({
-        ...payload,
-        is_available: true,
-        is_active: true,
-        is_preorderable: false,
+      const selectedCategoryName = displayCategories.find((category) => category.id === itemCategory)?.name ?? null;
+      const payload = {
+        name: itemName.trim(),
+        description: itemDesc.trim().slice(0, MENU_ITEM_DESCRIPTION_MAX_LENGTH) || null,
+        price: parseFloat(itemPrice) || 0,
+        category_id: itemCategory || null,
+        category: selectedCategoryName,
+        photo_url: photoUrl,
+        dietary_flags: itemTags.filter((tag) => !tag.includes("GF") && !tag.includes("DF")),
+        allergens: itemTags.filter((tag) => tag === "GF" || tag === "DF"),
         sort_order: displayItems.length,
-      });
-      if (error) {
-        toast.error("Could not add item.");
-        setSavingItem(false);
-        return;
-      }
-      toast.success("Item added.");
-    }
-    setSavingItem(false);
-    setItemModalOpen(false);
-    void refetch();
-  };
+      };
 
-  const toggle86 = async (itemId: string, currentlyAvailable: boolean) => {
-    if (!selectedRestaurantId || !isSupabaseConfigured() || itemId.startsWith("demo-") || itemId.startsWith("local-")) {
-      setAvailabilityOverrides((current) => ({ ...current, [itemId]: !currentlyAvailable }));
-      return;
+      if (editItem) {
+        await updateItem(editItem.id, payload);
+        if (editItem.id.startsWith("demo-") || editItem.id.startsWith("local-")) {
+          setLocalItems((current) => {
+            const updatedItem = { ...editItem, ...payload };
+            return current.some((item) => item.id === editItem.id)
+              ? current.map((item) => (item.id === editItem.id ? updatedItem : item))
+              : [...current, updatedItem];
+          });
+        }
+        toast.success("Item updated.");
+      } else {
+        const item = await createItem(payload);
+        if (item?.id.startsWith("local-")) {
+          setLocalItems((current) => [...current, item]);
+        }
+        toast.success("Item added.");
+      }
+      setItemModalOpen(false);
+      setSelectedItemFile(null);
+    } catch {
+      toast.error(editItem ? "Could not update item." : "Could not add item.");
+    } finally {
+      setSavingItem(false);
     }
-    const client = getSupabaseBrowserClient();
-    await client.from("menu_items").update({ is_available: !currentlyAvailable }).eq("id", itemId);
-    void refetch();
   };
 
   const handleDeleteItem = async (id: string) => {
-    if (!selectedRestaurantId || !isSupabaseConfigured() || id.startsWith("demo-") || id.startsWith("local-")) {
+    if (id.startsWith("demo-") || id.startsWith("local-")) {
       setHiddenItemIds((current) => new Set(current).add(id));
       setDeleteId(null);
       toast.success("Item removed.");
       return;
     }
-    const client = getSupabaseBrowserClient();
-    const { error } = await client.from("menu_items").update({ is_active: false }).eq("id", id);
-    if (error) {
+    try {
+      await deleteItem(id);
+      toast.success("Item removed.");
+      setDeleteId(null);
+    } catch {
       toast.error("Could not delete item.");
-      return;
     }
-    toast.success("Item removed.");
-    setDeleteId(null);
-    void refetch();
   };
 
   return (
@@ -334,7 +449,7 @@ export default function MenuPage() {
             <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Section</p>
             <h2 className="mt-2 font-serif text-5xl leading-none text-white">{activeCategory?.name ?? "Menu"}</h2>
             <p className="mt-2 text-xs text-text-muted">
-              {displayItems.length} items · {featuredCount} featured
+              {displayItems.length} items · {availableCount} available
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -361,27 +476,53 @@ export default function MenuPage() {
               <button
                 key={category.id}
                 type="button"
-                onClick={() => setSelectedCategory(category.id)}
+                onClick={(event) => {
+                  setSelectedCategory(category.id);
+                  event.currentTarget.blur();
+                }}
                 className={cn(
-                  "shrink-0 border-b py-4 text-xs transition-colors",
+                  "relative shrink-0 py-4 text-xs transition-colors focus:outline-none",
                   active
-                    ? "border-gold text-gold"
-                    : "border-transparent text-text-muted hover:text-text-secondary",
+                    ? "text-gold"
+                    : "text-text-muted hover:text-text-secondary",
                 )}
               >
                 {category.name} <span className="ml-1 text-[10px]">{countsByCategory.get(category.id) ?? 0}</span>
+                {active && <span aria-hidden className="absolute inset-x-0 bottom-0 h-px bg-gold" />}
               </button>
             );
           })}
         </div>
-        <Button
-          variant="ghost"
-          className="h-9 shrink-0 gap-2 rounded-lg px-3 text-xs text-gold hover:bg-gold/10 hover:text-gold"
-          onClick={() => setCategoryModalOpen(true)}
-        >
-          <Plus className="size-3.5" />
-          New category
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {activeCategory && (
+            <>
+              <Button
+                variant="ghost"
+                className="h-9 gap-2 rounded-lg px-3 text-xs text-text-secondary hover:bg-bg-elevated hover:text-white"
+                onClick={() => openEditCategory(activeCategory)}
+              >
+                <Pencil className="size-3.5" />
+                Edit category
+              </Button>
+              <Button
+                variant="ghost"
+                className="h-9 gap-2 rounded-lg px-3 text-xs text-danger hover:bg-danger/10 hover:text-danger"
+                onClick={() => setDeleteCategoryId(activeCategory.id)}
+              >
+                <Trash2 className="size-3.5" />
+                Delete category
+              </Button>
+            </>
+          )}
+          <Button
+            variant="ghost"
+            className="h-9 gap-2 rounded-lg px-3 text-xs text-gold hover:bg-gold/10 hover:text-gold"
+            onClick={openAddCategory}
+          >
+            <Plus className="size-3.5" />
+            New category
+          </Button>
+        </div>
       </div>
 
       <div className="px-6 py-5">
@@ -427,7 +568,6 @@ export default function MenuPage() {
                   currency={currency}
                   onEdit={() => openEditItem(item)}
                   onDelete={() => setDeleteId(item.id)}
-                  onToggleAvailable={() => void toggle86(item.id, item.is_available)}
                 />
               ))}
             </AnimatePresence>
@@ -436,128 +576,212 @@ export default function MenuPage() {
       </div>
 
       <Dialog open={itemModalOpen} onOpenChange={setItemModalOpen}>
-        <DialogContent className="max-w-3xl border-gold/30 bg-bg-surface p-8 text-text-primary" showCloseButton={false}>
+        <DialogContent className="flex max-h-[88vh] w-[calc(100vw-2rem)] max-w-5xl flex-col overflow-hidden border-gold/30 bg-bg-surface p-0 text-text-primary sm:max-w-5xl" showCloseButton={false}>
           <DialogHeader>
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
               <div>
                 <p className="font-mono text-xs uppercase tracking-[0.24em] text-text-muted">Add to menu</p>
                 <DialogTitle className="mt-2 font-serif text-4xl font-normal text-white">
                   {editItem ? "Edit item" : "New item"}
                 </DialogTitle>
+                <p className="mt-2 text-sm text-text-muted">Create the diner-facing menu card with the essentials first.</p>
               </div>
-              <button type="button" className="text-text-muted hover:text-white" onClick={() => setItemModalOpen(false)}>
+              <button
+                type="button"
+                className="rounded-lg p-1 text-text-muted transition-colors hover:bg-bg-elevated hover:text-white"
+                onClick={() => setItemModalOpen(false)}
+              >
                 <X className="size-5" />
               </button>
             </div>
           </DialogHeader>
 
-          <div className="mt-4 space-y-6">
-            <div>
-              <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Photo</Label>
-              <div className="mt-3 flex h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg-base text-text-muted">
-                <ImageIcon className="size-7" />
-                <p className="mt-3 text-sm">Add a photo</p>
-                <p className="mt-1 text-xs">JPG or PNG · drop or click</p>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.85fr)] lg:items-start">
+              <section className="min-w-0 rounded-2xl border border-border bg-bg-elevated/35 p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Item details</p>
+                <div className="mt-4 grid gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="menu-item-name">Name</Label>
+                    <Input
+                      id="menu-item-name"
+                      value={itemName}
+                      onChange={(event) => setItemName(event.target.value)}
+                      placeholder="e.g. Burrata & stone fruit"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="menu-item-description">Description</Label>
+                    <Textarea
+                      id="menu-item-description"
+                      rows={3}
+                      value={itemDesc}
+                      maxLength={MENU_ITEM_DESCRIPTION_MAX_LENGTH}
+                      onChange={(event) => setItemDesc(event.target.value.slice(0, MENU_ITEM_DESCRIPTION_MAX_LENGTH))}
+                      className="min-h-24 resize-none rounded-xl border-border bg-bg-elevated text-sm leading-6"
+                      placeholder="Two or three ingredients, plainly named."
+                    />
+                    <CharacterLimitStatus
+                      value={itemDesc}
+                      max={MENU_ITEM_DESCRIPTION_MAX_LENGTH}
+                      helper="Keep this short so menu cards stay easy to scan."
+                    />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Category</Label>
+                      <Select value={itemCategory} onValueChange={setItemCategory}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {displayCategories.map((category) => (
+                            <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="menu-item-price">Price ($)</Label>
+                      <Input
+                        id="menu-item-price"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={itemPrice}
+                        onChange={(event) => setItemPrice(event.target.value)}
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="min-w-0 rounded-2xl border border-border bg-bg-elevated/35 p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Media</p>
+                <p className="mt-1 text-xs text-text-muted">Upload an image or paste a photo URL.</p>
+                <div className="mt-4">
+                  <MenuImageDropzone
+                    file={selectedItemFile}
+                    imageUrl={itemPhotoPreviewUrl}
+                    onFile={(file) => {
+                      clearItemPhotoObjectUrl();
+                      const objectUrl = URL.createObjectURL(file);
+                      itemPhotoObjectUrlRef.current = objectUrl;
+                      setSelectedItemFile(file);
+                      setItemPhotoUrl("");
+                      setItemPhotoPreviewUrl(objectUrl);
+                    }}
+                    onImageUrl={(url) => {
+                      clearItemPhotoObjectUrl();
+                      setSelectedItemFile(null);
+                      setItemPhotoUrl(url);
+                      setItemPhotoPreviewUrl(url);
+                    }}
+                    onClear={() => {
+                      clearItemPhotoObjectUrl();
+                      setSelectedItemFile(null);
+                      setItemPhotoUrl("");
+                      setItemPhotoPreviewUrl("");
+                    }}
+                  />
+                </div>
+              </section>
+            </div>
+
+            <section className="mt-4 rounded-2xl border border-border bg-bg-elevated/35 p-4">
+              <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1fr)] lg:items-start">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Options</p>
+                  <div className="mt-4">
+                    <Label>Tags</Label>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {TAG_OPTIONS.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => toggleTag(tag)}
+                          className={cn(
+                            "rounded-full border px-3 py-2 text-xs transition-colors",
+                            itemTags.includes(tag)
+                              ? "border-gold bg-gold/15 text-gold"
+                              : "border-border bg-bg-base text-text-secondary hover:text-white",
+                          )}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
+
+                <div className="rounded-xl border border-border bg-bg-base/70 p-4">
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Preview</p>
+                  <div className="mt-4 flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      {itemPhotoPreviewUrl && (
+                        <div className="mb-4 h-24 overflow-hidden rounded-lg border border-border bg-bg-elevated">
+                          <img src={itemPhotoPreviewUrl} alt="" className="size-full object-cover" />
+                        </div>
+                      )}
+                      <p className="truncate font-serif text-xl text-white">{itemName.trim() || "Menu item name"}</p>
+                      <p className="mt-1 line-clamp-2 text-sm text-text-muted">
+                        {itemDesc.trim() || "A short description will appear on the diner-facing menu card."}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {itemTags.slice(0, 3).map((tag) => (
+                          <span key={tag} className="rounded-full border border-border px-2 py-1 text-[10px] text-text-muted">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <span className="shrink-0 font-serif text-2xl text-gold">
+                      {formatCurrency(parseFloat(itemPrice) || 0, currency)}
+                    </span>
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div>
-              <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Name</Label>
-              <Input
-                value={itemName}
-                onChange={(event) => setItemName(event.target.value)}
-                className="mt-3 h-14 rounded-xl border-border bg-bg-elevated text-base"
-                placeholder="e.g. Burrata & stone fruit"
-              />
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-[1fr_180px]">
-              <div>
-                <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Category</Label>
-                <Select value={itemCategory} onValueChange={setItemCategory}>
-                  <SelectTrigger className="mt-3 h-12 rounded-xl border-border bg-bg-base">
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {displayCategories.map((category) => (
-                      <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Price ($)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={itemPrice}
-                  onChange={(event) => setItemPrice(event.target.value)}
-                  className="mt-3 h-12 rounded-xl border-border bg-bg-base text-base"
-                  placeholder="0.00"
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Description</Label>
-              <Textarea
-                rows={3}
-                value={itemDesc}
-                onChange={(event) => setItemDesc(event.target.value)}
-                className="mt-3 rounded-xl border-border bg-bg-base text-base"
-                placeholder="Two or three ingredients, plainly named."
-              />
-            </div>
-
-            <div>
-              <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Tags</Label>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {TAG_OPTIONS.map((tag) => (
-                  <button
-                    key={tag}
-                    type="button"
-                    onClick={() => toggleTag(tag)}
-                    className={cn(
-                      "rounded-full border px-4 py-2 text-sm transition-colors",
-                      itemTags.includes(tag)
-                        ? "border-gold bg-gold/15 text-gold"
-                        : "border-border bg-bg-base text-text-secondary hover:text-white",
-                    )}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <label className="flex items-center gap-3 text-sm text-text-secondary">
-              <input
-                type="checkbox"
-                checked={itemFeatured}
-                onChange={(event) => setItemFeatured(event.target.checked)}
-                className="size-4 accent-gold"
-              />
-              Mark as featured
-            </label>
+            </section>
           </div>
 
-          <DialogFooter className="-mx-8 -mb-8 mt-7 border-border bg-bg-surface px-8 py-5">
-            <Button variant="ghost" onClick={() => setItemModalOpen(false)}>Cancel</Button>
-            <Button disabled={savingItem} onClick={() => void handleSaveItem()} className="min-w-36">
-              {savingItem ? "Saving..." : editItem ? "Save changes" : "Add to menu"}
+          <div className="flex shrink-0 items-center justify-end gap-3 border-t border-border bg-bg-surface px-6 py-4 sm:px-7 sm:py-5">
+            <Button
+              variant="ghost"
+              onClick={() => setItemModalOpen(false)}
+              className="h-11 rounded-xl px-5"
+            >
+              Cancel
             </Button>
-          </DialogFooter>
+            <Button
+              disabled={savingItem}
+              onClick={() => void handleSaveItem()}
+              className="h-11 min-w-32 rounded-xl px-6"
+            >
+              {savingItem ? "Saving..." : editItem ? "Save changes" : "Save item"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={categoryModalOpen} onOpenChange={setCategoryModalOpen}>
+      <Dialog
+        open={categoryModalOpen}
+        onOpenChange={(open) => {
+          setCategoryModalOpen(open);
+          if (!open) resetCategoryForm();
+        }}
+      >
         <DialogContent className="max-w-xl border-gold/30 bg-bg-surface p-8 text-text-primary" showCloseButton={false}>
           <DialogHeader>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="font-mono text-xs uppercase tracking-[0.24em] text-text-muted">Add to menu</p>
-                <DialogTitle className="mt-2 font-serif text-4xl font-normal text-white">New category</DialogTitle>
+                <DialogTitle className="mt-2 font-serif text-4xl font-normal text-white">
+                  {editCategory ? "Edit category" : "New category"}
+                </DialogTitle>
               </div>
               <button type="button" className="text-text-muted hover:text-white" onClick={() => setCategoryModalOpen(false)}>
                 <X className="size-5" />
@@ -578,16 +802,45 @@ export default function MenuPage() {
               <Label className="font-mono text-xs uppercase tracking-[0.22em] text-text-muted">Description</Label>
               <Textarea
                 value={newCatDesc}
-                onChange={(event) => setNewCatDesc(event.target.value)}
+                maxLength={MENU_CATEGORY_DESCRIPTION_MAX_LENGTH}
+                onChange={(event) => setNewCatDesc(event.target.value.slice(0, MENU_CATEGORY_DESCRIPTION_MAX_LENGTH))}
                 className="mt-3 rounded-xl border-border bg-bg-base"
                 placeholder="Short note for this section."
+              />
+              <CharacterLimitStatus
+                value={newCatDesc}
+                max={MENU_CATEGORY_DESCRIPTION_MAX_LENGTH}
+                helper="Keep section descriptions brief."
               />
             </div>
           </div>
           <DialogFooter className="-mx-8 -mb-8 mt-7 border-border bg-bg-surface px-8 py-5">
             <Button variant="ghost" onClick={() => setCategoryModalOpen(false)}>Cancel</Button>
-            <Button disabled={savingCat} onClick={() => void handleAddCategory()} className="min-w-36">
-              {savingCat ? "Saving..." : "Add category"}
+            <Button disabled={savingCat} onClick={() => void handleSaveCategory()} className="min-w-36">
+              {savingCat ? "Saving..." : editCategory ? "Save changes" : "Add category"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteCategoryId} onOpenChange={(open) => { if (!open) setDeleteCategoryId(null); }}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Remove category?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-text-secondary">
+            {deleteCategoryId && (countsByCategory.get(deleteCategoryId) ?? 0) > 0
+              ? "This category still has menu items. Move or delete those items before removing the category."
+              : "This category will be hidden from the menu. This cannot be undone."}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteCategoryId(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!!deleteCategoryId && (countsByCategory.get(deleteCategoryId) ?? 0) > 0}
+              onClick={() => deleteCategoryId && void handleDeleteCategory(deleteCategoryId)}
+            >
+              Remove
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -617,14 +870,12 @@ function MenuCard({
   currency,
   onEdit,
   onDelete,
-  onToggleAvailable,
 }: {
   item: MenuItemRow;
   index: number;
   currency: string;
   onEdit: () => void;
   onDelete: () => void;
-  onToggleAvailable: () => void;
 }) {
   const margin = item.cost_price && item.price > 0 ? ((item.price - item.cost_price) / item.price) * 100 : null;
   const orderDelta = item.id.includes("sardines") ? "-22%" : item.id.includes("trout") ? "+4%" : "+1%";
@@ -639,17 +890,25 @@ function MenuCard({
       className="group overflow-hidden rounded-xl border border-border bg-bg-surface shadow-xl shadow-black/20 transition-colors hover:border-gold/35"
     >
       <div className="relative h-32 overflow-hidden border-b border-border bg-gold/10">
-        <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.14)_0,rgba(201,168,76,0.14)_4px,transparent_4px,transparent_12px)]" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="flex size-8 items-center justify-center rounded-full border border-gold/35 text-gold/45">
-            <ImageIcon className="size-4" />
+        {item.photo_url ? (
+          <img src={item.photo_url} alt="" className="size-full object-cover" />
+        ) : (
+          <>
+            <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.14)_0,rgba(201,168,76,0.14)_4px,transparent_4px,transparent_12px)]" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="flex size-8 items-center justify-center rounded-full border border-gold/35 text-gold/45">
+                <ImageIcon className="size-4" />
+              </div>
+            </div>
+          </>
+        )}
+        {!item.is_available && (
+          <div className="absolute inset-0 flex items-center justify-center bg-bg-base/70">
+            <span className="rounded-full border border-border bg-bg-surface px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+              Unavailable
+            </span>
           </div>
-        </div>
-        {item.is_featured ? (
-          <span className="absolute left-3 top-3 rounded bg-gold/80 px-2 py-1 text-[10px] font-medium text-bg-base">
-            Featured
-          </span>
-        ) : null}
+        )}
       </div>
 
       <div className="p-4">
@@ -658,27 +917,8 @@ function MenuCard({
             <h3 className="truncate font-serif text-lg leading-tight text-white">{item.name}</h3>
             <p className="mt-2 line-clamp-1 text-xs text-text-muted">{item.description}</p>
           </div>
-          <div className="flex shrink-0 items-start gap-1">
+          <div className="shrink-0 text-right">
             <span className="font-serif text-xl text-gold">{formatCurrency(item.price, currency)}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="size-7 text-text-muted opacity-0 transition-opacity group-hover:opacity-100">
-                  <MoreVertical className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={onEdit}>
-                  <Pencil className="mr-2 size-3.5" /> Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onToggleAvailable}>
-                  {item.is_available ? "86 item" : "Restore item"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
-                  <Trash2 className="mr-2 size-3.5" /> Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           </div>
         </div>
 
@@ -696,6 +936,29 @@ function MenuCard({
           {!item.is_available ? (
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-danger">86'd</span>
           ) : null}
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 rounded-lg text-xs"
+            onClick={onEdit}
+          >
+            <Pencil className="size-3.5" />
+            Edit item
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 rounded-lg border border-danger/20 bg-danger/10 text-xs text-danger hover:bg-danger/15 hover:text-danger"
+            onClick={onDelete}
+          >
+            <Trash2 className="size-3.5" />
+            Delete
+          </Button>
         </div>
 
         <div className="mt-5 flex items-end justify-between">

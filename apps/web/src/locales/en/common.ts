@@ -512,6 +512,7 @@ const common = {
       saveFailed: "Could not save settings. Try again.",
     },
     shell: {
+      dashboard: "Dashboard",
       restaurant: "Restaurant",
       navLabel: "Dashboard navigation",
       signOut: "Sign out",
@@ -562,6 +563,7 @@ const common = {
       expenses: { title: "Expenses" },
       events: { title: "Events" },
       export: { title: "Export" },
+      restaurantInfo: { title: "Restaurant info" },
       settings: { title: "Settings" },
       promotions: { title: "Promotions" },
     },

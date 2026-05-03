@@ -702,9 +702,6 @@ function EventFormDialog({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-3">
                     <Label htmlFor="event-description">Description</Label>
-                    <span className="text-[11px] text-text-muted">
-                      {descriptionValue.length}/{EVENT_DESCRIPTION_MAX_LENGTH}
-                    </span>
                   </div>
                   <textarea
                     id="event-description"
@@ -714,9 +711,20 @@ function EventFormDialog({
                     placeholder="Describe what diners can expect."
                     className="min-h-24 resize-none rounded-xl border border-border bg-bg-elevated px-3 py-2 text-sm leading-6 text-text-primary outline-none placeholder:text-text-muted focus:border-gold/40"
                   />
-                  <p className="text-[11px] text-text-muted">
-                    Keep this to 2-3 short lines so the diner card stays readable.
-                  </p>
+                  <div className="text-[11px] text-text-muted">
+                    <p>Keep this to 2-3 short lines so the diner card stays readable.</p>
+                    <p
+                      className={cn(
+                        "mt-1 font-mono text-[10px]",
+                        descriptionValue.length >= EVENT_DESCRIPTION_MAX_LENGTH && "text-warning",
+                      )}
+                    >
+                      {descriptionValue.length}/{EVENT_DESCRIPTION_MAX_LENGTH}
+                    </p>
+                    {descriptionValue.length >= EVENT_DESCRIPTION_MAX_LENGTH && (
+                      <p className="mt-1 text-warning">Character limit reached.</p>
+                    )}
+                  </div>
                   {errors.description && <p className="text-xs text-danger">{errors.description.message}</p>}
                 </div>
 
@@ -1237,9 +1245,15 @@ export default function EventsPage() {
             />
           ))}
           {visibleEvents.length === 0 && (
-            <div className="col-span-full rounded-2xl border border-dashed border-border bg-bg-surface/40 p-10 text-center">
+            <div className="col-span-full flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-bg-surface/40 p-10 text-center lg:min-h-[520px]">
               <Ticket className="mx-auto size-8 text-text-muted" />
               <p className="mt-3 text-sm text-text-muted">No {phase} events.</p>
+              {events.length === 0 && (
+                <Button size="default" className="mt-4 gap-2" onClick={openCreate}>
+                  <Plus className="size-4" />
+                  Create event
+                </Button>
+              )}
             </div>
           )}
         </section>

@@ -15,6 +15,10 @@ const navLinkClass =
   "text-text-secondary hover:text-white px-3 py-1.5 text-sm font-medium transition-colors duration-200 relative";
 const navLinkActive = "text-white";
 
+function navigateToAuth(path: "/login" | "/register") {
+  window.location.assign(path);
+}
+
 function MarketingNavLinks({ onClick }: { onClick?: () => void }) {
   const links = [
     { to: "/hey-cenaiva", label: "Hey Cenaiva" },
@@ -99,14 +103,20 @@ export function MarketingShell({ children }: MarketingShellProps) {
               Discover
             </Link>
             <LangToggle />
-            <Link
-              to="/login"
+            <button
+              type="button"
+              onClick={() => navigateToAuth("/login")}
               className="text-sm font-medium text-text-secondary transition-colors hover:text-white"
             >
               Log in
-            </Link>
-            <Button size="sm" className="rounded-full px-5 font-semibold" asChild>
-              <Link to="/register">Sign up</Link>
+            </button>
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-full px-5 font-semibold"
+              onClick={() => navigateToAuth("/register")}
+            >
+              Sign up
             </Button>
           </div>
 
@@ -141,14 +151,26 @@ export function MarketingShell({ children }: MarketingShellProps) {
                 <div className="my-2 h-px bg-border/50" />
                 <div className="flex items-center gap-2">
                   <Button variant="outline" size="sm" className="flex-1" asChild>
-                    <Link to="/login" onClick={() => setMobileOpen(false)}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        navigateToAuth("/login");
+                      }}
+                    >
                       Log in
-                    </Link>
+                    </button>
                   </Button>
                   <Button size="sm" className="flex-1" asChild>
-                    <Link to="/register" onClick={() => setMobileOpen(false)}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        navigateToAuth("/register");
+                      }}
+                    >
                       Sign up
-                    </Link>
+                    </button>
                   </Button>
                 </div>
               </div>

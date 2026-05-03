@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { format, parse, isValid } from "date-fns";
 import {
@@ -7,12 +8,9 @@ import {
   CheckCircle2,
   ChevronDown,
   CreditCard,
-  Palette,
   Plus,
   Settings as SettingsIcon,
-  Store,
   X,
-  Clock,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -116,6 +114,8 @@ const CURRENCY_OPTIONS = [
   { value: "mxn", label: "MXN — Mexican Peso" },
 ];
 
+const RESTAURANT_DESCRIPTION_MAX_LENGTH = 200;
+
 function isLight(hex: string): boolean {
   const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
   if (!match) return false;
@@ -126,14 +126,47 @@ function isLight(hex: string): boolean {
 }
 
 type SectionKey = "restaurant" | "hours" | "billing" | "notifications" | "theme";
+type RestaurantInfoSectionKey = Extract<SectionKey, "restaurant" | "hours" | "theme">;
+type SettingsSectionKey = Extract<SectionKey, "billing" | "notifications">;
 
-const NAV: { key: SectionKey; label: string; icon: typeof Store }[] = [
-  { key: "restaurant", label: "Restaurant", icon: Store },
-  { key: "hours", label: "Hours & calendar", icon: Clock },
+const RESTAURANT_INFO_NAV: { key: RestaurantInfoSectionKey; label: string }[] = [
+  { key: "restaurant", label: "Restaurant info" },
+  { key: "hours", label: "Hours & calendar" },
+  { key: "theme", label: "Theme" },
+];
+
+const SETTINGS_NAV: { key: SettingsSectionKey; label: string; icon: typeof CreditCard }[] = [
   { key: "billing", label: "Billing", icon: CreditCard },
   { key: "notifications", label: "Notifications", icon: Bell },
-  { key: "theme", label: "Theme", icon: Palette },
 ];
+
+const SECTION_META: Record<SectionKey, { eyebrow: string; title: string; subtitle: string }> = {
+  restaurant: {
+    eyebrow: "Configuration",
+    title: "Restaurant info",
+    subtitle: "How Cenaiva and your guests see your restaurant.",
+  },
+  hours: {
+    eyebrow: "Configuration",
+    title: "Hours & calendar",
+    subtitle: "Service windows, closures, and exceptions.",
+  },
+  billing: {
+    eyebrow: "Configuration",
+    title: "Settings",
+    subtitle: "Billing and notifications that keep operations running.",
+  },
+  notifications: {
+    eyebrow: "Configuration",
+    title: "Settings",
+    subtitle: "Billing and notifications that keep operations running.",
+  },
+  theme: {
+    eyebrow: "Configuration",
+    title: "Theme",
+    subtitle: "Customize the colors that brand the dashboard for your restaurant.",
+  },
+};
 
 function SectionHeading({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
@@ -144,12 +177,12 @@ function SectionHeading({ title, subtitle }: { title: string; subtitle?: string 
   );
 }
 
-function FieldRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function FieldRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
     <div className="grid items-start gap-3 border-t border-border/50 px-6 py-5 first:border-t-0 sm:grid-cols-[200px_1fr] sm:gap-6 sm:px-7 sm:py-6">
       <div className="min-w-0">
         <p className="text-sm font-medium text-text-primary">{label}</p>
-        {hint && <p className="mt-1 text-xs text-text-muted">{hint}</p>}
+        {hint && <div className="mt-1 text-xs text-text-muted">{hint}</div>}
       </div>
       <div>{children}</div>
     </div>
@@ -203,8 +236,15 @@ const NOTIFICATION_GROUPS = [
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   const { t } = useTranslation();
+  const { pathname } = useLocation();
   const { selectedRestaurant, refreshRestaurants } = useRestaurantScope();
-  const [section, setSection] = useState<SectionKey>("restaurant");
+  const [restaurantInfoSection, setRestaurantInfoSection] = useState<RestaurantInfoSectionKey>("restaurant");
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("billing");
+  const normalizedPathname = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const isRestaurantInfoRoute = normalizedPathname === "/dashboard/restaurant";
+  const section: SectionKey = isRestaurantInfoRoute ? restaurantInfoSection : settingsSection;
+  const isStandaloneSection = isRestaurantInfoRoute;
+  const pageMeta = isRestaurantInfoRoute ? SECTION_META.restaurant : SECTION_META[section];
 
   // Restaurant info state
   const [restaurantName, setRestaurantName] = useState(selectedRestaurant?.name ?? "");
@@ -218,6 +258,7 @@ export default function SettingsPage() {
   const [restaurantInitial, setRestaurantInitial] = useState<{
     name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean;
   } | null>(null);
+  const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
 
   // Hours
   const [hours, setHours] = useState<DayHours[]>(defaultHours);
@@ -265,7 +306,7 @@ export default function SettingsPage() {
         const c = data.cuisine_type ?? "";
         const a = data.address ?? "";
         const p = (data as { phone?: string | null }).phone ?? "";
-        const d = data.description ?? "";
+        const d = (data.description ?? "").slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH);
         setCuisine(c);
         setAddress(a);
         setPhone(p);
@@ -310,7 +351,7 @@ export default function SettingsPage() {
         cuisine_type: cuisine.trim() || null,
         address: address.trim() || null,
         phone: phone.trim() || null,
-        description: description.trim() || null,
+        description: description.trim().slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH) || null,
         currency,
         has_bar: hasBar,
       })
@@ -394,35 +435,60 @@ export default function SettingsPage() {
       >
         <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
           <SettingsIcon className="size-3.5" />
-          Configuration
+          {pageMeta.eyebrow}
         </p>
-        <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Settings</h1>
-        <p className="mt-1 text-sm italic text-text-muted">Everything that doesn't change night to night.</p>
+        <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">{pageMeta.title}</h1>
+        <p className="mt-1 text-sm italic text-text-muted">{pageMeta.subtitle}</p>
       </motion.header>
 
-      <div className="grid gap-8 lg:grid-cols-[220px_1fr]">
-        <nav className="flex flex-col gap-1">
-          {NAV.map((item) => {
-            const Icon = item.icon;
-            const active = section === item.key;
+      {isRestaurantInfoRoute && (
+        <div className="flex w-fit max-w-full flex-wrap gap-1.5 rounded-2xl border border-border bg-bg-surface p-1.5">
+          {RESTAURANT_INFO_NAV.map((item) => {
+            const active = restaurantInfoSection === item.key;
             return (
               <button
                 key={item.key}
                 type="button"
-                onClick={() => setSection(item.key)}
+                onClick={() => setRestaurantInfoSection(item.key)}
                 className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                  "rounded-xl px-4 py-2 text-sm font-medium transition-colors",
                   active
-                    ? "border border-gold/30 bg-gold/10 text-gold"
-                    : "text-text-muted hover:bg-bg-elevated/40 hover:text-text-secondary",
+                    ? "bg-gold text-bg-base"
+                    : "text-text-muted hover:bg-bg-elevated/70 hover:text-text-primary",
                 )}
               >
-                <Icon className={cn("size-[18px]", active ? "text-gold" : "text-text-muted")} />
                 {item.label}
               </button>
             );
           })}
-        </nav>
+        </div>
+      )}
+
+      <div className={cn("grid gap-8", !isStandaloneSection && "lg:grid-cols-[220px_1fr]")}>
+        {!isStandaloneSection && (
+          <nav className="flex flex-col gap-1">
+            {SETTINGS_NAV.map((item) => {
+              const Icon = item.icon;
+              const active = settingsSection === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setSettingsSection(item.key)}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                    active
+                      ? "border border-gold/30 bg-gold/10 text-gold"
+                      : "text-text-muted hover:bg-bg-elevated/40 hover:text-text-secondary",
+                  )}
+                >
+                  <Icon className={cn("size-[18px]", active ? "text-gold" : "text-text-muted")} />
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+        )}
 
         <div className="min-w-0">
           {section === "restaurant" && (
@@ -441,8 +507,33 @@ export default function SettingsPage() {
                 <FieldRow label="Phone">
                   <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(416) 555-0142" />
                 </FieldRow>
-                <FieldRow label="Description" hint="2–3 sentences. Appears on your public page.">
-                  <Textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+                <FieldRow
+                  label="Description"
+                  hint={(
+                    <>
+                      <span className="block">2–3 sentences. Appears on your public page.</span>
+                      <span
+                        className={cn(
+                          "mt-1 block font-mono text-[10px]",
+                          restaurantDescriptionAtLimit && "text-warning",
+                        )}
+                      >
+                        {description.length}/{RESTAURANT_DESCRIPTION_MAX_LENGTH}
+                      </span>
+                      {restaurantDescriptionAtLimit && (
+                        <span className="mt-1 block text-warning">Character limit reached.</span>
+                      )}
+                    </>
+                  )}
+                >
+                  <div className="space-y-2">
+                    <Textarea
+                      rows={3}
+                      value={description}
+                      maxLength={RESTAURANT_DESCRIPTION_MAX_LENGTH}
+                      onChange={(e) => setDescription(e.target.value.slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH))}
+                    />
+                  </div>
                 </FieldRow>
                 <FieldRow label="Currency">
                   <Select value={currency} onValueChange={setCurrency}>

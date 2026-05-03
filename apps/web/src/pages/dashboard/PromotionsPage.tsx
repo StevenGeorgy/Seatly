@@ -801,9 +801,6 @@ function PromoFormDrawer({
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between gap-3">
                   <Label htmlFor="promo-desc">Description</Label>
-                  <span className="text-[11px] text-text-muted">
-                    {form.description.length}/{PROMOTION_DESCRIPTION_MAX_LENGTH}
-                  </span>
                 </div>
                 <textarea
                   id="promo-desc"
@@ -814,9 +811,20 @@ function PromoFormDrawer({
                   onChange={(e) => set("description", e.target.value.slice(0, PROMOTION_DESCRIPTION_MAX_LENGTH))}
                   className="min-h-24 w-full resize-none rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm leading-6 text-text-primary placeholder:text-text-muted outline-none focus:border-gold/40"
                 />
-                <p className="text-[11px] text-text-muted">
-                  Keep this to 2-3 short lines so the diner card stays readable.
-                </p>
+                <div className="text-[11px] text-text-muted">
+                  <p>Keep this to 2-3 short lines so the diner card stays readable.</p>
+                  <p
+                    className={cn(
+                      "mt-1 font-mono text-[10px]",
+                      form.description.length >= PROMOTION_DESCRIPTION_MAX_LENGTH && "text-warning",
+                    )}
+                  >
+                    {form.description.length}/{PROMOTION_DESCRIPTION_MAX_LENGTH}
+                  </p>
+                  {form.description.length >= PROMOTION_DESCRIPTION_MAX_LENGTH && (
+                    <p className="mt-1 text-warning">Character limit reached.</p>
+                  )}
+                </div>
               </div>
 
               <section className="rounded-2xl border border-border bg-bg-elevated/35 p-3">
@@ -1691,7 +1699,7 @@ export default function PromotionsPage() {
             />
           ))}
           {visiblePromotions.length === 0 && (
-            <div className="col-span-full rounded-2xl border border-dashed border-border bg-bg-surface/40 p-10 text-center">
+            <div className="col-span-full flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-bg-surface/40 p-10 text-center lg:min-h-[520px]">
               <Tag className="mx-auto size-8 text-text-muted" />
               <p className="mt-3 text-sm text-text-muted">No {phase} promotions.</p>
               {promotions.length === 0 && (

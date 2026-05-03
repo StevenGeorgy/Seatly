@@ -149,6 +149,7 @@ export function AppRoutes() {
           <Route path="events" element={<EventsPage />} />
           <Route path="promotions" element={<PromotionsPage />} />
           <Route path="export" element={<ExportPage />} />
+          <Route path="restaurant" element={<SettingsPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
 
