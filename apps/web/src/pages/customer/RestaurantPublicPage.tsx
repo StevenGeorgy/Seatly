@@ -61,6 +61,7 @@ type MenuItem = {
   popular: boolean;
   dietary: string[];
   emoji: string;
+  photoUrl?: string | null;
   /** Key allergens present in this dish */
   allergens: string[];
   /** Human-readable ingredient highlights shown in the warning section */
@@ -307,13 +308,19 @@ function StepBar({
   );
 }
 
-function PreviewArt({ label }: { label: string }) {
+function PreviewArt({ label, imageUrl }: { label: string; imageUrl?: string | null }) {
   return (
     <div className="relative flex size-full min-h-24 items-center justify-center overflow-hidden rounded-xl border border-gold/15 bg-bg-base">
-      <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.22)_0,rgba(201,168,76,0.22)_1px,transparent_1px,transparent_16px)]" />
-      <span className="relative flex size-10 items-center justify-center rounded-full border border-gold/30 bg-gold/15 font-mono text-[9px] uppercase tracking-[0.28em] text-gold/70">
-        {label.slice(0, 3)}
-      </span>
+      {imageUrl ? (
+        <img src={imageUrl} alt="" className="size-full object-cover" />
+      ) : (
+        <>
+          <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,rgba(201,168,76,0.22)_0,rgba(201,168,76,0.22)_1px,transparent_1px,transparent_16px)]" />
+          <span className="relative flex size-10 items-center justify-center rounded-full border border-gold/30 bg-gold/15 font-mono text-[9px] uppercase tracking-[0.28em] text-gold/70">
+            {label.slice(0, 3)}
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -327,7 +334,7 @@ function PreviewDishCard({ item, compact = false }: { item: MenuItem; compact?: 
       )}
     >
       <div className={compact ? "h-full min-h-20" : "h-32"}>
-        <PreviewArt label={item.name} />
+        <PreviewArt label={item.name} imageUrl={item.photoUrl} />
       </div>
       <div className={compact ? "min-w-0" : "p-4"}>
         {!compact && (
@@ -674,6 +681,7 @@ export default function RestaurantPublicPage() {
       popular: row.is_featured,
       dietary: row.dietary_flags ?? [],
       emoji: "🍽️",
+      photoUrl: row.photo_url,
       allergens: row.allergens ?? [],
       ingredients: row.description ?? "",
     }));
@@ -786,6 +794,7 @@ export default function RestaurantPublicPage() {
         popular: false,
         dietary: [],
         emoji: "🍽️",
+        photoUrl: null,
         allergens: [],
         ingredients: "",
         qty: item.quantity,
@@ -1524,7 +1533,11 @@ export default function RestaurantPublicPage() {
                         key={item.id}
                         className="flex items-start gap-3 rounded-xl border border-danger/20 bg-danger/5 p-3"
                       >
-                        <span className="mt-0.5 text-xl">{item.emoji}</span>
+                        {item.photoUrl ? (
+                          <img src={item.photoUrl} alt="" className="mt-0.5 size-10 shrink-0 rounded-lg object-cover" />
+                        ) : (
+                          <span className="mt-0.5 text-xl">{item.emoji}</span>
+                        )}
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-semibold text-text-primary">{item.name}</p>
                           <p className="mt-0.5 text-xs leading-relaxed text-text-muted">{item.ingredients}</p>
@@ -1633,7 +1646,11 @@ export default function RestaurantPublicPage() {
                         transition={{ duration: 0.2, delay: i * 0.03 }}
                         className="flex items-center gap-3 rounded-xl border border-border bg-bg-surface p-4 transition-colors hover:border-gold/20"
                       >
-                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-bg-elevated text-2xl">{item.emoji}</div>
+                        {item.photoUrl ? (
+                          <img src={item.photoUrl} alt="" className="size-12 shrink-0 rounded-xl object-cover" />
+                        ) : (
+                          <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-bg-elevated text-2xl">{item.emoji}</div>
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="text-sm font-semibold text-text-primary">{item.name}</span>
@@ -1720,7 +1737,11 @@ export default function RestaurantPublicPage() {
                 <div className="flex flex-col gap-2">
                   {cart.map((item) => (
                     <div key={item.id} className="flex items-center gap-3">
-                      <span className="text-base">{item.emoji}</span>
+                      {item.photoUrl ? (
+                        <img src={item.photoUrl} alt="" className="size-8 shrink-0 rounded-lg object-cover" />
+                      ) : (
+                        <span className="text-base">{item.emoji}</span>
+                      )}
                       <span className="flex-1 text-sm text-text-secondary">
                         {item.qty}× {item.name}
                       </span>

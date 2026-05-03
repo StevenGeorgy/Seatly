@@ -18,6 +18,7 @@ import {
 
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
 import type { EventPromotionDisplay } from "@/lib/customer/eventPromotionDisplay";
+import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -157,6 +158,16 @@ const EVENT_ROWS = [
   },
 ];
 
+type PreviewMenuItem = {
+  id: string;
+  category: string;
+  name: string;
+  description: string;
+  price: number;
+  badge: string | null;
+  imageUrl: string | null;
+};
+
 function previewEventToDisplay(
   event: (typeof EVENT_ROWS)[number],
   restaurant: RestaurantPreviewSummary,
@@ -199,15 +210,29 @@ function shortTime(time: string): string {
     .replace(":45 PM", ":45p");
 }
 
-function StripeArt({ label, className }: { label: string; className?: string }) {
+function StripeArt({
+  label,
+  className,
+  imageUrl,
+}: {
+  label: string;
+  className?: string;
+  imageUrl?: string | null;
+}) {
   return (
     <div className={cn("relative flex min-h-36 overflow-hidden rounded-xl bg-bg-elevated", className)}>
-      <div className="absolute inset-0 opacity-80 [background-image:repeating-linear-gradient(135deg,var(--gold)_0_1px,transparent_1px_14px)]" />
-      <div className="absolute inset-0 bg-black/50" />
-      <div className="relative m-auto size-9 rounded-full bg-gold/30 ring-4 ring-black/30" />
-      <span className="absolute bottom-3 left-1/2 -translate-x-1/2 font-mono text-[10px] uppercase tracking-[0.3em] text-gold/70">
-        {label}
-      </span>
+      {imageUrl ? (
+        <img src={imageUrl} alt="" className="size-full object-cover" />
+      ) : (
+        <>
+          <div className="absolute inset-0 opacity-80 [background-image:repeating-linear-gradient(135deg,var(--gold)_0_1px,transparent_1px_14px)]" />
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative m-auto size-9 rounded-full bg-gold/30 ring-4 ring-black/30" />
+          <span className="absolute bottom-3 left-1/2 -translate-x-1/2 font-mono text-[10px] uppercase tracking-[0.3em] text-gold/70">
+            {label}
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -247,11 +272,64 @@ export function RestaurantPreviewModal({
     restaurant && timeState.restaurantId === restaurant.id
       ? timeState.time
       : restaurant?.slots[0] ?? FALLBACK_TIMES[2];
+  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
 
   const availableTimes = useMemo(() => {
     if (!restaurant || restaurant.slots.length === 0) return FALLBACK_TIMES;
     return Array.from(new Set([...restaurant.slots, ...FALLBACK_TIMES])).slice(0, 6);
   }, [restaurant]);
+
+  const previewMenuItems = useMemo<PreviewMenuItem[]>(() => (
+    dbMenuItems.map((item) => ({
+      id: item.id,
+      category: item.category ?? dbCategories.find((category) => category.id === item.category_id)?.name ?? "Other",
+      name: item.name,
+      description: item.description ?? "",
+      price: item.price,
+      badge: item.is_featured ? "Popular" : null,
+      imageUrl: item.photo_url,
+    }))
+  ), [dbCategories, dbMenuItems]);
+
+  const hasSavedMenu = previewMenuItems.length > 0;
+
+  const menuHighlights = useMemo<PreviewMenuItem[]>(() => (
+    hasSavedMenu
+      ? previewMenuItems.slice(0, 4)
+      : MENU_HIGHLIGHTS.map((item) => ({
+        id: item.name,
+        ...item,
+        imageUrl: null,
+      }))
+  ), [hasSavedMenu, previewMenuItems]);
+
+  const menuSections = useMemo((): { title: string; items: PreviewMenuItem[] }[] => {
+    if (!hasSavedMenu) {
+      return MENU_SECTIONS.map((section) => ({
+        title: section.title,
+        items: section.items.map((item) => ({
+          id: `${section.title}-${item.name}`,
+          category: section.title,
+          badge: null,
+          imageUrl: null,
+          ...item,
+        })),
+      }));
+    }
+
+    const orderedCategoryNames = [
+      ...dbCategories.map((category) => category.name),
+      ...previewMenuItems.map((item) => item.category),
+    ].filter((category, index, list) => list.indexOf(category) === index);
+
+    return orderedCategoryNames
+      .map((category) => ({
+        title: category,
+        items: previewMenuItems.filter((item) => item.category === category),
+      }))
+      .filter((section) => section.items.length > 0);
+  }, [dbCategories, hasSavedMenu, previewMenuItems]);
 
   const setRestaurantTab = (tab: PreviewTab) => {
     setTabState({ restaurantId: restaurant?.id ?? null, tab });
@@ -403,16 +481,20 @@ export function RestaurantPreviewModal({
                               </h3>
                             </div>
                             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                              {MENU_HIGHLIGHTS.length} dishes
+                              {menuLoading && !hasSavedMenu ? "Loading" : `${menuHighlights.length} dishes`}
                             </p>
                           </div>
                           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                            {MENU_HIGHLIGHTS.map((item) => (
+                            {menuHighlights.map((item) => (
                               <article
-                                key={item.name}
+                                key={item.id}
                                 className="overflow-hidden rounded-xl border border-border bg-bg-elevated"
                               >
-                                <StripeArt label={item.name.slice(0, 8)} className="min-h-28 rounded-none" />
+                                <StripeArt
+                                  label={item.name.slice(0, 8)}
+                                  imageUrl={item.imageUrl}
+                                  className="min-h-28 rounded-none"
+                                />
                                 <div className="p-3">
                                   <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
                                     {item.category}
@@ -425,9 +507,11 @@ export function RestaurantPreviewModal({
                                     <span className="text-gold">
                                       {formatCurrency(item.price, currencyCode)}
                                     </span>
-                                    <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
-                                      {item.badge}
-                                    </span>
+                                    {item.badge ? (
+                                      <span className="rounded-full bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
+                                        {item.badge}
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </div>
                               </article>
@@ -435,7 +519,7 @@ export function RestaurantPreviewModal({
                           </div>
                         </section>
 
-                        {MENU_SECTIONS.map((section) => (
+                        {menuSections.map((section) => (
                           <section
                             key={section.title}
                             className="rounded-2xl border border-border bg-bg-surface p-4"
@@ -448,9 +532,10 @@ export function RestaurantPreviewModal({
                             </div>
                             <div className="mt-4 grid gap-3 sm:grid-cols-2">
                               {section.items.map((item) => (
-                                <div key={item.name} className="flex gap-3 rounded-xl bg-bg-elevated p-3">
+                                <div key={item.id} className="flex gap-3 rounded-xl bg-bg-elevated p-3">
                                   <StripeArt
                                     label={item.name.slice(0, 3)}
+                                    imageUrl={item.imageUrl}
                                     className="size-20 min-h-0 shrink-0 rounded-lg"
                                   />
                                   <div className="min-w-0 flex-1">
