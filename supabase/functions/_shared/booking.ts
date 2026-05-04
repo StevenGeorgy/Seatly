@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "./supabase.ts";
+import { assignReservationTables } from "./table-assignment.ts";
 
 export interface BookingItem {
   menu_item_id: string;
@@ -46,6 +47,14 @@ export interface CompleteBookingResult {
 
 function n2(n: number) {
   return Math.round(n * 100) / 100;
+}
+
+async function getRestaurantTurnTimeMinutes(restaurantId: string, shiftId?: string | null): Promise<number> {
+  const { data } = await supabaseAdmin.rpc("restaurant_turn_time_minutes", {
+    p_restaurant_id: restaurantId,
+    p_shift_id: shiftId ?? null,
+  });
+  return typeof data === "number" && Number.isFinite(data) ? data : 90;
 }
 
 export async function completeBooking(
@@ -146,6 +155,7 @@ export async function completeBooking(
   }
 
   const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  const turnTimeMinutes = await getRestaurantTurnTimeMinutes(restaurant_id, shift_id);
 
   // Create reservation
   let reservationId: string | null = null;
@@ -157,6 +167,7 @@ export async function completeBooking(
       shift_id,
       party_size,
       reserved_at: date_time,
+      duration_minutes: turnTimeMinutes,
       status: "confirmed",
       source: "cenaiva",
       confirmation_code: confirmationCode,
@@ -182,6 +193,39 @@ export async function completeBooking(
     };
   }
   reservationId = reservation.id;
+
+  const assignment = await assignReservationTables({
+    reservation_id: reservationId,
+    restaurant_id,
+    reserved_at: date_time,
+    party_size,
+    turn_minutes: turnTimeMinutes,
+  });
+  if (assignment.error) {
+    await supabaseAdmin
+      .from("reservations")
+      .update({
+        status: "cancelled",
+        cancelled_at: new Date().toISOString(),
+        cancellation_reason: "No available table for party size.",
+      })
+      .eq("id", reservationId);
+
+    return {
+      success: false,
+      confirmation_code: "",
+      order_type,
+      reservation_id: reservationId,
+      order_id: null,
+      guest_id: guestId ?? null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: "CAD",
+      checkout_url: null,
+      error: assignment.error,
+    };
+  }
 
   // Calculate totals
   const { data: rest } = await supabaseAdmin

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { MOCK_STAFF } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import type { DashboardPermissionOverrides, StaffRole } from "@/types/auth";
 
 export type StaffMemberRow = {
   id: string;
@@ -12,6 +13,7 @@ export type StaffMemberRow = {
   is_primary: boolean;
   hourly_rate: number | null;
   employment_type: string | null;
+  permission_overrides_json?: DashboardPermissionOverrides;
   created_at: string | null;
   user_profiles?: {
     full_name: string | null;
@@ -21,7 +23,17 @@ export type StaffMemberRow = {
   } | null;
 };
 
-export function useStaffRoster() {
+type UseStaffRosterOptions = {
+  includeMock?: boolean;
+};
+
+type StaffRosterActionResult = {
+  ok: boolean;
+  error?: string;
+};
+
+export function useStaffRoster(options: UseStaffRosterOptions = {}) {
+  const { includeMock = true } = options;
   const { selectedRestaurantId } = useRestaurantScope();
   const [members, setMembers] = useState<StaffMemberRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,12 +61,101 @@ export function useStaffRoster() {
       setMembers([]);
     } else {
       const rows = (data ?? []) as StaffMemberRow[];
-      setMembers(rows.length > 0 ? rows : MOCK_STAFF);
+      setMembers(rows.length > 0 || !includeMock ? rows : MOCK_STAFF);
     }
     setLoading(false);
-  }, [selectedRestaurantId]);
+  }, [includeMock, selectedRestaurantId]);
 
-  useEffect(() => { void fetchRoster(); }, [fetchRoster]);
+  useEffect(() => {
+    void Promise.resolve().then(() => fetchRoster());
+  }, [fetchRoster]);
 
-  return { members, loading, error, refetch: fetchRoster };
+  useEffect(() => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
+
+    const client = getSupabaseBrowserClient();
+    const channel = client
+      .channel(`staff-roster:${selectedRestaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "user_restaurant_roles",
+          filter: `restaurant_id=eq.${selectedRestaurantId}`,
+        },
+        () => {
+          void fetchRoster();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [fetchRoster, selectedRestaurantId]);
+
+  const updateMemberAccess = useCallback(
+    async (
+      memberId: string,
+      role: Extract<StaffRole, "owner" | "manager" | "host">,
+      permissionOverrides: DashboardPermissionOverrides,
+    ): Promise<StaffRosterActionResult> => {
+      if (!selectedRestaurantId || !isSupabaseConfigured()) {
+        return { ok: false, error: "Select a restaurant before updating staff access." };
+      }
+
+      const client = getSupabaseBrowserClient();
+      const { data, error: updateError } = await client
+        .from("user_restaurant_roles")
+        .update({
+          role,
+          permission_overrides_json: permissionOverrides,
+        })
+        .eq("id", memberId)
+        .eq("restaurant_id", selectedRestaurantId)
+        .select("id")
+        .maybeSingle();
+
+      if (updateError) return { ok: false, error: updateError.message };
+      if (!data) return { ok: false, error: "You do not have permission to update this staff member." };
+
+      await fetchRoster();
+      return { ok: true };
+    },
+    [fetchRoster, selectedRestaurantId],
+  );
+
+  const removeMemberAccess = useCallback(
+    async (memberId: string): Promise<StaffRosterActionResult> => {
+      if (!selectedRestaurantId || !isSupabaseConfigured()) {
+        return { ok: false, error: "Select a restaurant before removing staff access." };
+      }
+
+      const client = getSupabaseBrowserClient();
+      const { data, error: deleteError } = await client
+        .from("user_restaurant_roles")
+        .delete()
+        .eq("id", memberId)
+        .eq("restaurant_id", selectedRestaurantId)
+        .select("id")
+        .maybeSingle();
+
+      if (deleteError) return { ok: false, error: deleteError.message };
+      if (!data) return { ok: false, error: "You do not have permission to remove this staff member." };
+
+      await fetchRoster();
+      return { ok: true };
+    },
+    [fetchRoster, selectedRestaurantId],
+  );
+
+  return {
+    members,
+    loading,
+    error,
+    refetch: fetchRoster,
+    updateMemberAccess,
+    removeMemberAccess,
+  };
 }

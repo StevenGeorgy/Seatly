@@ -6,6 +6,7 @@ import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { getAvailability } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
+import { releaseReservationTables } from "../_shared/table-assignment.ts";
 import { localDayOfWeek } from "../_shared/time.ts";
 import { buildDeterministicFollowUp, type FollowUpAction, type VisibleRestaurant } from "./followup.ts";
 
@@ -1372,6 +1373,7 @@ async function confirmPendingAction(
 
   if (pending.type === "cancel_reservation") {
     await supabaseAdmin.from("reservations").update({ status: "cancelled" }).eq("id", reservationId);
+    await releaseReservationTables(reservationId);
     return makeAssistantPayload({
       conversationId: opts.conversationId,
       spokenText: "Cancelled. Your reservation has been marked cancelled.",

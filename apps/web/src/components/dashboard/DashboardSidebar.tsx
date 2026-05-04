@@ -26,6 +26,7 @@ import {
   Bell,
   LogOut,
   Store,
+  UserPlus,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -49,6 +50,8 @@ const ICONS: Record<string, typeof LayoutDashboard> = {
   "/dashboard": LayoutDashboard,
   "/dashboard/reservations": CalendarDays,
   "/dashboard/floor-plan": MapPin,
+  "/dashboard/staff-invites": UserPlus,
+  "/dashboard/host": UserPlus,
   "/dashboard/waitlist": Clock,
   "/dashboard/orders": UtensilsCrossed,
   "/dashboard/menu": BookOpen,
@@ -85,9 +88,14 @@ export function DashboardSidebar() {
     );
   }, [restaurantRoles, selectedRestaurantId]);
 
+  const scopedRoles = useMemo(
+    () => restaurantRoles.filter((r) => r.restaurant_id === selectedRestaurantId),
+    [restaurantRoles, selectedRestaurantId],
+  );
+
   const visibleItems = useMemo(
-    () => DASHBOARD_NAV_ITEMS.filter((item) => canAccessDashboardPath(item.path, roleSet)),
-    [roleSet],
+    () => DASHBOARD_NAV_ITEMS.filter((item) => canAccessDashboardPath(item.path, roleSet, scopedRoles)),
+    [roleSet, scopedRoles],
   );
 
   const settingsItem = visibleItems.find((i) => i.path === "/dashboard/settings");
@@ -301,6 +309,21 @@ export function DashboardSidebar() {
           </button>
         </div>
 
+        {canUseCustomerView && (
+          <button
+            type="button"
+            onClick={() => {
+              switchToCustomerView();
+              void navigate("/discover");
+              setMobileOpen(false);
+            }}
+            className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
+          >
+            <User className="size-[18px] shrink-0 text-gold" />
+            <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
+          </button>
+        )}
+
         {settingsItem && (
           <>
           {(selectedRestaurant?.slug ?? selectedRestaurant?.id) && (
@@ -314,20 +337,6 @@ export function DashboardSidebar() {
             >
               <Eye className="size-[18px] shrink-0 text-gold" />
               <span className="truncate">{t("dashboard.shell.previewRestaurant")}</span>
-            </button>
-          )}
-          {canUseCustomerView && (
-            <button
-              type="button"
-              onClick={() => {
-                switchToCustomerView();
-                void navigate("/discover");
-                setMobileOpen(false);
-              }}
-              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
-            >
-              <User className="size-[18px] shrink-0 text-gold" />
-              <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
             </button>
           )}
           <NavLink

@@ -12,6 +12,7 @@ import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItem
 import { useUser } from "@/hooks/useUser";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 interface BookingSheetProps {
   onExit: () => void;
@@ -444,15 +445,11 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                         const period = h >= 12 ? "PM" : "AM";
                         if (h === 0) h = 12;
                         else if (h > 12) h -= 12;
-                        return `${h}:${m[2]} ${period}`;
+                        return formatCompactTimeLabel(`${h}:${m[2]} ${period}`);
                       }
                       if (booking.slot_iso) {
                         try {
-                          return new Date(booking.slot_iso).toLocaleTimeString("en-US", {
-                            hour: "numeric",
-                            minute: "2-digit",
-                            hour12: true,
-                          });
+                          return formatCompactTimeLabel(new Date(booking.slot_iso));
                         } catch { /* fall through */ }
                       }
                       return t;
@@ -874,15 +871,11 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                           const period = h >= 12 ? "PM" : "AM";
                           if (h === 0) h = 12;
                           else if (h > 12) h -= 12;
-                          return `${h}:${m[2]} ${period}`;
+                          return formatCompactTimeLabel(`${h}:${m[2]} ${period}`);
                         }
                         if (booking.slot_iso) {
                           try {
-                            return new Date(booking.slot_iso).toLocaleTimeString("en-US", {
-                              hour: "numeric",
-                              minute: "2-digit",
-                              hour12: true,
-                            });
+                            return formatCompactTimeLabel(new Date(booking.slot_iso));
                           } catch { /* fall through */ }
                         }
                         return t;

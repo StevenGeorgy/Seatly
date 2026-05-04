@@ -21,6 +21,7 @@ import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type ServiceMetric = {
   label: string;
@@ -43,7 +44,7 @@ type ServiceReservation = {
 const DEMO_RESERVATIONS: ServiceReservation[] = [
   {
     id: "demo-lefebvre",
-    time: "7:30p",
+    time: "7:30pm",
     guest: "Lefebvre, Camille",
     party: 4,
     table: "T12 · Patio",
@@ -52,7 +53,7 @@ const DEMO_RESERVATIONS: ServiceReservation[] = [
   },
   {
     id: "demo-chen",
-    time: "7:45p",
+    time: "7:45pm",
     guest: "Chen, David",
     party: 2,
     table: "T06 · Main",
@@ -61,7 +62,7 @@ const DEMO_RESERVATIONS: ServiceReservation[] = [
   },
   {
     id: "demo-singh",
-    time: "8:00p",
+    time: "8pm",
     guest: "Singh, Anaya",
     party: 6,
     table: "T15 · Banquette",
@@ -70,7 +71,7 @@ const DEMO_RESERVATIONS: ServiceReservation[] = [
   },
   {
     id: "demo-tromblay",
-    time: "8:15p",
+    time: "8:15pm",
     guest: "Tromblay, M.",
     party: 8,
     table: "T03 · Main",
@@ -79,7 +80,7 @@ const DEMO_RESERVATIONS: ServiceReservation[] = [
   },
   {
     id: "demo-walkin",
-    time: "8:30p",
+    time: "8:30pm",
     guest: "Walk-in queue",
     party: 2,
     table: "—",
@@ -91,7 +92,7 @@ const DEMO_RESERVATIONS: ServiceReservation[] = [
 const ATTENTION_ITEMS = [
   {
     icon: Phone,
-    title: "Singh · 8:00p · 6 top",
+    title: "Singh · 8pm · 6 top",
     detail: "82% no-show risk · call now",
     tone: "warning",
   },
@@ -110,19 +111,19 @@ const ATTENTION_ITEMS = [
   {
     icon: ShoppingBag,
     title: "Pre-order ready",
-    detail: "Chen · 7:45p · $214",
+    detail: "Chen · 7:45pm · $214",
     tone: "gold",
   },
   {
     icon: AlertTriangle,
     title: "Staff arriving late",
-    detail: "2 runners · ETA 6:45p",
+    detail: "2 runners · ETA 6:45pm",
     tone: "muted",
   },
 ];
 
 function compactTime(date: Date): string {
-  return format(date, "h:mma").toLowerCase().replace(":00", "");
+  return formatCompactTimeLabel(date);
 }
 
 function reservationToServiceRow(row: ReservationRow, index: number): ServiceReservation {
@@ -202,13 +203,13 @@ function MetricCard({ metric }: { metric: ServiceMetric }) {
 }
 
 function TimelineChart() {
-  const labels = ["6p", "7p", "8p", "9p", "10p", "11p"];
+  const labels = ["6pm", "7pm", "8pm", "9pm", "10pm", "11pm"];
   return (
     <section className="rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-serif text-2xl text-white">Tonight's timeline</h2>
-          <p className="mt-1 text-xs text-text-muted">6:00 PM - 11:00 PM · 58 reservations</p>
+          <p className="mt-1 text-xs text-text-muted">6pm - 11pm · 58 reservations</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 text-[11px] text-success">
@@ -257,7 +258,7 @@ function TimelineChart() {
           <circle cx="300" cy="58" r="4" fill="var(--text-primary)" />
         </svg>
         <div className="absolute left-[39%] top-4 rounded-md bg-bg-elevated px-2 py-1 font-mono text-[10px] text-text-secondary">
-          Now · 7:52p
+          Now · 7:52pm
         </div>
       </div>
     </section>
@@ -362,7 +363,7 @@ function AiBriefing({ currency }: { currency: string }) {
       <h2 className="mt-4 font-serif text-2xl text-white">Tonight's read</h2>
       <div className="mt-4 space-y-4 text-sm leading-relaxed text-text-secondary">
         <p>
-          Saturday after a Leafs win: expect aggressive walk-ins between 9:30p-11p.
+          Saturday after a Leafs win: expect aggressive walk-ins between 9:30pm-11pm.
           Bar four-tops are 50% likely to overrun.
         </p>
         <p>
@@ -370,7 +371,7 @@ function AiBriefing({ currency }: { currency: string }) {
           <span className="text-gold">{formatCurrency(2140, currency)}</span> / wk.
         </p>
         <p>
-          Camille Lefebvre (7:30p) - 6th visit. Last 5 bills exceeded{" "}
+          Camille Lefebvre (7:30pm) - 6th visit. Last 5 bills exceeded{" "}
           <span className="text-gold">{formatCurrency(400, currency)}</span>. Consider amuse from chef.
         </p>
       </div>

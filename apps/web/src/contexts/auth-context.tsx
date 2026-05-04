@@ -1,47 +1,13 @@
-import {
-  createContext,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 
+import { AuthContext, type AuthContextValue } from "@/contexts/auth-context-value";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import type { UserProfile, UserRestaurantRole } from "@/types/auth";
 
 const VIEW_MODE_STORAGE_KEY = "cenaiva:view-mode";
 type ViewMode = "staff" | "customer";
-
-export type AuthContextValue = {
-  session: Session | null;
-  user: User | null;
-  profile: UserProfile | null;
-  /** Rows from user_restaurant_roles for this profile. Empty ⇒ customer (Bible). */
-  restaurantRoles: UserRestaurantRole[];
-  loading: boolean;
-  error: Error | null;
-  /** True if any `user_restaurant_roles` row exists (staff experience). */
-  isStaff: boolean;
-  /** True when an owner intentionally enters personal customer experience. */
-  isCustomerView: boolean;
-  /** Only owner accounts can switch to personal customer view. */
-  canUseCustomerView: boolean;
-  signOut: () => Promise<void>;
-  switchToCustomerView: () => void;
-  switchToStaffView: () => void;
-  /** Re-fetch profile + roles after mutations (e.g. onboarding). */
-  refreshUser: () => Promise<void>;
-  /** Primary row: `is_primary`, else first role. */
-  primaryRestaurantRole: UserRestaurantRole | null;
-  rolesAtRestaurant: (restaurantId: string) => UserRestaurantRole[];
-  hasStaffRole: (role: UserRestaurantRole["role"]) => boolean;
-};
-
-export const AuthContext = createContext<AuthContextValue | null>(null);
 
 type AuthProviderProps = {
   children: ReactNode;
@@ -118,7 +84,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   useEffect(() => {
     if (!isSupabaseConfigured()) {
-      void applySession(null);
+      void Promise.resolve().then(() => applySession(null));
       return;
     }
 
@@ -198,18 +164,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
   );
 
   const canUseCustomerView = useMemo(
-    () => restaurantRoles.some((r) => r.role === "owner"),
+    () => restaurantRoles.length > 0,
     [restaurantRoles],
   );
 
   useEffect(() => {
-    if (restaurantRoles.length === 0 && viewMode !== "staff") {
-      setViewMode("staff");
-      return;
-    }
-    if (!canUseCustomerView && viewMode === "customer") {
-      setViewMode("staff");
-    }
+    void Promise.resolve().then(() => {
+      if (restaurantRoles.length === 0 && viewMode !== "staff") {
+        setViewMode("staff");
+        return;
+      }
+      if (!canUseCustomerView && viewMode === "customer") {
+        setViewMode("staff");
+      }
+    });
   }, [restaurantRoles.length, canUseCustomerView, viewMode]);
 
   const switchToCustomerView = useCallback(() => {

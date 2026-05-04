@@ -10,9 +10,7 @@ import {
   Bookmark,
   CalendarDays,
   Check,
-  ChevronDown,
   Flame,
-  LayoutDashboard,
   LayoutGrid,
   LocateFixed,
   LogOut,
@@ -40,6 +38,7 @@ import {
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { EventPromotionDetailDialog } from "@/components/customer/EventPromotionDetailCard";
 import { CustomerNav } from "@/components/customer/CustomerNav";
+import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import {
   RestaurantPreviewModal,
   type RestaurantPreviewSummary,
@@ -57,6 +56,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 import {
   eventToDisplay,
   promotionToDisplay,
@@ -197,7 +197,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "6 left",
     restaurant: "Nova Ristorante",
     title: "Truffle & Barolo Tasting Night",
-    when: "Tonight at 7:00 PM",
+    when: "Tonight at 7pm",
     price: "$185 / person",
     initials: "TRUFFLE",
     imageUrl: null,
@@ -211,7 +211,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "24 left",
     restaurant: "Le Petit Jardin",
     title: "Happy Hour: Craft Cocktails 2-for-1",
-    when: "Tonight at 4:00 PM",
+    when: "Tonight at 4pm",
     price: "From $9",
     initials: "COCKTAILS",
     imageUrl: null,
@@ -225,7 +225,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "14 left",
     restaurant: "The Smokehouse",
     title: "Vinyl Night — Bourbon & BBQ Pairings",
-    when: "Tonight at 8:30 PM",
+    when: "Tonight at 8:30pm",
     price: "$65 / person",
     initials: "VINYL",
     imageUrl: null,
@@ -239,7 +239,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "8 left",
     restaurant: "Bistro Lumière",
     title: "Late Service — Three for Forty",
-    when: "Tonight at 9:30 PM",
+    when: "Tonight at 9:30pm",
     price: "$40 / person",
     initials: "BISTRO",
     imageUrl: null,
@@ -253,7 +253,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "12 left",
     restaurant: "Maison Verre",
     title: "Côtes du Rhône Flight Friday",
-    when: "Friday at 7:00 PM",
+    when: "Friday at 7pm",
     price: "$95 / person",
     initials: "WINE",
     imageUrl: null,
@@ -267,7 +267,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "4 left",
     restaurant: "Ginkgo",
     title: "Omakase 12-course",
-    when: "Saturday at 6:30 PM",
+    when: "Saturday at 6:30pm",
     price: "$240 / person",
     initials: "OMAKASE",
     imageUrl: null,
@@ -281,7 +281,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "18 left",
     restaurant: "Le Pigeon Bleu",
     title: "Sunday Bottomless Brunch",
-    when: "Sunday at 11:00 AM",
+    when: "Sunday at 11am",
     price: "$58 / person",
     initials: "BRUNCH",
     imageUrl: null,
@@ -295,7 +295,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "30 left",
     restaurant: "Osteria Nova",
     title: "Wood-fired Wednesday — 25% off pizza",
-    when: "Wed at 5:00 PM",
+    when: "Wed at 5pm",
     price: "Save 25%",
     initials: "PIZZA",
     imageUrl: null,
@@ -309,7 +309,7 @@ const DEMO_EVENTS: DemoEvent[] = [
     availability: "9 left",
     restaurant: "Salt & Ember",
     title: "Tomahawk for Two",
-    when: "Thu at 8:00 PM",
+    when: "Thu at 8pm",
     price: "$220 / table",
     initials: "STEAK",
     imageUrl: null,
@@ -701,10 +701,6 @@ export default function DealsPage() {
   const {
     profile,
     signOut,
-    canUseCustomerView,
-    isCustomerView,
-    switchToCustomerView,
-    switchToStaffView,
     restaurantRoles,
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
@@ -909,7 +905,9 @@ export default function DealsPage() {
       );
     });
 
-    if (match) setDetailItem(match.detail ?? demoToDisplay(match));
+    if (match) {
+      void Promise.resolve().then(() => setDetailItem(match.detail ?? demoToDisplay(match)));
+    }
   }, [detailParam, events]);
 
   return (
@@ -966,6 +964,10 @@ export default function DealsPage() {
                   <Settings className="size-4" />
                   Settings
                 </DropdownMenuItem>
+                <StaffWorkspaceMenuItems
+                  restaurants={staffRestaurants}
+                  restaurantRoles={restaurantRoles}
+                />
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
                   <LogOut className="size-4" />
@@ -973,51 +975,6 @@ export default function DealsPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-
-            {restaurantRoles.length > 0 &&
-              (staffRestaurants.length > 1 ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-white/5">
-                    <LayoutDashboard className="size-3.5" />
-                    Dashboard
-                    <ChevronDown className="size-3.5" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
-                    {staffRestaurants.map((r) => (
-                      <DropdownMenuItem
-                        key={r.id}
-                        onClick={() => {
-                          localStorage.setItem("cenaiva.selectedRestaurantId", r.id);
-                          if (isCustomerView) switchToStaffView();
-                          void navigate("/dashboard");
-                        }}
-                      >
-                        <LayoutDashboard className="size-4" />
-                        {r.name ?? r.slug}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  onClick={() => {
-                    if (isCustomerView) switchToStaffView();
-                    void navigate("/dashboard");
-                  }}
-                >
-                  <LayoutDashboard className="size-4" />
-                  Dashboard
-                </Button>
-              ))}
-
-            {canUseCustomerView && !isCustomerView && (
-              <Button variant="outline" size="sm" onClick={switchToCustomerView}>
-                Diner view
-              </Button>
-            )}
           </div>
         </div>
       </header>
@@ -1202,7 +1159,7 @@ export default function DealsPage() {
                               : "border-border bg-bg-surface text-text-secondary hover:border-gold/40",
                           )}
                         >
-                          {tt}
+                          {formatCompactTimeLabel(tt)}
                         </button>
                       ))}
                     </div>

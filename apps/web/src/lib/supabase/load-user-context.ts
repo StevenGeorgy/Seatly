@@ -1,6 +1,8 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  type DashboardPermissionKey,
+  type DashboardPermissionOverrides,
   isStaffRole,
   type UserProfile,
   type UserRestaurantRole,
@@ -10,7 +12,7 @@ const PROFILE_COLUMNS =
   "id, auth_user_id, full_name, phone, email, avatar_url, role, restaurant_id, birthday, dietary_restrictions, allergies, seating_preference, noise_preference, preferred_language, notification_preferences_json, car_details_json, stripe_payment_method_id, stripe_customer_id, created_at";
 
 const ROLE_COLUMNS =
-  "id, user_id, restaurant_id, role, is_primary, hourly_rate, employment_type, created_at";
+  "id, user_id, restaurant_id, role, is_primary, hourly_rate, employment_type, permission_overrides_json, created_at";
 
 export type LoadUserContextResult =
   | { ok: true; profile: UserProfile | null; restaurantRoles: UserRestaurantRole[] }
@@ -26,6 +28,19 @@ function parseHourlyRate(value: unknown): number | null {
   return null;
 }
 
+function parsePermissionOverrides(value: unknown): DashboardPermissionOverrides {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const source = value as { allow?: unknown; deny?: unknown };
+  return {
+    allow: Array.isArray(source.allow)
+      ? source.allow.filter((key): key is DashboardPermissionKey => typeof key === "string")
+      : undefined,
+    deny: Array.isArray(source.deny)
+      ? source.deny.filter((key): key is DashboardPermissionKey => typeof key === "string")
+      : undefined,
+  };
+}
+
 function mapRestaurantRole(row: {
   id: string;
   user_id: string;
@@ -34,6 +49,7 @@ function mapRestaurantRole(row: {
   is_primary: boolean | null;
   hourly_rate: unknown;
   employment_type: string | null;
+  permission_overrides_json?: unknown;
   created_at: string | null;
 }): UserRestaurantRole | null {
   if (!isStaffRole(row.role)) return null;
@@ -45,6 +61,7 @@ function mapRestaurantRole(row: {
     is_primary: row.is_primary ?? false,
     hourly_rate: parseHourlyRate(row.hourly_rate),
     employment_type: row.employment_type,
+    permission_overrides_json: parsePermissionOverrides(row.permission_overrides_json),
     created_at: row.created_at,
   };
 }
@@ -97,6 +114,7 @@ export async function loadUserContext(
           is_primary: boolean | null;
           hourly_rate: unknown;
           employment_type: string | null;
+          permission_overrides_json?: unknown;
           created_at: string | null;
         },
       ),

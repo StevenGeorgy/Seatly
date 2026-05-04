@@ -14,6 +14,7 @@ export type RestaurantTheme = {
 
 export type RestaurantSettings = {
   theme?: RestaurantTheme;
+  turnTimeMinutes?: number;
 };
 
 export type StaffRestaurantRow = {

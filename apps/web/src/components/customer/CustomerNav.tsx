@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useUser } from "@/hooks/useUser";
@@ -20,7 +19,6 @@ type NavItem = {
  * get bounced by RequireCustomer when clicking from a customer-view screen.
  */
 export function CustomerNav() {
-  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { isStaff, canUseCustomerView, switchToCustomerView } = useUser();
@@ -46,13 +44,6 @@ export function CustomerNav() {
       isStaff && canUseCustomerView ? () => goCustomer(to) : undefined;
 
     return [
-      ...(isStaff
-        ? [{
-            label: t("dashboard.shell.dashboard"),
-            to: "/dashboard",
-            activeWhen: ["/dashboard"],
-          }]
-        : []),
       {
         label: "Discover",
         to: isStaff && !canUseCustomerView ? "/dashboard" : "/discover",
@@ -78,7 +69,7 @@ export function CustomerNav() {
         onClick: wrap("/loyalty"),
       },
     ];
-  }, [isStaff, canUseCustomerView, goCustomer, t]);
+  }, [isStaff, canUseCustomerView, goCustomer]);
 
   const isActive = (item: NavItem) =>
     item.activeWhen.some(

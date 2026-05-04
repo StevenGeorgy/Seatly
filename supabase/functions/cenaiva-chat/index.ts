@@ -27,6 +27,57 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
+async function findAvailableTableIds(params: {
+  restaurant_id: string;
+  reserved_at: string;
+  party_size: number;
+  turn_minutes?: number;
+}): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.rpc("find_available_table_group", {
+    p_restaurant_id: params.restaurant_id,
+    p_reserved_at: params.reserved_at,
+    p_party_size: params.party_size,
+    p_turn_minutes: params.turn_minutes ?? null,
+  });
+  if (error || !Array.isArray(data)) return [];
+  return data.filter((id): id is string => typeof id === "string");
+}
+
+async function assignReservationTables(params: {
+  reservation_id: string;
+  restaurant_id: string;
+  reserved_at: string;
+  party_size: number;
+  turn_minutes?: number;
+}): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.rpc("assign_reservation_tables", {
+    p_reservation_id: params.reservation_id,
+    p_restaurant_id: params.restaurant_id,
+    p_reserved_at: params.reserved_at,
+    p_party_size: params.party_size,
+    p_turn_minutes: params.turn_minutes ?? null,
+  });
+  if (error || !Array.isArray(data)) return [];
+  return data.filter((id): id is string => typeof id === "string");
+}
+
+async function getRestaurantTurnTimeMinutes(
+  restaurant_id: string,
+  shift_id?: string | null,
+): Promise<number> {
+  const { data } = await supabaseAdmin.rpc("restaurant_turn_time_minutes", {
+    p_restaurant_id: restaurant_id,
+    p_shift_id: shift_id ?? null,
+  });
+  return typeof data === "number" && Number.isFinite(data) ? data : 90;
+}
+
+async function releaseReservationTables(reservation_id: string): Promise<void> {
+  await supabaseAdmin.rpc("release_reservation_tables", {
+    p_reservation_id: reservation_id,
+  });
+}
+
 // ── JWT payload decoder ──
 // verify_jwt is set to false in config so the raw Authorization header reaches
 // this function. We decode the payload ourselves to extract the sub claim.
@@ -490,10 +541,14 @@ async function executeTool(
       // Fetch restaurant timezone so all slot times are in the correct local time
       const { data: restaurantRow } = await supabaseAdmin
         .from("restaurants")
-        .select("timezone")
+        .select("timezone, settings_json")
         .eq("id", restaurant_id)
         .single();
       const timezone = restaurantRow?.timezone || "UTC";
+      const configuredTurnMinutes =
+        typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
+          ? restaurantRow.settings_json.turnTimeMinutes
+          : null;
 
       // Use a UTC noon anchor to get the correct day-of-week in the restaurant tz
       const anchorUTC = new Date(`${dateOnly}T12:00:00Z`);
@@ -527,7 +582,7 @@ async function executeTool(
 
       const { data: reservations } = await supabaseAdmin
         .from("reservations")
-        .select("shift_id, reserved_at, party_size")
+        .select("shift_id, reserved_at, party_size, duration_minutes")
         .eq("restaurant_id", restaurant_id)
         .in("status", ["pending", "confirmed", "seated"])
         .gte("reserved_at", dayStartUTC)
@@ -550,7 +605,7 @@ async function executeTool(
         const [sH, sM] = (shift.start_time || "17:00").split(":").map(Number);
         const [eH, eM] = (shift.end_time || "23:00").split(":").map(Number);
         const slotMins = shift.slot_duration_minutes || 30;
-        const turnMins = shift.turn_time_minutes || 90;
+        const turnMins = configuredTurnMinutes || shift.turn_time_minutes || 90;
         const maxCovers = shift.max_covers || 100;
 
         let slotMin = sH * 60 + sM;
@@ -573,7 +628,8 @@ async function executeTool(
           let available = true;
           for (const r of shiftResvs) {
             const resvStart = new Date(r.reserved_at);
-            const resvEnd = new Date(resvStart.getTime() + turnMins * 60_000);
+            const resvDuration = r.duration_minutes || turnMins;
+            const resvEnd = new Date(resvStart.getTime() + resvDuration * 60_000);
             if (slotStart < resvEnd && slotEnd > resvStart) {
               totalCovers += r.party_size || 0;
               if (totalCovers > maxCovers) {
@@ -583,6 +639,16 @@ async function executeTool(
             }
           }
           if (available) {
+            const tableIds = await findAvailableTableIds({
+              restaurant_id,
+              reserved_at: slotStart.toISOString(),
+              party_size,
+              turn_minutes: turnMins,
+            });
+            if (tableIds.length === 0) {
+              slotMin += slotMins;
+              continue;
+            }
             slots.push({
               shift_id: shift.id,
               shift_name: shift.name || "Shift",
@@ -595,6 +661,7 @@ async function executeTool(
                 minute: "2-digit",
                 hour12: true,
               }),
+              table_ids: tableIds,
             });
           }
           slotMin += slotMins;
@@ -667,6 +734,7 @@ async function executeTool(
       }
 
       const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const turnTimeMinutes = await getRestaurantTurnTimeMinutes(restaurant_id, shift_id);
 
       // Create reservation
       const { data: reservation, error: resvErr } = await supabaseAdmin
@@ -677,6 +745,7 @@ async function executeTool(
           shift_id,
           party_size,
           reserved_at: date_time,
+          duration_minutes: turnTimeMinutes,
           status: "confirmed",
           source: "cenaiva",
           confirmation_code: confirmationCode,
@@ -687,6 +756,25 @@ async function executeTool(
         .single();
       if (resvErr) return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
       const reservationId: string = reservation.id;
+
+      const assignedTableIds = await assignReservationTables({
+        reservation_id: reservationId,
+        restaurant_id,
+        reserved_at: date_time,
+        party_size,
+        turn_minutes: turnTimeMinutes,
+      });
+      if (assignedTableIds.length === 0) {
+        await supabaseAdmin
+          .from("reservations")
+          .update({
+            status: "cancelled",
+            cancelled_at: new Date().toISOString(),
+            cancellation_reason: "No available table for party size.",
+          })
+          .eq("id", reservationId);
+        return JSON.stringify({ error: "No available table can fit this party at that time." });
+      }
 
       const { data: rest } = await supabaseAdmin
         .from("restaurants")
@@ -1063,6 +1151,9 @@ async function executeTool(
         .select("id, status, confirmation_code")
         .single();
       if (error) return JSON.stringify({ error: error.message });
+      if (["completed", "cancelled", "no_show"].includes(String(input.status))) {
+        await releaseReservationTables(input.reservation_id);
+      }
       return JSON.stringify({ success: true, reservation: data });
     }
 

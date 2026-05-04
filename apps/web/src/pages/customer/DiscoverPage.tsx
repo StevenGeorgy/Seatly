@@ -21,15 +21,16 @@ import {
   LogOut,
   User,
   Settings,
-  LayoutDashboard,
-  ChevronDown,
 } from "lucide-react";
 
 import { useUser } from "@/hooks/useUser";
+import { useMyStaffInvites } from "@/hooks/useMyStaffInvites";
+import { useNotifications } from "@/hooks/useNotifications";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewModal";
+import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -43,6 +44,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
@@ -438,7 +440,7 @@ function GridCard({
                   }}
                   className="rounded-md bg-gold py-2 text-xs font-semibold text-black hover:opacity-90"
                 >
-                  {s}
+                  {formatCompactTimeLabel(s)}
                 </button>
               ))}
             </div>
@@ -543,7 +545,7 @@ function MapListCard({
                   }}
                   className="rounded-md bg-gold px-3 py-1.5 text-xs font-semibold text-black hover:opacity-90"
                 >
-                  {s}
+                  {formatCompactTimeLabel(s)}
                 </button>
               ))}
             </div>
@@ -590,14 +592,12 @@ export default function DiscoverPage() {
   const {
     profile,
     signOut,
-    canUseCustomerView,
-    isCustomerView,
-    switchToCustomerView,
-    switchToStaffView,
     restaurantRoles,
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
   const { restaurants, loading } = usePublicRestaurants();
+  const { notifications, unreadCount, markRead } = useNotifications();
+  const { invites: pendingStaffInvites } = useMyStaffInvites();
 
   const [view, setView] = useState<"grid" | "map">("grid");
   const [filtersOpen, setFiltersOpen] = useState(true);
@@ -756,16 +756,63 @@ export default function DiscoverPage() {
           <CustomerNav />
 
           <div className="ml-auto flex shrink-0 items-center gap-3">
-            <button
-              type="button"
-              className="relative inline-flex size-9 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-              aria-label="Notifications"
-            >
-              <Bell className="size-4" />
-              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-gold font-mono text-[10px] font-bold text-black">
-                3
-              </span>
-            </button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="relative inline-flex size-9 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+                  aria-label="Notifications"
+                >
+                  <Bell className="size-4" />
+                  {unreadCount + pendingStaffInvites.length > 0 ? (
+                    <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-gold font-mono text-[10px] font-bold text-black">
+                      {Math.min(unreadCount + pendingStaffInvites.length, 9)}
+                    </span>
+                  ) : null}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 border-border bg-bg-elevated p-0 text-text-primary">
+                <div className="border-b border-border px-4 py-3">
+                  <p className="font-serif text-lg text-white">Notifications</p>
+                  <p className="text-xs text-text-muted">Invites and account updates</p>
+                </div>
+                <div className="max-h-80 overflow-y-auto p-2">
+                  {pendingStaffInvites.map((invite) => (
+                    <button
+                      key={invite.id}
+                      type="button"
+                      onClick={() => void navigate(`/accept-invite?token=${encodeURIComponent(invite.token)}`)}
+                      className="w-full rounded-lg px-3 py-3 text-left transition-colors hover:bg-bg-surface"
+                    >
+                      <p className="text-sm font-medium text-white">Staff invite</p>
+                      <p className="mt-1 text-xs text-text-secondary">
+                        Join {invite.restaurant_name} as {invite.role}.
+                      </p>
+                    </button>
+                  ))}
+                  {notifications.map((notification) => (
+                    <button
+                      key={notification.id}
+                      type="button"
+                      onClick={() => {
+                        void markRead(notification.id);
+                        const route = notification.data?.route;
+                        if (typeof route === "string") void navigate(route);
+                      }}
+                      className="w-full rounded-lg px-3 py-3 text-left transition-colors hover:bg-bg-surface"
+                    >
+                      <p className="text-sm font-medium text-white">{notification.title}</p>
+                      {notification.body ? (
+                        <p className="mt-1 text-xs text-text-secondary">{notification.body}</p>
+                      ) : null}
+                    </button>
+                  ))}
+                  {pendingStaffInvites.length === 0 && notifications.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-xs text-text-muted">No notifications yet.</p>
+                  ) : null}
+                </div>
+              </PopoverContent>
+            </Popover>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -797,6 +844,10 @@ export default function DiscoverPage() {
                   <Settings className="size-4" />
                   Settings
                 </DropdownMenuItem>
+                <StaffWorkspaceMenuItems
+                  restaurants={staffRestaurants}
+                  restaurantRoles={restaurantRoles}
+                />
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
                   <LogOut className="size-4" />
@@ -804,51 +855,6 @@ export default function DiscoverPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-
-            {restaurantRoles.length > 0 &&
-              (staffRestaurants.length > 1 ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-white/5">
-                    <LayoutDashboard className="size-3.5" />
-                    Dashboard
-                    <ChevronDown className="size-3.5" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
-                    {staffRestaurants.map((r) => (
-                      <DropdownMenuItem
-                        key={r.id}
-                        onClick={() => {
-                          localStorage.setItem("cenaiva.selectedRestaurantId", r.id);
-                          if (isCustomerView) switchToStaffView();
-                          void navigate("/dashboard");
-                        }}
-                      >
-                        <LayoutDashboard className="size-4" />
-                        {r.name ?? r.slug}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  onClick={() => {
-                    if (isCustomerView) switchToStaffView();
-                    void navigate("/dashboard");
-                  }}
-                >
-                  <LayoutDashboard className="size-4" />
-                  Dashboard
-                </Button>
-              ))}
-
-            {canUseCustomerView && !isCustomerView && (
-              <Button variant="outline" size="sm" onClick={switchToCustomerView}>
-                Diner view
-              </Button>
-            )}
           </div>
         </div>
       </header>
@@ -1052,7 +1058,7 @@ export default function DiscoverPage() {
                               : "border-border bg-bg-surface text-text-secondary hover:border-gold/40",
                           )}
                         >
-                          {tt}
+                          {formatCompactTimeLabel(tt)}
                         </button>
                       ))}
                     </div>
@@ -1395,7 +1401,7 @@ export default function DiscoverPage() {
                                   onClick={() => handleSlotClick(r, s)}
                                   className="rounded-md bg-gold px-2.5 py-1 text-[11px] font-semibold text-black hover:opacity-90"
                                 >
-                                  {s.replace(":00 PM", "p").replace(":15 PM", ":15p").replace(":30 PM", ":30p").replace(":45 PM", ":45p")}
+                                  {formatCompactTimeLabel(s)}
                                 </button>
                               ))}
                             </div>

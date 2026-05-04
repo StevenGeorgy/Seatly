@@ -36,6 +36,16 @@ Deno.serve(async (req: Request) => {
     const dayOfWeek = date.getDay();
     const dateOnly = dateStr.slice(0, 10);
 
+    const { data: restaurantRow } = await supabase
+      .from("restaurants")
+      .select("settings_json")
+      .eq("id", restaurantId)
+      .single();
+    const configuredTurnMinutes =
+      typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
+        ? restaurantRow.settings_json.turnTimeMinutes
+        : null;
+
     const { data: shifts } = await supabase
       .from("shifts")
       .select("id, name, start_time, end_time, slot_duration_minutes, turn_time_minutes, min_party_size, max_party_size, max_covers")
@@ -54,13 +64,20 @@ Deno.serve(async (req: Request) => {
     const end = `${dateOnly}T23:59:59`;
     const { data: reservations } = await supabase
       .from("reservations")
-      .select("shift_id, reserved_at, party_size")
+      .select("shift_id, reserved_at, party_size, duration_minutes")
       .eq("restaurant_id", restaurantId)
       .in("status", ["pending", "confirmed", "seated"])
       .gte("reserved_at", start)
       .lte("reserved_at", end);
 
-    const slots: { shift_id: string; shift_name: string; time: string }[] = [];
+    const slots: {
+      shift_id: string;
+      shift_name: string;
+      time: string;
+      date_time: string;
+      display_time: string;
+      table_ids: string[];
+    }[] = [];
 
     for (const shift of shifts) {
       if (partySize < (shift.min_party_size || 1) || partySize > (shift.max_party_size || 20)) continue;
@@ -68,7 +85,7 @@ Deno.serve(async (req: Request) => {
       const [sH, sM] = (shift.start_time || "17:00").split(":").map(Number);
       const [eH, eM] = (shift.end_time || "23:00").split(":").map(Number);
       const slotMins = shift.slot_duration_minutes || 30;
-      const turnMins = shift.turn_time_minutes || 90;
+      const turnMins = configuredTurnMinutes || shift.turn_time_minutes || 90;
       const maxCovers = shift.max_covers || 100;
 
       let slotMin = sH * 60 + sM;
@@ -84,7 +101,8 @@ Deno.serve(async (req: Request) => {
         let available = true;
         for (const r of shiftResvs) {
           const resvStart = new Date(r.reserved_at);
-          const resvEnd = new Date(resvStart.getTime() + turnMins * 60 * 1000);
+          const resvDuration = r.duration_minutes || turnMins;
+          const resvEnd = new Date(resvStart.getTime() + resvDuration * 60 * 1000);
           if (slotStart < resvEnd && slotEnd > resvStart) {
             totalCovers += r.party_size || 0;
             if (totalCovers > maxCovers) {
@@ -94,10 +112,31 @@ Deno.serve(async (req: Request) => {
           }
         }
         if (available && totalCovers <= maxCovers) {
+          const { data: tableIds, error: assignmentErr } = await supabase.rpc("find_available_table_group", {
+            p_restaurant_id: restaurantId,
+            p_reserved_at: slotStart.toISOString(),
+            p_party_size: partySize,
+            p_turn_minutes: turnMins,
+          });
+          const assignedTableIds = Array.isArray(tableIds)
+            ? tableIds.filter((id): id is string => typeof id === "string")
+            : [];
+          if (assignmentErr || assignedTableIds.length === 0) {
+            slotMin += slotMins;
+            continue;
+          }
+
           slots.push({
             shift_id: shift.id,
             shift_name: shift.name || "Shift",
             time: slotStart.toISOString().slice(0, 19).replace("T", " "),
+            date_time: slotStart.toISOString(),
+            display_time: slotStart.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+            }),
+            table_ids: assignedTableIds,
           });
         }
         slotMin += slotMins;

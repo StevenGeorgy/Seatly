@@ -26,6 +26,7 @@ export type OrderRow = {
   restaurant_id: string;
   guest_id: string | null;
   is_preorder: boolean;
+  is_guest_checkout?: boolean;
   order_type: string | null;
   confirmation_code: string | null;
   notes: string | null;
@@ -37,7 +38,14 @@ export type OrderRow = {
   total_amount: number | null;
   created_at: string | null;
   order_items: OrderItemRow[];
-  reservations?: { table_id: string | null; tables?: { table_number: string | null } | null } | null;
+  reservations?: {
+    table_id: string | null;
+    reserved_at?: string | null;
+    guest_full_name?: string | null;
+    guest_email?: string | null;
+    guest_phone?: string | null;
+    tables?: { table_number: string | null; label?: string | null } | null;
+  } | null;
   guests?: {
     full_name: string | null;
     phone: string | null;
@@ -50,6 +58,7 @@ export type OrderRow = {
 
 export type OrderFilters = {
   barOnly?: boolean;
+  preordersOnly?: boolean;
 };
 
 export function useOrders(filters?: OrderFilters) {
@@ -71,9 +80,9 @@ export function useOrders(filters?: OrderFilters) {
 
     const { data, error: qErr } = await client
       .from("orders")
-      .select("*, order_items(*, menu_items(name, name_fr)), reservations!orders_reservation_id_fkey(table_id, tables(table_number)), guests(full_name, phone, dietary_restrictions, allergies, seating_preference, noise_preference)")
+      .select("*, order_items(*, menu_items(name, name_fr)), reservations!orders_reservation_id_fkey(table_id, reserved_at, guest_full_name, guest_email, guest_phone, tables(table_number, label)), guests(full_name, phone, dietary_restrictions, allergies, seating_preference, noise_preference)")
       .eq("restaurant_id", selectedRestaurantId)
-      .in("status", ["pending", "confirmed", "preparing", "ready"])
+      .in("status", ["pending", "confirmed", "preparing", "ready", "served"])
       .order("created_at", { ascending: true });
 
     if (qErr) {
@@ -81,6 +90,9 @@ export function useOrders(filters?: OrderFilters) {
       setOrders([]);
     } else {
       let rows = (data ?? []) as OrderRow[];
+      if (filters?.preordersOnly) {
+        rows = rows.filter((order) => order.is_preorder || order.reservation_id);
+      }
       if (filters?.barOnly) {
         rows = rows.map((o) => ({
           ...o,
@@ -90,7 +102,7 @@ export function useOrders(filters?: OrderFilters) {
       setOrders(rows);
     }
     setLoading(false);
-  }, [selectedRestaurantId, filters?.barOnly]);
+  }, [selectedRestaurantId, filters?.barOnly, filters?.preordersOnly]);
 
   useEffect(() => { void fetchOrders(); }, [fetchOrders]);
 
@@ -115,5 +127,22 @@ export function useOrders(filters?: OrderFilters) {
     return () => { void client.removeChannel(channel); };
   }, [selectedRestaurantId, fetchOrders]);
 
-  return { orders, loading, error, refetch: fetchOrders };
+  const updateOrderStatus = async (orderId: string, status: string) => {
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    const { error: itemUpdateError } = await client
+      .from("order_items")
+      .update({ status })
+      .eq("order_id", orderId);
+    if (itemUpdateError) throw new Error(itemUpdateError.message);
+
+    const { error: updateError } = await client
+      .from("orders")
+      .update({ status })
+      .eq("id", orderId);
+    if (updateError) throw new Error(updateError.message);
+    void fetchOrders();
+  };
+
+  return { orders, loading, error, refetch: fetchOrders, updateOrderStatus };
 }

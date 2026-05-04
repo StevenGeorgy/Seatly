@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const STEPS = [
@@ -126,7 +127,7 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) 
         onChange={(e) => onChange(e.target.value)}
         className="h-9 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
       >
-        {TIME_OPTIONS.map((t) => <option key={t}>{t}</option>)}
+        {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
     </div>

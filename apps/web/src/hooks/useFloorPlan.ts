@@ -5,6 +5,7 @@ import { fetchFloorPlanBundle } from "@/lib/floor-plan-bundle-fetch";
 import type { FloorPlanRow, SectionRow, TableRow } from "@/lib/floor-plan-db-types";
 import { readFloorPlanCache, writeFloorPlanCache } from "@/lib/floor-plan-data-cache";
 import i18n from "@/lib/i18n/i18n";
+import { releaseReservationTables } from "@/lib/table-assignment";
 import { nextSequentialTableNumber } from "@/lib/table-number";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
@@ -221,6 +222,37 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     [sections, selectedRestaurantId, tables],
   );
 
+  const updateFloorName = useCallback(
+    async (sectionId: string, name: string): Promise<boolean> => {
+      const trimmedName = name.trim();
+      if (!trimmedName) return false;
+      if (!isDatabaseUuid(sectionId)) return true;
+      if (!isSupabaseConfigured()) return false;
+
+      const client = getSupabaseBrowserClient();
+      const sectionRes = await client
+        .from("restaurant_sections")
+        .update({ name: trimmedName })
+        .eq("id", sectionId);
+      if (sectionRes.error) {
+        setError(new Error(sectionRes.error.message));
+        return false;
+      }
+
+      const planRes = await client
+        .from("floor_plans")
+        .update({ name: trimmedName })
+        .eq("section_id", sectionId);
+      if (planRes.error) {
+        setError(new Error(planRes.error.message));
+        return false;
+      }
+
+      return true;
+    },
+    [],
+  );
+
   const updateTable = useCallback(async (tableId: string, patch: Partial<TableRow>) => {
     const sanitized: Partial<TableRow> = { ...patch };
     if ("table_number" in sanitized) {
@@ -240,6 +272,19 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     if (!isSupabaseConfigured()) return false;
     if (Object.keys(sanitized).length === 0) return true;
     const client = getSupabaseBrowserClient();
+    if (sanitized.status === "empty") {
+      const { data: activeLinks } = await client
+        .from("reservation_tables")
+        .select("reservation_id, reservations(status)")
+        .eq("table_id", tableId)
+        .is("released_at", null);
+      const reservationIds = ((activeLinks ?? []) as Array<{ reservation_id: string; reservations?: { status?: string } | null }>)
+        .filter((link) => ["seated", "completed", "cancelled", "no_show"].includes(link.reservations?.status ?? ""))
+        .map((link) => link.reservation_id);
+      for (const reservationId of reservationIds) {
+        await releaseReservationTables(reservationId);
+      }
+    }
     const res = await client.from("tables").update(sanitized).eq("id", tableId);
     if (res.error) {
       setError(new Error(res.error.message));
@@ -247,6 +292,37 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     }
     return true;
   }, []);
+
+  const updateTableServiceStatus = useCallback(
+    async (tableId: string, status: string, seatedCount: number): Promise<boolean> => {
+      if (!isDatabaseUuid(tableId)) {
+        setTables((prev) =>
+          prev.map((table) =>
+            table.id === tableId
+              ? { ...table, status, seated_count: Math.max(0, seatedCount) }
+              : table,
+          ),
+        );
+        setError(null);
+        return true;
+      }
+      if (!isSupabaseConfigured()) return false;
+
+      const client = getSupabaseBrowserClient();
+      const { error } = await client.rpc("update_table_service_status", {
+        p_table_id: tableId,
+        p_status: status,
+        p_seated_count: Math.max(0, seatedCount),
+      });
+
+      if (error) {
+        setError(new Error(error.message));
+        return false;
+      }
+      return true;
+    },
+    [],
+  );
 
   const deleteTable = useCallback(async (tableId: string, options?: { refetchAfter?: boolean }) => {
     const refetchAfter = options?.refetchAfter ?? true;
@@ -266,6 +342,37 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     return true;
   }, [fetchAll]);
 
+  const deleteFloor = useCallback(
+    async (sectionId: string, options?: { refetchAfter?: boolean }): Promise<boolean> => {
+      const refetchAfter = options?.refetchAfter ?? true;
+      if (!isDatabaseUuid(sectionId)) {
+        setTables((prev) => prev.filter((table) => table.section_id !== sectionId));
+        setFloorPlans((prev) => prev.filter((plan) => plan.section_id !== sectionId && plan.id !== sectionId));
+        setSections((prev) => prev.filter((section) => section.id !== sectionId));
+        setError(null);
+        return true;
+      }
+      if (!isSupabaseConfigured()) return false;
+
+      const client = getSupabaseBrowserClient();
+      const [tablesRes, plansRes, sectionRes] = await Promise.all([
+        client.from("tables").update({ is_active: false }).eq("section_id", sectionId),
+        client.from("floor_plans").update({ is_active: false }).eq("section_id", sectionId),
+        client.from("restaurant_sections").update({ is_active: false }).eq("id", sectionId),
+      ]);
+
+      const error = tablesRes.error ?? plansRes.error ?? sectionRes.error;
+      if (error) {
+        setError(new Error(error.message));
+        return false;
+      }
+
+      if (refetchAfter) await fetchAll({ silent: true });
+      return true;
+    },
+    [fetchAll],
+  );
+
   const updateLayout = useCallback(async (floorPlanId: string, layout: FloorPlanLayout) => {
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
@@ -278,28 +385,45 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!selectedRestaurantId || !isSupabaseConfigured()) {
-      setTables([]);
-      setFloorPlans([]);
-      setSections([]);
-      setLoading(false);
-      return;
+      void Promise.resolve().then(() => {
+        if (cancelled) return;
+        setTables([]);
+        setFloorPlans([]);
+        setSections([]);
+        setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
     const cached = readFloorPlanCache(selectedRestaurantId);
     if (cached && !cached.error) {
-      setTables(cached.tables);
-      setFloorPlans(cached.floorPlans);
-      setSections(cached.sections);
-      setError(null);
-      setLoading(false);
-      void fetchAll({ silent: true });
+      void Promise.resolve().then(() => {
+        if (cancelled) return;
+        setTables(cached.tables);
+        setFloorPlans(cached.floorPlans);
+        setSections(cached.sections);
+        setError(null);
+        setLoading(false);
+        void fetchAll({ silent: true });
+      });
     } else {
-      setTables([]);
-      setFloorPlans([]);
-      setSections([]);
-      void fetchAll({ silent: false });
+      void Promise.resolve().then(() => {
+        if (cancelled) return;
+        setTables([]);
+        setFloorPlans([]);
+        setSections([]);
+        void fetchAll({ silent: false });
+      });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRestaurantId, fetchAll]);
 
   useEffect(() => {
@@ -327,8 +451,11 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     refetch,
     createSectionAndFloor,
     createTable,
+    updateFloorName,
     updateTable,
+    updateTableServiceStatus,
     deleteTable,
+    deleteFloor,
     updateLayout,
   };
 }

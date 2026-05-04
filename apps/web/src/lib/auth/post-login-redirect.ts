@@ -27,17 +27,20 @@ export function resolvePostLoginPath(from: unknown, result: OkContext): string {
   if (fromStr && isSafeRedirectPath(fromStr)) {
     if (isStaff) {
       if (fromStr.startsWith("/dashboard")) {
-        return canAccessDashboardPath(fromStr, roleSet)
+        return canAccessDashboardPath(fromStr, roleSet, result.restaurantRoles)
           ? fromStr
-          : getStaffDefaultPath(roleSet);
+          : getStaffDefaultPath(roleSet, result.restaurantRoles);
       }
       if (fromStr.startsWith("/discover") || fromStr.startsWith("/account")) {
-        return getStaffDefaultPath(roleSet);
+        return getStaffDefaultPath(roleSet, result.restaurantRoles);
       }
       if (fromStr.startsWith("/setup")) {
         return fromStr;
       }
-      return getStaffDefaultPath(roleSet);
+      if (fromStr.startsWith("/accept-invite")) {
+        return fromStr;
+      }
+      return getStaffDefaultPath(roleSet, result.restaurantRoles);
     }
 
     if (fromStr.startsWith("/dashboard")) {
@@ -46,5 +49,5 @@ export function resolvePostLoginPath(from: unknown, result: OkContext): string {
     return fromStr;
   }
 
-  return isStaff ? getStaffDefaultPath(roleSet) : "/discover";
+  return isStaff ? getStaffDefaultPath(roleSet, result.restaurantRoles) : "/discover";
 }

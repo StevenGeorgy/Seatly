@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 export type ReservationRow = {
   id: string;
@@ -11,6 +16,7 @@ export type ReservationRow = {
   shift_id: string | null;
   party_size: number;
   reserved_at: string;
+  duration_minutes: number | null;
   status: string;
   source: string | null;
   confirmation_code: string | null;
@@ -33,6 +39,24 @@ export type ReservationRow = {
   cancelled_at: string | null;
   created_at: string | null;
   guests?: { full_name: string | null; email: string | null; phone: string | null } | null;
+  reservation_tables?: Array<{
+    table_id: string;
+    is_primary: boolean;
+    tables: {
+      id: string;
+      table_number: string | null;
+      label: string | null;
+      section: string | null;
+      capacity: number;
+    } | null;
+  }> | null;
+  tables?: {
+    id: string;
+    table_number: string | null;
+    label: string | null;
+    section: string | null;
+    capacity: number;
+  } | null;
 };
 
 export type ReservationFilters = {
@@ -43,6 +67,9 @@ export type ReservationFilters = {
 
 export function useReservations(filters?: ReservationFilters) {
   const { selectedRestaurantId } = useRestaurantScope();
+  const filterStatus = filters?.status;
+  const filterDate = filters?.date;
+  const filterSearch = filters?.search;
   const [reservations, setReservations] = useState<ReservationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -60,20 +87,20 @@ export function useReservations(filters?: ReservationFilters) {
 
     let query = client
       .from("reservations")
-      .select("*, guests(full_name, email, phone)")
+      .select("*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, tables(id, table_number, label, section, capacity))")
       .eq("restaurant_id", selectedRestaurantId)
       .order("reserved_at", { ascending: true });
 
-    if (filters?.status && filters.status !== "all") {
-      query = query.eq("status", filters.status);
+    if (filterStatus && filterStatus !== "all") {
+      query = query.eq("status", filterStatus);
     } else {
       // "All" tab hides completed/cancelled — only show them on their own tabs
       query = query.not("status", "in", '("completed","cancelled")');
     }
 
-    if (filters?.date) {
-      const dayStart = `${filters.date}T00:00:00`;
-      const dayEnd = `${filters.date}T23:59:59`;
+    if (filterDate) {
+      const dayStart = `${filterDate}T00:00:00`;
+      const dayEnd = `${filterDate}T23:59:59`;
       query = query.gte("reserved_at", dayStart).lte("reserved_at", dayEnd);
     }
 
@@ -83,23 +110,34 @@ export function useReservations(filters?: ReservationFilters) {
       setError(new Error(qErr.message));
       setReservations([]);
     } else {
-      let rows = (data ?? []) as ReservationRow[];
-      if (filters?.search) {
-        const s = filters.search.toLowerCase();
+      let rows = ((data ?? []) as ReservationRow[]).map((reservation) => ({
+        ...reservation,
+        reservation_tables: reservation.reservation_tables?.filter((assignment) => assignment.tables) ?? [],
+      }));
+      if (filterSearch) {
+        const s = filterSearch.toLowerCase();
         rows = rows.filter(
           (r) =>
             r.guests?.full_name?.toLowerCase().includes(s) ||
             r.guest_full_name?.toLowerCase().includes(s) ||
+            r.guest_phone?.toLowerCase().includes(s) ||
+            r.guest_email?.toLowerCase().includes(s) ||
+            r.reservation_tables?.some((assignment) =>
+              assignment.tables?.label?.toLowerCase().includes(s) ||
+              assignment.tables?.table_number?.toLowerCase().includes(s),
+            ) ||
+            r.tables?.label?.toLowerCase().includes(s) ||
+            r.tables?.table_number?.toLowerCase().includes(s) ||
             r.confirmation_code?.toLowerCase().includes(s),
         );
       }
       setReservations(rows);
     }
     setLoading(false);
-  }, [selectedRestaurantId, filters?.status, filters?.date, filters?.search]);
+  }, [selectedRestaurantId, filterStatus, filterDate, filterSearch]);
 
   useEffect(() => {
-    void fetchReservations();
+    void Promise.resolve().then(() => fetchReservations());
   }, [fetchReservations]);
 
   useEffect(() => {
@@ -123,33 +161,16 @@ export function useReservations(filters?: ReservationFilters) {
     return () => { void client.removeChannel(channel); };
   }, [selectedRestaurantId, fetchReservations]);
 
-  const updateStatus = async (id: string, status: string) => {
+  const updateStatus = async (id: string, status: string, approvalToken?: string) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
-
-    const timestampField: Record<string, string> = {
-      completed: "completed_at",
-      cancelled: "cancelled_at",
-    };
-
-    const patch: Record<string, unknown> = { status };
-    if (timestampField[status]) patch[timestampField[status]] = new Date().toISOString();
-
-    await client.from("reservations").update(patch).eq("id", id);
-
-    // Auto-free the linked table when the reservation ends
-    if (status === "completed" || status === "cancelled" || status === "no_show") {
-      const { data: res } = await client
-        .from("reservations")
-        .select("table_id")
-        .eq("id", id)
-        .single();
-      if (res?.table_id) {
-        await client
-          .from("tables")
-          .update({ status: "empty", seated_count: 0 })
-          .eq("id", res.table_id);
-      }
+    const { error: statusError } = await client.rpc("update_staff_reservation_status", {
+      p_reservation_id: id,
+      p_status: status,
+      p_approval_token: approvalToken ?? null,
+    });
+    if (statusError) {
+      throw new Error(statusError.message);
     }
 
     void fetchReservations();
@@ -162,15 +183,14 @@ export function useReservations(filters?: ReservationFilters) {
   ) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
-    const now = new Date().toISOString();
-    await client
-      .from("reservations")
-      .update({ status: "seated", table_id: tableId, checked_in_at: now, seated_at: now })
-      .eq("id", reservationId);
-    await client
-      .from("tables")
-      .update({ status: "occupied", seated_count: partySize })
-      .eq("id", tableId);
+    const { error: seatError } = await client.rpc("seat_staff_reservation", {
+      p_reservation_id: reservationId,
+      p_table_id: tableId,
+    });
+    if (seatError) {
+      throw new Error(seatError.message);
+    }
+    void partySize;
     void fetchReservations();
   };
 
@@ -185,51 +205,68 @@ export function useReservations(filters?: ReservationFilters) {
   }) => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
-
-    // Upsert guest by phone or email
-    let guestId: string | null = null;
-    const { data: existingGuest } = await client
-      .from("guests")
-      .select("id")
-      .eq("restaurant_id", selectedRestaurantId)
-      .or(`phone.eq.${payload.guest_phone},email.eq.${payload.guest_email}`)
-      .maybeSingle();
-
-    if (existingGuest) {
-      guestId = existingGuest.id;
-    } else if (payload.guest_name || payload.guest_phone || payload.guest_email) {
-      const { data: newGuest } = await client
-        .from("guests")
-        .insert({
-          restaurant_id: selectedRestaurantId,
-          full_name: payload.guest_name,
-          phone: payload.guest_phone || null,
-          email: payload.guest_email || null,
-        })
-        .select("id")
-        .single();
-      guestId = newGuest?.id ?? null;
-    }
-
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    await client.from("reservations").insert({
-      restaurant_id: selectedRestaurantId,
-      guest_id: guestId,
-      guest_full_name: payload.guest_name,
-      guest_email: payload.guest_email || null,
-      guest_phone: payload.guest_phone || null,
-      party_size: payload.party_size,
-      reserved_at: payload.reserved_at,
-      table_id: payload.table_id ?? null,
-      special_request: payload.special_request || null,
-      status: "confirmed",
-      confirmation_code: code,
-      source: "dashboard",
-      is_guest_checkout: true,
+    const { error: reservationError } = await client.rpc("create_staff_reservation", {
+      p_restaurant_id: selectedRestaurantId,
+      p_guest_name: payload.guest_name,
+      p_guest_email: payload.guest_email || null,
+      p_guest_phone: payload.guest_phone || null,
+      p_party_size: payload.party_size,
+      p_reserved_at: payload.reserved_at,
+      p_special_request: payload.special_request || null,
     });
+
+    if (reservationError) {
+      throw new Error(reservationError.message);
+    }
 
     void fetchReservations();
   };
 
-  return { reservations, loading, error, refetch: fetchReservations, updateStatus, seatReservation, createReservation };
+  const requestManagerApproval = async (payload: {
+    restaurantId: string;
+    action: string;
+    managerEmail: string;
+    managerPassword: string;
+  }) => {
+    if (!isSupabaseConfigured()) return null;
+    const client = getSupabaseBrowserClient();
+    const {
+      data: { session },
+    } = await client.auth.getSession();
+    if (!session?.access_token) throw new Error("Authentication required.");
+
+    const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/approve-staff-action`, {
+      method: "POST",
+      headers: {
+        apikey: getSupabaseAnonKey(),
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        restaurant_id: payload.restaurantId,
+        action: payload.action,
+        manager_email: payload.managerEmail,
+        manager_password: payload.managerPassword,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      approval_token?: string;
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(body.error ?? "Manager approval failed.");
+    }
+    return body.approval_token ?? null;
+  };
+
+  return {
+    reservations,
+    loading,
+    error,
+    refetch: fetchReservations,
+    updateStatus,
+    seatReservation,
+    createReservation,
+    requestManagerApproval,
+  };
 }

@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import type { z } from "zod";
 
@@ -20,7 +20,9 @@ export default function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const [params] = useSearchParams();
   const [submitting, setSubmitting] = useState(false);
+  const invitedEmail = params.get("email")?.trim().toLowerCase() ?? "";
 
   const schema = useMemo(() => createLoginSchema(t), [t]);
   type FormValues = z.infer<typeof schema>;
@@ -31,10 +33,10 @@ export default function LoginPage() {
     formState: { errors },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: invitedEmail, password: "" },
   });
 
-  const from = (location.state as { from?: string } | null)?.from;
+  const from = (location.state as { from?: string } | null)?.from ?? params.get("from") ?? undefined;
 
   const onSubmit = async (values: FormValues) => {
     setSubmitting(true);
@@ -85,7 +87,9 @@ export default function LoginPage() {
       const { error } = await client.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `${window.location.origin}/auth/callback${
+            from ? `?from=${encodeURIComponent(from)}` : ""
+          }`,
         },
       });
       if (error) {
@@ -163,7 +167,10 @@ export default function LoginPage() {
       </p>
       <p className="text-muted-foreground text-center text-sm">
         {t("auth.login.noAccount")}{" "}
-        <Link className="text-primary underline-offset-4 hover:underline" to="/register">
+        <Link
+          className="text-primary underline-offset-4 hover:underline"
+          to={from ? `/register?from=${encodeURIComponent(from)}` : "/register"}
+        >
           {t("auth.login.registerLink")}
         </Link>
       </p>

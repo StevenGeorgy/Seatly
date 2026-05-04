@@ -47,6 +47,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 const ease = [0.25, 0.46, 0.45, 0.94] as const;
 
@@ -131,11 +132,11 @@ const RESTAURANTS: Restaurant[] = [
 ];
 
 const TIMELINE = [
-  { time: "7:30p", who: "Lefebvre · party of 4", status: "seated" as const },
-  { time: "7:45p", who: "Chen · party of 2", status: "confirmed" as const },
-  { time: "8:00p", who: "Singh · party of 6 · VIP", status: "at-risk" as const },
-  { time: "8:15p", who: "Walk-in · party of 2", status: "waiting" as const },
-  { time: "8:30p", who: "Tremblay · party of 3 · anniversary", status: "confirmed" as const },
+  { time: "7:30pm", who: "Lefebvre · party of 4", status: "seated" as const },
+  { time: "7:45pm", who: "Chen · party of 2", status: "confirmed" as const },
+  { time: "8pm", who: "Singh · party of 6 · VIP", status: "at-risk" as const },
+  { time: "8:15pm", who: "Walk-in · party of 2", status: "waiting" as const },
+  { time: "8:30pm", who: "Tremblay · party of 3 · anniversary", status: "confirmed" as const },
 ];
 
 const STATUS_STYLES: Record<(typeof TIMELINE)[number]["status"], string> = {
@@ -422,7 +423,7 @@ export default function HomePage() {
                 <SelectContent>
                   {TIME_SLOTS.map((t) => (
                     <SelectItem key={t} value={t}>
-                      {t}
+                      {formatCompactTimeLabel(t)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -573,27 +574,27 @@ export default function HomePage() {
                     </div>
                     <p className="text-xs text-text-muted">★ 4.8 · Yorkville · 0.4km</p>
                     <div className="grid grid-cols-3 gap-2">
-                      {["7:00p", "7:15p", "7:45p"].map((slot) => (
+                      {["7:00 PM", "7:15 PM", "7:45 PM"].map((slot) => (
                         <button
                           key={slot}
                           type="button"
                           onClick={() => goToDiscover({ slot })}
                           className={cn(
                             "rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
-                            slot === "7:15p"
+                            slot === "7:15 PM"
                               ? "border-gold bg-gold/15 text-gold"
                               : "border-border bg-bg-elevated text-text-secondary hover:border-gold/40",
                           )}
                         >
-                          {slot}
+                          {formatCompactTimeLabel(slot)}
                         </button>
                       ))}
                     </div>
                     <Button
                       className="w-full rounded-md font-semibold"
-                      onClick={() => goToDiscover({ slot: "7:15p" })}
+                      onClick={() => goToDiscover({ slot: "7:15 PM" })}
                     >
-                      Reserve · 7:15p
+                      Reserve · 7:15pm
                     </Button>
                     <p className="text-center text-[11px] text-text-muted">
                       ✦ Earn 185 points · ≈ $1.85
@@ -608,7 +609,7 @@ export default function HomePage() {
                     <CheckCircle2 className="size-5" />
                   </span>
                   <div>
-                    <p className="text-sm font-semibold text-white">Confirmed · 7:30 PM</p>
+                    <p className="text-sm font-semibold text-white">Confirmed · 7:30pm</p>
                     <p className="font-mono text-[10px] text-text-muted">
                       MV-7K2N91 · Patio T12 · 47 sec ago
                     </p>
@@ -627,7 +628,7 @@ export default function HomePage() {
             <div>
               <SectionEyebrow>Available tonight near you</SectionEyebrow>
               <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
-                Toronto · {time} · {people} {people === "1" ? "guest" : "guests"}
+                Toronto · {formatCompactTimeLabel(time)} · {people} {people === "1" ? "guest" : "guests"}
               </h2>
             </div>
             <Link
@@ -690,7 +691,7 @@ export default function HomePage() {
                         }
                         className="rounded-md bg-gold py-2 text-xs font-semibold text-black transition-opacity hover:opacity-90"
                       >
-                        {s}
+                        {formatCompactTimeLabel(s)}
                       </button>
                     ))}
                   </div>
@@ -780,7 +781,7 @@ export default function HomePage() {
           >
             <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
               <span>Live · Maison Verre · Saturday Service</span>
-              <span>7:42 PM</span>
+              <span>7:42pm</span>
             </div>
 
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -1008,7 +1009,7 @@ export default function HomePage() {
                   BL
                 </span>
                 <div>
-                  <p className="text-sm text-white">Bistro Lumière · Friday 7:30p</p>
+                  <p className="text-sm text-white">Bistro Lumière · Friday 7:30pm</p>
                   <p className="text-text-muted">Held for 6 min · MTL-3F2A8K</p>
                 </div>
                 <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-400">

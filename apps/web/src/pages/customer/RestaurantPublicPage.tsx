@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAvailability } from "@/hooks/useAvailability";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
@@ -47,7 +48,9 @@ import {
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
+import { assignReservationTables } from "@/lib/table-assignment";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -189,6 +192,7 @@ const SEATING_PREFERENCES = [
   "Bar seating",
   "Quiet corner",
 ];
+const DEFAULT_TURN_TIME_MINUTES = 90;
 const CUISINE_GRADIENT: Record<string, string> = {
   French:   "from-indigo-900 to-blue-900",
   Japanese: "from-rose-900 to-pink-900",
@@ -228,6 +232,11 @@ function formatCardPanInput(value: string): string {
     .slice(0, 16)
     .replace(/(.{4})/g, "$1 ")
     .trim();
+}
+
+function restaurantTurnTimeMinutes(restaurant: Restaurant): number {
+  const value = restaurant.settings_json?.turnTimeMinutes;
+  return typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_TURN_TIME_MINUTES;
 }
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
@@ -363,12 +372,12 @@ const STAFF_PREVIEW_TABS = ["Menu", "Photos", "Reviews", "About", "Events"] as c
 type StaffPreviewTab = (typeof STAFF_PREVIEW_TABS)[number];
 
 const STAFF_PREVIEW_TIMES = [
-  { label: "7:45p", value: "7:45 PM" },
-  { label: "8p", value: "8:00 PM" },
-  { label: "8:30p", value: "8:30 PM" },
-  { label: "9p", value: "9:00 PM" },
-  { label: "5:30p", value: "5:30 PM" },
-  { label: "6:45p", value: "6:45 PM" },
+  { label: "7:45pm", value: "7:45 PM" },
+  { label: "8pm", value: "8:00 PM" },
+  { label: "8:30pm", value: "8:30 PM" },
+  { label: "9pm", value: "9:00 PM" },
+  { label: "5:30pm", value: "5:30 PM" },
+  { label: "6:45pm", value: "6:45 PM" },
 ];
 
 function RestaurantStaffPreview({
@@ -736,6 +745,7 @@ export default function RestaurantPublicPage() {
    *  a manual-flow insert would ship "T19:00:00" as the timestamp). */
   const [existingReservationId, setExistingReservationId] = useState<string | null>(null);
   const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
+  const availability = useAvailability();
 
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
@@ -898,6 +908,22 @@ export default function RestaurantPublicPage() {
     return isValid(d) ? d : undefined;
   }, [dineIn.date]);
 
+  useEffect(() => {
+    if (!restaurant?.id || !dineIn.date || typeof dineIn.party_size !== "number") return;
+    void availability.fetchSlots(restaurant.id, dineIn.date, dineIn.party_size);
+  }, [availability.fetchSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
+
+  const availableTimeOptions = useMemo(
+    () => (dineIn.date ? availability.slots.map((slot) => slot.display_time) : TIMES),
+    [availability.slots, dineIn.date],
+  );
+
+  useEffect(() => {
+    if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
+    if (availableTimeOptions.includes(dineIn.time)) return;
+    setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
+  }, [availability.loading, availability.slots.length, availableTimeOptions, dineIn.date, dineIn.time]);
+
   const filteredMenu = useMemo(() => {
     let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
     if (activePromoId) {
@@ -1040,7 +1066,9 @@ export default function RestaurantPublicPage() {
       dineIn.name &&
       dineIn.email &&
       typeof dineIn.party_size === "number" &&
-      dineIn.party_size >= 1
+      dineIn.party_size >= 1 &&
+      !availability.loading &&
+      availability.slots.some((slot) => slot.display_time === dineIn.time || slot.date_time === `${dineIn.date}T${convertTo24h(dineIn.time)}:00`)
     );
   };
 
@@ -1108,13 +1136,16 @@ export default function RestaurantPublicPage() {
         reservationId = existingReservationId;
       } else {
         const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
+        const partySize = typeof dineIn.party_size === "number" ? dineIn.party_size : 1;
+        const durationMinutes = restaurantTurnTimeMinutes(restaurant);
         const { data: resData, error: resErr } = await client
           .from("reservations")
           .insert({
             restaurant_id: restaurant.id,
             guest_id: guestId,
-            party_size: typeof dineIn.party_size === "number" ? dineIn.party_size : 1,
+            party_size: partySize,
             reserved_at: reservedAt,
+            duration_minutes: durationMinutes,
             status: "pending",
             source: "web",
             special_request: dineIn.allergies || null,
@@ -1130,6 +1161,25 @@ export default function RestaurantPublicPage() {
           .single();
         if (resErr) throw new Error(`Reservation: ${resErr.message}`);
         reservationId = resData.id;
+
+        const assignment = await assignReservationTables({
+          reservationId,
+          restaurantId: restaurant.id,
+          reservedAt,
+          partySize,
+          turnMinutes: durationMinutes,
+        });
+        if (assignment.error) {
+          await client
+            .from("reservations")
+            .update({
+              status: "cancelled",
+              cancelled_at: new Date().toISOString(),
+              cancellation_reason: "No available table for party size.",
+            })
+            .eq("id", reservationId);
+          throw new Error(assignment.error);
+        }
       }
 
       // 3. Create (or update) the order.
@@ -1387,12 +1437,24 @@ export default function RestaurantPublicPage() {
                           <select
                             value={dineIn.time}
                             onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
+                            disabled={dineIn.date ? availability.loading || availability.slots.length === 0 : false}
                             className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40"
                           >
-                            {TIMES.map((t) => <option key={t}>{t}</option>)}
+                            {availableTimeOptions.length > 0 ? (
+                              availableTimeOptions.map((time) => (
+                                <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
+                              ))
+                            ) : (
+                              <option value="">No times available</option>
+                            )}
                           </select>
                           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
                         </div>
+                        {dineIn.date && availability.loading ? (
+                          <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>
+                        ) : dineIn.date && availability.slots.length === 0 ? (
+                          <p className="mt-1.5 text-[11px] text-warning">No tables fit this party on that date.</p>
+                        ) : null}
                       </div>
                       <div>
                         <Label htmlFor="di-party" className="mb-1.5 block text-xs text-text-muted">Guests</Label>
@@ -1787,7 +1849,7 @@ export default function RestaurantPublicPage() {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-text-muted">Reservation</p>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div><p className="text-text-muted text-xs">Name</p><p className="font-medium text-text-primary">{dineIn.name}</p></div>
-                  <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {dineIn.time}</p></div>
+                  <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {formatCompactTimeLabel(dineIn.time)}</p></div>
                   <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size || 1} guests</p></div>
                   {dineIn.seating_preference && (
                     <div>
@@ -2108,7 +2170,7 @@ export default function RestaurantPublicPage() {
               <div>
                 <h2 className="text-2xl font-bold text-white">Table Booked!</h2>
                 <p className="mt-2 text-sm text-text-secondary">
-                  {`Your table at ${restaurant.name} is reserved for ${dineIn.party_size || 1} on ${dineIn.date} at ${dineIn.time}.`}
+                  {`Your table at ${restaurant.name} is reserved for ${dineIn.party_size || 1} on ${dineIn.date} at ${formatCompactTimeLabel(dineIn.time)}.`}
                 </p>
               </div>
 

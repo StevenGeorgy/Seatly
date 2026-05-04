@@ -8,9 +8,7 @@ import {
   Calendar as CalendarIcon,
   CalendarDays,
   CalendarPlus,
-  ChevronDown,
   ChevronRight,
-  LayoutDashboard,
   LogOut,
   MapPin,
   Phone,
@@ -29,6 +27,7 @@ import { useUser } from "@/hooks/useUser";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CustomerNav } from "@/components/customer/CustomerNav";
+import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,6 +40,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type Tab = "upcoming" | "past" | "cancelled";
 
@@ -256,7 +256,7 @@ function BookingCardView({
         <div className="flex items-baseline gap-2 text-base">
           <span className="text-white">{format(b.reservedAt, "EEE, MMMM d")}</span>
           <span className="text-text-muted">·</span>
-          <span className="font-semibold text-gold">{format(b.reservedAt, "h:mm a")}</span>
+          <span className="font-semibold text-gold">{formatCompactTimeLabel(b.reservedAt)}</span>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
           <span className="inline-flex items-center gap-1.5">
@@ -340,7 +340,7 @@ function NextReservationCard({
         <li className="flex items-center gap-2 text-text-secondary">
           <CalendarIcon className="size-4 text-gold" />
           {format(b.reservedAt, "EEE, MMMM d")} ·{" "}
-          <span className="text-white">{format(b.reservedAt, "h:mm a")}</span>
+          <span className="text-white">{formatCompactTimeLabel(b.reservedAt)}</span>
         </li>
         <li className="flex items-center gap-2 text-text-secondary">
           <Users className="size-4 text-gold" />
@@ -510,10 +510,6 @@ export default function BookingsPage() {
   const {
     profile,
     signOut,
-    canUseCustomerView,
-    isCustomerView,
-    switchToCustomerView,
-    switchToStaffView,
     restaurantRoles,
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
@@ -640,6 +636,10 @@ export default function BookingsPage() {
                   <Settings className="size-4" />
                   Settings
                 </DropdownMenuItem>
+                <StaffWorkspaceMenuItems
+                  restaurants={staffRestaurants}
+                  restaurantRoles={restaurantRoles}
+                />
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
                   <LogOut className="size-4" />
@@ -647,51 +647,6 @@ export default function BookingsPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-
-            {restaurantRoles.length > 0 &&
-              (staffRestaurants.length > 1 ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-white/5">
-                    <LayoutDashboard className="size-3.5" />
-                    Dashboard
-                    <ChevronDown className="size-3.5" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
-                    {staffRestaurants.map((r) => (
-                      <DropdownMenuItem
-                        key={r.id}
-                        onClick={() => {
-                          localStorage.setItem("cenaiva.selectedRestaurantId", r.id);
-                          if (isCustomerView) switchToStaffView();
-                          void navigate("/dashboard");
-                        }}
-                      >
-                        <LayoutDashboard className="size-4" />
-                        {r.name ?? r.slug}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  onClick={() => {
-                    if (isCustomerView) switchToStaffView();
-                    void navigate("/dashboard");
-                  }}
-                >
-                  <LayoutDashboard className="size-4" />
-                  Dashboard
-                </Button>
-              ))}
-
-            {canUseCustomerView && !isCustomerView && (
-              <Button variant="outline" size="sm" onClick={switchToCustomerView}>
-                Diner view
-              </Button>
-            )}
           </div>
         </div>
       </header>

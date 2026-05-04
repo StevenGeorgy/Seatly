@@ -28,6 +28,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -98,7 +99,7 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) 
         onChange={(e) => onChange(e.target.value)}
         className="h-9 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
       >
-        {TIME_OPTIONS.map((t) => <option key={t}>{t}</option>)}
+        {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
     </div>
@@ -114,7 +115,10 @@ const CURRENCY_OPTIONS = [
   { value: "mxn", label: "MXN — Mexican Peso" },
 ];
 
-const RESTAURANT_DESCRIPTION_MAX_LENGTH = 200;
+const RESTAURANT_DESCRIPTION_MAX_LENGTH = 360;
+const DEFAULT_TURN_TIME_MINUTES = 90;
+const MIN_TURN_TIME_MINUTES = 30;
+const MAX_TURN_TIME_MINUTES = 240;
 
 function isLight(hex: string): boolean {
   const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -189,6 +193,13 @@ function FieldRow({ label, hint, children }: { label: string; hint?: ReactNode; 
   );
 }
 
+function normalizeTurnTime(value: string): number | null {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < MIN_TURN_TIME_MINUTES || parsed > MAX_TURN_TIME_MINUTES) return null;
+  return parsed;
+}
+
 function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
@@ -254,11 +265,15 @@ export default function SettingsPage() {
   const [description, setDescription] = useState("");
   const [currency, setCurrency] = useState(selectedRestaurant?.currency ?? "cad");
   const [hasBar, setHasBar] = useState(selectedRestaurant?.has_bar ?? false);
+  const [turnTimeMinutes, setTurnTimeMinutes] = useState(
+    String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
+  );
   const [savingRestaurant, setSavingRestaurant] = useState(false);
   const [restaurantInitial, setRestaurantInitial] = useState<{
-    name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean;
+    name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean; turnTimeMinutes: string;
   } | null>(null);
   const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
+  const normalizedTurnTime = normalizeTurnTime(turnTimeMinutes);
 
   // Hours
   const [hours, setHours] = useState<DayHours[]>(defaultHours);
@@ -288,6 +303,7 @@ export default function SettingsPage() {
     setRestaurantName(selectedRestaurant?.name ?? "");
     setCurrency(selectedRestaurant?.currency ?? "cad");
     setHasBar(selectedRestaurant?.has_bar ?? false);
+    setTurnTimeMinutes(String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES));
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
     setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
@@ -316,6 +332,7 @@ export default function SettingsPage() {
           cuisine: c, address: a, phone: p, description: d,
           currency: selectedRestaurant.currency ?? "cad",
           hasBar: selectedRestaurant.has_bar ?? false,
+          turnTimeMinutes: String(selectedRestaurant.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
         });
         const parsed = hoursJsonToState(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
@@ -333,17 +350,27 @@ export default function SettingsPage() {
       restaurantInitial.phone !== phone ||
       restaurantInitial.description !== description ||
       restaurantInitial.currency !== currency ||
-      restaurantInitial.hasBar !== hasBar
+      restaurantInitial.hasBar !== hasBar ||
+      restaurantInitial.turnTimeMinutes !== turnTimeMinutes
     );
-  }, [restaurantInitial, restaurantName, cuisine, address, phone, description, currency, hasBar]);
+  }, [restaurantInitial, restaurantName, cuisine, address, phone, description, currency, hasBar, turnTimeMinutes]);
 
   const saveRestaurantSettings = async () => {
     if (!selectedRestaurant) return;
     if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
     const nextName = restaurantName.trim();
     if (!nextName) return;
+    if (!normalizedTurnTime) {
+      toast.error(t("dashboard.settings.invalidTurnTime"));
+      return;
+    }
     setSavingRestaurant(true);
     const client = getSupabaseBrowserClient();
+    const existingSettings = (selectedRestaurant.settings_json ?? {}) as RestaurantSettings;
+    const updatedSettings: RestaurantSettings = {
+      ...existingSettings,
+      turnTimeMinutes: normalizedTurnTime,
+    };
     const { error } = await client
       .from("restaurants")
       .update({
@@ -354,11 +381,12 @@ export default function SettingsPage() {
         description: description.trim().slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH) || null,
         currency,
         has_bar: hasBar,
+        settings_json: updatedSettings,
       })
       .eq("id", selectedRestaurant.id);
     setSavingRestaurant(false);
     if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
-    setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar });
+    setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar, turnTimeMinutes });
     refreshRestaurants();
     toast.success(t("dashboard.settings.saved"));
   };
@@ -372,6 +400,7 @@ export default function SettingsPage() {
     setDescription(restaurantInitial.description);
     setCurrency(restaurantInitial.currency);
     setHasBar(restaurantInitial.hasBar);
+    setTurnTimeMinutes(restaurantInitial.turnTimeMinutes);
   };
 
   const saveHours = async () => {
@@ -547,6 +576,35 @@ export default function SettingsPage() {
                 </FieldRow>
                 <FieldRow label="Bar / drinks station" hint="Enables the Bar Only filter on Orders.">
                   <Switch checked={hasBar} onCheckedChange={setHasBar} />
+                </FieldRow>
+                <FieldRow
+                  label={t("dashboard.settings.turnTime")}
+                  hint={t("dashboard.settings.turnTimeHint")}
+                >
+                  <div className="flex max-w-sm flex-col gap-2">
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        min={MIN_TURN_TIME_MINUTES}
+                        max={MAX_TURN_TIME_MINUTES}
+                        step={15}
+                        value={turnTimeMinutes}
+                        onChange={(event) => setTurnTimeMinutes(event.target.value)}
+                        className="pr-16"
+                      />
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-text-muted">
+                        {t("dashboard.settings.minutesShort")}
+                      </span>
+                    </div>
+                    {!normalizedTurnTime ? (
+                      <p className="text-xs text-warning">
+                        {t("dashboard.settings.turnTimeValidation", {
+                          min: MIN_TURN_TIME_MINUTES,
+                          max: MAX_TURN_TIME_MINUTES,
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
                 </FieldRow>
                 <FieldRow label="Logo & cover" hint="Square logo · 16:9 cover image.">
                   <div className="flex items-center gap-3">

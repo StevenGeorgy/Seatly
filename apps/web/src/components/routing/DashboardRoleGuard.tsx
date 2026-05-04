@@ -29,6 +29,11 @@ export function DashboardRoleGuard({ children }: { children: ReactNode }) {
     );
   }, [restaurantRoles, selectedRestaurantId]);
 
+  const scopedRoles = useMemo(
+    () => restaurantRoles.filter((r) => r.restaurant_id === selectedRestaurantId),
+    [restaurantRoles, selectedRestaurantId],
+  );
+
   if (scopeLoading) {
     return <RouteFallback />;
   }
@@ -53,8 +58,8 @@ export function DashboardRoleGuard({ children }: { children: ReactNode }) {
     return <Navigate to="/discover" replace />;
   }
 
-  if (!canAccessDashboardPath(pathname, roleSet)) {
-    return <Navigate to={getStaffDefaultPath(roleSet)} replace />;
+  if (!canAccessDashboardPath(pathname, roleSet, scopedRoles)) {
+    return <Navigate to={getStaffDefaultPath(roleSet, scopedRoles)} replace />;
   }
 
   return children;

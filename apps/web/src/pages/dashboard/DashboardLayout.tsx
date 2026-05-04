@@ -108,7 +108,7 @@ function DashboardShell() {
     <div
       className={cn(
         "flex h-screen flex-col text-foreground sm:flex-row",
-        isFloorPlanRoute ? "bg-bg-surface" : "bg-background",
+        "bg-background",
       )}
     >
       <CenaivaDashboardSync />
@@ -116,21 +116,21 @@ function DashboardShell() {
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-          isFloorPlanRoute && "bg-bg-surface",
+          isFloorPlanRoute && "bg-background",
         )}
       >
         <main
           className={cn(
             "flex-1 min-h-0",
             isFloorPlanRoute
-              ? "flex flex-col overflow-hidden bg-bg-surface"
+              ? "flex flex-col overflow-hidden bg-background"
               : "overflow-y-auto",
           )}
         >
           <div
             className={cn(
               isFloorPlanRoute
-                ? "flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-bg-surface"
+                ? "flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-background"
                 : "w-full p-5 sm:p-6 lg:p-8",
             )}
           >
@@ -141,7 +141,7 @@ function DashboardShell() {
               <PageErrorBoundary key={pathname}>
                 {isFloorPlanRoute ? (
                   /* Plain wrapper: skip AnimatePresence/motion so flex height reaches Konva reliably. */
-                  <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden bg-bg-surface">
+                  <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden bg-background">
                     <Outlet />
                   </div>
                 ) : (

@@ -1,89 +1,124 @@
 import { useMemo, useState } from "react";
-import { Filter, Plus, Search, UtensilsCrossed } from "lucide-react";
+import { CheckCircle2, Clock3, ReceiptText, Search, UtensilsCrossed } from "lucide-react";
 import { motion } from "framer-motion";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { Button } from "@/components/ui/button";
-import { useOrders } from "@/hooks/useOrders";
+import { useOrders, type OrderRow } from "@/hooks/useOrders";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { cn } from "@/lib/utils";
-import { NewOrderDrawer } from "@/components/orders/NewOrderDrawer";
+import { formatCurrency } from "@/lib/utils/formatCurrency";
 
-type TicketStatus = "open" | "closed";
-type TicketTag = "split" | "allergen" | "birthday" | "vip";
+type TabKey = "all" | "pending" | "preparing" | "ready" | "served";
 
-type Ticket = {
-  table: string;
+type PreorderRow = {
+  id: string;
   orderId: string;
+  reservationTime: string;
   guest: string;
-  tag?: { kind: TicketTag; label: string };
-  course: string;
-  items: number;
+  contact: string;
+  table: string;
+  items: string;
+  itemCount: number;
   total: number;
-  server: string;
-  opened: string;
-  status: TicketStatus;
+  status: string;
+  tabStatus: Exclude<TabKey, "all">;
+  sortAt: number;
 };
 
-const TICKETS: Ticket[] = [
-  { table: "T06", orderId: "OR-2841", guest: "Park, Ji-soo", tag: { kind: "split", label: "SPLIT × 3" }, course: "Mains", items: 9, total: 412.5, server: "M.Reyes", opened: "6:32p", status: "open" },
-  { table: "T03", orderId: "OR-2842", guest: "Tremblay, M.", course: "Hors", items: 6, total: 268.0, server: "A.Singh", opened: "7:00p", status: "open" },
-  { table: "T18", orderId: "OR-2843", guest: "Singh, A.", tag: { kind: "allergen", label: "ALLERGEN" }, course: "Snacks", items: 11, total: 520.4, server: "M.Reyes", opened: "7:15p", status: "open" },
-  { table: "T12", orderId: "OR-2844", guest: "Lefebvre, C.", tag: { kind: "birthday", label: "BIRTHDAY" }, course: "Hors", items: 7, total: 344.2, server: "D.Owens", opened: "7:30p", status: "open" },
-  { table: "T05", orderId: "OR-2846", guest: "Chen, D.", tag: { kind: "vip", label: "VIP" }, course: "Dessert", items: 5, total: 214.0, server: "A.Singh", opened: "7:45p", status: "open" },
-  { table: "T20", orderId: "OR-2848", guest: "Park, A.", tag: { kind: "vip", label: "VIP" }, course: "Mains", items: 12, total: 642.0, server: "D.Owens", opened: "8:02p", status: "open" },
-  { table: "T09", orderId: "OR-2849", guest: "Okafor, N.", course: "Hors", items: 4, total: 178.0, server: "A.Singh", opened: "8:14p", status: "open" },
-  { table: "T22", orderId: "OR-2850", guest: "Bianchi, G.", course: "Mains", items: 8, total: 386.75, server: "M.Reyes", opened: "8:21p", status: "open" },
-  { table: "T01", orderId: "OR-2839", guest: "Anand, R.", course: "Closed", items: 6, total: 184.2, server: "M.Reyes", opened: "5:28p", status: "closed" },
-  { table: "T07", orderId: "OR-2840", guest: "Walk-in", course: "Closed", items: 3, total: 96.5, server: "A.Singh", opened: "6:12p", status: "closed" },
-];
+const ACTIVE_STATUSES = new Set(["pending", "confirmed", "preparing", "ready"]);
 
-const STATS = [
-  { label: "Open tickets", value: "8", caption: "on the floor", deltaTone: null as null },
-  { label: "Open value", value: "$2966", caption: "vs avg Sat", delta: "$1,840", deltaTone: "up" as const },
-  { label: "Avg ticket", value: "$371", caption: "vs last week", delta: "6%", deltaTone: "up" as const },
-  { label: "Avg time", value: "42m", caption: "ticket → close", delta: "3m", deltaTone: "down" as const },
-];
-
-const TAG_CLASSES: Record<TicketTag, string> = {
-  split: "border-info/30 bg-info/10 text-info",
-  allergen: "border-danger/30 bg-danger/10 text-danger",
-  birthday: "border-warning/30 bg-warning/10 text-warning",
-  vip: "border-gold/30 bg-gold/10 text-gold",
-};
-
-function formatMoney(value: number): string {
-  return `$${value.toFixed(2)}`;
+function tabStatusFor(status: string): Exclude<TabKey, "all"> {
+  if (status === "preparing") return "preparing";
+  if (status === "ready") return "ready";
+  if (status === "served") return "served";
+  return "pending";
 }
 
-type TabKey = "all" | "open" | "closed";
-
 export default function OrdersPage() {
+  const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
-  const { refetch } = useOrders();
-  const currency = selectedRestaurant?.currency ?? "CAD";
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const { selectedRestaurant } = useRestaurantScope();
+  const { orders, loading, error, updateOrderStatus } = useOrders({ preordersOnly: true });
+  const currency = selectedRestaurant?.currency ?? "cad";
+
+  const rows = useMemo(
+    () =>
+      orders
+        .map((order) => adaptOrder(order, i18n.language, t))
+        .sort((a, b) => a.sortAt - b.sortAt),
+    [i18n.language, orders, t],
+  );
 
   const counts = useMemo(() => ({
-    all: TICKETS.length,
-    open: TICKETS.filter((t) => t.status === "open").length,
-    closed: TICKETS.filter((t) => t.status === "closed").length,
-  }), []);
+    all: rows.length,
+    pending: rows.filter((row) => row.tabStatus === "pending").length,
+    preparing: rows.filter((row) => row.tabStatus === "preparing").length,
+    ready: rows.filter((row) => row.tabStatus === "ready").length,
+    served: rows.filter((row) => row.tabStatus === "served").length,
+  }), [rows]);
+
+  const stats = useMemo(() => {
+    const activeRows = rows.filter((row) => ACTIVE_STATUSES.has(row.status));
+    return [
+      {
+        label: t("dashboard.orders.statActivePreorders"),
+        value: String(activeRows.length),
+        caption: t("dashboard.orders.statActivePreordersCaption"),
+        icon: Clock3,
+      },
+      {
+        label: t("dashboard.orders.statReady"),
+        value: String(counts.ready),
+        caption: t("dashboard.orders.statReadyCaption"),
+        icon: CheckCircle2,
+      },
+      {
+        label: t("dashboard.orders.statPreorderValue"),
+        value: formatCurrency(rows.reduce((sum, row) => sum + row.total, 0), currency),
+        caption: t("dashboard.orders.statPreorderValueCaption"),
+        icon: ReceiptText,
+      },
+      {
+        label: t("dashboard.orders.statItems"),
+        value: String(rows.reduce((sum, row) => sum + row.itemCount, 0)),
+        caption: t("dashboard.orders.statItemsCaption"),
+        icon: UtensilsCrossed,
+      },
+    ];
+  }, [counts.ready, currency, rows, t]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return TICKETS.filter((row) => {
-      if (tab !== "all" && row.status !== tab) return false;
+    return rows.filter((row) => {
+      if (tab !== "all" && row.tabStatus !== tab) return false;
       if (!q) return true;
       return (
         row.orderId.toLowerCase().includes(q) ||
         row.guest.toLowerCase().includes(q) ||
-        row.table.toLowerCase().includes(q)
+        row.table.toLowerCase().includes(q) ||
+        row.items.toLowerCase().includes(q) ||
+        row.contact.toLowerCase().includes(q)
       );
     });
-  }, [tab, query]);
+  }, [query, rows, tab]);
+
+  const handleStatusClick = async (row: PreorderRow) => {
+    const nextStatus = row.status === "ready" ? "served" : "ready";
+    setUpdatingId(row.id);
+    try {
+      await updateOrderStatus(row.id, nextStatus);
+      toast.success(t(nextStatus === "served" ? "dashboard.orders.markedServed" : "dashboard.orders.markedReady"));
+    } catch (statusError) {
+      toast.error(statusError instanceof Error ? statusError.message : t("dashboard.orders.updateFailed"));
+    } finally {
+      setUpdatingId(null);
+    }
+  };
 
   return (
     <AnimatedPage className="flex flex-col gap-6">
@@ -96,47 +131,30 @@ export default function OrdersPage() {
         <div className="min-w-0">
           <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
             <UtensilsCrossed className="size-3.5" />
-            Dine-in
+            {t("dashboard.orders.eyebrow")}
           </p>
-          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Orders tonight</h1>
+          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">{t("dashboard.orders.preordersTitle")}</h1>
           <p className="mt-1 text-sm italic text-text-muted">
-            Every open ticket on the floor — by table, course and server.
+            {t("dashboard.orders.preordersSubtitle")}
           </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="outline" size="default" className="gap-2">
-            <Filter className="size-4" />
-            Filters
-          </Button>
-          <Button size="default" className="gap-2" onClick={() => setDrawerOpen(true)}>
-            <Plus className="size-4" />
-            New ticket
-          </Button>
         </div>
       </motion.header>
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {STATS.map((stat) => (
+        {stats.map((stat) => (
           <article
             key={stat.label}
             className="rounded-2xl border border-border bg-bg-surface p-5"
           >
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-              {stat.label}
-            </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                {stat.label}
+              </p>
+              <stat.icon className="size-4 text-gold" />
+            </div>
             <p className="mt-3 font-serif text-4xl text-white">{stat.value}</p>
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-text-muted">
-              {stat.deltaTone && (
-                <span
-                  className={cn(
-                    "font-medium",
-                    stat.deltaTone === "up" ? "text-success" : "text-danger",
-                  )}
-                >
-                  {stat.deltaTone === "up" ? "↑" : "↓"} {stat.delta}
-                </span>
-              )}
-              <span>{stat.caption}</span>
+            <p className="mt-2 text-xs text-text-muted">
+              {stat.caption}
             </p>
           </article>
         ))}
@@ -145,19 +163,19 @@ export default function OrdersPage() {
       <section className="rounded-2xl border border-border bg-bg-surface">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
           <div className="flex items-center gap-1 rounded-lg border border-border bg-bg-elevated/40 p-1">
-            {(["all", "open", "closed"] as const).map((key) => (
+            {(["all", "pending", "preparing", "ready", "served"] as const).map((key) => (
               <button
                 key={key}
                 type="button"
                 onClick={() => setTab(key)}
                 className={cn(
-                  "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors",
+                  "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
                   tab === key
                     ? "bg-gold/15 text-gold"
                     : "text-text-muted hover:text-text-secondary",
                 )}
               >
-                {key}
+                {t(`dashboard.orders.tabs.${key}`)}
                 <span
                   className={cn(
                     "font-mono text-[10px]",
@@ -175,7 +193,7 @@ export default function OrdersPage() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Order #, guest…"
+              placeholder={t("dashboard.orders.searchPlaceholder")}
               className="h-9 w-full rounded-md border border-border bg-bg-elevated/50 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-gold/40 focus:outline-none"
             />
           </div>
@@ -185,61 +203,90 @@ export default function OrdersPage() {
           <table className="w-full min-w-[960px] text-left">
             <thead>
               <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                <th className="px-5 py-3 font-medium">Table</th>
-                <th className="px-5 py-3 font-medium">Guest</th>
-                <th className="px-5 py-3 font-medium">Course</th>
-                <th className="px-5 py-3 font-medium">Items</th>
-                <th className="px-5 py-3 font-medium">Total</th>
-                <th className="px-5 py-3 font-medium">Server</th>
-                <th className="px-5 py-3 font-medium">Opened</th>
-                <th className="px-5 py-3 font-medium">Status</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.reservationTime")}</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.guest")}</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.table")}</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.items")}</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.preorderTotal")}</th>
+                <th className="px-5 py-3 font-medium">{t("dashboard.orders.status")}</th>
+                <th className="px-5 py-3 text-right font-medium">{t("dashboard.orders.action")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
-              {visible.map((row) => (
-                <tr key={row.orderId} className="text-sm transition-colors hover:bg-bg-elevated/30">
+              {loading && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-12 text-center text-sm text-text-muted">
+                    {t("dashboard.orders.loading")}
+                  </td>
+                </tr>
+              )}
+              {!loading && error && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-12 text-center text-sm text-danger">
+                    {t("dashboard.orders.loadFailed")}
+                  </td>
+                </tr>
+              )}
+              {!loading && !error && visible.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-12 text-center">
+                    <div className="mx-auto max-w-sm">
+                      <p className="font-serif text-xl text-white">{t("dashboard.orders.emptyTitle")}</p>
+                      <p className="mt-2 text-sm text-text-muted">{t("dashboard.orders.emptyDesc")}</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {!loading && !error && visible.map((row) => (
+                <tr key={row.id} className="text-sm transition-colors hover:bg-bg-elevated/30">
                   <td className="px-5 py-4 align-top">
-                    <div className="font-serif text-base text-gold">{row.table}</div>
+                    <div className="font-serif text-base text-gold">{row.reservationTime}</div>
                     <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
                       {row.orderId}
                     </div>
                   </td>
                   <td className="px-5 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-text-primary">{row.guest}</span>
-                      {row.tag && (
-                        <span
-                          className={cn(
-                            "rounded-md border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider",
-                            TAG_CLASSES[row.tag.kind],
-                          )}
-                        >
-                          {row.tag.label}
-                        </span>
-                      )}
+                    <div className="text-text-primary">{row.guest}</div>
+                    <div className="mt-1 text-xs text-text-muted">{row.contact}</div>
+                  </td>
+                  <td className="px-5 py-4 font-serif text-base text-gold">{row.table}</td>
+                  <td className="px-5 py-4">
+                    <div className="text-text-secondary">{row.items}</div>
+                    <div className="mt-1 text-xs text-text-muted">
+                      {t("dashboard.orders.itemCount", { count: row.itemCount })}
                     </div>
                   </td>
-                  <td className="px-5 py-4 text-text-secondary">{row.course}</td>
-                  <td className="px-5 py-4 text-text-secondary">{row.items}</td>
-                  <td className="px-5 py-4 text-text-primary">{formatMoney(row.total)}</td>
-                  <td className="px-5 py-4 text-text-secondary">{row.server}</td>
-                  <td className="px-5 py-4 font-mono text-text-muted">{row.opened}</td>
+                  <td className="px-5 py-4 text-text-primary">{formatCurrency(row.total, currency)}</td>
                   <td className="px-5 py-4">
                     <span className="inline-flex items-center gap-1.5 text-xs">
                       <span
                         className={cn(
                           "size-1.5 rounded-full",
-                          row.status === "open" ? "bg-gold" : "bg-text-muted",
+                          statusDotClass(row.tabStatus),
                         )}
                       />
                       <span
-                        className={
-                          row.status === "open" ? "text-gold" : "text-text-muted"
-                        }
+                        className={statusTextClass(row.tabStatus)}
                       >
-                        {row.status === "open" ? "Open" : "Closed"}
+                        {t(`dashboard.orders.statuses.${row.tabStatus}`)}
                       </span>
                     </span>
+                  </td>
+                  <td className="px-5 py-4 text-right">
+                    {row.tabStatus !== "served" ? (
+                      <Button
+                        size="sm"
+                        variant={row.tabStatus === "ready" ? "default" : "outline"}
+                        disabled={updatingId === row.id}
+                        onClick={() => void handleStatusClick(row)}
+                      >
+                        {row.tabStatus === "ready"
+                          ? t("dashboard.orders.markServed")
+                          : t("dashboard.orders.markReady")}
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-text-muted">{t("dashboard.orders.noAction")}</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -247,14 +294,78 @@ export default function OrdersPage() {
           </table>
         </div>
       </section>
-
-      <NewOrderDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        onSaved={() => void refetch()}
-        restaurantId={selectedRestaurantId}
-        currency={currency}
-      />
     </AnimatedPage>
   );
+}
+
+function adaptOrder(
+  order: OrderRow,
+  language: string,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): PreorderRow {
+  const reservedAt = order.reservations?.reserved_at ?? order.created_at;
+  const sortAt = reservedAt ? new Date(reservedAt).getTime() : Number.MAX_SAFE_INTEGER;
+  const itemCount = order.order_items.reduce((sum, item) => sum + item.quantity, 0);
+  const itemTotal = order.order_items.reduce((sum, item) => sum + (item.line_total ?? item.unit_price * item.quantity), 0);
+  const total = order.total_amount ?? order.subtotal ?? itemTotal;
+  const items = summarizeItems(order, t);
+  const guest = order.is_guest_checkout
+    ? t("dashboard.orders.guestCheckout")
+    : order.guests?.full_name ?? order.reservations?.guest_full_name ?? t("dashboard.orders.guestCheckout");
+  const contact = order.guests?.phone
+    ?? order.reservations?.guest_phone
+    ?? order.reservations?.guest_email
+    ?? t("dashboard.orders.noContact");
+  const table = order.reservations?.tables?.label
+    ?? order.reservations?.tables?.table_number
+    ?? t("dashboard.orders.unassigned");
+
+  return {
+    id: order.id,
+    orderId: order.confirmation_code ?? order.id.slice(0, 8).toUpperCase(),
+    reservationTime: reservedAt ? formatReservationTime(reservedAt, language) : t("dashboard.orders.noReservationTime"),
+    guest,
+    contact,
+    table,
+    items,
+    itemCount,
+    total,
+    status: order.status,
+    tabStatus: tabStatusFor(order.status),
+    sortAt,
+  };
+}
+
+function summarizeItems(order: OrderRow, t: (key: string, options?: Record<string, unknown>) => string): string {
+  if (order.order_items.length === 0) return t("dashboard.orders.noItems");
+  const visibleItems = order.order_items.slice(0, 2).map((item) => t("dashboard.orders.itemSummary", {
+    quantity: item.quantity,
+    name: item.name || item.menu_items?.name || t("dashboard.orders.unknownItem"),
+  }));
+  const remaining = order.order_items.length - visibleItems.length;
+  if (remaining <= 0) return visibleItems.join(", ");
+  return `${visibleItems.join(", ")} ${t("dashboard.orders.itemSummaryMore", { count: remaining })}`;
+}
+
+function formatReservationTime(value: string, language: string): string {
+  return new Intl.DateTimeFormat(language, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function statusDotClass(status: Exclude<TabKey, "all">): string {
+  if (status === "ready") return "bg-success";
+  if (status === "served") return "bg-text-muted";
+  if (status === "preparing") return "bg-warning";
+  return "bg-gold";
+}
+
+function statusTextClass(status: Exclude<TabKey, "all">): string {
+  if (status === "ready") return "text-success";
+  if (status === "served") return "text-text-muted";
+  if (status === "preparing") return "text-warning";
+  return "text-gold";
 }

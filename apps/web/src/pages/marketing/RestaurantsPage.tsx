@@ -30,11 +30,11 @@ const DASHBOARD_STATS = [
 ];
 
 const TIMELINE = [
-  { time: "7:30p", guest: "Lefebvre - party of 4", status: "seated" },
-  { time: "7:45p", guest: "Chen - party of 2", status: "confirmed" },
-  { time: "8:00p", guest: "Singh - party of 6 - VIP", status: "at-risk" },
-  { time: "8:15p", guest: "Walk-in - party of 2", status: "waiting" },
-  { time: "8:30p", guest: "Tremblay - party of 3 - anniversary", status: "confirmed" },
+  { time: "7:30pm", guest: "Lefebvre - party of 4", status: "seated" },
+  { time: "7:45pm", guest: "Chen - party of 2", status: "confirmed" },
+  { time: "8pm", guest: "Singh - party of 6 - VIP", status: "at-risk" },
+  { time: "8:15pm", guest: "Walk-in - party of 2", status: "waiting" },
+  { time: "8:30pm", guest: "Tremblay - party of 3 - anniversary", status: "confirmed" },
 ];
 
 const STATUS_STYLES: Record<string, string> = {
@@ -182,7 +182,7 @@ function DashboardMock() {
     <div className="rounded-3xl border border-border bg-bg-surface/80 p-6 shadow-2xl shadow-black/30">
       <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
         <span>Live - Maison Verre - Saturday service</span>
-        <span>7:42 PM</span>
+        <span>7:42pm</span>
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">

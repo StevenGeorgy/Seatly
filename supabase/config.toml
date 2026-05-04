@@ -7,6 +7,16 @@
 
 project_id = "exbjodmnpdiayfzrdyux"
 
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = [
+  "cenaiva://reset-password",
+  "cenaiva://**",
+  "http://localhost:5173/**",
+  "http://127.0.0.1:5173/**",
+]
+
 [functions.cenaiva-orchestrate]
 verify_jwt = false
 
@@ -32,4 +42,16 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.get-order-public]
+verify_jwt = false
+
+[functions.invite-staff]
+verify_jwt = false
+
+[functions.accept-staff-invite]
+verify_jwt = false
+
+[functions.get-my-staff-invites]
+verify_jwt = false
+
+[functions.approve-staff-action]
 verify_jwt = false

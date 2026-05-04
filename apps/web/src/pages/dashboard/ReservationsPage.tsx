@@ -8,9 +8,11 @@ import {
   Filter,
   Plus,
   Search,
+  Utensils,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { SeatReservationDialog } from "@/components/dashboard/SeatReservationDialog";
@@ -27,7 +29,11 @@ import {
   type ReservationFilters,
   type ReservationRow,
 } from "@/hooks/useReservations";
+import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useUser } from "@/hooks/useUser";
+import { hostActionNeedsManagerApproval } from "@/lib/auth/host-action-permissions";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type ViewMode = "day" | "week" | "list";
 type QuickFilter = "all" | "confirmed" | "seated" | "at_risk" | "waitlist" | "pending";
@@ -39,12 +45,20 @@ type ReservationBoardRow = {
   phone: string;
   party: number;
   table: string;
+  duration: string;
   notes: string;
   status: QuickFilter | "completed";
   tag?: string;
   source?: ReservationRow;
   startsAt: number;
   durationMinutes: number;
+};
+
+type TimelineTableRow = {
+  table: string;
+  room: string;
+  seats: number;
+  bookings: ReservationBoardRow[];
 };
 
 const TIME_OPTIONS: string[] = [];
@@ -56,63 +70,20 @@ for (let h = 0; h < 24; h += 1) {
   }
 }
 
-const BOARD_TIMES = ["5:30p", "6:00p", "6:30p", "7:00p", "7:30p", "8:00p", "8:30p", "9:00p", "10:00p", "11:00p", "12:00a", "1:00a", "2:00a"];
+const BOARD_TIMES = ["5:30pm", "6pm", "6:30pm", "7pm", "7:30pm", "8pm", "8:30pm", "9pm", "10pm", "11pm", "12am", "1am", "2am"];
 const BOARD_START_MINUTES = 17 * 60 + 30;
 const BOARD_END_MINUTES = 26 * 60;
 const BOARD_RANGE_MINUTES = BOARD_END_MINUTES - BOARD_START_MINUTES;
+const DEFAULT_DURATION_MINUTES = 90;
 
-const TABLE_ROWS = [
-  { table: "T01", room: "Patio", seats: 2 },
-  { table: "T03", room: "Main", seats: 4 },
-  { table: "T05", room: "Main", seats: 2 },
-  { table: "T06", room: "Main", seats: 8 },
-  { table: "T07", room: "Bar", seats: 2 },
-  { table: "T12", room: "Patio", seats: 4 },
-  { table: "T18", room: "Banquette", seats: 6 },
-  { table: "T20", room: "Patio", seats: 6 },
-  { table: "T09", room: "Main", seats: 4 },
-];
+type TranslationFn = ReturnType<typeof useTranslation>["t"];
 
-const DEMO_ROWS: ReservationBoardRow[] = [
-  row("demo-anand", "5:30 PM", "Anand, R.", "1416 555-0119", 2, "T07 · Bar", "Birthday · Cake brought", "completed"),
-  row("demo-chen", "6:00 PM", "Chen, M.", "1416 555-0144", 4, "T03 · Main", "Loire wines · quiet table", "seated", "VIP"),
-  row("demo-walkin", "6:15 PM", "Walk-in", "-", 2, "T07 · Bar", "Limit 90 min", "seated", "Walk-in"),
-  row("demo-park-j", "6:30 PM", "Park, J.", "1418 555-0177", 5, "T06 · Main", "Anniversary · Champagne pour", "seated", "Returning"),
-  row("demo-tremblay", "7:00 PM", "Tremblay, L.", "1418 555-0233", 4, "T03 · Main", "Pre-ordered tasting", "confirmed"),
-  row("demo-kapoor", "7:15 PM", "Kapoor, S.", "1410 555-0124", 2, "T01 · Patio", "Morel allergy (high)", "confirmed", "Loyalty"),
-  row("demo-singh", "7:30 PM", "Singh, A.", "1410 555-0208", 6, "T18 · Banquette", "Awaiting deposit · 24h hold", "at_risk", "Large party"),
-  row("demo-lefebvre", "7:45 PM", "Lefebvre, P.", "1418 555-0144", 4, "T12 · Patio", "Stroller · kid-friendly", "confirmed"),
-  row("demo-hassan", "8:00 PM", "Hassan, M.", "1416 555-0109", 3, "Waitlist", "Quoted 12 min", "waitlist", "Walk-in"),
-  row("demo-wong", "8:15 PM", "Wong, K.", "1416 555-0451", 2, "T05 · Main", "-", "confirmed"),
-  row("demo-park-a", "8:30 PM", "Park, A.", "1418 555-0184", 6, "T20 · Patio", "Sommelier pour · Loire", "confirmed", "VIP · Anniv."),
-  row("demo-cohen", "9:00 PM", "Cohen, R.", "1415 555-2511", 4, "Unassigned", "Vegetarian · 1GF", "pending", "New guest"),
-];
-
-function row(
-  id: string,
-  time: string,
-  guest: string,
-  phone: string,
-  party: number,
-  table: string,
-  notes: string,
-  status: ReservationBoardRow["status"],
-  tag?: string,
-): ReservationBoardRow {
-  const startsAt = timeToBoardMinutes(time);
-  return {
-    id,
-    time: shortTimeLabel(time),
-    guest,
-    phone,
-    party,
-    table,
-    notes,
-    status,
-    tag,
-    startsAt,
-    durationMinutes: party >= 6 ? 120 : 90,
-  };
+function formatDurationMinutes(minutes: number, t: TranslationFn): string {
+  if (minutes < 60) return t("dashboard.reservations.durationMinutes", { count: minutes });
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  if (remainder === 0) return t("dashboard.reservations.durationHours", { count: hours });
+  return t("dashboard.reservations.durationHoursMinutes", { hours, minutes: remainder });
 }
 
 function parseTime(timeStr: string): { hours: number; minutes: number } {
@@ -132,16 +103,6 @@ function timeToBoardMinutes(timeStr: string): number {
   return normalizedHour * 60 + minutes;
 }
 
-function shortTimeLabel(timeStr: string): string {
-  return timeStr
-    .replace(":00 PM", "p")
-    .replace(":15 PM", ":15p")
-    .replace(":30 PM", ":30p")
-    .replace(":45 PM", ":45p")
-    .replace(":00 AM", "a")
-    .replace(":30 AM", ":30a");
-}
-
 function normalizeStatus(row: ReservationRow): ReservationBoardRow["status"] {
   if ((row.no_show_risk_score ?? 0) >= 60) return "at_risk";
   if (row.status === "waiting" || row.status === "waitlist") return "waitlist";
@@ -151,34 +112,57 @@ function normalizeStatus(row: ReservationRow): ReservationBoardRow["status"] {
   return "confirmed";
 }
 
-function adaptReservation(rowData: ReservationRow, index: number): ReservationBoardRow {
+function reservationTableLabel(rowData: ReservationRow, t: TranslationFn): string {
+  const assignments = rowData.reservation_tables ?? [];
+  if (assignments.length > 0) {
+    const sorted = [...assignments].sort((a, b) => Number(b.is_primary) - Number(a.is_primary));
+    const labels = sorted.map((assignment) => {
+      const table = assignment.tables;
+      return table?.label || table?.table_number || t("dashboard.reservations.tableFallback");
+    });
+    const section = sorted[0]?.tables?.section;
+    return `${labels.length > 1 ? t("dashboard.reservations.tablesLabel") : t("dashboard.reservations.tableLabel")} ${labels.join(" + ")}${section ? ` · ${section}` : ""}`;
+  }
+
+  if (rowData.tables) {
+    const label = rowData.tables.label || rowData.tables.table_number || rowData.table_id?.slice(0, 8) || t("dashboard.reservations.unassigned");
+    return `${t("dashboard.reservations.tableLabel")} ${label}${rowData.tables.section ? ` · ${rowData.tables.section}` : ""}`;
+  }
+
+  if (rowData.table_id) return `${t("dashboard.reservations.tableLabel")} ${rowData.table_id.slice(0, 8)}`;
+
+  return normalizeStatus(rowData) === "waitlist" ? t("dashboard.reservations.waitlist") : t("dashboard.reservations.unassigned");
+}
+
+function adaptReservation(rowData: ReservationRow, t: TranslationFn): ReservationBoardRow {
   const date = new Date(rowData.reserved_at);
-  const guest = rowData.guests?.full_name ?? rowData.guest_full_name ?? "Walk-in";
+  const guest = rowData.is_guest_checkout
+    ? t("dashboard.reservations.notApplicable")
+    : rowData.guests?.full_name ?? rowData.guest_full_name ?? t("dashboard.reservations.notApplicable");
+  const phone = rowData.guest_phone ?? rowData.guests?.phone ?? rowData.guest_email ?? rowData.guests?.email ?? "-";
   const status = normalizeStatus(rowData);
+  const durationMinutes = rowData.duration_minutes ?? DEFAULT_DURATION_MINUTES;
   const notes =
     rowData.special_request ||
     rowData.occasion ||
     rowData.dietary_notes ||
     ((rowData.no_show_risk_score ?? 0) >= 60 ? "Awaiting deposit · 24h hold" : "-");
-  const table = rowData.table_id
-    ? `${TABLE_ROWS[index % TABLE_ROWS.length].table} · ${TABLE_ROWS[index % TABLE_ROWS.length].room}`
-    : status === "waitlist"
-      ? "Waitlist"
-      : "Unassigned";
+  const table = reservationTableLabel(rowData, t);
 
   return {
     id: rowData.id,
-    time: shortTimeLabel(format(date, "h:mm a")),
+    time: formatCompactTimeLabel(date),
     guest,
-    phone: rowData.guests?.phone ?? rowData.guest_phone ?? "-",
+    phone,
     party: rowData.party_size,
     table,
+    duration: formatDurationMinutes(durationMinutes, t),
     notes,
     status,
     tag: rowData.source === "walk_in" ? "Walk-in" : rowData.deposit_amount ? "Deposit" : undefined,
     source: rowData,
     startsAt: timeToBoardMinutes(format(date, "h:mm a")),
-    durationMinutes: rowData.party_size >= 6 ? 120 : 90,
+    durationMinutes,
   };
 }
 
@@ -196,16 +180,41 @@ function blockClasses(status: ReservationBoardRow["status"]): string {
 }
 
 function tableKey(table: string): string {
-  return table.split(" ")[0];
+  return table.replace(/^Tables?\s+/, "").split(" + ")[0].split(" · ")[0];
+}
+
+function buildTimelineRows(rows: ReservationBoardRow[]): TimelineTableRow[] {
+  const rowMap = new Map<string, TimelineTableRow>();
+  for (const reservation of rows) {
+    const table = reservation.table;
+    const key = tableKey(table);
+    const existing = rowMap.get(key);
+    if (existing) {
+      existing.bookings.push(reservation);
+      continue;
+    }
+    rowMap.set(key, {
+      table: key,
+      room: table.includes(" · ") ? table.split(" · ").at(-1) ?? "Floor" : "Floor",
+      seats: reservation.party,
+      bookings: [reservation],
+    });
+  }
+  return Array.from(rowMap.values()).sort((a, b) => a.table.localeCompare(b.table, undefined, { numeric: true }));
 }
 
 export default function ReservationsPage() {
+  const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<ViewMode>("day");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState<ReservationRow | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const { selectedRestaurantId } = useRestaurantScope();
+  const { rolesAtRestaurant } = useUser();
 
   const filters = useMemo(
     (): ReservationFilters => ({
@@ -215,7 +224,19 @@ export default function ReservationsPage() {
     [search, selectedDate],
   );
 
-  const { reservations, loading, seatReservation, createReservation } = useReservations(filters);
+  const {
+    reservations,
+    loading,
+    seatReservation,
+    createReservation,
+    updateStatus,
+    requestManagerApproval,
+  } = useReservations(filters);
+  const [managerEmail, setManagerEmail] = useState("");
+  const [managerPassword, setManagerPassword] = useState("");
+  const scopedRoles = selectedRestaurantId ? rolesAtRestaurant(selectedRestaurantId) : [];
+  const canManageRiskyActions = scopedRoles.some((role) => role.role === "owner" || role.role === "manager");
+  const canCancelDirectly = canManageRiskyActions || !hostActionNeedsManagerApproval("reservation.cancel");
 
   const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
@@ -228,8 +249,7 @@ export default function ReservationsPage() {
   const [saving, setSaving] = useState(false);
 
   const boardRows = useMemo(() => {
-    const adapted = reservations.map(adaptReservation);
-    const base = adapted.length > 0 ? adapted : DEMO_ROWS;
+    const base = reservations.map((reservation) => adaptReservation(reservation, t));
     const q = search.trim().toLowerCase();
     return base.filter((reservation) => {
       const matchesQuick =
@@ -243,9 +263,9 @@ export default function ReservationsPage() {
         reservation.table.toLowerCase().includes(q);
       return matchesQuick && matchesSearch;
     });
-  }, [quickFilter, reservations, search]);
+  }, [quickFilter, reservations, search, t]);
 
-  const allRows = reservations.length > 0 ? reservations.map(adaptReservation) : DEMO_ROWS;
+  const allRows = useMemo(() => reservations.map((reservation) => adaptReservation(reservation, t)), [reservations, t]);
   const bookedTonight = allRows.length;
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
   const seatedCount = allRows.filter((reservation) => reservation.status === "seated").length;
@@ -268,6 +288,11 @@ export default function ReservationsPage() {
     setCalOpen(false);
     setSelectedTime("7:00 PM");
     setSpecialRequest("");
+  };
+
+  const resetApprovalForm = () => {
+    setManagerEmail("");
+    setManagerPassword("");
   };
 
   const handleCreate = async () => {
@@ -305,6 +330,10 @@ export default function ReservationsPage() {
   };
 
   const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
+  const selectedDateLabel =
+    selectedDate === format(new Date(), "yyyy-MM-dd")
+      ? `${t("dashboard.reservations.today")} · ${format(selectedDateObject, "MMM d")}`
+      : format(selectedDateObject, "EEE · MMM d");
 
   return (
     <AnimatedPage className="space-y-6">
@@ -329,115 +358,150 @@ export default function ReservationsPage() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Booked tonight" value={String(bookedTonight)} detail={`${coversExpected} covers expected`} />
         <MetricCard label="Currently seated" value={String(seatedCount)} detail={`${seatedCount} finishing entrees`} />
-        <MetricCard label="Upcoming" value={String(upcomingCount)} detail="Next: 7:00 PM · Tremblay" />
+        <MetricCard label="Upcoming" value={String(upcomingCount)} detail="Next: 7pm · Tremblay" />
         <MetricCard label="At risk" value={String(atRiskCount)} detail="Awaiting deposit" />
         <MetricCard label="Waitlist" value={String(waitlistCount)} detail="Quoted 12 min" />
       </div>
 
-      <section className="space-y-3">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-          <div className="flex flex-wrap items-center gap-2 xl:flex-nowrap">
-            <div className="inline-flex h-8 rounded-lg border border-border bg-bg-surface p-0.5">
-              {(["day", "week", "list"] as const).map((mode) => (
+      <section className="rounded-2xl border border-border bg-bg-surface/80 p-4 shadow-lg shadow-black/10">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex h-9 rounded-lg border border-border bg-bg-elevated p-0.5">
+                {(["day", "week", "list"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setViewMode(mode)}
+                    className={cn(
+                      "rounded-md px-3 text-xs font-medium capitalize transition-colors",
+                      viewMode === mode ? "bg-gold text-black" : "text-text-secondary hover:text-white",
+                    )}
+                  >
+                    {t(`dashboard.reservations.${mode}`)}
+                  </button>
+                ))}
+              </div>
+              <div className="flex h-9 items-center rounded-lg border border-border bg-bg-elevated p-0.5">
                 <button
-                  key={mode}
                   type="button"
-                  onClick={() => setViewMode(mode)}
+                  onClick={() => {
+                    const previous = new Date(`${selectedDate}T12:00:00`);
+                    previous.setDate(previous.getDate() - 1);
+                    setSelectedDate(format(previous, "yyyy-MM-dd"));
+                  }}
+                  className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                  aria-label={t("dashboard.reservations.previousDay")}
+                >
+                  <ChevronLeft className="size-3.5" />
+                </button>
+                <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="h-8 rounded-md px-3 text-xs font-medium text-text-secondary transition-colors hover:bg-white/5 hover:text-white focus-visible:ring-2 focus-visible:ring-gold/40"
+                    >
+                      {selectedDateLabel}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="center" className="w-auto border-border bg-bg-elevated p-2 text-text-primary shadow-2xl">
+                    <Calendar
+                      mode="single"
+                      required={false}
+                      showOutsideDays={false}
+                      selected={selectedDateObject}
+                      onSelect={(day) => {
+                        if (!day) return;
+                        setSelectedDate(format(day, "yyyy-MM-dd"));
+                        setDatePickerOpen(false);
+                      }}
+                      classNames={{
+                        day: "group/day relative flex-1 p-0 text-center select-none",
+                        day_button: "relative isolate z-10 flex size-9 min-w-9 items-center justify-center rounded-md border-0 leading-none font-normal text-text-secondary hover:bg-gold/10 hover:text-white disabled:pointer-events-none disabled:opacity-30 data-[selected-single=true]:bg-gold data-[selected-single=true]:font-semibold data-[selected-single=true]:text-black",
+                        hidden: "invisible pointer-events-none",
+                        outside: "invisible pointer-events-none",
+                        disabled: "text-text-muted opacity-25",
+                        today: "text-white",
+                      }}
+                      className="rounded-md border-0 bg-transparent"
+                    />
+                  </PopoverContent>
+                </Popover>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new Date(`${selectedDate}T12:00:00`);
+                    next.setDate(next.getDate() + 1);
+                    setSelectedDate(format(next, "yyyy-MM-dd"));
+                  }}
+                  className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                  aria-label={t("dashboard.reservations.nextDay")}
+                >
+                  <ChevronRight className="size-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <Button size="sm" className="h-9 rounded-lg gap-1.5 px-4 text-xs xl:ml-auto" onClick={() => setDrawerOpen(true)}>
+              <Plus className="size-3.5" />
+              {t("dashboard.reservations.addReservation")}
+            </Button>
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-[minmax(280px,1fr)_auto] xl:items-center">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+              <Input
+                placeholder={t("dashboard.reservations.searchDetailedPlaceholder")}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="h-9 rounded-lg border-border bg-bg-elevated pl-9 text-xs"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" className="h-9 rounded-lg gap-1.5 px-3 text-xs">
+                <Filter className="size-3.5" />
+                {t("dashboard.reservations.allShifts")}
+              </Button>
+              <Button variant="outline" size="sm" className="h-9 rounded-lg gap-1.5 px-3 text-xs">
+                <Download className="size-3.5" />
+                {t("dashboard.reservations.export")}
+              </Button>
+            </div>
+          </div>
+
+          <div className="border-t border-border/60 pt-3">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
+              {t("dashboard.reservations.status")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: "all" as QuickFilter, label: t("dashboard.reservations.all"), count: allRows.length },
+                  { id: "confirmed" as QuickFilter, label: t("dashboard.reservations.confirmed"), count: allRows.filter((item) => item.status === "confirmed").length },
+                  { id: "seated" as QuickFilter, label: t("dashboard.reservations.seated"), count: seatedCount },
+                  { id: "at_risk" as QuickFilter, label: t("dashboard.reservations.atRisk"), count: atRiskCount },
+                  { id: "waitlist" as QuickFilter, label: t("dashboard.reservations.waitlist"), count: waitlistCount },
+                  { id: "pending" as QuickFilter, label: t("dashboard.reservations.pending"), count: allRows.filter((item) => item.status === "pending").length },
+                ]
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setQuickFilter(item.id)}
                   className={cn(
-                    "rounded-md px-3 text-xs font-medium capitalize transition-colors",
-                    viewMode === mode ? "bg-gold text-black" : "text-text-secondary hover:text-white",
+                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    quickFilter === item.id
+                      ? "border-gold bg-gold text-black"
+                      : "border-border bg-bg-surface text-text-secondary hover:text-white",
                   )}
                 >
-                  {mode}
+                  {item.label} · {item.count}
                 </button>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                const previous = new Date(`${selectedDate}T12:00:00`);
-                previous.setDate(previous.getDate() - 1);
-                setSelectedDate(format(previous, "yyyy-MM-dd"));
-              }}
-              className="flex size-8 items-center justify-center rounded-lg border border-border bg-bg-surface text-text-secondary hover:text-white"
-              aria-label="Previous day"
-            >
-              <ChevronLeft className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedDate(format(new Date(), "yyyy-MM-dd"))}
-              className="h-8 rounded-lg border border-border bg-bg-surface px-3 text-xs text-text-secondary hover:text-white"
-            >
-              Today · {format(selectedDateObject, "MMM d")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const next = new Date(`${selectedDate}T12:00:00`);
-                next.setDate(next.getDate() + 1);
-                setSelectedDate(format(next, "yyyy-MM-dd"));
-              }}
-              className="flex size-8 items-center justify-center rounded-lg border border-border bg-bg-surface text-text-secondary hover:text-white"
-              aria-label="Next day"
-            >
-              <ChevronRight className="size-3.5" />
-            </button>
-            <div className="relative w-full min-w-72 sm:w-[320px]">
-              <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
-              <Input
-                placeholder="Search guest, phone, table..."
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                className="h-8 rounded-lg pl-9 text-xs"
-              />
-            </div>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 xl:ml-auto">
-            <Button variant="outline" size="sm" className="h-8 rounded-lg gap-1.5 px-3 text-xs">
-              <Filter className="size-3.5" />
-              All shifts
-            </Button>
-            <Button variant="outline" size="sm" className="h-8 rounded-lg gap-1.5 px-3 text-xs">
-              <Download className="size-3.5" />
-              Export
-            </Button>
-            <Button size="sm" className="h-8 rounded-lg gap-1.5 px-3 text-xs" onClick={() => setDrawerOpen(true)}>
-              <Plus className="size-3.5" />
-              Add reservation
-            </Button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap gap-2">
-            {(
-              [
-                { id: "all" as QuickFilter, label: "All", count: allRows.length },
-                { id: "confirmed" as QuickFilter, label: "Confirmed", count: allRows.filter((item) => item.status === "confirmed").length },
-                { id: "seated" as QuickFilter, label: "Seated", count: seatedCount },
-                { id: "at_risk" as QuickFilter, label: "At risk", count: atRiskCount },
-                { id: "waitlist" as QuickFilter, label: "Waitlist", count: waitlistCount },
-                { id: "pending" as QuickFilter, label: "Pending", count: allRows.filter((item) => item.status === "pending").length },
-              ]
-            ).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setQuickFilter(item.id)}
-                className={cn(
-                  "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                  quickFilter === item.id
-                    ? "border-gold bg-gold text-black"
-                    : "border-border bg-bg-surface text-text-secondary hover:text-white",
-                )}
-              >
-                {item.label} · {item.count}
-              </button>
-            ))}
-          </div>
-          <span className="ml-auto text-[11px] text-text-muted">Last refreshed 12s ago</span>
         </div>
       </section>
 
@@ -447,10 +511,16 @@ export default function ReservationsPage() {
         loading={loading}
         onSeat={(rowData) => {
           if (rowData.source) setSeatTarget(rowData.source);
-          else toast.info("Demo reservation - connect data to seat this guest.");
         }}
         onNotify={() => toast.info("Guest notification queued.")}
         onCall={() => toast.info("Call task created.")}
+        onCancel={(rowData) => {
+          if (!rowData.source) return;
+          if (!canCancelDirectly) {
+            toast.info("Manager approval required to cancel this reservation.");
+          }
+          setCancelTarget(rowData.source);
+        }}
       />
 
       <SeatReservationDialog
@@ -466,6 +536,88 @@ export default function ReservationsPage() {
           setSeatTarget(null);
         }}
       />
+
+      <Dialog
+        open={cancelTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelTarget(null);
+            resetApprovalForm();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel reservation</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-secondary">
+            <p>
+              Canceling a reservation is a risky action. Managers and owners can approve it immediately;
+              host cancellations are audited with manager approval.
+            </p>
+            {cancelTarget ? (
+              <p className="rounded-lg border border-border bg-bg-surface p-3 text-text-primary">
+                {cancelTarget.guests?.full_name ?? cancelTarget.guest_full_name ?? "Guest"} · Party of{" "}
+                {cancelTarget.party_size}
+              </p>
+            ) : null}
+            {!canCancelDirectly ? (
+              <div className="grid gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <p className="text-xs text-warning">
+                  Manager approval required. The manager signs only this action and does not switch the host account.
+                </p>
+                <div className="grid gap-2">
+                  <Label>Manager email</Label>
+                  <Input
+                    type="email"
+                    value={managerEmail}
+                    onChange={(event) => setManagerEmail(event.target.value)}
+                    placeholder="manager@example.com"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Manager password</Label>
+                  <Input
+                    type="password"
+                    value={managerPassword}
+                    onChange={(event) => setManagerPassword(event.target.value)}
+                    placeholder="Password"
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>
+              Keep reservation
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!cancelTarget || !selectedRestaurantId) return;
+                try {
+                  const approvalToken = canCancelDirectly
+                    ? undefined
+                    : await requestManagerApproval({
+                        restaurantId: selectedRestaurantId,
+                        action: "reservation.cancel",
+                        managerEmail,
+                        managerPassword,
+                      });
+                  await updateStatus(cancelTarget.id, "cancelled", approvalToken ?? undefined);
+                  toast.success("Reservation cancelled.");
+                  setCancelTarget(null);
+                  resetApprovalForm();
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
+                }
+              }}
+            >
+              Cancel reservation
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={drawerOpen}
@@ -558,7 +710,7 @@ export default function ReservationsPage() {
                   className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
                 >
                   {TIME_OPTIONS.map((time) => (
-                    <option key={time}>{time}</option>
+                    <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
                   ))}
                 </select>
               </div>
@@ -599,10 +751,7 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
 }
 
 function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading: boolean }) {
-  const byTable = TABLE_ROWS.map((table) => ({
-    ...table,
-    bookings: rows.filter((reservation) => tableKey(reservation.table) === table.table),
-  }));
+  const byTable = buildTimelineRows(rows);
 
   return (
     <section className="overflow-hidden rounded-2xl border border-border bg-bg-surface">
@@ -623,6 +772,8 @@ function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading
         <div className="p-5">
           <Skeleton className="h-[420px] rounded-xl" />
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyReservationsState />
       ) : (
         <div className="overflow-x-auto">
           <div className="min-w-[1120px]">
@@ -696,19 +847,39 @@ function Legend({ color, label }: { color: string; label: string }) {
   );
 }
 
+function EmptyReservationsState() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-h-64 flex-col items-center justify-center gap-3 px-6 py-14 text-center">
+      <div className="flex size-12 items-center justify-center rounded-full border border-border bg-bg-elevated text-gold">
+        <Utensils className="size-5" />
+      </div>
+      <div>
+        <h3 className="font-serif text-2xl text-white">{t("dashboard.reservations.emptyTitle")}</h3>
+        <p className="mt-2 max-w-md text-sm text-text-muted">
+          {t("dashboard.reservations.emptyDesc")}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ReservationsTable({
   rows,
   loading,
   onSeat,
   onNotify,
   onCall,
+  onCancel,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
   onSeat: (row: ReservationBoardRow) => void;
   onNotify: (row: ReservationBoardRow) => void;
   onCall: (row: ReservationBoardRow) => void;
+  onCancel: (row: ReservationBoardRow) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="overflow-hidden rounded-2xl border border-border bg-bg-surface">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
@@ -724,6 +895,8 @@ function ReservationsTable({
             <Skeleton key={index} className="h-14 rounded-lg" />
           ))}
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyReservationsState />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] text-left">
@@ -733,6 +906,7 @@ function ReservationsTable({
                 <th className="px-5 py-4 font-medium">Guest</th>
                 <th className="px-5 py-4 font-medium">Party</th>
                 <th className="px-5 py-4 font-medium">Table</th>
+                <th className="px-5 py-4 font-medium">{t("dashboard.reservations.duration")}</th>
                 <th className="px-5 py-4 font-medium">Status</th>
                 <th className="px-5 py-4 font-medium">Notes</th>
                 <th className="px-5 py-4 text-right font-medium">Action</th>
@@ -756,6 +930,7 @@ function ReservationsTable({
                     </td>
                     <td className="px-5 py-4 text-text-secondary">{reservation.party}</td>
                     <td className="px-5 py-4 text-text-secondary">{reservation.table}</td>
+                    <td className="px-5 py-4 text-text-secondary">{reservation.duration}</td>
                     <td className="px-5 py-4">
                       <StatusBadge
                         status={statusBadgeStatus(reservation.status)}
@@ -765,9 +940,19 @@ function ReservationsTable({
                     <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
                     <td className="px-5 py-4 text-right">
                       {reservation.status === "confirmed" || reservation.status === "pending" ? (
-                        <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onSeat(reservation)}>
-                          Seat
-                        </Button>
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onSeat(reservation)}>
+                            Seat
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-3 text-xs"
+                            onClick={() => onCancel(reservation)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
                       ) : reservation.status === "waitlist" ? (
                         <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onNotify(reservation)}>
                           Notify

@@ -22,6 +22,27 @@ export function isStaffRole(value: string): value is StaffRole {
   return (STAFF_ROLES as readonly string[]).includes(value);
 }
 
+export type DashboardPermissionKey =
+  | "overview"
+  | "reservations"
+  | "floorPlan"
+  | "staffInvites"
+  | "orders"
+  | "menu"
+  | "crm"
+  | "analytics"
+  | "expenses"
+  | "events"
+  | "promotions"
+  | "export"
+  | "restaurant"
+  | "settings";
+
+export type DashboardPermissionOverrides = {
+  allow?: DashboardPermissionKey[];
+  deny?: DashboardPermissionKey[];
+};
+
 /** Columns we read from user_profiles (see Supabase migration + Bible). */
 export type UserProfile = {
   id: string;
@@ -53,5 +74,6 @@ export type UserRestaurantRole = {
   is_primary: boolean;
   hourly_rate: number | null;
   employment_type: string | null;
+  permission_overrides_json: DashboardPermissionOverrides;
   created_at: string | null;
 };

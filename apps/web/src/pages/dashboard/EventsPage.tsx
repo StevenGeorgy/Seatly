@@ -30,6 +30,7 @@ import {
 import { eventToDisplay, type EventPromotionDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type EventPhase = "active" | "draft" | "past";
 type View = "grid" | "calendar";
@@ -110,7 +111,7 @@ function formatShortTime(value: string | null): string {
   const date = new Date();
   date.setHours(Number(hourPart), Number(minutePart ?? 0), 0, 0);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+  return formatCompactTimeLabel(date);
 }
 
 function parseDateValue(value: string): Date | undefined {
@@ -453,7 +454,7 @@ function TimePickerButton({
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
             Scroll columns
           </p>
-          <p className="text-sm font-medium text-white">{value ? formatPickerTime(value) : "7:00 PM"}</p>
+          <p className="text-sm font-medium text-white">{value ? formatPickerTime(value) : "7pm"}</p>
         </div>
         <div className="grid grid-cols-[1fr_1fr_0.9fr] gap-2">
           <WheelColumn label="Hour" values={HOURS} value={parts.hour} onChange={(hour) => setPart({ hour })} />

@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import type { z } from "zod";
 
@@ -15,10 +15,32 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import { createRegisterSchema } from "@/lib/validation/auth-schemas";
 
+function buildLoginTarget(from: string | undefined, email: string): string {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (email) params.set("email", email);
+  const query = params.toString();
+  return query ? `/login?${query}` : "/login";
+}
+
+function isExistingAccountError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("already") && (
+    normalized.includes("registered") ||
+    normalized.includes("exists") ||
+    normalized.includes("user")
+  );
+}
+
 export default function RegisterPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const [submitting, setSubmitting] = useState(false);
+  const params = new URLSearchParams(location.search);
+  const from = params.get("from") ?? undefined;
+  const invitedEmail = params.get("email")?.trim().toLowerCase() ?? "";
+  const loginTarget = buildLoginTarget(from, invitedEmail);
 
   const schema = useMemo(() => createRegisterSchema(t), [t]);
   type FormValues = z.infer<typeof schema>;
@@ -31,7 +53,7 @@ export default function RegisterPage() {
     resolver: zodResolver(schema),
     defaultValues: {
       fullName: "",
-      email: "",
+      email: invitedEmail,
       password: "",
       confirmPassword: "",
     },
@@ -46,17 +68,31 @@ export default function RegisterPage() {
       }
       const client = getSupabaseBrowserClient();
       const fullName = values.fullName.trim();
+      const email = values.email.trim().toLowerCase();
       const { data, error } = await client.auth.signUp({
-        email: values.email.trim(),
+        email,
         password: values.password,
         options: {
-          emailRedirectTo: `${window.location.origin}/login`,
+          emailRedirectTo: `${window.location.origin}/auth/callback${
+            from ? `?from=${encodeURIComponent(from)}` : ""
+          }`,
           data: fullName ? { full_name: fullName } : undefined,
         },
       });
 
       if (error) {
+        if (isExistingAccountError(error.message)) {
+          toast.info(t("auth.errors.accountAlreadyExistsLogin"));
+          navigate(buildLoginTarget(from, email), { replace: true });
+          return;
+        }
         toast.error(t("auth.errors.signUpFailed"));
+        return;
+      }
+
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        toast.info(t("auth.errors.accountAlreadyExistsLogin"));
+        navigate(buildLoginTarget(from, email), { replace: true });
         return;
       }
 
@@ -68,7 +104,7 @@ export default function RegisterPage() {
           );
           return;
         }
-        navigate(resolvePostLoginPath(undefined, ctx), { replace: true });
+        navigate(resolvePostLoginPath(from, ctx), { replace: true });
         return;
       }
 
@@ -89,7 +125,9 @@ export default function RegisterPage() {
       const { error } = await client.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `${window.location.origin}/auth/callback${
+            from ? `?from=${encodeURIComponent(from)}` : ""
+          }`,
         },
       });
       if (error) {
@@ -194,7 +232,10 @@ export default function RegisterPage() {
 
       <p className="text-muted-foreground text-center text-sm">
         {t("auth.register.hasAccount")}{" "}
-        <Link className="text-primary underline-offset-4 hover:underline" to="/login">
+        <Link
+          className="text-primary underline-offset-4 hover:underline"
+          to={loginTarget}
+        >
           {t("auth.register.loginLink")}
         </Link>
       </p>

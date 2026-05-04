@@ -28,7 +28,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: resv, error: resvErr } = await supabase
       .from("reservations")
-      .select("id, restaurant_id, guest_id, table_id, status")
+      .select("id, restaurant_id, guest_id, table_id, status, party_size")
       .eq("id", reservationId)
       .single();
 
@@ -50,6 +50,7 @@ Deno.serve(async (req: Request) => {
       .from("reservations")
       .update({
         checked_in_at: new Date().toISOString(),
+        seated_at: new Date().toISOString(),
         status: "seated",
       })
       .eq("id", reservationId);
@@ -60,6 +61,11 @@ Deno.serve(async (req: Request) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    await supabase.rpc("mark_reservation_tables_seated", {
+      p_reservation_id: reservationId,
+      p_party_size: resv.party_size ?? 0,
+    });
 
     const { data: existingOrder } = await supabase
       .from("orders")

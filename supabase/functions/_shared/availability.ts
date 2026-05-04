@@ -6,6 +6,7 @@ export interface AvailabilitySlot {
   shift_name: string;
   date_time: string;   // UTC ISO — pass directly to complete_booking
   display_time: string; // Local time shown to user
+  table_ids?: string[];
 }
 
 export interface AvailabilityResult {
@@ -31,10 +32,14 @@ export async function getAvailability(
   // in 12-hour strings ("11:00 AM", "10:00 PM").
   const { data: restaurantRow } = await supabaseAdmin
     .from("restaurants")
-    .select("timezone, hours_json")
+    .select("timezone, hours_json, settings_json")
     .eq("id", restaurant_id)
     .single();
   const timezone = restaurantRow?.timezone || "UTC";
+  const configuredTurnMinutes =
+    typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
+      ? restaurantRow.settings_json.turnTimeMinutes
+      : null;
 
   const dayOfWeek = localDayOfWeek(dateOnly, timezone);
   // localDayOfWeek returns JS-style 0-6 (0=Sun ... 6=Sat) — the same
@@ -92,7 +97,7 @@ export async function getAvailability(
 
   const { data: reservations } = await supabaseAdmin
     .from("reservations")
-    .select("shift_id, reserved_at, party_size")
+    .select("shift_id, reserved_at, party_size, duration_minutes")
     .eq("restaurant_id", restaurant_id)
     .in("status", ["pending", "confirmed", "seated"])
     .gte("reserved_at", dayStartUTC)
@@ -120,7 +125,7 @@ export async function getAvailability(
     const [sH, sM] = (shift.start_time ?? "17:00").split(":").map(Number);
     const [eH, eM] = (shift.end_time ?? "23:00").split(":").map(Number);
     const slotMins = shift.slot_duration_minutes ?? 30;
-    const turnMins = shift.turn_time_minutes ?? 90;
+    const turnMins = configuredTurnMinutes ?? shift.turn_time_minutes ?? 90;
     const maxCovers = shift.max_covers ?? 100;
 
     let slotMin = sH * 60 + sM;
@@ -141,7 +146,8 @@ export async function getAvailability(
 
       for (const r of shiftResvs) {
         const resvStart = new Date(r.reserved_at);
-        const resvEnd = new Date(resvStart.getTime() + turnMins * 60_000);
+        const resvDuration = r.duration_minutes ?? turnMins;
+        const resvEnd = new Date(resvStart.getTime() + resvDuration * 60_000);
         if (slotStart < resvEnd && slotEnd > resvStart) {
           totalCovers += r.party_size ?? 0;
           if (totalCovers > maxCovers) {
@@ -152,6 +158,20 @@ export async function getAvailability(
       }
 
       if (available) {
+        const { data: tableIds, error: assignmentErr } = await supabaseAdmin.rpc("find_available_table_group", {
+          p_restaurant_id: restaurant_id,
+          p_reserved_at: slotStart.toISOString(),
+          p_party_size: party_size,
+          p_turn_minutes: turnMins,
+        });
+        const assignedTableIds = Array.isArray(tableIds)
+          ? tableIds.filter((id): id is string => typeof id === "string")
+          : [];
+        if (assignmentErr || assignedTableIds.length === 0) {
+          slotMin += slotMins;
+          continue;
+        }
+
         slots.push({
           shift_id: shift.id,
           shift_name: shift.name ?? "Shift",
@@ -162,6 +182,7 @@ export async function getAvailability(
             minute: "2-digit",
             hour12: true,
           }),
+          table_ids: assignedTableIds,
         });
       }
 

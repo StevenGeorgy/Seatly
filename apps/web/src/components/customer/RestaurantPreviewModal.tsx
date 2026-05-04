@@ -21,6 +21,7 @@ import type { EventPromotionDisplay } from "@/lib/customer/eventPromotionDisplay
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 export type RestaurantPreviewSummary = {
   id: string;
@@ -139,21 +140,21 @@ const EVENT_ROWS = [
     type: "Tasting Menu",
     spots: 4,
     title: "Spring Garden 7-Course Chef's Table",
-    when: "Sat, May 4 at 6:30 PM",
+    when: "Sat, May 4 at 6:30pm",
     price: 120,
   },
   {
     type: "Wine Event",
     spots: 8,
     title: "Natural Wines of the Loire - Six Producers",
-    when: "Wed, May 15 at 7:00 PM",
+    when: "Wed, May 15 at 7pm",
     price: 135,
   },
   {
     type: "Prix Fixe",
     spots: 12,
     title: "Late Service Three-Course Prix Fixe",
-    when: "Thu-Sun after 9:00 PM",
+    when: "Thu-Sun after 9pm",
     price: 58,
   },
 ];
@@ -203,11 +204,7 @@ function previewEventToDisplay(
 }
 
 function shortTime(time: string): string {
-  return time
-    .replace(":00 PM", "p")
-    .replace(":15 PM", ":15p")
-    .replace(":30 PM", ":30p")
-    .replace(":45 PM", ":45p");
+  return formatCompactTimeLabel(time);
 }
 
 function StripeArt({
@@ -658,12 +655,12 @@ export function RestaurantPreviewModal({
                             <dl className="mt-4 space-y-2 text-xs text-text-secondary">
                               {[
                                 ["Mon", "Closed"],
-                                ["Tue", "5:30 - 10:00 PM"],
-                                ["Wed", "5:30 - 10:00 PM"],
-                                ["Thu", "5:30 - 11:00 PM"],
-                                ["Fri", "5:30 - 11:00 PM"],
-                                ["Sat", "5:00 - 11:00 PM"],
-                                ["Sun", "5:00 - 9:30 PM"],
+                                ["Tue", "5:30pm - 10pm"],
+                                ["Wed", "5:30pm - 10pm"],
+                                ["Thu", "5:30pm - 11pm"],
+                                ["Fri", "5:30pm - 11pm"],
+                                ["Sat", "5pm - 11pm"],
+                                ["Sun", "5pm - 9:30pm"],
                               ].map(([day, hours]) => (
                                 <div key={day} className="flex justify-between gap-4">
                                   <dt>{day}</dt>

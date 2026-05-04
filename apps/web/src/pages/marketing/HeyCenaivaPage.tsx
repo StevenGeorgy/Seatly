@@ -285,7 +285,7 @@ export default function HeyCenaivaPage() {
                   BL
                 </span>
                 <span>
-                  <span className="block text-sm text-white">Bistro Lumiere - Friday 7:30p</span>
+                  <span className="block text-sm text-white">Bistro Lumiere - Friday 7:30pm</span>
                   <span className="block text-text-muted">Held for 6 min - MTL-3F2A8K</span>
                 </span>
                 <span className="rounded-full border border-success/40 bg-success/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-success">

@@ -5,6 +5,7 @@ import {
   type PromotionWithRestaurant,
 } from "@/hooks/usePromotions";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 export type EventPromotionSource = "event" | "promotion";
 
@@ -82,10 +83,7 @@ function formatTime(time: string | null | undefined): string {
 
   const date = new Date();
   date.setHours(hour, minute, 0, 0);
-  return date.toLocaleTimeString("en-CA", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatCompactTimeLabel(date);
 }
 
 function formatTimeRange(start: string | null | undefined, end: string | null | undefined): string {

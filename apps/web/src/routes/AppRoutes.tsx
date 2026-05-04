@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import { RestaurantScopeProvider } from "@/contexts/restaurant-scope-context";
 import { DashboardRoleGuard } from "@/components/routing/DashboardRoleGuard";
@@ -40,6 +40,8 @@ const PromotionsPage = lazy(() => import("@/pages/dashboard/PromotionsPage"));
 const ExportPage = lazy(() => import("@/pages/dashboard/ExportPage"));
 const SettingsPage = lazy(() => import("@/pages/dashboard/SettingsPage"));
 const FloorPlanPage = lazy(() => import("@/pages/dashboard/FloorPlanPage"));
+const HostPage = lazy(() => import("@/pages/dashboard/HostPage"));
+const AcceptInvitePage = lazy(() => import("@/pages/auth/AcceptInvitePage"));
 
 export function AppRoutes() {
   return (
@@ -78,6 +80,7 @@ export function AppRoutes() {
         />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
         <Route
           path="/setup"
           element={
@@ -141,6 +144,8 @@ export function AppRoutes() {
           <Route index element={<OverviewPage />} />
           <Route path="reservations" element={<ReservationsPage />} />
           <Route path="floor-plan" element={<FloorPlanPage />} />
+          <Route path="staff-invites" element={<HostPage />} />
+          <Route path="host" element={<Navigate to="/dashboard/staff-invites" replace />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="menu" element={<MenuPage />} />
           <Route path="crm" element={<CrmPage />} />

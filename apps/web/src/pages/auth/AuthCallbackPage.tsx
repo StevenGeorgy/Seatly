@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { AuthPageLayout } from "@/components/auth/AuthPageLayout";
 import { RouteFallback } from "@/components/routing/RouteFallback";
@@ -12,7 +12,9 @@ import { loadUserContext } from "@/lib/supabase/load-user-context";
 export default function AuthCallbackPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [failed, setFailed] = useState(false);
+  const from = params.get("from") ?? undefined;
 
   useEffect(() => {
     void (async () => {
@@ -35,9 +37,9 @@ export default function AuthCallbackPage() {
         setFailed(true);
         return;
       }
-      navigate(resolvePostLoginPath(undefined, ctx), { replace: true });
+      navigate(resolvePostLoginPath(from, ctx), { replace: true });
     })();
-  }, [navigate]);
+  }, [from, navigate]);
 
   if (failed) {
     return (

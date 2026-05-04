@@ -13,16 +13,32 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { toast } from "sonner";
 
+import {
+  isDatabaseUuid,
+  useFloorPlan,
+  type FloorPlanLayout,
+  type FloorPlanRow,
+  type TableRow,
+} from "@/hooks/useFloorPlan";
+import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useUser } from "@/hooks/useUser";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
-type Status = "free" | "reserved" | "occupied" | "cleaning";
+type Status = "free" | "reserved" | "occupied" | "cleaning" | "blocked";
 
 type TableShape = "round" | "rect";
 
 type FloorTable = {
   id: string;
+  dbId?: string;
+  tableNumber?: string | null;
+  label?: string | null;
+  sectionId?: string | null;
+  combinedWith?: string[];
   shape: TableShape;
   x: number;
   y: number;
@@ -56,6 +72,8 @@ type Snapshot = {
   entrance: Record<string, Entrance>;
   rooms: Record<string, Room>;
   floors: Floor[];
+  deletedTableIds: string[];
+  deletedFloorIds: string[];
 };
 
 type DragState =
@@ -242,10 +260,94 @@ const TBL_STATUS: Record<
     label: "Resetting",
     hint: "Being cleared",
   },
+  blocked: {
+    color: "#6B7280",
+    soft: "rgba(107,114,128,0.10)",
+    edge: "rgba(107,114,128,0.35)",
+    label: "Blocked",
+    hint: "Temporarily unavailable for bookings",
+  },
 };
 
 const BORDER_SOFT = "rgba(255,255,255,0.07)";
 const SURFACE_BG = "rgba(20,20,22,0.85)";
+const DEFAULT_ROOM: Room = { w: 720, h: 560 };
+
+function tableDisplayLabel(table: FloorTable): string {
+  return table.label || table.tableNumber || table.id;
+}
+
+function toLocalStatus(status: string | null | undefined): Status {
+  if (status === "reserved" || status === "occupied" || status === "cleaning" || status === "blocked") return status;
+  return "free";
+}
+
+function toDbStatus(status: Status): string {
+  return status === "free" ? "empty" : status;
+}
+
+function tableSize(shape: TableShape, capacity: number): { size: number; long: boolean } {
+  if (shape === "round") {
+    return { size: capacity > 4 ? Math.max(90, 70 + capacity * 4) : capacity > 2 ? 90 : 75, long: false };
+  }
+  const long = capacity > 4;
+  return { size: long ? Math.max(140, 90 + capacity * 12) : 90, long };
+}
+
+function toLocalShape(shape: string | null | undefined): TableShape {
+  return shape === "circle" || shape === "round" ? "round" : "rect";
+}
+
+function toDbShape(shape: TableShape): string {
+  return shape === "round" ? "circle" : "rectangle";
+}
+
+function tableCenter(table: FloorTable): { x: number; y: number } {
+  return {
+    x: table.x + table.size / 2,
+    y: table.y + (table.shape === "round" ? table.size : table.long ? 70 : 80) / 2,
+  };
+}
+
+function tableRowToFloorTable(row: TableRow): FloorTable {
+  const shape = toLocalShape(row.shape);
+  const capacity = Math.max(1, row.capacity);
+  const size = tableSize(shape, capacity);
+  return {
+    id: row.id,
+    dbId: row.id,
+    tableNumber: row.table_number,
+    label: row.label,
+    sectionId: row.section_id,
+    combinedWith: row.combined_with ?? [],
+    shape,
+    x: row.position_x ?? 120,
+    y: row.position_y ?? 120,
+    size: size.size,
+    cap: capacity,
+    status: toLocalStatus(row.status),
+    guest: null,
+    party: row.seated_count ?? 0,
+    time: null,
+    long: size.long,
+  };
+}
+
+function layoutFromPlan(plan: FloorPlanRow | undefined): FloorPlanLayout {
+  const layout = plan?.layout;
+  if (!layout || typeof layout !== "object") {
+    return { walls: [], doors: [], windows: [], tableTransforms: {}, decorations: [], zones: [] };
+  }
+  const partial = layout as Partial<FloorPlanLayout>;
+  return {
+    walls: Array.isArray(partial.walls) ? partial.walls : [],
+    doors: Array.isArray(partial.doors) ? partial.doors : [],
+    windows: Array.isArray(partial.windows) ? partial.windows : [],
+    tableTransforms: partial.tableTransforms && typeof partial.tableTransforms === "object" ? partial.tableTransforms : {},
+    decorations: Array.isArray(partial.decorations) ? partial.decorations : [],
+    zones: Array.isArray(partial.zones) ? partial.zones : [],
+  };
+}
 
 // ─── Seat dots ─────────────────────────────────────────────────────────────
 function SeatDots({
@@ -379,7 +481,7 @@ function TableNode({
         fontFamily="Fraunces, serif"
         style={{ pointerEvents: "none", letterSpacing: "-0.02em" }}
       >
-        {t.id}
+        {tableDisplayLabel(t)}
       </text>
       {showGuest && (
         <text
@@ -514,6 +616,32 @@ function entranceLine(entrance: Entrance, room: Room): EntranceLine {
     labelAnchor: "middle",
     rotate: 90,
   };
+}
+
+function entranceFromLayout(plan: FloorPlanRow | undefined, room: Room): Entrance {
+  const door = layoutFromPlan(plan).doors[0];
+  if (!door) return { side: "top", pos: room.w / 2, width: 50 };
+  const horizontal = Math.abs(door.x2 - door.x1) >= Math.abs(door.y2 - door.y1);
+  const width = Math.max(30, Math.round(Math.hypot(door.x2 - door.x1, door.y2 - door.y1)));
+  if (horizontal) {
+    const y = (door.y1 + door.y2) / 2;
+    return {
+      side: y > room.h / 2 ? "bottom" : "top",
+      pos: (door.x1 + door.x2) / 2,
+      width,
+    };
+  }
+  const x = (door.x1 + door.x2) / 2;
+  return {
+    side: x > room.w / 2 ? "right" : "left",
+    pos: (door.y1 + door.y2) / 2,
+    width,
+  };
+}
+
+function entranceToDoor(entrance: Entrance, room: Room): FloorPlanLayout["doors"][number] {
+  const line = entranceLine(entrance, room);
+  return { id: "entrance", x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 };
 }
 
 function EntranceNode({
@@ -680,6 +808,7 @@ type ActionKind =
 function TableCard({
   t,
   editing,
+  canAdjustSeats,
   onAction,
   onClose,
   onSeatChange,
@@ -687,6 +816,7 @@ function TableCard({
 }: {
   t: FloorTable;
   editing: boolean;
+  canAdjustSeats: boolean;
   onAction: (a: ActionKind, t: FloorTable) => void;
   onClose: () => void;
   onSeatChange: (t: FloorTable, n: number) => void;
@@ -701,7 +831,7 @@ function TableCard({
           <div>
             <div className={cn(eyebrowCls, "mb-1.5")}>Table</div>
             <div className="font-serif text-[42px] leading-none" style={{ letterSpacing: "-0.04em" }}>
-              {t.id}
+              {tableDisplayLabel(t)}
             </div>
             <div className="mt-2 flex items-center gap-2 text-[12px]">
               <span className="size-1.5 rounded-full" style={{ background: s.color }} />
@@ -753,6 +883,12 @@ function TableCard({
             >
               Remove this table
             </button>
+          </div>
+        )}
+
+        {!editing && (t.combinedWith?.length ?? 0) > 0 && (
+          <div className="mb-5 rounded-lg border border-gold/20 bg-gold/10 px-3 py-2 text-[12.5px] text-gold-light">
+            Combined with {t.combinedWith?.length} other table{t.combinedWith?.length === 1 ? "" : "s"} for this booking.
           </div>
         )}
 
@@ -832,7 +968,7 @@ function TableCard({
           )}
         </div>
 
-        {!editing && (
+        {!editing && canAdjustSeats && (
           <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${BORDER_SOFT}` }}>
             <div className={cn(eyebrowCls, "mb-2")}>Adjust seats</div>
             <div className="flex items-center gap-1">
@@ -1025,7 +1161,7 @@ function IdleCard({
                     className="w-8 font-serif text-[15px] tabular-nums"
                     style={{ letterSpacing: "-0.02em" }}
                   >
-                    {t.id}
+                    {tableDisplayLabel(t)}
                   </span>
                   <span className="flex-1 truncate text-[12px] text-text-secondary">
                     {t.guest || s.label} {t.time ? `· ${t.time}` : ""}
@@ -1045,14 +1181,10 @@ function EditCard({
   onAddTable,
   onAddWall,
   onAddFloor,
-  onSave,
-  onCancel,
 }: {
   onAddTable: (shape: TableShape, cap: number) => void;
   onAddWall: () => void;
   onAddFloor: () => void;
-  onSave: () => void;
-  onCancel: () => void;
 }) {
   return (
     <div className="overflow-hidden rounded-xl" style={cardStyle}>
@@ -1120,15 +1252,6 @@ function EditCard({
         <p className="mb-5 text-[11.5px] leading-relaxed text-text-muted">
           Tip: click the entrance to move it.
         </p>
-
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={onCancel} className={cn(softBtnCls, "py-2.5")}>
-            Cancel
-          </button>
-          <button onClick={onSave} className={cn(goldBtnCls, "bg-gold py-2.5 text-black")}>
-            Save layout
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -1136,6 +1259,23 @@ function EditCard({
 
 // ─── Main page ─────────────────────────────────────────────────────────────
 export default function FloorPlanPage() {
+  const {
+    tables: dbTables,
+    floorPlans: dbFloorPlans,
+    sections: dbSections,
+    loading: floorPlanLoading,
+    createSectionAndFloor,
+    createTable: createDbTable,
+    updateFloorName,
+    updateTable: updateDbTable,
+    updateTableServiceStatus,
+    deleteTable: deleteDbTable,
+    deleteFloor: deleteDbFloor,
+    updateLayout,
+    refetch: refetchFloorPlan,
+  } = useFloorPlan({ pauseRealtime: true });
+  const { rolesAtRestaurant } = useUser();
+  const { selectedRestaurantId } = useRestaurantScope();
   const [floors, setFloors] = useState<Floor[]>(FLOORS);
   const [activeFloor, setActiveFloor] = useState("main");
   const [rooms, setRooms] = useState<Record<string, Room>>(ROOMS);
@@ -1144,15 +1284,22 @@ export default function FloorPlanPage() {
   const [entranceByFloor, setEntrance] = useState<Record<string, Entrance>>(ENTRANCES);
   const [sel, setSel] = useState<Selection>(null);
   const [editing, setEditing] = useState(false);
+  const [savingLayout, setSavingLayout] = useState(false);
   const [query, setQuery] = useState("");
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [deletedTableIds, setDeletedTableIds] = useState<string[]>([]);
+  const [deletedFloorIds, setDeletedFloorIds] = useState<string[]>([]);
+  const [renamingFloorId, setRenamingFloorId] = useState<string | null>(null);
+  const [renameFloorValue, setRenameFloorValue] = useState("");
+  const [confirmDeleteFloorId, setConfirmDeleteFloorId] = useState<string | null>(null);
 
-  // Visual scale for "100%". Lower = smaller default rendering of the
-  // tables. The percent indicator is displayed relative to this base, so
-  // the user always sees 100% at the default size.
-  const BASE_ZOOM = 0.8;
+  // Visual scale for "100%". Keep this at true room scale so the floor
+  // outline fills the viewport instead of feeling zoomed out.
+  const BASE_ZOOM = 1;
   const [zoom, setZoom] = useState(BASE_ZOOM);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
 
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -1160,9 +1307,80 @@ export default function FloorPlanPage() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const canEditLayout = useMemo(
+    () =>
+      selectedRestaurantId
+        ? rolesAtRestaurant(selectedRestaurantId).some((role) => role.role === "owner" || role.role === "manager")
+        : false,
+    [rolesAtRestaurant, selectedRestaurantId],
+  );
 
-  const tables = tablesByFloor[activeFloor] || [];
-  const walls = wallsByFloor[activeFloor] || [];
+  useEffect(() => {
+    if (canEditLayout || !editing) return;
+    void Promise.resolve().then(() => {
+      setEditing(false);
+      setSel(null);
+      setRenamingFloorId(null);
+      setConfirmDeleteFloorId(null);
+    });
+  }, [canEditLayout, editing]);
+
+  useEffect(() => {
+    if (floorPlanLoading) return;
+    if (!isSupabaseConfigured()) return;
+
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+
+      const sourceFloors: Floor[] = dbSections.length > 0
+        ? dbSections.map((section) => ({ id: section.id, name: section.name }))
+        : dbFloorPlans.map((plan) => ({ id: plan.section_id ?? plan.id, name: plan.name }));
+      const nextFloors = sourceFloors.length > 0 ? sourceFloors : [{ id: "main", name: "Main Dining" }];
+      const floorIds = new Set(nextFloors.map((floor) => floor.id));
+
+      const nextRooms: Record<string, Room> = {};
+      const nextWalls: Record<string, Wall[]> = {};
+      const nextEntrances: Record<string, Entrance> = {};
+      const nextTables: Record<string, FloorTable[]> = {};
+
+      nextFloors.forEach((floor) => {
+        const plan = dbFloorPlans.find((candidate) => (candidate.section_id ?? candidate.id) === floor.id);
+        const room = {
+          w: plan?.canvas_width ?? DEFAULT_ROOM.w,
+          h: plan?.canvas_height ?? DEFAULT_ROOM.h,
+        };
+        nextRooms[floor.id] = room;
+        nextWalls[floor.id] = layoutFromPlan(plan).walls as Wall[];
+        nextEntrances[floor.id] = entranceFromLayout(plan, room);
+        nextTables[floor.id] = [];
+      });
+
+      dbTables.forEach((table) => {
+        const floorId = table.section_id && floorIds.has(table.section_id) ? table.section_id : nextFloors[0].id;
+        nextTables[floorId] = [...(nextTables[floorId] ?? []), tableRowToFloorTable(table)];
+      });
+
+      setFloors(nextFloors);
+      setRooms(nextRooms);
+      setWalls(nextWalls);
+      setEntrance(nextEntrances);
+      setTables(nextTables);
+      setActiveFloor((current) => (floorIds.has(current) ? current : nextFloors[0].id));
+      setDeletedTableIds([]);
+      setDeletedFloorIds([]);
+      setRenamingFloorId(null);
+      setConfirmDeleteFloorId(null);
+      setSel(null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dbFloorPlans, dbSections, dbTables, floorPlanLoading]);
+
+  const tables = useMemo(() => tablesByFloor[activeFloor] ?? [], [activeFloor, tablesByFloor]);
+  const walls = useMemo(() => wallsByFloor[activeFloor] ?? [], [activeFloor, wallsByFloor]);
   const entrance = entranceByFloor[activeFloor];
   const baseRoom = rooms[activeFloor] || { w: 720, h: 560 };
 
@@ -1195,8 +1413,10 @@ export default function FloorPlanPage() {
       entrance: JSON.parse(JSON.stringify(entranceByFloor)) as Record<string, Entrance>,
       rooms: JSON.parse(JSON.stringify(rooms)) as Record<string, Room>,
       floors: JSON.parse(JSON.stringify(floors)) as Floor[],
+      deletedTableIds: [...deletedTableIds],
+      deletedFloorIds: [...deletedFloorIds],
     }),
-    [activeFloor, tablesByFloor, wallsByFloor, entranceByFloor, rooms, floors],
+    [activeFloor, tablesByFloor, wallsByFloor, entranceByFloor, rooms, floors, deletedTableIds, deletedFloorIds],
   );
 
   const pushHistory = useCallback(() => {
@@ -1210,6 +1430,8 @@ export default function FloorPlanPage() {
     setEntrance(snap.entrance);
     setRooms(snap.rooms);
     setFloors(snap.floors);
+    setDeletedTableIds(snap.deletedTableIds);
+    setDeletedFloorIds(snap.deletedFloorIds);
     if (snap.floors.find((f) => f.id === snap.floor)) setActiveFloor(snap.floor);
   };
 
@@ -1266,7 +1488,13 @@ export default function FloorPlanPage() {
     setEntrance((byF) => ({ ...byF, [activeFloor]: { ...byF[activeFloor], ...patch } }));
   };
   const deleteTable = (id: string) => {
+    if (!canEditLayout) return;
     pushHistory();
+    const table = tables.find((t) => t.id === id);
+    const tableDbId = table?.dbId;
+    if (tableDbId && isDatabaseUuid(tableDbId)) {
+      setDeletedTableIds((ids) => (ids.includes(tableDbId) ? ids : [...ids, tableDbId]));
+    }
     setTables((byF) => ({
       ...byF,
       [activeFloor]: (byF[activeFloor] || []).filter((t) => t.id !== id),
@@ -1274,6 +1502,7 @@ export default function FloorPlanPage() {
     setSel(null);
   };
   const deleteWall = (id: string) => {
+    if (!canEditLayout) return;
     pushHistory();
     setWalls((byF) => ({
       ...byF,
@@ -1283,6 +1512,7 @@ export default function FloorPlanPage() {
   };
 
   const addWall = () => {
+    if (!canEditLayout) return;
     pushHistory();
     const id = "w" + Date.now().toString(36);
     const cx = room.w / 2;
@@ -1293,52 +1523,79 @@ export default function FloorPlanPage() {
   };
 
   const setSeats = (t: FloorTable, n: number) => {
+    if (!canEditLayout) return;
     const cap = Math.max(1, Math.min(20, n));
-    let size = t.size;
-    let long = t.long;
-    if (t.shape === "round") size = cap > 4 ? Math.max(90, 70 + cap * 4) : cap > 2 ? 90 : 75;
-    else {
-      long = cap > 4;
-      size = long ? Math.max(140, 90 + cap * 12) : 90;
-    }
+    const nextSize = tableSize(t.shape, cap);
+    const size = nextSize.size;
+    const long = nextSize.long;
     updateTable(t.id, { cap, size, long });
   };
 
+  const persistServiceStatus = async (
+    t: FloorTable,
+    status: Status,
+    seatedCount: number,
+  ) => {
+    const tableId = t.dbId ?? t.id;
+    const saved = await updateTableServiceStatus(tableId, toDbStatus(status), seatedCount);
+    if (!saved) {
+      toast.error("Could not update table status.");
+      await refetchFloorPlan({ silent: true });
+    }
+  };
+
   const handleAction = (action: ActionKind, t: FloorTable) => {
-    if (action === "walkin" || action === "seat")
+    if (action === "walkin" || action === "seat") {
+      const nextParty = t.party || 2;
       updateTable(
         t.id,
-        { status: "occupied", guest: t.guest || "Walk-in", party: t.party || 2, time: t.time || "now" },
+        { status: "occupied", guest: t.guest || "Walk-in", party: nextParty, time: t.time || "now" },
         true,
       );
-    if (action === "paid") updateTable(t.id, { status: "cleaning", guest: null, party: 0, time: null }, true);
-    if (action === "ready") updateTable(t.id, { status: "free" }, true);
-    if (action === "cancel") updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
+      void persistServiceStatus(t, "occupied", nextParty);
+    }
+    if (action === "paid") {
+      updateTable(t.id, { status: "cleaning", guest: null, party: 0, time: null }, true);
+      void persistServiceStatus(t, "cleaning", 0);
+    }
+    if (action === "ready") {
+      updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
+      void persistServiceStatus(t, "free", 0);
+    }
+    if (action === "cancel") {
+      updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
+      void persistServiceStatus(t, "free", 0);
+    }
   };
 
   const addTable = (shape: TableShape, cap: number) => {
+    if (!canEditLayout) return;
     pushHistory();
     const idx = (tables.length || 0) + 1;
     const id = activeFloor === "patio" ? `P${idx}` : activeFloor === "private" ? `PR${idx}` : String(idx);
-    const long = cap > 4;
+    const nextSize = tableSize(shape, cap);
     const newT: FloorTable = {
       id,
+      tableNumber: id,
+      sectionId: activeFloor,
+      combinedWith: [],
       shape,
       x: 140,
       y: 140,
-      size: shape === "round" ? (cap > 2 ? 90 : 75) : long ? Math.max(140, 90 + cap * 12) : 90,
+      size: nextSize.size,
       cap,
       status: "free",
       guest: null,
       party: 0,
       time: null,
-      long,
+      long: nextSize.long,
     };
     setTables((byF) => ({ ...byF, [activeFloor]: [...(byF[activeFloor] || []), newT] }));
     setSel({ kind: "table", id });
   };
 
   const addFloor = () => {
+    if (!canEditLayout) return;
     pushHistory();
     const n = floors.length + 1;
     const id = `floor${n}`;
@@ -1348,6 +1605,183 @@ export default function FloorPlanPage() {
     setEntrance((byF) => ({ ...byF, [id]: { side: "top", pos: 360, width: 50 } }));
     setRooms((r) => ({ ...r, [id]: { w: 720, h: 560 } }));
     setActiveFloor(id);
+  };
+
+  const startRenameFloor = (floor: Floor) => {
+    if (!canEditLayout) return;
+    setConfirmDeleteFloorId(null);
+    setRenamingFloorId(floor.id);
+    setRenameFloorValue(floor.name);
+  };
+
+  const commitRenameFloor = () => {
+    if (!canEditLayout) return;
+    if (!renamingFloorId) return;
+    const nextName = renameFloorValue.trim();
+    if (!nextName) {
+      toast.error("Floor name cannot be empty.");
+      return;
+    }
+    pushHistory();
+    setFloors((current) =>
+      current.map((floor) => (floor.id === renamingFloorId ? { ...floor, name: nextName } : floor)),
+    );
+    setRenamingFloorId(null);
+    setRenameFloorValue("");
+  };
+
+  const deleteFloor = (floorId: string) => {
+    if (!canEditLayout) return;
+    if (floors.length <= 1) {
+      toast.error("At least one floor is required.");
+      return;
+    }
+    pushHistory();
+    const nextFloors = floors.filter((floor) => floor.id !== floorId);
+    const nextActiveFloor = activeFloor === floorId ? nextFloors[0]?.id : activeFloor;
+    const floorTables = tablesByFloor[floorId] ?? [];
+    const dbTableIds = floorTables
+      .map((table) => table.dbId)
+      .filter((id): id is string => Boolean(id && isDatabaseUuid(id)));
+
+    setFloors(nextFloors);
+    setTables((current) => {
+      const next = { ...current };
+      delete next[floorId];
+      return next;
+    });
+    setWalls((current) => {
+      const next = { ...current };
+      delete next[floorId];
+      return next;
+    });
+    setEntrance((current) => {
+      const next = { ...current };
+      delete next[floorId];
+      return next;
+    });
+    setRooms((current) => {
+      const next = { ...current };
+      delete next[floorId];
+      return next;
+    });
+    setDeletedTableIds((ids) => Array.from(new Set([...ids, ...dbTableIds])));
+    if (isDatabaseUuid(floorId)) {
+      setDeletedFloorIds((ids) => (ids.includes(floorId) ? ids : [...ids, floorId]));
+    }
+    if (nextActiveFloor) setActiveFloor(nextActiveFloor);
+    setConfirmDeleteFloorId(null);
+    setRenamingFloorId(null);
+    setSel(null);
+  };
+
+  const saveFloorPlanLayout = async () => {
+    if (!canEditLayout) {
+      setEditing(false);
+      toast.error("Only owners and managers can edit the floor plan layout.");
+      return;
+    }
+    if (!isSupabaseConfigured()) {
+      setEditing(false);
+      return;
+    }
+
+    setSavingLayout(true);
+    try {
+      const floorMappings: Record<string, { sectionId: string; floorPlanId: string | null }> = {};
+
+      for (const floor of floors) {
+        const existingPlan = dbFloorPlans.find((plan) => (plan.section_id ?? plan.id) === floor.id);
+        if (isDatabaseUuid(floor.id)) {
+          const renamed = await updateFloorName(floor.id, floor.name);
+          if (!renamed) {
+            throw new Error(`Could not rename ${floor.name}.`);
+          }
+          floorMappings[floor.id] = {
+            sectionId: floor.id,
+            floorPlanId: existingPlan?.id ?? null,
+          };
+          continue;
+        }
+
+        const created = await createSectionAndFloor(floor.name);
+        if (!created) {
+          throw new Error(`Could not save ${floor.name}.`);
+        }
+        floorMappings[floor.id] = {
+          sectionId: created.sectionId,
+          floorPlanId: created.floorPlanId,
+        };
+      }
+
+      for (const floorId of deletedFloorIds) {
+        const deleted = await deleteDbFloor(floorId, { refetchAfter: false });
+        if (!deleted) {
+          throw new Error("Could not delete floor.");
+        }
+      }
+
+      for (const tableId of deletedTableIds) {
+        await deleteDbTable(tableId, { refetchAfter: false });
+      }
+
+      for (const floor of floors) {
+        const mapping = floorMappings[floor.id];
+        if (!mapping) continue;
+
+        const plan = dbFloorPlans.find((candidate) => candidate.id === mapping.floorPlanId)
+          ?? dbFloorPlans.find((candidate) => (candidate.section_id ?? candidate.id) === floor.id);
+        const roomForFloor = rooms[floor.id] ?? DEFAULT_ROOM;
+        const existingLayout = layoutFromPlan(plan);
+        if (mapping.floorPlanId) {
+          await updateLayout(mapping.floorPlanId, {
+            ...existingLayout,
+            walls: wallsByFloor[floor.id] ?? [],
+            doors: [entranceToDoor(entranceByFloor[floor.id] ?? { side: "top", pos: roomForFloor.w / 2, width: 50 }, roomForFloor)],
+          });
+        }
+
+        for (const table of tablesByFloor[floor.id] ?? []) {
+          const patch = {
+            table_number: table.tableNumber ?? tableDisplayLabel(table),
+            label: table.label ?? null,
+            capacity: table.cap,
+            section_id: mapping.sectionId,
+            section: floor.name,
+            position_x: table.x,
+            position_y: table.y,
+            shape: toDbShape(table.shape),
+            status: toDbStatus(table.status),
+            is_active: true,
+          };
+          if (table.dbId && isDatabaseUuid(table.dbId)) {
+            await updateDbTable(table.dbId, patch);
+          } else {
+            await createDbTable({
+              sectionId: mapping.sectionId,
+              label: table.label ?? tableDisplayLabel(table),
+              shape: toDbShape(table.shape),
+              capacity: table.cap,
+              x: table.x,
+              y: table.y,
+              tableNumber: table.tableNumber ?? tableDisplayLabel(table),
+              minParty: 1,
+              status: toDbStatus(table.status),
+            });
+          }
+        }
+      }
+
+      await refetchFloorPlan({ silent: true });
+      setDeletedTableIds([]);
+      setDeletedFloorIds([]);
+      setEditing(false);
+      toast.success("Floor plan saved.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save the floor plan.");
+    } finally {
+      setSavingLayout(false);
+    }
   };
 
   const setZoomClamped = (z: number, originX?: number, originY?: number) => {
@@ -1363,18 +1797,12 @@ export default function FloorPlanPage() {
   };
 
   /**
-   * Reset to 100% zoom and center the *visible outline* of the floor plan
-   * in the canvas.
-   *
-   * Centers on the bounding box of the actual content the user sees
-   * (tables + walls), not the abstract room rectangle. This means the
-   * eye lands on the middle of the plan even when the room has uneven
-   * padding around its content.
+   * Reset to 100% zoom and center the room outline in the canvas.
    *
    * Math is in viewBox units. SVG uses `preserveAspectRatio="xMinYMin
    * meet"` so it scales uniformly to fit but doesn't auto-center; we
    * convert canvas pixels to viewBox units via `meetScale` and place the
-   * content's center at the canvas center.
+   * room's center at the canvas center.
    */
   const fitToRoom = useCallback(() => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -1384,44 +1812,15 @@ export default function FloorPlanPage() {
     // current pan back to (0,0).
     if (!rect || rect.width === 0 || rect.height === 0) return;
 
-    // Bounding box of every visible element on this floor.
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    tables.forEach((t) => {
-      const w = t.size;
-      const h = t.shape === "round" ? t.size : t.long ? 70 : 80;
-      if (t.x < minX) minX = t.x;
-      if (t.y < minY) minY = t.y;
-      if (t.x + w > maxX) maxX = t.x + w;
-      if (t.y + h > maxY) maxY = t.y + h;
-    });
-    walls.forEach((w) => {
-      minX = Math.min(minX, w.x1, w.x2);
-      minY = Math.min(minY, w.y1, w.y2);
-      maxX = Math.max(maxX, w.x1, w.x2);
-      maxY = Math.max(maxY, w.y1, w.y2);
-    });
-    // Fallback to outline rect if floor is empty.
-    if (!Number.isFinite(minX)) {
-      minX = 30;
-      minY = 30;
-      maxX = room.w - 30;
-      maxY = room.h - 30;
-    }
-    const contentCenterX = (minX + maxX) / 2;
-    const contentCenterY = (minY + maxY) / 2;
-
     const meetScale = Math.min(rect.width / room.w, rect.height / room.h);
     const visW = rect.width / meetScale;
     const visH = rect.height / meetScale;
     setZoom(BASE_ZOOM);
     setPan({
-      x: visW / 2 - contentCenterX * BASE_ZOOM,
-      y: visH / 2 - contentCenterY * BASE_ZOOM,
+      x: visW / 2 - (room.w / 2) * BASE_ZOOM,
+      y: visH / 2 - (room.h / 2) * BASE_ZOOM,
     });
-  }, [room.w, room.h, tables, walls]);
+  }, [room.w, room.h]);
 
   // Stable reference to the latest fitToRoom so the ResizeObserver
   // doesn't get torn down and recreated every render (which was causing
@@ -1450,7 +1849,15 @@ export default function FloorPlanPage() {
   useEffect(() => {
     const el = svgRef.current?.parentElement;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const obs = new ResizeObserver(() => fitToRoomRef.current());
+    const updateCanvasSize = () => {
+      const rect = el.getBoundingClientRect();
+      setCanvasSize({ width: rect.width, height: rect.height });
+    };
+    updateCanvasSize();
+    const obs = new ResizeObserver(() => {
+      updateCanvasSize();
+      fitToRoomRef.current();
+    });
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
@@ -1470,6 +1877,7 @@ export default function FloorPlanPage() {
     const target = e.target as Element;
     if (target.tagName !== "svg" && !target.classList?.contains("fp-bg")) return;
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y };
+    setIsPanning(true);
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
@@ -1485,6 +1893,7 @@ export default function FloorPlanPage() {
   };
 
   const onTableDragStart = (e: ReactPointerEvent<SVGElement>, t: FloorTable) => {
+    if (!canEditLayout) return;
     e.stopPropagation();
     setSel({ kind: "table", id: t.id });
     pushHistory();
@@ -1494,6 +1903,7 @@ export default function FloorPlanPage() {
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
   const onWallDragStart = (e: ReactPointerEvent<SVGElement>, w: Wall) => {
+    if (!canEditLayout) return;
     e.stopPropagation();
     setSel({ kind: "wall", id: w.id });
     pushHistory();
@@ -1512,6 +1922,7 @@ export default function FloorPlanPage() {
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
   const onEndpointDrag = (e: ReactPointerEvent<SVGElement>, w: Wall, end: "start" | "end") => {
+    if (!canEditLayout) return;
     e.stopPropagation();
     setSel({ kind: "wall", id: w.id });
     pushHistory();
@@ -1529,6 +1940,7 @@ export default function FloorPlanPage() {
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
   const onEntranceDragStart = (e: ReactPointerEvent<SVGElement>) => {
+    if (!canEditLayout) return;
     e.stopPropagation();
     setSel({ kind: "entrance" });
     pushHistory();
@@ -1547,6 +1959,10 @@ export default function FloorPlanPage() {
     }
     const d = dragRef.current;
     if (!d) return;
+    if (!canEditLayout) {
+      dragRef.current = null;
+      return;
+    }
     const p = svgPoint(e);
     if (!p) return;
     const snap = (v: number) => Math.max(20, Math.round(v / 10) * 10);
@@ -1581,6 +1997,7 @@ export default function FloorPlanPage() {
   const onUp = () => {
     dragRef.current = null;
     panRef.current = null;
+    setIsPanning(false);
   };
 
   const searchResults = useMemo(() => {
@@ -1630,12 +2047,12 @@ export default function FloorPlanPage() {
 
   const today = new Date();
   const dateStr = today.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const serviceDateLabel = dateStr.toUpperCase();
 
   const viewportRect = (() => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    const visW = rect.width / zoom;
-    const visH = rect.height / zoom;
+    if (!canvasSize) return null;
+    const visW = canvasSize.width / zoom;
+    const visH = canvasSize.height / zoom;
     const visX = -pan.x / zoom;
     const visY = -pan.y / zoom;
     return { x: visX, y: visY, w: visW, h: visH };
@@ -1644,23 +2061,26 @@ export default function FloorPlanPage() {
   const density: Density = zoom < 0.55 ? "minimal" : zoom < 0.85 ? "compact" : "full";
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-y-auto">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-y-auto bg-background">
       {/* Editorial header */}
-      <div className="px-10 pb-7 pt-10" style={{ borderBottom: `1px solid ${BORDER_SOFT}` }}>
+      <div
+        className="sticky top-0 z-30 bg-background/95 px-10 pb-7 pt-10 backdrop-blur-xl"
+        style={{ borderBottom: `1px solid ${BORDER_SOFT}` }}
+      >
         <div className="flex items-end justify-between gap-6">
           <div>
-            <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-text-muted">
-              Floor Plan · Dinner Service
+            <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.24em] text-gold/70">
+              {serviceDateLabel} · Table Management
             </div>
             <h1
               className="font-serif text-[40px] leading-[1.05] tracking-tight"
               style={{ letterSpacing: "-0.025em" }}
             >
-              {dateStr}
+              Floor Plan
             </h1>
           </div>
-          <div className="flex items-center gap-2">
-            {editing && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {editing && canEditLayout && (
               <>
                 <button
                   onClick={undo}
@@ -1692,23 +2112,35 @@ export default function FloorPlanPage() {
               </>
             )}
             {!editing ? (
-              <button
-                onClick={() => {
-                  setEditing(true);
-                  setSel(null);
-                }}
-                className="rounded-md px-3.5 py-2 text-[13px] text-text-secondary transition-colors hover:text-white"
-                style={{ border: `1px solid ${BORDER_SOFT}` }}
-              >
-                Edit layout
-              </button>
+              canEditLayout && (
+                <button
+                  onClick={() => {
+                    setEditing(true);
+                    setSel(null);
+                  }}
+                  className="rounded-md px-3.5 py-2 text-[13px] text-text-secondary transition-colors hover:text-white"
+                  style={{ border: `1px solid ${BORDER_SOFT}` }}
+                >
+                  Edit layout
+                </button>
+              )
             ) : (
-              <button
-                onClick={() => setEditing(false)}
-                className="rounded-md bg-gold px-4 py-2 text-[13px] font-medium text-black transition-opacity hover:opacity-90"
-              >
-                Done editing
-              </button>
+              <>
+                <button
+                  onClick={() => setEditing(false)}
+                  className="rounded-md px-3.5 py-2 text-[12px] text-text-secondary transition-colors hover:text-white"
+                  style={{ border: `1px solid ${BORDER_SOFT}` }}
+                >
+                  Exit without saving
+                </button>
+                <button
+                  onClick={() => void saveFloorPlanLayout()}
+                  disabled={savingLayout}
+                  className="rounded-md bg-gold px-4 py-2 text-[13px] font-semibold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingLayout ? "Saving..." : "Save layout"}
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1717,7 +2149,7 @@ export default function FloorPlanPage() {
           className="mt-5 max-w-2xl font-serif text-[17px] text-text-secondary"
           style={{ letterSpacing: "-0.01em", fontStyle: "italic", opacity: 0.85 }}
         >
-          {summary}
+          {editing ? "Changes are not saved until you click Save layout." : summary}
         </p>
       </div>
 
@@ -1727,35 +2159,119 @@ export default function FloorPlanPage() {
           {floors.map((f) => {
             const fc = (tablesByFloor[f.id] || []).length;
             const isActive = activeFloor === f.id;
+            const isRenaming = renamingFloorId === f.id;
+            const isConfirmingDelete = confirmDeleteFloorId === f.id;
             return (
-              <button
+              <div
                 key={f.id}
-                onClick={() => {
-                  setActiveFloor(f.id);
-                  setSel(null);
-                  // Centering is handled by useLayoutEffect[activeFloor]
-                  // which uses the up-to-date tables/walls for the new
-                  // floor. Calling fitToRoom() directly here would use
-                  // the stale closure from this render.
-                }}
-                className="rounded-full px-4 py-2 text-[13px] transition-all"
+                className="flex items-center gap-1 rounded-full px-1 py-1 transition-all"
                 style={{
                   background: isActive ? "rgba(201,168,76,0.10)" : "transparent",
                   color: isActive ? "var(--gold-light)" : "var(--text-secondary)",
                   border: isActive ? "1px solid rgba(201,168,76,0.30)" : "1px solid transparent",
                 }}
               >
-                {f.name}
-                <span
-                  className="ml-2 text-[11px] tabular-nums"
-                  style={{ color: isActive ? "rgba(229,203,124,0.7)" : "var(--text-muted)" }}
-                >
-                  {fc}
-                </span>
-              </button>
+                {isRenaming ? (
+                  <>
+                    <input
+                      value={renameFloorValue}
+                      autoFocus
+                      onChange={(event) => setRenameFloorValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") commitRenameFloor();
+                        if (event.key === "Escape") {
+                          setRenamingFloorId(null);
+                          setRenameFloorValue("");
+                        }
+                      }}
+                      className="h-8 w-36 rounded-full border border-gold/30 bg-bg-elevated px-3 text-[13px] text-text-primary outline-none focus:border-gold/60"
+                    />
+                    <button
+                      type="button"
+                      onClick={commitRenameFloor}
+                      className="rounded-full bg-gold px-3 py-1.5 text-[11px] font-medium text-black"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenamingFloorId(null);
+                        setRenameFloorValue("");
+                      }}
+                      className="rounded-full px-3 py-1.5 text-[11px] text-text-muted transition-colors hover:bg-white/5 hover:text-text-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : isConfirmingDelete ? (
+                  <>
+                    <span className="px-3 text-[12px] text-text-secondary">Delete {f.name}?</span>
+                    <button
+                      type="button"
+                      onClick={() => deleteFloor(f.id)}
+                      className="rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-danger transition-colors hover:bg-danger/15"
+                    >
+                      Yes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteFloorId(null)}
+                      className="rounded-full px-3 py-1.5 text-[11px] text-text-muted transition-colors hover:bg-white/5 hover:text-text-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveFloor(f.id);
+                        setSel(null);
+                        setConfirmDeleteFloorId(null);
+                        // Centering is handled by useLayoutEffect[activeFloor]
+                        // which uses the up-to-date tables/walls for the new
+                        // floor. Calling fitToRoom() directly here would use
+                        // the stale closure from this render.
+                      }}
+                      className="rounded-full px-3 py-1 text-[13px] transition-all"
+                    >
+                      {f.name}
+                      <span
+                        className="ml-2 text-[11px] tabular-nums"
+                        style={{ color: isActive ? "rgba(229,203,124,0.7)" : "var(--text-muted)" }}
+                      >
+                        {fc}
+                      </span>
+                    </button>
+                    {editing && canEditLayout && isActive && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => startRenameFloor(f)}
+                          className="rounded-full px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-white/5 hover:text-gold-light"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenamingFloorId(null);
+                            setConfirmDeleteFloorId(f.id);
+                          }}
+                          className="rounded-full px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
             );
           })}
-          {editing && (
+          {editing && canEditLayout && (
             <button onClick={addFloor} className="ml-1 px-3 py-2 text-[13px] text-gold hover:underline">
               + Add floor
             </button>
@@ -1769,6 +2285,7 @@ export default function FloorPlanPage() {
               ["reserved", "Reserved"],
               ["occupied", "Seated"],
               ["cleaning", "Resetting"],
+              ["blocked", "Blocked"],
             ] as const
           ).map(([k, l]) => (
             <div key={k} className="flex items-center gap-1.5">
@@ -1784,7 +2301,8 @@ export default function FloorPlanPage() {
         <div
           className="relative overflow-hidden rounded-xl"
           style={{
-            background: "radial-gradient(ellipse at 30% 20%, #131312 0%, #0c0c0c 60%, #080808 100%)",
+            background:
+              "radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--bg-elevated) 70%, transparent) 0%, var(--background) 62%, color-mix(in srgb, var(--background) 92%, black) 100%)",
             border: `1px solid ${BORDER_SOFT}`,
             height: 660,
             touchAction: "none",
@@ -1842,7 +2360,7 @@ export default function FloorPlanPage() {
             className="size-full"
             style={{
               display: "block",
-              cursor: panRef.current ? "grabbing" : "default",
+              cursor: isPanning ? "grabbing" : "default",
             }}
             onPointerMove={onMove}
             onPointerUp={onUp}
@@ -1852,7 +2370,7 @@ export default function FloorPlanPage() {
             <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
               <rect className="fp-bg" x="0" y="0" width={room.w} height={room.h} fill="transparent" />
 
-              {editing && (
+              {editing && canEditLayout && (
                 <>
                   <defs>
                     <pattern id="fp-grid" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -1905,8 +2423,10 @@ export default function FloorPlanPage() {
                 entrance={entrance}
                 room={room}
                 selected={sel?.kind === "entrance"}
-                editing={editing}
-                onClick={() => setSel({ kind: "entrance" })}
+                editing={editing && canEditLayout}
+                onClick={() => {
+                  if (editing && canEditLayout) setSel({ kind: "entrance" });
+                }}
                 onDragStart={onEntranceDragStart}
               />
 
@@ -1915,12 +2435,38 @@ export default function FloorPlanPage() {
                   key={w.id}
                   w={w}
                   selected={sel?.kind === "wall" && sel.id === w.id}
-                  editing={editing}
-                  onClick={(ww) => setSel({ kind: "wall", id: ww.id })}
+                  editing={editing && canEditLayout}
+                  onClick={(ww) => {
+                    if (editing && canEditLayout) setSel({ kind: "wall", id: ww.id });
+                  }}
                   onDragStart={onWallDragStart}
                   onEndpointDrag={onEndpointDrag}
                 />
               ))}
+
+              {tables.flatMap((table) => {
+                const from = tableCenter(table);
+                return (table.combinedWith ?? [])
+                  .map((combinedId) => tables.find((candidate) => candidate.dbId === combinedId || candidate.id === combinedId))
+                  .filter((combined): combined is FloorTable => Boolean(combined))
+                  .filter((combined) => table.id < combined.id)
+                  .map((combined) => {
+                    const to = tableCenter(combined);
+                    return (
+                      <line
+                        key={`${table.id}-${combined.id}`}
+                        x1={from.x}
+                        y1={from.y}
+                        x2={to.x}
+                        y2={to.y}
+                        stroke="rgba(201,168,76,0.55)"
+                        strokeDasharray="6 6"
+                        strokeLinecap="round"
+                        strokeWidth="2"
+                      />
+                    );
+                  });
+              })}
 
               {tables.map((t) => (
                 <TableNode
@@ -1928,7 +2474,7 @@ export default function FloorPlanPage() {
                   t={t}
                   selected={sel?.kind === "table" && sel.id === t.id}
                   focused={focusId === t.id}
-                  editing={editing}
+                  editing={editing && canEditLayout}
                   density={density}
                   onClick={(tt) => setSel({ kind: "table", id: tt.id })}
                   onDragStart={onTableDragStart}
@@ -1946,7 +2492,7 @@ export default function FloorPlanPage() {
                 >
                   This floor is empty.
                 </p>
-                {editing && (
+                {editing && canEditLayout && (
                   <p className="text-[12px] text-text-muted">Add a table from the panel on the right.</p>
                 )}
               </div>
@@ -1962,15 +2508,16 @@ export default function FloorPlanPage() {
           {selTable ? (
             <TableCard
               t={selTable}
-              editing={editing}
+              editing={editing && canEditLayout}
+              canAdjustSeats={canEditLayout}
               onAction={handleAction}
               onSeatChange={setSeats}
               onDelete={(t) => deleteTable(t.id)}
               onClose={() => setSel(null)}
             />
-          ) : selWall ? (
+          ) : selWall && editing && canEditLayout ? (
             <WallCard w={selWall} onDelete={(w) => deleteWall(w.id)} onClose={() => setSel(null)} />
-          ) : selEntrance ? (
+          ) : selEntrance && editing && canEditLayout ? (
             <EntranceCard
               entrance={entrance}
               onChangeSide={(s) =>
@@ -1982,13 +2529,11 @@ export default function FloorPlanPage() {
               onChangeWidth={(w) => updateEntrance({ width: Math.max(30, Math.min(180, w)) })}
               onClose={() => setSel(null)}
             />
-          ) : editing ? (
+          ) : editing && canEditLayout ? (
             <EditCard
               onAddTable={addTable}
               onAddWall={addWall}
               onAddFloor={addFloor}
-              onSave={() => setEditing(false)}
-              onCancel={() => setEditing(false)}
             />
           ) : (
             <IdleCard

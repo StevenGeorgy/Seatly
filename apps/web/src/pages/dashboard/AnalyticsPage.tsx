@@ -52,7 +52,7 @@ function buildRevenueSeries() {
 }
 
 function buildHeatmapMatrix(): number[][] {
-  // 7 rows (5p..11p), 7 cols (Mon..Sun) — values 0..4
+  // 7 rows (5pm..11pm), 7 cols (Mon..Sun) — values 0..4
   return [
     [1, 2, 1, 0, 0, 2, 3],
     [2, 2, 3, 1, 1, 1, 2],
@@ -192,7 +192,7 @@ function PeakHoursHeatmap() {
         )}
       </div>
       <div className="mt-4 flex items-center justify-between text-[10px] text-text-muted">
-        <span className="font-mono">5p</span>
+        <span className="font-mono">5pm</span>
         <div className="flex items-center gap-2 font-mono">
           <span>Less</span>
           {HEAT_FILLS.map((fill, i) => (
@@ -200,7 +200,7 @@ function PeakHoursHeatmap() {
           ))}
           <span>More</span>
         </div>
-        <span className="font-mono">11p</span>
+        <span className="font-mono">11pm</span>
       </div>
     </section>
   );

@@ -39,7 +39,7 @@ function daysFromNow(n: number): string {
 export const MOCK_RESERVATIONS: ReservationRow[] = [
   {
     id: "res-1", restaurant_id: RID, guest_id: "g-1", table_id: "t-1", shift_id: null,
-    party_size: 4, reserved_at: todayAt(18, 0), status: "confirmed",
+    party_size: 4, duration_minutes: 90, reserved_at: todayAt(18, 0), status: "confirmed",
     source: "website", confirmation_code: "SEAT-1A2B", special_request: "Window seat preferred",
     occasion: "Anniversary", dietary_notes: "Gluten-free", internal_notes: null,
     no_show_risk_score: 12, waiter_id: null, deposit_amount: 25, deposit_status: "paid",
@@ -49,7 +49,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-2", restaurant_id: RID, guest_id: "g-2", table_id: "t-3", shift_id: null,
-    party_size: 2, reserved_at: todayAt(18, 30), status: "confirmed",
+    party_size: 2, duration_minutes: 90, reserved_at: todayAt(18, 30), status: "confirmed",
     source: "phone", confirmation_code: "SEAT-3C4D", special_request: null,
     occasion: null, dietary_notes: null, internal_notes: "Regular customer",
     no_show_risk_score: 5, waiter_id: null, deposit_amount: null, deposit_status: null,
@@ -59,7 +59,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-3", restaurant_id: RID, guest_id: "g-3", table_id: "t-5", shift_id: null,
-    party_size: 6, reserved_at: todayAt(19, 0), status: "pending",
+    party_size: 6, duration_minutes: 120, reserved_at: todayAt(19, 0), status: "pending",
     source: "website", confirmation_code: "SEAT-5E6F", special_request: "Birthday cake at 8pm",
     occasion: "Birthday", dietary_notes: "Nut allergy (1 guest)", internal_notes: null,
     no_show_risk_score: 35, waiter_id: null, deposit_amount: 50, deposit_status: "pending",
@@ -69,7 +69,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-4", restaurant_id: RID, guest_id: "g-4", table_id: "t-2", shift_id: null,
-    party_size: 2, reserved_at: todayAt(19, 30), status: "confirmed",
+    party_size: 2, duration_minutes: 90, reserved_at: todayAt(19, 30), status: "confirmed",
     source: "google", confirmation_code: "SEAT-7G8H", special_request: "Vegetarian tasting menu",
     occasion: null, dietary_notes: "Both vegetarian", internal_notes: null,
     no_show_risk_score: 8, waiter_id: null, deposit_amount: null, deposit_status: null,
@@ -79,7 +79,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-5", restaurant_id: RID, guest_id: "g-5", table_id: "t-4", shift_id: null,
-    party_size: 3, reserved_at: todayAt(20, 0), status: "confirmed",
+    party_size: 3, duration_minutes: 90, reserved_at: todayAt(20, 0), status: "confirmed",
     source: "website", confirmation_code: "SEAT-9I0J", special_request: null,
     occasion: null, dietary_notes: null, internal_notes: "VIP — comp dessert",
     no_show_risk_score: 2, waiter_id: null, deposit_amount: null, deposit_status: null,
@@ -89,7 +89,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-6", restaurant_id: RID, guest_id: "g-6", table_id: "t-6", shift_id: null,
-    party_size: 8, reserved_at: todayAt(20, 30), status: "confirmed",
+    party_size: 8, duration_minutes: 120, reserved_at: todayAt(20, 30), status: "confirmed",
     source: "phone", confirmation_code: "SEAT-KL1M", special_request: "Private corner",
     occasion: "Business dinner", dietary_notes: null, internal_notes: null,
     no_show_risk_score: 62, waiter_id: null, deposit_amount: 100, deposit_status: "paid",
@@ -99,7 +99,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
   },
   {
     id: "res-7", restaurant_id: RID, guest_id: null, table_id: null, shift_id: null,
-    party_size: 2, reserved_at: todayAt(17, 30), status: "seated",
+    party_size: 2, duration_minutes: 90, reserved_at: todayAt(17, 30), status: "seated",
     source: "walk-in", confirmation_code: null, special_request: null,
     occasion: null, dietary_notes: null, internal_notes: null,
     no_show_risk_score: null, waiter_id: null, deposit_amount: null, deposit_status: null,
