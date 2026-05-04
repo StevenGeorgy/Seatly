@@ -19,7 +19,9 @@ import {
   Settings,
   Tag,
   ChevronDown,
+  Check,
   Menu,
+  Plus,
   X,
   User,
   Eye,
@@ -34,6 +36,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { RestaurantPreviewModal, type RestaurantPreviewSummary } from "@/components/customer/RestaurantPreviewModal";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { usePublicRestaurants } from "@/hooks/useRestaurant";
+import { useRestaurantPreviewStats } from "@/hooks/useRestaurantPreviewStats";
 import { useUser } from "@/hooks/useUser";
 import { useNotifications } from "@/hooks/useNotifications";
 import {
@@ -80,6 +83,7 @@ export function DashboardSidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewFavorite, setPreviewFavorite] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   const roleSet = useMemo((): Set<StaffRole> => {
     if (!selectedRestaurantId) return new Set();
@@ -104,35 +108,58 @@ export function DashboardSidebar() {
   const selectedRestaurant = restaurants.find((r) => r.id === selectedRestaurantId) ?? restaurants[0];
   const publicRestaurant =
     publicRestaurants.find((r) => r.id === selectedRestaurant?.id || r.slug === selectedRestaurant?.slug) ?? null;
+  const { stats: previewStats } = useRestaurantPreviewStats(selectedRestaurant?.id);
+  const ROLE_PRIORITY: StaffRole[] = ["owner", "manager", "host", "server", "kitchen", "bar", "staff"];
+  const primaryRole = ROLE_PRIORITY.find((r) => roleSet.has(r));
+  const roleLabel = primaryRole ? t(`dashboard.shell.staffRole.${primaryRole}`) : null;
   const restaurantInitials = (selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "??")
     .split(/\s+/)
     .map((w) => w[0])
     .join("")
     .slice(0, 2)
     .toUpperCase();
-  const ROLE_PRIORITY: StaffRole[] = ["owner", "manager", "host", "server", "kitchen", "bar", "staff"];
-  const primaryRole = ROLE_PRIORITY.find((r) => roleSet.has(r));
-  const roleLabel = primaryRole ? primaryRole.charAt(0).toUpperCase() + primaryRole.slice(1) : null;
+  const restaurantRoleLabel = (restaurantId: string) => {
+    const roles = getStaffRoleSet(restaurantRoles.filter((r) => r.restaurant_id === restaurantId));
+    const role = ROLE_PRIORITY.find((r) => roles.has(r));
+    return role ? t(`dashboard.shell.staffRole.${role}`) : null;
+  };
+  const restaurantInitialsFor = (name: string | null | undefined, slug: string) =>
+    (name ?? slug ?? "??")
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
+  const profileLabel = profile?.full_name ?? profile?.email ?? t("routes.account.title");
+  const profileInitials = profileLabel
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
   const previewRestaurant = selectedRestaurant
     ? ({
         id: selectedRestaurant.id,
         name: publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug,
-        reviews: publicRestaurant?.total_reviews ?? 927,
-        rating: publicRestaurant?.avg_rating ?? 4.6,
+        reviews: publicRestaurant?.total_reviews ?? 0,
+        rating: publicRestaurant?.avg_rating ?? 0,
         cuisine: publicRestaurant?.cuisine_type ?? "Restaurant",
-        price: PRICE_LABELS[publicRestaurant?.price_range ?? 3] ?? "$$$",
-        area: publicRestaurant?.city ?? "Toronto",
-        bookedToday: 85,
-        slots: ["6:45 PM", "7:00 PM", "7:30 PM", "7:45 PM", "8:30 PM", "9:00 PM"],
+        price: PRICE_LABELS[publicRestaurant?.price_range ?? 0] ?? "—",
+        area: publicRestaurant?.city ?? "—",
+        bookedToday: previewStats.bookedToday,
+        slots: [],
         initials: (publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug)
           .split(/\s+/)
           .slice(0, 2)
           .join(" ")
           .toUpperCase(),
-        badge: "POPULAR",
-        city: publicRestaurant?.city ?? "Toronto",
-        distanceKm: 0.4,
-        features: ["Patio", "Tasting menu"],
+        badge: publicRestaurant?.avg_rating ? "Rated" : "Preview",
+        city: publicRestaurant?.city ?? "—",
+        distanceKm: 0,
+        features: [publicRestaurant?.cuisine_type, publicRestaurant?.city].filter(Boolean) as string[],
+        logoUrl: selectedRestaurant.logo_url,
+        coverPhotoUrl: publicRestaurant?.cover_photo_url ?? selectedRestaurant.cover_photo_url,
       } satisfies RestaurantPreviewSummary)
     : null;
 
@@ -145,41 +172,97 @@ export function DashboardSidebar() {
 
       {/* Restaurant switcher card */}
       <div className="px-4 pb-2 pt-1">
-        <div className="relative rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 transition-colors hover:border-gold/30">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 font-mono text-xs font-semibold text-gold">
-              {restaurantInitials}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-text-primary">
-                {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
-              </p>
-              {roleLabel && (
-                <p className="truncate text-xs text-text-muted">{roleLabel}</p>
-              )}
-            </div>
-            <ChevronDown
-              className={cn(
-                "size-4 shrink-0 transition-colors",
-                restaurants.length > 1 ? "text-text-muted" : "text-transparent",
-              )}
-            />
-          </div>
-          {restaurants.length > 1 && (
-            <select
-              aria-label="Switch restaurant"
-              value={selectedRestaurantId ?? ""}
-              onChange={(e) => setSelectedRestaurantId(e.target.value)}
-              className="absolute inset-0 cursor-pointer appearance-none bg-transparent text-transparent opacity-0 outline-none"
+        <Popover open={workspaceOpen} onOpenChange={setWorkspaceOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={t("dashboard.shell.switchRestaurant")}
+              className="relative w-full rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 text-left transition-colors hover:border-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
             >
-              {restaurants.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name ?? r.slug}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 font-mono text-xs font-semibold text-gold">
+                  {restaurantInitials}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-text-primary">
+                    {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
+                  </p>
+                  {roleLabel && (
+                    <p className="truncate text-xs text-text-muted">{roleLabel}</p>
+                  )}
+                </div>
+                <ChevronDown
+                  className={cn(
+                    "size-4 shrink-0 text-text-muted transition-transform",
+                    workspaceOpen && "rotate-180 text-gold",
+                  )}
+                />
+              </div>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" side="right" sideOffset={10} className="w-72 p-0">
+            <div className="border-b border-border px-4 py-3">
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">
+                {t("dashboard.shell.workspaces")}
+              </p>
+              <p className="mt-1 text-xs text-text-muted">{t("dashboard.shell.switchRestaurant")}</p>
+            </div>
+            <div className="max-h-72 overflow-y-auto p-2">
+              {restaurants.length === 0 ? (
+                <p className="px-2 py-4 text-sm text-text-muted">{t("dashboard.shell.noRestaurants")}</p>
+              ) : (
+                restaurants.map((restaurant) => {
+                  const isSelected = restaurant.id === selectedRestaurantId;
+                  const restaurantName = restaurant.name ?? restaurant.slug;
+                  const restaurantRole = restaurantRoleLabel(restaurant.id);
+
+                  return (
+                    <button
+                      key={restaurant.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRestaurantId(restaurant.id);
+                        setWorkspaceOpen(false);
+                        setMobileOpen(false);
+                      }}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+                        isSelected ? "bg-gold/10 text-text-primary" : "text-text-secondary hover:bg-bg-elevated",
+                      )}
+                    >
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10 font-mono text-[11px] font-semibold text-gold">
+                        {restaurantInitialsFor(restaurant.name, restaurant.slug)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{restaurantName}</span>
+                        {restaurantRole ? (
+                          <span className="block truncate text-xs text-text-muted">{restaurantRole}</span>
+                        ) : null}
+                      </span>
+                      {isSelected ? <Check className="size-4 shrink-0 text-gold" /> : null}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="border-t border-border p-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceOpen(false);
+                  setMobileOpen(false);
+                  void navigate("/setup");
+                }}
+                className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-gold transition-colors hover:bg-gold/10"
+              >
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                  <Plus className="size-4" />
+                </span>
+                <span>{t("dashboard.shell.addRestaurant")}</span>
+              </button>
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* Navigation */}
@@ -236,8 +319,19 @@ export function DashboardSidebar() {
       {/* Account actions pinned at bottom */}
       <div className="border-t border-border px-3 py-2">
         <div className="mb-2 flex items-center gap-2 border-b border-border px-2 pb-2 pt-2">
-          <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
-            {profile?.full_name ?? profile?.email ?? ""}
+          <span className="flex min-w-0 flex-1 items-center">
+            <button
+              type="button"
+              className="flex size-9 items-center justify-center rounded-full bg-gold/15 font-mono text-xs font-semibold text-gold transition-colors hover:bg-gold/25"
+              aria-label={t("routes.account.title")}
+              title={profileLabel}
+              onClick={() => {
+                void navigate("/account");
+                setMobileOpen(false);
+              }}
+            >
+              {profileInitials || <User className="size-4" />}
+            </button>
           </span>
           <Popover>
             <PopoverTrigger asChild>

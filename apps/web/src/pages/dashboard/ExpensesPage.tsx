@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { format, isValid, parse } from "date-fns";
 import { CalendarDays, Coins, Download, Pencil, Plus, Trash2, WalletCards } from "lucide-react";
@@ -23,16 +23,34 @@ import {
   type ExpenseFrequency,
   type ExpenseRow,
   type ExpenseStatus,
+  type FinanceTransactionType,
   type RecurringExpenseRule,
 } from "@/hooks/useExpenses";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
-const RANGES = ["Week", "Month", "Quarter", "Year"] as const;
+const PRESET_RANGES = ["Day", "Week", "Month", "Quarter", "Year"] as const;
+const RANGES = [...PRESET_RANGES, "Custom"] as const;
+type PresetRangeKey = (typeof PRESET_RANGES)[number];
 type RangeKey = (typeof RANGES)[number];
 
-const CATEGORY_OPTIONS: Array<{ value: ExpenseCategory; label: string }> = [
+const RANGE_LABELS: Record<RangeKey, string> = {
+  Day: "Today",
+  Week: "This week",
+  Month: "This month",
+  Quarter: "This quarter",
+  Year: "This year",
+  Custom: "Custom",
+};
+
+const TRANSACTION_TYPE_OPTIONS: Array<{ value: FinanceTransactionType; label: string }> = [
+  { value: "expense", label: "Expense" },
+  { value: "income", label: "Income" },
+];
+
+const EXPENSE_CATEGORY_OPTIONS: Array<{ value: ExpenseCategory; label: string }> = [
   { value: "food_cost", label: "Food cost" },
+  { value: "food_supplies", label: "Food supplies" },
   { value: "beverages", label: "Beverages" },
   { value: "utilities", label: "Utilities" },
   { value: "rent", label: "Rent" },
@@ -41,8 +59,41 @@ const CATEGORY_OPTIONS: Array<{ value: ExpenseCategory; label: string }> = [
   { value: "staff", label: "Staff" },
   { value: "supplies", label: "Supplies" },
   { value: "maintenance", label: "Maintenance" },
+  { value: "cleaning", label: "Cleaning" },
   { value: "other", label: "Other" },
 ];
+
+const INCOME_CATEGORY_OPTIONS: Array<{ value: ExpenseCategory; label: string }> = [
+  { value: "sales", label: "Sales" },
+  { value: "preorders", label: "Pre-orders" },
+  { value: "events", label: "Events" },
+  { value: "catering", label: "Catering" },
+  { value: "delivery", label: "Delivery" },
+  { value: "gift_cards", label: "Gift cards" },
+  { value: "other", label: "Other" },
+];
+
+const CATEGORY_OPTIONS = [...EXPENSE_CATEGORY_OPTIONS, ...INCOME_CATEGORY_OPTIONS];
+const CATEGORY_VALUES = [
+  "food_cost",
+  "food_supplies",
+  "beverages",
+  "utilities",
+  "rent",
+  "equipment",
+  "marketing",
+  "staff",
+  "supplies",
+  "maintenance",
+  "cleaning",
+  "sales",
+  "preorders",
+  "events",
+  "catering",
+  "delivery",
+  "gift_cards",
+  "other",
+] as const;
 
 const FREQUENCY_OPTIONS: Array<{ value: ExpenseFrequency; label: string }> = [
   { value: "one_time", label: "One-time" },
@@ -61,19 +112,9 @@ const STATUS_OPTIONS: Array<{ value: ExpenseStatus; label: string }> = [
 ];
 
 const expenseSchema = z.object({
-  vendor_name: z.string().trim().min(1, "Vendor is required."),
-  category: z.enum([
-    "food_cost",
-    "beverages",
-    "utilities",
-    "rent",
-    "equipment",
-    "marketing",
-    "staff",
-    "supplies",
-    "maintenance",
-    "other",
-  ]),
+  transaction_type: z.enum(["expense", "income"]),
+  vendor_name: z.string().trim().min(1, "Name is required."),
+  category: z.enum(CATEGORY_VALUES),
   description: z.string().trim().optional(),
   notes: z.string().trim().optional(),
   amount: z.number().min(0, "Amount must be zero or more."),
@@ -86,15 +127,39 @@ const expenseSchema = z.object({
 
 type ExpenseFormValues = z.infer<typeof expenseSchema>;
 
+function transactionTypeFor(row: ExpenseRow | RecurringExpenseRule): FinanceTransactionType {
+  return row.transaction_type ?? "expense";
+}
+
+function categoryOptionsFor(type: FinanceTransactionType): Array<{ value: ExpenseCategory; label: string }> {
+  return type === "income" ? INCOME_CATEGORY_OPTIONS : EXPENSE_CATEGORY_OPTIONS;
+}
+
 function categoryLabel(category: string): string {
   return CATEGORY_OPTIONS.find((option) => option.value === category)?.label ?? category.replace(/_/g, " ");
+}
+
+function typeLabel(type: FinanceTransactionType): string {
+  return TRANSACTION_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? type;
 }
 
 function frequencyLabel(frequency: string): string {
   return FREQUENCY_OPTIONS.find((option) => option.value === frequency)?.label ?? frequency.replace(/_/g, " ");
 }
 
-function statusLabel(status: string | undefined): string {
+function statusLabel(status: string | undefined, type: FinanceTransactionType = "expense"): string {
+  if (type === "income") {
+    switch (status) {
+      case "due":
+        return "Expected";
+      case "scheduled":
+        return "Scheduled";
+      case "overdue":
+        return "Overdue";
+      default:
+        return "Received";
+    }
+  }
   return STATUS_OPTIONS.find((option) => option.value === status)?.label ?? "Paid";
 }
 
@@ -112,23 +177,48 @@ function statusClass(status: string | undefined): string {
 }
 
 function isoDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  return format(date, "yyyy-MM-dd");
 }
 
-function rangeStart(range: RangeKey): string {
-  const date = new Date();
+function rangeStart(range: PresetRangeKey, anchorDate: Date): string {
+  const date = new Date(anchorDate);
   switch (range) {
+    case "Day":
+      break;
     case "Week":
-      date.setDate(date.getDate() - 7);
+      date.setDate(date.getDate() - date.getDay());
       break;
     case "Month":
-      date.setMonth(date.getMonth() - 1);
+      date.setDate(1);
       break;
     case "Quarter":
-      date.setMonth(date.getMonth() - 3);
+      date.setMonth(Math.floor(date.getMonth() / 3) * 3, 1);
       break;
     case "Year":
-      date.setFullYear(date.getFullYear() - 1);
+      date.setMonth(0, 1);
+      break;
+  }
+  return isoDate(date);
+}
+
+function rangeEnd(range: PresetRangeKey, anchorDate: Date): string {
+  const date = new Date(anchorDate);
+  switch (range) {
+    case "Day":
+      break;
+    case "Week":
+      date.setDate(date.getDate() - date.getDay() + 6);
+      break;
+    case "Month":
+      date.setMonth(date.getMonth() + 1, 0);
+      break;
+    case "Quarter": {
+      const quarterStartMonth = Math.floor(date.getMonth() / 3) * 3;
+      date.setMonth(quarterStartMonth + 3, 0);
+      break;
+    }
+    case "Year":
+      date.setMonth(11, 31);
       break;
   }
   return isoDate(date);
@@ -140,42 +230,25 @@ function shortDate(date: string): string {
   return parsed.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
 }
 
-function monthlyEquivalent(rule: RecurringExpenseRule): number {
-  switch (rule.frequency) {
-    case "weekly":
-      return (rule.total_amount * 52) / 12;
-    case "bi_weekly":
-      return (rule.total_amount * 26) / 12;
-    case "monthly":
-      return rule.total_amount;
-    case "quarterly":
-      return rule.total_amount / 3;
-    case "yearly":
-      return rule.total_amount / 12;
-  }
+function readableDate(date: string): string {
+  const parsed = parse(date, "yyyy-MM-dd", new Date());
+  if (!isValid(parsed)) return date;
+  return format(parsed, "MMM d, yyyy");
 }
 
-function recurringAmountForRange(rule: RecurringExpenseRule, range: RangeKey): number {
-  const monthly = monthlyEquivalent(rule);
-  switch (range) {
-    case "Week":
-      return monthly / (52 / 12);
-    case "Month":
-      return monthly;
-    case "Quarter":
-      return monthly * 3;
-    case "Year":
-      return monthly * 12;
-  }
+function recurringOccurrenceAmount(rule: RecurringExpenseRule): number {
+  return rule.total_amount;
 }
 
-function rangeNoun(range: RangeKey): string {
-  return range.toLowerCase();
+function rangeCaption(range: RangeKey): string {
+  if (range === "Day") return "today";
+  if (range === "Custom") return "in this custom range";
+  return `this ${range.toLowerCase()}`;
 }
 
 type LedgerRow =
-  | { kind: "expense"; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; expense: ExpenseRow }
-  | { kind: "recurring"; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; rule: RecurringExpenseRule };
+  | { kind: "expense"; type: FinanceTransactionType; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; expense: ExpenseRow }
+  | { kind: "recurring"; type: FinanceTransactionType; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; rule: RecurringExpenseRule };
 
 type DeleteTarget =
   | { kind: "expense"; expense: ExpenseRow }
@@ -183,9 +256,10 @@ type DeleteTarget =
 
 function downloadLedgerCsv(ledgerRows: LedgerRow[]) {
   const rows = [
-    ["type", "date", "vendor", "category", "description", "status", "amount"],
+    ["row_type", "transaction_type", "date", "name", "category", "description", "status", "amount"],
     ...ledgerRows.map((row) => [
       row.kind,
+      row.type,
       row.date,
       row.vendor,
       row.category,
@@ -199,7 +273,7 @@ function downloadLedgerCsv(ledgerRows: LedgerRow[]) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "expenses.csv";
+  link.download = "income-expenses.csv";
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -281,17 +355,24 @@ function ExpenseDateField({
 
 export default function ExpensesPage() {
   const [range, setRange] = useState<RangeKey>("Month");
+  const [customDateFrom, setCustomDateFrom] = useState(() => rangeStart("Month", new Date()));
+  const [customDateTo, setCustomDateTo] = useState(() => rangeEnd("Month", new Date()));
   const [formOpen, setFormOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<ExpenseRow | null>(null);
   const [recurringEditTarget, setRecurringEditTarget] = useState<RecurringExpenseRule | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const { selectedRestaurant } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
-  const filters = useMemo(() => ({ dateFrom: rangeStart(range), dateTo: isoDate(new Date()) }), [range]);
+  const filters = useMemo(() => {
+    if (range === "Custom") return { dateFrom: customDateFrom, dateTo: customDateTo };
+    const today = new Date();
+    return { dateFrom: rangeStart(range, today), dateTo: rangeEnd(range, today) };
+  }, [customDateFrom, customDateTo, range]);
   const { expenses, recurringRules, loading, saving, createExpense, updateExpense, updateRecurringRule, deleteExpense, deleteRecurringRule } = useExpenses(filters);
   const form = useForm<ExpenseFormValues>({
     resolver: zodResolver(expenseSchema),
     defaultValues: {
+      transaction_type: "expense",
       vendor_name: "",
       category: "food_cost",
       description: "",
@@ -306,44 +387,91 @@ export default function ExpensesPage() {
   });
   const amountValue = form.watch("amount") || 0;
   const taxValue = form.watch("tax_amount") || 0;
+  const transactionTypeValue = form.watch("transaction_type");
   const frequencyValue = form.watch("frequency");
   const expenseDateValue = form.watch("expense_date");
   const totalValue = amountValue + taxValue;
+  const activeCategoryOptions = categoryOptionsFor(transactionTypeValue);
 
-  const totalSpend = useMemo(
-    () => expenses.reduce((sum, expense) => sum + expense.total_amount, 0),
+  useEffect(() => {
+    if (activeCategoryOptions.some((option) => option.value === form.getValues("category"))) return;
+    form.setValue("category", activeCategoryOptions[0]?.value ?? "other", { shouldDirty: true });
+  }, [activeCategoryOptions, form, transactionTypeValue]);
+
+  useEffect(() => {
+    if (customDateTo >= customDateFrom) return;
+    setCustomDateTo(customDateFrom);
+  }, [customDateFrom, customDateTo]);
+
+  const actualExpenses = useMemo(
+    () => expenses.filter((expense) => transactionTypeFor(expense) === "expense"),
     [expenses],
   );
-  const paidSpend = useMemo(
-    () => expenses.filter((expense) => (expense.payment_status ?? "paid") === "paid").reduce((sum, expense) => sum + expense.total_amount, 0),
+  const actualIncome = useMemo(
+    () => expenses.filter((expense) => transactionTypeFor(expense) === "income"),
     [expenses],
+  );
+  const recurringExpenses = useMemo(
+    () => recurringRules.filter((rule) => transactionTypeFor(rule) === "expense"),
+    [recurringRules],
+  );
+  const recurringIncome = useMemo(
+    () => recurringRules.filter((rule) => transactionTypeFor(rule) === "income"),
+    [recurringRules],
+  );
+  const totalSpend = useMemo(
+    () => actualExpenses.reduce((sum, expense) => sum + expense.total_amount, 0),
+    [actualExpenses],
+  );
+  const totalIncome = useMemo(
+    () => actualIncome.reduce((sum, income) => sum + income.total_amount, 0),
+    [actualIncome],
   );
   const dueSpend = useMemo(
-    () => expenses.filter((expense) => ["due", "overdue", "scheduled"].includes(expense.payment_status ?? "paid")).reduce((sum, expense) => sum + expense.total_amount, 0),
-    [expenses],
+    () => actualExpenses.filter((expense) => ["due", "overdue", "scheduled"].includes(expense.payment_status ?? "paid")).reduce((sum, expense) => sum + expense.total_amount, 0),
+    [actualExpenses],
   );
   const recurringSpend = useMemo(
-    () => recurringRules.reduce((sum, rule) => sum + recurringAmountForRange(rule, range), 0),
-    [range, recurringRules],
+    () => recurringExpenses.reduce((sum, rule) => sum + recurringOccurrenceAmount(rule), 0),
+    [recurringExpenses],
   );
-  const selectedRangeNoun = rangeNoun(range);
+  const recurringIncomeTotal = useMemo(
+    () => recurringIncome.reduce((sum, rule) => sum + recurringOccurrenceAmount(rule), 0),
+    [recurringIncome],
+  );
+  const netIncome = totalIncome + recurringIncomeTotal - totalSpend - recurringSpend;
+  const selectedRangeCaption = rangeCaption(range);
+  const displayRangeLabel = range === "Custom"
+    ? `${readableDate(customDateFrom)} to ${readableDate(customDateTo)}`
+    : RANGE_LABELS[range];
+  const customStartDate = useMemo(() => {
+    const parsed = parse(customDateFrom, "yyyy-MM-dd", new Date());
+    return isValid(parsed) ? parsed : undefined;
+  }, [customDateFrom]);
   const categoryRows = useMemo(() => {
-    const totals = new Map<string, number>();
+    const totals = new Map<string, { type: FinanceTransactionType; category: string; amount: number }>();
     expenses.forEach((expense) => {
-      totals.set(expense.category, (totals.get(expense.category) ?? 0) + expense.total_amount);
+      const type = transactionTypeFor(expense);
+      const key = `${type}:${expense.category}`;
+      const existing = totals.get(key);
+      totals.set(key, { type, category: expense.category, amount: (existing?.amount ?? 0) + expense.total_amount });
     });
     recurringRules.forEach((rule) => {
-      totals.set(rule.category, (totals.get(rule.category) ?? 0) + recurringAmountForRange(rule, range));
+      const type = transactionTypeFor(rule);
+      const key = `${type}:${rule.category}`;
+      const existing = totals.get(key);
+      totals.set(key, { type, category: rule.category, amount: (existing?.amount ?? 0) + recurringOccurrenceAmount(rule) });
     });
-    const rows = Array.from(totals.entries())
-      .map(([category, amount]) => ({ category, label: categoryLabel(category), amount }))
+    const rows = Array.from(totals.values())
+      .map((row) => ({ ...row, label: `${typeLabel(row.type)} · ${categoryLabel(row.category)}` }))
       .sort((a, b) => b.amount - a.amount);
     const total = rows.reduce((sum, row) => sum + row.amount, 0);
     return rows.map((row) => ({ ...row, pct: total > 0 ? (row.amount / total) * 100 : 0 }));
-  }, [expenses, range, recurringRules]);
+  }, [expenses, recurringRules]);
   const ledgerRows = useMemo<LedgerRow[]>(() => {
     const actualRows: LedgerRow[] = expenses.map((expense) => ({
       kind: "expense",
+      type: transactionTypeFor(expense),
       id: expense.id,
       date: expense.expense_date,
       vendor: expense.vendor_name ?? "Unknown vendor",
@@ -356,27 +484,29 @@ export default function ExpensesPage() {
     }));
     const recurringRows: LedgerRow[] = recurringRules.map((rule) => ({
       kind: "recurring",
+      type: transactionTypeFor(rule),
       id: rule.id,
       date: rule.next_due_date,
       vendor: rule.vendor_name,
       category: rule.category,
-      description: `${frequencyLabel(rule.frequency)} recurring bill`,
+      description: `${frequencyLabel(rule.frequency)} recurring ${transactionTypeFor(rule)}`,
       status: "recurring",
-      amount: recurringAmountForRange(rule, range),
+      amount: recurringOccurrenceAmount(rule),
       currency: rule.currency || currency,
       rule,
     }));
     return [...actualRows, ...recurringRows].sort((a, b) => b.date.localeCompare(a.date));
-  }, [currency, expenses, range, recurringRules]);
+  }, [currency, expenses, recurringRules]);
   const stats = [
-    { label: "Total spend", value: formatCurrency(totalSpend, currency), caption: `${expenses.length} actual entries this ${selectedRangeNoun}` },
-    { label: "Cash paid", value: formatCurrency(paidSpend, currency), caption: `Paid actual expenses this ${selectedRangeNoun}` },
-    { label: "Due or scheduled", value: formatCurrency(dueSpend, currency), caption: `Upcoming cash out this ${selectedRangeNoun}` },
-    { label: `${range} recurring`, value: formatCurrency(recurringSpend, currency), caption: `${recurringRules.length} active bills forecast` },
+    { label: "Income", value: formatCurrency(totalIncome + recurringIncomeTotal, currency), caption: `${actualIncome.length} actual income entries ${selectedRangeCaption}` },
+    { label: "Expenses", value: formatCurrency(totalSpend + recurringSpend, currency), caption: `${actualExpenses.length} actual expense entries ${selectedRangeCaption}` },
+    { label: "Net", value: formatCurrency(netIncome, currency), caption: `${netIncome >= 0 ? "Positive" : "Negative"} tracked cash flow` },
+    { label: "Due or scheduled", value: formatCurrency(dueSpend, currency), caption: `Upcoming cash out ${selectedRangeCaption}` },
   ];
 
   const resetForm = () => {
     form.reset({
+      transaction_type: "expense",
       vendor_name: "",
       category: "food_cost",
       description: "",
@@ -401,6 +531,7 @@ export default function ExpensesPage() {
     setEditTarget(expense);
     setRecurringEditTarget(null);
     form.reset({
+      transaction_type: transactionTypeFor(expense),
       vendor_name: expense.vendor_name ?? "",
       category: expense.category as ExpenseCategory,
       description: expense.description ?? "",
@@ -419,6 +550,7 @@ export default function ExpensesPage() {
     setEditTarget(null);
     setRecurringEditTarget(rule);
     form.reset({
+      transaction_type: transactionTypeFor(rule),
       vendor_name: rule.vendor_name,
       category: rule.category as ExpenseCategory,
       description: rule.description ?? "",
@@ -445,6 +577,7 @@ export default function ExpensesPage() {
       toast.error("Choose a recurring frequency.");
       return;
     }
+    const entryLabel = values.transaction_type === "income" ? "income" : "expense";
     const payload = {
       ...values,
       description: values.description || null,
@@ -465,12 +598,12 @@ export default function ExpensesPage() {
     }
     toast.success(
       recurringEditTarget
-        ? "Recurring bill updated."
+        ? `Recurring ${entryLabel} updated.`
         : editTarget
-          ? "Expense updated."
+          ? `${typeLabel(values.transaction_type)} updated.`
           : values.frequency === "one_time"
-            ? "Expense logged."
-            : "Expense and recurring bill saved.",
+            ? `${typeLabel(values.transaction_type)} logged.`
+            : `${typeLabel(values.transaction_type)} and recurring ${entryLabel} saved.`,
     );
     closeForm();
   });
@@ -484,7 +617,7 @@ export default function ExpensesPage() {
       toast.error(result);
       return;
     }
-    toast.success(deleteTarget.kind === "expense" ? "Expense deleted." : "Recurring bill removed.");
+    toast.success(deleteTarget.kind === "expense" ? `${typeLabel(transactionTypeFor(deleteTarget.expense))} deleted.` : `Recurring ${transactionTypeFor(deleteTarget.rule)} removed.`);
     setDeleteTarget(null);
   };
 
@@ -499,14 +632,14 @@ export default function ExpensesPage() {
         <div className="min-w-0">
           <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
             <Coins className="size-3.5" />
-            Cost ledger
+            Finance ledger
           </p>
-          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Expenses</h1>
+          <h1 className="mt-2 font-serif text-3xl text-white sm:text-4xl">Income & Expenses</h1>
           <p className="mt-1 text-sm italic text-text-muted">
-            Saved costs by category, vendor, payment status, and recurring bill cycle.
+            Log money going out and money coming in by category, status, and recurring cycle.
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <div className="flex items-center rounded-lg border border-border bg-bg-elevated/40 p-1">
             {RANGES.map((key) => (
               <button
@@ -518,13 +651,40 @@ export default function ExpensesPage() {
                   range === key ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
                 )}
               >
-                {key}
+                {RANGE_LABELS[key]}
               </button>
             ))}
           </div>
+          {range === "Custom" && (
+            <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-2">
+              <div className="w-full space-y-1 sm:w-[180px]">
+                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">Start date</span>
+                <ExpenseDateField
+                  value={customDateFrom}
+                  onChange={(date) => {
+                    if (date) setCustomDateFrom(date);
+                  }}
+                  placeholder="Start date"
+                  allowClear={false}
+                />
+              </div>
+              <div className="w-full space-y-1 sm:w-[180px]">
+                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">End date</span>
+                <ExpenseDateField
+                  value={customDateTo}
+                  onChange={(date) => {
+                    if (date) setCustomDateTo(date);
+                  }}
+                  placeholder="End date"
+                  allowClear={false}
+                  disableBefore={customStartDate}
+                />
+              </div>
+            </div>
+          )}
           <Button size="default" className="gap-2" onClick={openCreateForm}>
             <Plus className="size-4" />
-            Log expense
+            Log entry
           </Button>
         </div>
       </motion.header>
@@ -542,21 +702,21 @@ export default function ExpensesPage() {
       <section className="grid gap-5 lg:grid-cols-[minmax(280px,0.82fr)_minmax(0,1.82fr)]">
         <article className="min-h-[520px] rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
           <h2 className="font-serif text-2xl text-white">By category</h2>
-          <p className="mt-1 text-xs text-text-muted">Actual expenses plus recurring forecast · {selectedRangeNoun}</p>
+          <p className="mt-1 text-xs text-text-muted">Actual entries plus upcoming recurring entries · {displayRangeLabel}</p>
           <div className="mt-6 space-y-5">
             {categoryRows.length === 0 && (
               <p className="rounded-xl border border-dashed border-border p-4 text-sm text-text-muted">
-                Log an expense to populate this category graph.
+                Log an expense or income entry to populate this category graph.
               </p>
             )}
             {categoryRows.map((cat) => (
-              <div key={cat.category}>
+              <div key={`${cat.type}-${cat.category}`}>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-text-primary">{cat.label}</span>
-                  <span className="font-mono text-xs text-gold">{formatCurrency(cat.amount, currency)}</span>
+                  <span className={cn("font-mono text-xs", cat.type === "income" ? "text-success" : "text-gold")}>{formatCurrency(cat.amount, currency)}</span>
                 </div>
                 <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-bg-elevated">
-                  <div className="h-full rounded-full bg-gold" style={{ width: `${cat.pct}%` }} />
+                  <div className={cn("h-full rounded-full", cat.type === "income" ? "bg-success" : "bg-gold")} style={{ width: `${cat.pct}%` }} />
                 </div>
               </div>
             ))}
@@ -568,7 +728,7 @@ export default function ExpensesPage() {
             <div>
               <h2 className="font-serif text-2xl text-white">Recent transactions</h2>
               <p className="mt-1 text-xs text-text-muted">
-                {range} range · {expenses.length} expenses · {recurringRules.length} recurring bills
+                {displayRangeLabel} · {expenses.length} actual entries · {recurringRules.length} upcoming recurring entries
               </p>
             </div>
             <Button variant="outline" size="sm" className="gap-2" onClick={() => downloadLedgerCsv(ledgerRows)}>
@@ -577,11 +737,12 @@ export default function ExpensesPage() {
             </Button>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left">
+            <table className="w-full min-w-[820px] text-left">
               <thead>
                 <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
                   <th className="px-5 py-3 font-medium lg:px-6">Date</th>
-                  <th className="px-5 py-3 font-medium">Vendor</th>
+                  <th className="px-5 py-3 font-medium">Type</th>
+                  <th className="px-5 py-3 font-medium">Name</th>
                   <th className="px-5 py-3 font-medium">Category</th>
                   <th className="px-5 py-3 font-medium">Description</th>
                   <th className="px-5 py-3 font-medium">Status</th>
@@ -592,37 +753,42 @@ export default function ExpensesPage() {
               <tbody className="divide-y divide-border/50">
                 {loading && (
                   <tr>
-                    <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={7}>
-                      Loading expenses...
+                    <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={8}>
+                      Loading finance entries...
                     </td>
                   </tr>
                 )}
                 {!loading && ledgerRows.length === 0 && (
                   <tr>
-                    <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={7}>
-                      No expenses or recurring bills saved for this range.
+                    <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={8}>
+                      No income, expenses, or recurring rules saved for this range.
                     </td>
                   </tr>
                 )}
                 {!loading && ledgerRows.map((row) => (
                   <tr key={`${row.kind}-${row.id}`} className="text-sm transition-colors hover:bg-bg-elevated/30">
                     <td className="px-5 py-4 font-mono text-text-muted lg:px-6">{shortDate(row.date)}</td>
+                    <td className={cn("px-5 py-4 font-mono text-[10px] uppercase tracking-wider", row.type === "income" ? "text-success" : "text-gold")}>
+                      {row.kind === "recurring" ? `Recurring ${row.type}` : typeLabel(row.type)}
+                    </td>
                     <td className="px-5 py-4 text-text-primary">{row.vendor}</td>
                     <td className="px-5 py-4 text-text-secondary">{categoryLabel(row.category)}</td>
                     <td className="px-5 py-4 text-text-secondary">
                       <div>{row.description}</div>
                       {row.kind === "recurring" && (
                         <div className="mt-1 text-xs text-text-muted">
-                          Monthly equivalent from {formatCurrency(monthlyEquivalent(row.rule), row.currency)}
+                          Next {frequencyLabel(row.rule.frequency).toLowerCase()} occurrence
                         </div>
                       )}
                     </td>
                     <td className={cn("px-5 py-4 font-mono text-[10px] uppercase tracking-wider", row.kind === "recurring" ? "text-gold" : statusClass(row.status))}>
-                      {row.kind === "recurring" ? "Recurring" : statusLabel(row.status)}
+                      {row.kind === "recurring" ? "Recurring" : statusLabel(row.status, row.type)}
                     </td>
                     <td className="px-5 py-4 text-right lg:px-6">
-                      <div className="text-text-primary">{formatCurrency(row.amount, row.currency)}</div>
-                      {row.kind === "recurring" && <div className="text-xs text-text-muted">/ {selectedRangeNoun}</div>}
+                      <div className={row.type === "income" ? "text-success" : "text-text-primary"}>
+                        {row.type === "income" ? "+" : "-"}{formatCurrency(row.amount, row.currency)}
+                      </div>
+                      {row.kind === "recurring" && <div className="text-xs text-text-muted">next due</div>}
                     </td>
                     <td className="px-5 py-4 text-right lg:px-6">
                       <div className="inline-flex items-center gap-1">
@@ -635,7 +801,7 @@ export default function ExpensesPage() {
                             if (row.kind === "expense") openEditForm(row.expense);
                             else openEditRecurringForm(row.rule);
                           }}
-                          aria-label={row.kind === "expense" ? "Edit expense" : "Edit recurring bill"}
+                          aria-label={row.kind === "expense" ? `Edit ${row.type}` : `Edit recurring ${row.type}`}
                         >
                           <Pencil className="size-3.5" />
                         </Button>
@@ -648,7 +814,7 @@ export default function ExpensesPage() {
                             if (row.kind === "expense") setDeleteTarget({ kind: "expense", expense: row.expense });
                             else setDeleteTarget({ kind: "recurring", rule: row.rule });
                           }}
-                          aria-label={row.kind === "expense" ? "Delete expense" : "Remove recurring bill"}
+                          aria-label={row.kind === "expense" ? `Delete ${row.type}` : `Remove recurring ${row.type}`}
                         >
                           <Trash2 className="size-3.5" />
                         </Button>
@@ -669,22 +835,45 @@ export default function ExpensesPage() {
         <DialogContent className="max-h-[92vh] overflow-y-auto border-border bg-bg-base text-text-primary sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="font-serif text-2xl">
-              {recurringEditTarget ? "Edit recurring bill" : editTarget ? "Edit expense" : "Log expense"}
+              {recurringEditTarget ? `Edit recurring ${transactionTypeValue}` : editTarget ? `Edit ${transactionTypeValue}` : "Log expense or income"}
             </DialogTitle>
             <DialogDescription>
               {recurringEditTarget
-                ? "Update the recurring bill used for future expense forecasting."
+                ? "Update the recurring rule used for future forecasting."
                 : editTarget
-                  ? "Update the saved expense record."
-                  : "Save actual costs and optionally create a recurring bill rule for forecasting."}
+                  ? "Update the saved finance record."
+                  : "Save actual money in or out, and optionally create a recurring rule for forecasting."}
             </DialogDescription>
           </DialogHeader>
 
           <form className="grid gap-4" onSubmit={onSubmit}>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-2">
-                <Label htmlFor="vendor_name">Vendor</Label>
-                <Input id="vendor_name" placeholder="Toronto Hydro" {...form.register("vendor_name")} />
+                <Label>Type</Label>
+                <Controller
+                  control={form.control}
+                  name="transaction_type"
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TRANSACTION_TYPE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="vendor_name">{transactionTypeValue === "income" ? "Source" : "Vendor"}</Label>
+                <Input
+                  id="vendor_name"
+                  placeholder={transactionTypeValue === "income" ? "DoorDash, event tickets, catering client" : "Toronto Hydro"}
+                  {...form.register("vendor_name")}
+                />
                 {form.formState.errors.vendor_name && <p className="text-xs text-danger">{form.formState.errors.vendor_name.message}</p>}
               </div>
               <div className="space-y-2">
@@ -698,7 +887,7 @@ export default function ExpensesPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {CATEGORY_OPTIONS.map((option) => (
+                        {activeCategoryOptions.map((option) => (
                           <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -710,7 +899,11 @@ export default function ExpensesPage() {
 
             <div className="space-y-2">
               <Label htmlFor="description">Description</Label>
-              <Input id="description" placeholder="May rent, weekly produce, annual insurance..." {...form.register("description")} />
+              <Input
+                id="description"
+                placeholder={transactionTypeValue === "income" ? "Weekend pre-orders, private event deposit, catering invoice..." : "May rent, weekly produce, annual insurance..."}
+                {...form.register("description")}
+              />
             </div>
 
             <div className="grid gap-4 sm:grid-cols-3">
@@ -771,7 +964,7 @@ export default function ExpensesPage() {
               <div className="space-y-2">
                 {recurringEditTarget ? (
                   <>
-                    <Label>Bill status</Label>
+                    <Label>{transactionTypeValue === "income" ? "Income status" : "Bill status"}</Label>
                     <div className="flex h-10 items-center rounded-lg border border-border bg-bg-elevated px-3 font-mono text-[10px] uppercase tracking-wider text-gold">
                       Recurring
                     </div>
@@ -789,7 +982,7 @@ export default function ExpensesPage() {
                           </SelectTrigger>
                           <SelectContent>
                             {STATUS_OPTIONS.map((option) => (
-                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                              <SelectItem key={option.value} value={option.value}>{statusLabel(option.value, transactionTypeValue)}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -818,7 +1011,7 @@ export default function ExpensesPage() {
                 />
                 {editTarget && (
                   <p className="text-[11px] leading-relaxed text-text-muted">
-                    Frequency applies when creating a recurring bill. This edit updates the expense only.
+                    Frequency applies when creating a recurring rule. This edit updates the saved entry only.
                   </p>
                 )}
                 {recurringEditTarget && (
@@ -834,11 +1027,11 @@ export default function ExpensesPage() {
                 <div className="flex gap-3">
                   <WalletCards className="mt-0.5 size-4 shrink-0 text-gold" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-white">Recurring bill rule</p>
+                    <p className="text-sm font-medium text-white">Recurring {transactionTypeValue} rule</p>
                     <p className="mt-1 text-xs leading-relaxed text-text-secondary">
                       {recurringEditTarget
                         ? `This updates the ${frequencyLabel(frequencyValue).toLowerCase()} rule for future forecasting.`
-                        : `This will save today's expense and create a ${frequencyLabel(frequencyValue).toLowerCase()} rule for future forecasting.`}
+                        : `This will save today's ${transactionTypeValue} and create a ${frequencyLabel(frequencyValue).toLowerCase()} rule for future forecasting.`}
                     </p>
                     <div className="mt-3 max-w-xs space-y-2">
                       <Label>Optional end date</Label>
@@ -876,7 +1069,7 @@ export default function ExpensesPage() {
               </Button>
               <Button type="submit" disabled={saving} className="gap-2">
                 <Plus className="size-4" />
-                {saving ? "Saving..." : recurringEditTarget ? "Save bill" : editTarget ? "Save changes" : "Save expense"}
+                {saving ? "Saving..." : recurringEditTarget ? "Save recurring rule" : editTarget ? "Save changes" : "Save entry"}
               </Button>
             </div>
           </form>
@@ -889,23 +1082,23 @@ export default function ExpensesPage() {
         <DialogContent className="border-border bg-bg-base text-text-primary sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="font-serif text-2xl">
-              {deleteTarget?.kind === "recurring" ? "Remove recurring bill?" : "Delete expense?"}
+              {deleteTarget?.kind === "recurring" ? `Remove recurring ${transactionTypeFor(deleteTarget.rule)}?` : `Delete ${deleteTarget ? transactionTypeFor(deleteTarget.expense) : "entry"}?`}
             </DialogTitle>
             <DialogDescription>
               {deleteTarget?.kind === "recurring"
-                ? "This stops the bill from contributing to monthly recurring totals."
-                : "This removes the expense from reports without deleting its audit trail from the database."}
+                ? "This stops the rule from contributing to recurring forecasts."
+                : "This removes the entry from reports without deleting its audit trail from the database."}
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-xl border border-border bg-bg-surface p-4">
             <p className="text-sm font-medium text-white">
               {deleteTarget?.kind === "recurring"
                 ? deleteTarget.rule.vendor_name
-                : deleteTarget?.expense.vendor_name ?? "Expense"}
+                : deleteTarget?.expense.vendor_name ?? "Entry"}
             </p>
             <p className="mt-1 text-xs text-text-muted">
               {deleteTarget?.kind === "recurring"
-                ? `${frequencyLabel(deleteTarget.rule.frequency)} · ${formatCurrency(monthlyEquivalent(deleteTarget.rule), deleteTarget.rule.currency || currency)} / month`
+                ? `${frequencyLabel(deleteTarget.rule.frequency)} · ${formatCurrency(recurringOccurrenceAmount(deleteTarget.rule), deleteTarget.rule.currency || currency)} per occurrence`
                 : deleteTarget
                   ? `${shortDate(deleteTarget.expense.expense_date)} · ${formatCurrency(deleteTarget.expense.total_amount, deleteTarget.expense.currency || currency)}`
                   : ""}
@@ -916,7 +1109,7 @@ export default function ExpensesPage() {
               Cancel
             </Button>
             <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={saving}>
-              {saving ? "Deleting..." : deleteTarget?.kind === "recurring" ? "Remove bill" : "Delete expense"}
+              {saving ? "Deleting..." : deleteTarget?.kind === "recurring" ? "Remove rule" : "Delete entry"}
             </Button>
           </div>
         </DialogContent>

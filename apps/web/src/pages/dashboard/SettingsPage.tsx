@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
@@ -29,67 +29,18 @@ import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
-
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-const TIME_OPTIONS: string[] = [];
-for (let h = 0; h < 24; h++) {
-  for (const m of [0, 30]) {
-    const ampm = h < 12 ? "AM" : "PM";
-    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    TIME_OPTIONS.push(`${h12}:${m === 0 ? "00" : "30"} ${ampm}`);
-  }
-}
-
-type DayHours = { open: boolean; from: string; to: string };
-type SpecialDay = {
-  id: string;
-  date: string;
-  label: string;
-  closed: boolean;
-  from: string;
-  to: string;
-};
-
-function defaultHours(): DayHours[] {
-  return DAYS.map((_, i) => ({
-    open: true,
-    from: i < 5 ? "11:00 AM" : "10:00 AM",
-    to: i < 5 ? "10:00 PM" : "11:00 PM",
-  }));
-}
-
-function hoursJsonToState(json: Record<string, unknown> | null): { regular: DayHours[]; special: SpecialDay[] } {
-  if (!json) return { regular: defaultHours(), special: [] };
-  const regular = DAYS.map((day) => {
-    const val = json[day.toLowerCase()] as { open: string; close: string } | null | undefined;
-    if (!val) return { open: false, from: "11:00 AM", to: "10:00 PM" };
-    return { open: true, from: val.open, to: val.close };
-  });
-  const rawSpecial = Array.isArray(json.special) ? json.special : [];
-  const special: SpecialDay[] = (rawSpecial as Record<string, unknown>[]).map((s) => ({
-    id: String(s.id ?? crypto.randomUUID()),
-    date: String(s.date ?? ""),
-    label: String(s.label ?? ""),
-    closed: Boolean(s.closed),
-    from: String(s.from ?? "12:00 PM"),
-    to: String(s.to ?? "10:00 PM"),
-  }));
-  return { regular, special };
-}
-
-function stateToHoursJson(hours: DayHours[], special: SpecialDay[]): Record<string, unknown> {
-  const result: Record<string, unknown> = Object.fromEntries(
-    DAYS.map((day, i) => [
-      day.toLowerCase(),
-      hours[i].open ? { open: hours[i].from, close: hours[i].to } : null,
-    ]),
-  );
-  if (special.length > 0) {
-    result.special = special.map(({ id, date, label, closed, from, to }) => ({ id, date, label, closed, from, to }));
-  }
-  return result;
-}
+import {
+  RESTAURANT_TIME_OPTIONS,
+  RESTAURANT_WEEKDAY_NUMBERS,
+  RESTAURANT_WEEKDAYS,
+  defaultRestaurantHours,
+  minutesToPostgresTime,
+  parseRestaurantHoursJson,
+  parseRestaurantTimeToMinutes,
+  restaurantHoursToJson,
+  type RestaurantDayHours,
+  type RestaurantSpecialDay,
+} from "@/lib/restaurant-hours";
 
 function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -99,7 +50,7 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) 
         onChange={(e) => onChange(e.target.value)}
         className="h-9 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
       >
-        {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
+        {RESTAURANT_TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
     </div>
@@ -119,6 +70,22 @@ const RESTAURANT_DESCRIPTION_MAX_LENGTH = 360;
 const DEFAULT_TURN_TIME_MINUTES = 90;
 const MIN_TURN_TIME_MINUTES = 30;
 const MAX_TURN_TIME_MINUTES = 240;
+const RESTAURANT_IMAGE_FORMATS = "JPG, PNG, WebP, GIF, AVIF, HEIC, or HEIF";
+const SUPPORTED_RESTAURANT_IMAGE_TYPES: Array<{ mime: string; extensions: string[] }> = [
+  { mime: "image/jpeg", extensions: ["jpg", "jpeg"] },
+  { mime: "image/png", extensions: ["png"] },
+  { mime: "image/webp", extensions: ["webp"] },
+  { mime: "image/gif", extensions: ["gif"] },
+  { mime: "image/avif", extensions: ["avif"] },
+  { mime: "image/heic", extensions: ["heic"] },
+  { mime: "image/heif", extensions: ["heif"] },
+];
+const RESTAURANT_IMAGE_ACCEPT = SUPPORTED_RESTAURANT_IMAGE_TYPES
+  .flatMap((type) => [type.mime, ...type.extensions.map((extension) => `.${extension}`)])
+  .join(",");
+
+type RestaurantMediaKind = "logo" | "cover";
+type RestaurantMediaField = "logo_url" | "cover_photo_url";
 
 function isLight(hex: string): boolean {
   const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -200,6 +167,35 @@ function normalizeTurnTime(value: string): number | null {
   return parsed;
 }
 
+function resolveRestaurantImage(file: File): { mime: string } | null {
+  const mime = file.type.toLowerCase();
+  const byMime = SUPPORTED_RESTAURANT_IMAGE_TYPES.find((type) => type.mime === mime);
+  if (byMime) return { mime: byMime.mime };
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (!extension) return null;
+
+  const byExtension = SUPPORTED_RESTAURANT_IMAGE_TYPES.find((type) => type.extensions.includes(extension));
+  return byExtension ? { mime: byExtension.mime } : null;
+}
+
+function imageUrlFromInput(value: string): string | null | false {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return parsed.toString();
+  } catch {
+    return false;
+  }
+}
+
+function revokeDraftUrl(url: string | null): void {
+  if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
 function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
@@ -256,6 +252,8 @@ export default function SettingsPage() {
   const section: SectionKey = isRestaurantInfoRoute ? restaurantInfoSection : settingsSection;
   const isStandaloneSection = isRestaurantInfoRoute;
   const pageMeta = isRestaurantInfoRoute ? SECTION_META.restaurant : SECTION_META[section];
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+  const coverInputRef = useRef<HTMLInputElement | null>(null);
 
   // Restaurant info state
   const [restaurantName, setRestaurantName] = useState(selectedRestaurant?.name ?? "");
@@ -263,6 +261,14 @@ export default function SettingsPage() {
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [description, setDescription] = useState("");
+  const [savedLogoUrl, setSavedLogoUrl] = useState(selectedRestaurant?.logo_url ?? "");
+  const [savedCoverPhotoUrl, setSavedCoverPhotoUrl] = useState(selectedRestaurant?.cover_photo_url ?? "");
+  const [logoUrlInput, setLogoUrlInput] = useState("");
+  const [coverUrlInput, setCoverUrlInput] = useState("");
+  const [logoFileDraft, setLogoFileDraft] = useState<File | null>(null);
+  const [coverFileDraft, setCoverFileDraft] = useState<File | null>(null);
+  const [logoDraftPreviewUrl, setLogoDraftPreviewUrl] = useState<string | null>(null);
+  const [coverDraftPreviewUrl, setCoverDraftPreviewUrl] = useState<string | null>(null);
   const [currency, setCurrency] = useState(selectedRestaurant?.currency ?? "cad");
   const [hasBar, setHasBar] = useState(selectedRestaurant?.has_bar ?? false);
   const [turnTimeMinutes, setTurnTimeMinutes] = useState(
@@ -274,10 +280,18 @@ export default function SettingsPage() {
   } | null>(null);
   const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
   const normalizedTurnTime = normalizeTurnTime(turnTimeMinutes);
+  const mediaDirty = Boolean(
+    logoFileDraft ||
+    coverFileDraft ||
+    logoUrlInput.trim() ||
+    coverUrlInput.trim(),
+  );
+  const logoPreviewSrc = (logoDraftPreviewUrl ?? logoUrlInput.trim()) || savedLogoUrl;
+  const coverPreviewSrc = (coverDraftPreviewUrl ?? coverUrlInput.trim()) || savedCoverPhotoUrl;
 
   // Hours
-  const [hours, setHours] = useState<DayHours[]>(defaultHours);
-  const [specialDays, setSpecialDays] = useState<SpecialDay[]>([]);
+  const [hours, setHours] = useState<RestaurantDayHours[]>(defaultRestaurantHours);
+  const [specialDays, setSpecialDays] = useState<RestaurantSpecialDay[]>([]);
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
@@ -301,13 +315,24 @@ export default function SettingsPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset editable form fields when switching restaurants
     setRestaurantName(selectedRestaurant?.name ?? "");
+    setSavedLogoUrl(selectedRestaurant?.logo_url ?? "");
+    setSavedCoverPhotoUrl(selectedRestaurant?.cover_photo_url ?? "");
+    setLogoUrlInput("");
+    setCoverUrlInput("");
+    setLogoFileDraft(null);
+    setCoverFileDraft(null);
+    setLogoDraftPreviewUrl(null);
+    setCoverDraftPreviewUrl(null);
     setCurrency(selectedRestaurant?.currency ?? "cad");
     setHasBar(selectedRestaurant?.has_bar ?? false);
     setTurnTimeMinutes(String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES));
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
     setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
-  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.has_bar]);
+  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.logo_url, selectedRestaurant?.cover_photo_url, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.has_bar]);
+
+  useEffect(() => () => revokeDraftUrl(logoDraftPreviewUrl), [logoDraftPreviewUrl]);
+  useEffect(() => () => revokeDraftUrl(coverDraftPreviewUrl), [coverDraftPreviewUrl]);
 
   useEffect(() => {
     if (!selectedRestaurant?.id || !isSupabaseConfigured()) return;
@@ -334,7 +359,7 @@ export default function SettingsPage() {
           hasBar: selectedRestaurant.has_bar ?? false,
           turnTimeMinutes: String(selectedRestaurant.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
         });
-        const parsed = hoursJsonToState(data.hours_json as Record<string, unknown> | null);
+        const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
         setSpecialDays(parsed.special);
         setCurrentPlan(data.plan ?? null);
@@ -364,6 +389,14 @@ export default function SettingsPage() {
       toast.error(t("dashboard.settings.invalidTurnTime"));
       return;
     }
+
+    const normalizedLogoUrl = logoUrlInput.trim() ? imageUrlFromInput(logoUrlInput) : undefined;
+    const normalizedCoverUrl = coverUrlInput.trim() ? imageUrlFromInput(coverUrlInput) : undefined;
+    if (normalizedLogoUrl === false || normalizedCoverUrl === false) {
+      toast.error(t("dashboard.settings.invalidImageUrl"));
+      return;
+    }
+
     setSavingRestaurant(true);
     const client = getSupabaseBrowserClient();
     const existingSettings = (selectedRestaurant.settings_json ?? {}) as RestaurantSettings;
@@ -371,6 +404,30 @@ export default function SettingsPage() {
       ...existingSettings,
       turnTimeMinutes: normalizedTurnTime,
     };
+
+    const mediaUpdates: Partial<Record<RestaurantMediaField, string | null>> = {};
+    if (logoFileDraft) {
+      const uploadedLogoUrl = await uploadRestaurantMediaFile("logo", logoFileDraft);
+      if (!uploadedLogoUrl) {
+        setSavingRestaurant(false);
+        return;
+      }
+      mediaUpdates.logo_url = uploadedLogoUrl;
+    } else if (normalizedLogoUrl !== undefined) {
+      mediaUpdates.logo_url = normalizedLogoUrl;
+    }
+
+    if (coverFileDraft) {
+      const uploadedCoverUrl = await uploadRestaurantMediaFile("cover", coverFileDraft);
+      if (!uploadedCoverUrl) {
+        setSavingRestaurant(false);
+        return;
+      }
+      mediaUpdates.cover_photo_url = uploadedCoverUrl;
+    } else if (normalizedCoverUrl !== undefined) {
+      mediaUpdates.cover_photo_url = normalizedCoverUrl;
+    }
+
     const { error } = await client
       .from("restaurants")
       .update({
@@ -382,13 +439,88 @@ export default function SettingsPage() {
         currency,
         has_bar: hasBar,
         settings_json: updatedSettings,
+        ...mediaUpdates,
       })
       .eq("id", selectedRestaurant.id);
     setSavingRestaurant(false);
     if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
+
+    const nextSavedLogoUrl = mediaUpdates.logo_url !== undefined ? mediaUpdates.logo_url ?? "" : savedLogoUrl;
+    const nextSavedCoverPhotoUrl = mediaUpdates.cover_photo_url !== undefined ? mediaUpdates.cover_photo_url ?? "" : savedCoverPhotoUrl;
     setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar, turnTimeMinutes });
+    setSavedLogoUrl(nextSavedLogoUrl);
+    setSavedCoverPhotoUrl(nextSavedCoverPhotoUrl);
+    setLogoUrlInput("");
+    setCoverUrlInput("");
+    setLogoFileDraft(null);
+    setCoverFileDraft(null);
+    setLogoDraftPreviewUrl(null);
+    setCoverDraftPreviewUrl(null);
     refreshRestaurants();
     toast.success(t("dashboard.settings.saved"));
+  };
+
+  const uploadRestaurantMediaFile = async (kind: RestaurantMediaKind, file: File): Promise<string | null> => {
+    if (!selectedRestaurant) return null;
+    const image = resolveRestaurantImage(file);
+    if (!image) {
+      toast.error(t("dashboard.settings.invalidRestaurantImage", { formats: RESTAURANT_IMAGE_FORMATS }));
+      return null;
+    }
+
+    const client = getSupabaseBrowserClient();
+    const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
+    const path = `${selectedRestaurant.id}/restaurant/${kind}/${crypto.randomUUID()}-${safeName}`;
+    const { error } = await client.storage
+      .from("event-media")
+      .upload(path, file, { cacheControl: "3600", contentType: image.mime, upsert: false });
+
+    if (error) {
+      toast.error(error.message);
+      return null;
+    }
+
+    const { data } = client.storage.from("event-media").getPublicUrl(path);
+    return data.publicUrl;
+  };
+
+  const handleRestaurantMediaFile = (kind: RestaurantMediaKind, event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const image = resolveRestaurantImage(file);
+    if (!image) {
+      toast.error(t("dashboard.settings.invalidRestaurantImage", { formats: RESTAURANT_IMAGE_FORMATS }));
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(file);
+    if (kind === "logo") {
+      setLogoFileDraft(file);
+      setLogoUrlInput("");
+      setLogoDraftPreviewUrl(previewUrl);
+    } else {
+      setCoverFileDraft(file);
+      setCoverUrlInput("");
+      setCoverDraftPreviewUrl(previewUrl);
+    }
+  };
+
+  const handleRestaurantMediaUrl = (kind: RestaurantMediaKind, value: string) => {
+    if (kind === "logo") {
+      setLogoUrlInput(value);
+      if (value.trim()) {
+        setLogoFileDraft(null);
+        setLogoDraftPreviewUrl(null);
+      }
+    } else {
+      setCoverUrlInput(value);
+      if (value.trim()) {
+        setCoverFileDraft(null);
+        setCoverDraftPreviewUrl(null);
+      }
+    }
   };
 
   const discardRestaurant = () => {
@@ -401,6 +533,16 @@ export default function SettingsPage() {
     setCurrency(restaurantInitial.currency);
     setHasBar(restaurantInitial.hasBar);
     setTurnTimeMinutes(restaurantInitial.turnTimeMinutes);
+    discardRestaurantMedia();
+  };
+
+  const discardRestaurantMedia = () => {
+    setLogoUrlInput("");
+    setCoverUrlInput("");
+    setLogoFileDraft(null);
+    setCoverFileDraft(null);
+    setLogoDraftPreviewUrl(null);
+    setCoverDraftPreviewUrl(null);
   };
 
   const saveHours = async () => {
@@ -408,12 +550,76 @@ export default function SettingsPage() {
     if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
     setSavingHours(true);
     const client = getSupabaseBrowserClient();
+    const hoursJson = restaurantHoursToJson(hours, specialDays);
     const { error } = await client
       .from("restaurants")
-      .update({ hours_json: stateToHoursJson(hours, specialDays) })
+      .update({ hours_json: hoursJson })
       .eq("id", selectedRestaurant.id);
+    if (error) {
+      setSavingHours(false);
+      toast.error(t("dashboard.settings.saveFailed"));
+      return;
+    }
+
+    const { data: existingShifts } = await client
+      .from("shifts")
+      .select("id, name, days_of_week, slot_duration_minutes, max_covers, turn_time_minutes, min_party_size, max_party_size, advance_booking_days, blackout_dates")
+      .eq("restaurant_id", selectedRestaurant.id);
+    const templateShift = existingShifts?.[0] as {
+      slot_duration_minutes: number | null;
+      max_covers: number | null;
+      turn_time_minutes: number | null;
+      min_party_size: number | null;
+      max_party_size: number | null;
+      advance_booking_days: number | null;
+      blackout_dates: string[] | null;
+    } | undefined;
+    const openDays = hours
+      .map((day, index) => ({ day, index }))
+      .filter(({ day }) => day.open);
+
+    const shiftPayload = openDays.flatMap(({ day, index }) => {
+      const startMinutes = parseRestaurantTimeToMinutes(day.from);
+      const endMinutes = parseRestaurantTimeToMinutes(day.to);
+      if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) return [];
+      return [{
+        restaurant_id: selectedRestaurant.id,
+        name: `${RESTAURANT_WEEKDAYS[index]} service`,
+        days_of_week: [RESTAURANT_WEEKDAY_NUMBERS[index]],
+        start_time: minutesToPostgresTime(startMinutes),
+        end_time: minutesToPostgresTime(endMinutes),
+        slot_duration_minutes: templateShift?.slot_duration_minutes ?? 30,
+        max_covers: templateShift?.max_covers ?? 100,
+        turn_time_minutes: normalizedTurnTime ?? templateShift?.turn_time_minutes ?? DEFAULT_TURN_TIME_MINUTES,
+        min_party_size: templateShift?.min_party_size ?? 1,
+        max_party_size: templateShift?.max_party_size ?? 20,
+        advance_booking_days: templateShift?.advance_booking_days ?? 30,
+        blackout_dates: templateShift?.blackout_dates ?? [],
+        is_active: true,
+      }];
+    });
+
+    const { error: deactivateShiftError } = await client
+      .from("shifts")
+      .update({ is_active: false })
+      .eq("restaurant_id", selectedRestaurant.id);
+    if (deactivateShiftError) {
+      setSavingHours(false);
+      toast.error(t("dashboard.settings.saveFailed"));
+      return;
+    }
+
+    if (shiftPayload.length > 0) {
+      const { error: shiftError } = await client.from("shifts").insert(shiftPayload);
+      if (shiftError) {
+        setSavingHours(false);
+        toast.error(t("dashboard.settings.saveFailed"));
+        return;
+      }
+    }
+
+    refreshRestaurants();
     setSavingHours(false);
-    if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
     toast.success(t("dashboard.settings.saved"));
   };
 
@@ -606,20 +812,115 @@ export default function SettingsPage() {
                     ) : null}
                   </div>
                 </FieldRow>
-                <FieldRow label="Logo & cover" hint="Square logo · 16:9 cover image.">
-                  <div className="flex items-center gap-3">
-                    <div className="flex size-14 items-center justify-center rounded-lg border border-gold/30 bg-gold/10 font-serif text-lg text-gold">
-                      {(restaurantName || "MV").slice(0, 2).toUpperCase()}
+                <FieldRow
+                  label={t("dashboard.settings.logoAndCover")}
+                  hint={t("dashboard.settings.logoAndCoverHint")}
+                >
+                  <div className="space-y-4">
+                    <input
+                      ref={logoInputRef}
+                      type="file"
+                      accept={RESTAURANT_IMAGE_ACCEPT}
+                      className="hidden"
+                      onChange={(event) => handleRestaurantMediaFile("logo", event)}
+                    />
+                    <input
+                      ref={coverInputRef}
+                      type="file"
+                      accept={RESTAURANT_IMAGE_ACCEPT}
+                      className="hidden"
+                      onChange={(event) => handleRestaurantMediaFile("cover", event)}
+                    />
+
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+                      <div className="rounded-2xl border border-border/70 bg-bg-elevated/40 p-4">
+                        <p className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
+                          {t("dashboard.settings.logo")}
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-gold/30 bg-gold/10 font-serif text-lg text-gold">
+                            {logoPreviewSrc ? (
+                              <img
+                                src={logoPreviewSrc}
+                                alt={t("dashboard.settings.logoPreviewAlt")}
+                                className="size-full object-cover"
+                              />
+                            ) : (
+                              (restaurantName || "MV").slice(0, 2).toUpperCase()
+                            )}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={savingRestaurant || !selectedRestaurant}
+                            onClick={() => logoInputRef.current?.click()}
+                          >
+                            {t("dashboard.settings.replaceLogo")}
+                          </Button>
+                        </div>
+                        <Input
+                          value={logoUrlInput}
+                          onChange={(event) => handleRestaurantMediaUrl("logo", event.target.value)}
+                          placeholder={t("dashboard.settings.logoUrlPlaceholder")}
+                          className="mt-3"
+                        />
+                      </div>
+
+                      <div className="rounded-2xl border border-border/70 bg-bg-elevated/40 p-4">
+                        <p className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
+                          {t("dashboard.settings.coverPhoto")}
+                        </p>
+                        <div className="overflow-hidden rounded-xl border border-border bg-bg-base">
+                          {coverPreviewSrc ? (
+                            <img
+                              src={coverPreviewSrc}
+                              alt={t("dashboard.settings.coverPreviewAlt")}
+                              className="aspect-video w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex aspect-video w-full items-center justify-center text-xs text-text-muted">
+                              {t("dashboard.settings.noCoverPhoto")}
+                            </div>
+                          )}
+                        </div>
+                        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            value={coverUrlInput}
+                            onChange={(event) => handleRestaurantMediaUrl("cover", event.target.value)}
+                            placeholder={t("dashboard.settings.coverUrlPlaceholder")}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={savingRestaurant || !selectedRestaurant}
+                            onClick={() => coverInputRef.current?.click()}
+                            className="shrink-0"
+                          >
+                            {t("dashboard.settings.uploadCover")}
+                          </Button>
+                        </div>
+                      </div>
                     </div>
-                    <Button variant="outline" size="sm">Replace</Button>
-                    <Button variant="outline" size="sm">Upload cover</Button>
+
+                    <div className="flex flex-col gap-2 text-xs text-text-muted sm:flex-row sm:items-center sm:justify-between">
+                      <p>{t("dashboard.settings.imageUploadSupport", { formats: RESTAURANT_IMAGE_FORMATS })}</p>
+                      {mediaDirty && <p className="text-gold">{t("dashboard.settings.mediaPendingSave")}</p>}
+                    </div>
                   </div>
                 </FieldRow>
               </Card>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" disabled={!restaurantDirty} onClick={discardRestaurant}>Discard</Button>
                 <Button
-                  disabled={!restaurantDirty || savingRestaurant || !restaurantName.trim() || !selectedRestaurant}
+                  variant="outline"
+                  disabled={(!restaurantDirty && !mediaDirty) || savingRestaurant}
+                  onClick={discardRestaurant}
+                >
+                  Discard
+                </Button>
+                <Button
+                  disabled={(!restaurantDirty && !mediaDirty) || savingRestaurant || !restaurantName.trim() || !selectedRestaurant}
                   onClick={() => void saveRestaurantSettings()}
                 >
                   {savingRestaurant ? t("routes.loading") : "Save changes"}
@@ -636,8 +937,8 @@ export default function SettingsPage() {
                   <h3 className="font-serif text-xl text-white">Weekly hours</h3>
                 </div>
                 <div>
-                  {DAYS.map((day, i) => (
-                    <div key={day} className="grid grid-cols-[120px_1fr_auto] items-center gap-4 border-t border-border/50 px-6 py-4 sm:px-7">
+                  {RESTAURANT_WEEKDAYS.map((day, i) => (
+                    <div key={day} className="grid grid-cols-[120px_minmax(0,1fr)_auto] items-center gap-4 border-t border-border/50 px-6 py-4 sm:px-7">
                       <span className={cn("text-sm", hours[i].open ? "text-text-primary" : "text-text-muted")}>{day}</span>
                       {hours[i].open ? (
                         <div className="flex items-center gap-2 text-sm text-text-primary">
@@ -648,13 +949,13 @@ export default function SettingsPage() {
                       ) : (
                         <span className="text-sm text-text-muted">Closed</span>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => setHours((h) => h.map((d, idx) => idx === i ? { ...d, open: !d.open } : d))}
-                        className="text-xs text-text-muted transition-colors hover:text-gold"
-                      >
-                        {hours[i].open ? "Edit" : "Open"}
-                      </button>
+                      <label className="flex items-center gap-2 text-xs text-text-muted">
+                        <span>{hours[i].open ? "Open" : "Closed"}</span>
+                        <Switch
+                          checked={hours[i].open}
+                          onCheckedChange={(open) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, open } : d))}
+                        />
+                      </label>
                     </div>
                   ))}
                 </div>

@@ -18,6 +18,40 @@ export interface AvailabilityResult {
   message?: string;
 }
 
+function parseTimeToMinutes(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const meridiem = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (meridiem) {
+    let hours = Number(meridiem[1]);
+    const minutes = Number(meridiem[2] ?? 0);
+    const period = meridiem[3].toLowerCase();
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    if (period === "pm" && hours !== 12) hours += 12;
+    if (period === "am" && hours === 12) hours = 0;
+    return hours * 60 + minutes;
+  }
+
+  const [hourPart, minutePart] = trimmed.split(":");
+  const hours = Number(hourPart);
+  const minutes = Number(minutePart ?? 0);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function readHoursPair(value: unknown): { open: number; close: number; label: string } | "closed" | null {
+  if (!value || typeof value !== "object") return "closed";
+  const row = value as Record<string, unknown>;
+  if (row.closed === true || row.is_closed === true || row.open === false) return "closed";
+  const openValue = row.open ?? row.from ?? row.open_time ?? row.openTime ?? row.opens ?? row.start;
+  const closeValue = row.close ?? row.to ?? row.close_time ?? row.closeTime ?? row.closes ?? row.end;
+  if (typeof openValue !== "string" || typeof closeValue !== "string") return "closed";
+  const open = parseTimeToMinutes(openValue);
+  const close = parseTimeToMinutes(closeValue);
+  if (open == null || close == null || close <= open) return "closed";
+  return { open, close, label: `${openValue} to ${closeValue}` };
+}
+
 export async function getAvailability(
   restaurant_id: string,
   date: string, // YYYY-MM-DD
@@ -49,10 +83,13 @@ export async function getAvailability(
   const DOW_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   const dayOfWeekName = DOW_NAMES[dayOfWeek] ?? "monday";
 
-  // Resolve the spoken store-hours string for THIS date. Special-day entries
-  // take precedence over the recurring weekly schedule. When closed or the
-  // row is missing, hours_window falls back to the slot-derived window later.
+  // Resolve the configured booking window for THIS date. Special-day entries
+  // take precedence over the recurring weekly schedule.
   let configuredHoursWindow: string | null = null;
+  let configuredHours:
+    | { open: number; close: number }
+    | "closed"
+    | null = null;
   const hoursJson =
     restaurantRow?.hours_json && typeof restaurantRow.hours_json === "object"
       ? (restaurantRow.hours_json as Record<string, unknown>)
@@ -63,18 +100,30 @@ export async function getAvailability(
       : [];
     const special = specialEntries.find((s) => String(s.date ?? "") === dateOnly);
     if (special) {
-      if (!special.closed && special.from && special.to) {
-        configuredHoursWindow = `${special.from} to ${special.to}`;
+      if (special.closed === true) {
+        configuredHours = "closed";
+      } else {
+        const pair = readHoursPair({ open: special.from, close: special.to, closed: false });
+        if (pair && pair !== "closed") {
+          configuredHours = { open: pair.open, close: pair.close };
+          configuredHoursWindow = pair.label;
+        } else {
+          configuredHours = "closed";
+        }
       }
     } else {
-      const weekly = hoursJson[dayOfWeekName] as
-        | { open?: string; close?: string }
-        | null
-        | undefined;
-      if (weekly && weekly.open && weekly.close) {
-        configuredHoursWindow = `${weekly.open} to ${weekly.close}`;
+      const pair = readHoursPair(hoursJson[dayOfWeekName]);
+      if (pair === "closed") {
+        configuredHours = "closed";
+      } else if (pair) {
+        configuredHours = { open: pair.open, close: pair.close };
+        configuredHoursWindow = pair.label;
       }
     }
+  }
+
+  if (configuredHours === "closed") {
+    return { slots: [], hours_window: null, message: "No availability on that date." };
   }
 
   // Fetch matching shifts — also select blackout_dates and advance_booking_days
@@ -129,7 +178,12 @@ export async function getAvailability(
     const maxCovers = shift.max_covers ?? 100;
 
     let slotMin = sH * 60 + sM;
-    const endMin = eH * 60 + eM;
+    let endMin = eH * 60 + eM;
+    if (configuredHours && configuredHours !== "closed") {
+      slotMin = Math.max(slotMin, configuredHours.open);
+      endMin = Math.min(endMin, configuredHours.close);
+    }
+    if (endMin <= slotMin) continue;
 
     while (slotMin + slotMins <= endMin) {
       const slotHour = Math.floor(slotMin / 60);

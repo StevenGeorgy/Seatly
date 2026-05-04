@@ -4,8 +4,6 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
-  Download,
-  Filter,
   Plus,
   Search,
   Utensils,
@@ -36,7 +34,7 @@ import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type ViewMode = "day" | "week" | "list";
-type QuickFilter = "all" | "confirmed" | "seated" | "at_risk" | "waitlist" | "pending";
+type QuickFilter = "all" | "confirmed" | "seated";
 
 type ReservationBoardRow = {
   id: string;
@@ -104,10 +102,7 @@ function timeToBoardMinutes(timeStr: string): number {
 }
 
 function normalizeStatus(row: ReservationRow): ReservationBoardRow["status"] {
-  if ((row.no_show_risk_score ?? 0) >= 60) return "at_risk";
-  if (row.status === "waiting" || row.status === "waitlist") return "waitlist";
   if (row.status === "seated") return "seated";
-  if (row.status === "pending") return "pending";
   if (row.status === "completed") return "completed";
   return "confirmed";
 }
@@ -131,7 +126,7 @@ function reservationTableLabel(rowData: ReservationRow, t: TranslationFn): strin
 
   if (rowData.table_id) return `${t("dashboard.reservations.tableLabel")} ${rowData.table_id.slice(0, 8)}`;
 
-  return normalizeStatus(rowData) === "waitlist" ? t("dashboard.reservations.waitlist") : t("dashboard.reservations.unassigned");
+  return t("dashboard.reservations.unassigned");
 }
 
 function adaptReservation(rowData: ReservationRow, t: TranslationFn): ReservationBoardRow {
@@ -146,7 +141,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     rowData.special_request ||
     rowData.occasion ||
     rowData.dietary_notes ||
-    ((rowData.no_show_risk_score ?? 0) >= 60 ? "Awaiting deposit · 24h hold" : "-");
+    "-";
   const table = reservationTableLabel(rowData, t);
 
   return {
@@ -167,15 +162,11 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
 }
 
 function statusBadgeStatus(status: ReservationBoardRow["status"]): string {
-  if (status === "at_risk") return "pending";
-  if (status === "waitlist") return "waiting";
   return status;
 }
 
 function blockClasses(status: ReservationBoardRow["status"]): string {
-  if (status === "at_risk") return "border-warning/35 bg-warning/20 text-warning";
   if (status === "seated") return "border-gold/35 bg-gold/20 text-gold";
-  if (status === "waitlist") return "border-text-muted/30 bg-text-muted/10 text-text-secondary";
   return "border-success/35 bg-success/15 text-success";
 }
 
@@ -270,8 +261,6 @@ export default function ReservationsPage() {
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
   const seatedCount = allRows.filter((reservation) => reservation.status === "seated").length;
   const upcomingCount = allRows.filter((reservation) => reservation.status === "confirmed").length;
-  const atRiskCount = allRows.filter((reservation) => reservation.status === "at_risk").length;
-  const waitlistCount = allRows.filter((reservation) => reservation.status === "waitlist").length;
 
   const calSelectedDay = useMemo(() => {
     if (!reservationDate) return undefined;
@@ -355,12 +344,10 @@ export default function ReservationsPage() {
         </div>
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard label="Booked tonight" value={String(bookedTonight)} detail={`${coversExpected} covers expected`} />
         <MetricCard label="Currently seated" value={String(seatedCount)} detail={`${seatedCount} finishing entrees`} />
         <MetricCard label="Upcoming" value={String(upcomingCount)} detail="Next: 7pm · Tremblay" />
-        <MetricCard label="At risk" value={String(atRiskCount)} detail="Awaiting deposit" />
-        <MetricCard label="Waitlist" value={String(waitlistCount)} detail="Quoted 12 min" />
       </div>
 
       <section className="rounded-2xl border border-border bg-bg-surface/80 p-4 shadow-lg shadow-black/10">
@@ -458,17 +445,6 @@ export default function ReservationsPage() {
                 className="h-9 rounded-lg border-border bg-bg-elevated pl-9 text-xs"
               />
             </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" className="h-9 rounded-lg gap-1.5 px-3 text-xs">
-                <Filter className="size-3.5" />
-                {t("dashboard.reservations.allShifts")}
-              </Button>
-              <Button variant="outline" size="sm" className="h-9 rounded-lg gap-1.5 px-3 text-xs">
-                <Download className="size-3.5" />
-                {t("dashboard.reservations.export")}
-              </Button>
-            </div>
           </div>
 
           <div className="border-t border-border/60 pt-3">
@@ -481,9 +457,6 @@ export default function ReservationsPage() {
                   { id: "all" as QuickFilter, label: t("dashboard.reservations.all"), count: allRows.length },
                   { id: "confirmed" as QuickFilter, label: t("dashboard.reservations.confirmed"), count: allRows.filter((item) => item.status === "confirmed").length },
                   { id: "seated" as QuickFilter, label: t("dashboard.reservations.seated"), count: seatedCount },
-                  { id: "at_risk" as QuickFilter, label: t("dashboard.reservations.atRisk"), count: atRiskCount },
-                  { id: "waitlist" as QuickFilter, label: t("dashboard.reservations.waitlist"), count: waitlistCount },
-                  { id: "pending" as QuickFilter, label: t("dashboard.reservations.pending"), count: allRows.filter((item) => item.status === "pending").length },
                 ]
               ).map((item) => (
                 <button
@@ -512,8 +485,6 @@ export default function ReservationsPage() {
         onSeat={(rowData) => {
           if (rowData.source) setSeatTarget(rowData.source);
         }}
-        onNotify={() => toast.info("Guest notification queued.")}
-        onCall={() => toast.info("Call task created.")}
         onCancel={(rowData) => {
           if (!rowData.source) return;
           if (!canCancelDirectly) {
@@ -763,7 +734,6 @@ function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading
         <div className="flex flex-wrap gap-3 text-[11px] text-text-muted">
           <Legend color="bg-success" label="Confirmed" />
           <Legend color="bg-gold" label="Seated" />
-          <Legend color="bg-warning" label="At risk" />
           <Legend color="bg-bg-elevated" label="Available" />
         </div>
       </div>
@@ -868,15 +838,11 @@ function ReservationsTable({
   rows,
   loading,
   onSeat,
-  onNotify,
-  onCall,
   onCancel,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
   onSeat: (row: ReservationBoardRow) => void;
-  onNotify: (row: ReservationBoardRow) => void;
-  onCall: (row: ReservationBoardRow) => void;
   onCancel: (row: ReservationBoardRow) => void;
 }) {
   const { t } = useTranslation();
@@ -939,7 +905,7 @@ function ReservationsTable({
                     </td>
                     <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
                     <td className="px-5 py-4 text-right">
-                      {reservation.status === "confirmed" || reservation.status === "pending" ? (
+                      {reservation.status === "confirmed" ? (
                         <div className="flex justify-end gap-2">
                           <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onSeat(reservation)}>
                             Seat
@@ -953,14 +919,6 @@ function ReservationsTable({
                             Cancel
                           </Button>
                         </div>
-                      ) : reservation.status === "waitlist" ? (
-                        <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onNotify(reservation)}>
-                          Notify
-                        </Button>
-                      ) : reservation.status === "at_risk" ? (
-                        <Button size="sm" variant="outline" className="h-8 px-3 text-xs" onClick={() => onCall(reservation)}>
-                          Call
-                        </Button>
                       ) : (
                         <Button size="icon-sm" variant="ghost" aria-label="Open reservation">
                           <ChevronRight className="size-4" />

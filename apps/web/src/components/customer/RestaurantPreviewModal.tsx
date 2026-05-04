@@ -17,11 +17,15 @@ import {
 } from "lucide-react";
 
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
-import type { EventPromotionDisplay } from "@/lib/customer/eventPromotionDisplay";
+import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
+import { useAvailability } from "@/hooks/useAvailability";
+import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
+import { useRestaurant } from "@/hooks/useRestaurant";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 
 export type RestaurantPreviewSummary = {
   id: string;
@@ -38,6 +42,8 @@ export type RestaurantPreviewSummary = {
   city: string;
   distanceKm: number;
   features: string[];
+  logoUrl?: string | null;
+  coverPhotoUrl?: string | null;
 };
 
 type PreviewTab = "menu" | "photos" | "reviews" | "about" | "events";
@@ -60,105 +66,6 @@ const TABS: { id: PreviewTab; label: string }[] = [
   { id: "events", label: "Events" },
 ];
 
-const FALLBACK_TIMES = ["5:30 PM", "6:45 PM", "7:15 PM", "7:45 PM", "8:30 PM", "9:00 PM"];
-
-const MENU_HIGHLIGHTS = [
-  {
-    category: "Snacks & Bread",
-    name: "Gougères",
-    description: "Comté and black pepper, warm from the oven.",
-    price: 11,
-    badge: "Popular",
-  },
-  {
-    category: "Snacks",
-    name: "Oysters - half dozen",
-    description: "Tonight's selection with champagne mignonette and lemon.",
-    price: 24,
-    badge: "Chef pick",
-  },
-  {
-    category: "First Course",
-    name: "Trout - cured 18 hours",
-    description: "Citrus-cured trout, dill crème, garlic oil, sea salt.",
-    price: 26,
-    badge: "New",
-  },
-  {
-    category: "Main Course",
-    name: "Lamb shoulder",
-    description: "Braised lamb, pomme purée, charred alliums.",
-    price: 54,
-    badge: "Limited",
-  },
-];
-
-const MENU_SECTIONS = [
-  {
-    title: "Snacks & Bread",
-    items: [
-      { name: "House sourdough", description: "Cultured butter, smoked salt, chive oil.", price: 9 },
-      { name: "Gougères", description: "Comté and black pepper, warm from the oven.", price: 11 },
-    ],
-  },
-  {
-    title: "First Course",
-    items: [
-      { name: "Celeriac velouté", description: "Hazelnut, brown butter, fine herbs.", price: 18 },
-      { name: "Beef tartare", description: "Caperberry, egg yolk, grilled country bread.", price: 22 },
-    ],
-  },
-  {
-    title: "Main Course",
-    items: [
-      { name: "Duck with quince", description: "Dry-aged breast, quince jus, bitter greens.", price: 42 },
-      { name: "Mushroom pithivier", description: "Wild mushroom, truffle cream, winter herbs.", price: 34 },
-    ],
-  },
-];
-
-const REVIEW_ROWS = [
-  {
-    name: "Julien R.",
-    context: "Visited for Anniversary",
-    text: "Service was extraordinary. Every course explained, every wine considered. The morels with petit pois were the dish of the year for us.",
-  },
-  {
-    name: "Priya K.",
-    context: "Date night",
-    text: "Patio at dusk is unbeatable. Trout cured 18 hours was a quiet revelation.",
-  },
-  {
-    name: "Marcus T.",
-    context: "Late service",
-    text: "Elegant room, generous pacing, and a staff that remembered our allergies without making a fuss.",
-  },
-];
-
-const EVENT_ROWS = [
-  {
-    type: "Tasting Menu",
-    spots: 4,
-    title: "Spring Garden 7-Course Chef's Table",
-    when: "Sat, May 4 at 6:30pm",
-    price: 120,
-  },
-  {
-    type: "Wine Event",
-    spots: 8,
-    title: "Natural Wines of the Loire - Six Producers",
-    when: "Wed, May 15 at 7pm",
-    price: 135,
-  },
-  {
-    type: "Prix Fixe",
-    spots: 12,
-    title: "Late Service Three-Course Prix Fixe",
-    when: "Thu-Sun after 9pm",
-    price: 58,
-  },
-];
-
 type PreviewMenuItem = {
   id: string;
   category: string;
@@ -169,38 +76,24 @@ type PreviewMenuItem = {
   imageUrl: string | null;
 };
 
-function previewEventToDisplay(
-  event: (typeof EVENT_ROWS)[number],
-  restaurant: RestaurantPreviewSummary,
-  currencyCode: string,
-): EventPromotionDisplay {
-  return {
-    id: `${restaurant.id}-${event.title}`,
-    source: "event",
-    restaurantName: restaurant.name,
-    restaurantSlug: null,
-    cuisineLabel: restaurant.cuisine,
-    cityLabel: restaurant.city,
-    priceRangeLabel: restaurant.price,
-    ratingLabel: `${restaurant.rating.toFixed(1)} stars`,
-    title: event.title,
-    description: "Hosted on-site with limited seats and a dedicated service experience.",
-    badgeLabel: event.type,
-    availabilityLabel: `${event.spots} left`,
-    imageUrl: null,
-    imageLabel: event.type,
-    mediaUrl: null,
-    mediaType: null,
-    mediaName: null,
-    dateLabel: event.when,
-    timeLabel: "Select a reservation time",
-    priceLabel: `${formatCurrency(event.price, currencyCode)} / person`,
-    perCoverLabel: `${formatCurrency(event.price, currencyCode)} / person`,
-    seatsLabel: `${event.spots} seats left`,
-    actionLabel: "Book",
-    promoCode: null,
-    isActive: true,
-  };
+function todayDateValue(): string {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function todayDisplayValue(): string {
+  return new Date().toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function uniqueValues(values: Array<string | null | undefined>): string[] {
+  return values
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .filter((value, index, list) => list.indexOf(value) === index);
 }
 
 function shortTime(time: string): string {
@@ -260,22 +153,48 @@ export function RestaurantPreviewModal({
   });
   const [timeState, setTimeState] = useState<{ restaurantId: string | null; time: string }>({
     restaurantId: null,
-    time: FALLBACK_TIMES[2],
+    time: "",
   });
 
   const activeTab =
     restaurant && tabState.restaurantId === restaurant.id ? tabState.tab : "menu";
+  const previewDate = todayDateValue();
+  const previewDateLabel = todayDisplayValue();
+  const { restaurant: restaurantDetails } = useRestaurant(restaurant?.id);
+  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
+  const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
+  const {
+    slots: availabilitySlots,
+    loading: availabilityLoading,
+    fetchSlots,
+    clearSlots,
+  } = useAvailability();
+
+  const availableTimes = useMemo(() => {
+    const liveSlots = availabilitySlots.map((slot) => slot.display_time);
+    return Array.from(new Set([...liveSlots, ...(restaurant?.slots ?? [])])).slice(0, 6);
+  }, [availabilitySlots, restaurant?.slots]);
+
   const selectedTime =
     restaurant && timeState.restaurantId === restaurant.id
       ? timeState.time
-      : restaurant?.slots[0] ?? FALLBACK_TIMES[2];
-  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
-  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
+      : availableTimes[0] ?? "";
 
-  const availableTimes = useMemo(() => {
-    if (!restaurant || restaurant.slots.length === 0) return FALLBACK_TIMES;
-    return Array.from(new Set([...restaurant.slots, ...FALLBACK_TIMES])).slice(0, 6);
-  }, [restaurant]);
+  const restaurantEvents = useMemo(
+    () => activeEvents.filter((event) => event.restaurant_id === restaurant?.id),
+    [activeEvents, restaurant?.id],
+  );
+
+  const restaurantDisplay = useMemo<RestaurantDisplayInfo>(() => ({
+    name: restaurantDetails?.name ?? restaurant?.name ?? "Restaurant",
+    slug: restaurantDetails?.slug ?? null,
+    cuisine_type: restaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
+    avg_rating: restaurantDetails?.avg_rating ?? restaurant?.rating ?? null,
+    cover_photo_url: restaurantDetails?.cover_photo_url ?? null,
+    city: restaurantDetails?.city ?? restaurant?.city ?? null,
+    price_range: restaurantDetails?.price_range ?? Math.max(restaurant?.price.length ?? 0, 1),
+  }), [restaurant, restaurantDetails]);
 
   const previewMenuItems = useMemo<PreviewMenuItem[]>(() => (
     dbMenuItems.map((item) => ({
@@ -291,29 +210,13 @@ export function RestaurantPreviewModal({
 
   const hasSavedMenu = previewMenuItems.length > 0;
 
-  const menuHighlights = useMemo<PreviewMenuItem[]>(() => (
-    hasSavedMenu
-      ? previewMenuItems.slice(0, 4)
-      : MENU_HIGHLIGHTS.map((item) => ({
-        id: item.name,
-        ...item,
-        imageUrl: null,
-      }))
-  ), [hasSavedMenu, previewMenuItems]);
+  const menuHighlights = useMemo<PreviewMenuItem[]>(
+    () => previewMenuItems.slice(0, 4),
+    [previewMenuItems],
+  );
 
   const menuSections = useMemo((): { title: string; items: PreviewMenuItem[] }[] => {
-    if (!hasSavedMenu) {
-      return MENU_SECTIONS.map((section) => ({
-        title: section.title,
-        items: section.items.map((item) => ({
-          id: `${section.title}-${item.name}`,
-          category: section.title,
-          badge: null,
-          imageUrl: null,
-          ...item,
-        })),
-      }));
-    }
+    if (!hasSavedMenu) return [];
 
     const orderedCategoryNames = [
       ...dbCategories.map((category) => category.name),
@@ -328,6 +231,37 @@ export function RestaurantPreviewModal({
       .filter((section) => section.items.length > 0);
   }, [dbCategories, hasSavedMenu, previewMenuItems]);
 
+  const logoUrl = restaurantDetails?.logo_url ?? restaurant?.logoUrl ?? null;
+  const coverPhotoUrl = restaurantDetails?.cover_photo_url ?? restaurant?.coverPhotoUrl ?? null;
+
+  const photoSources = useMemo(
+    () => uniqueValues([
+      coverPhotoUrl,
+      logoUrl,
+      ...previewMenuItems.map((item) => item.imageUrl),
+      ...restaurantEvents.map((event) => event.media_type === "image" ? event.media_url : event.cover_image_url),
+    ]),
+    [coverPhotoUrl, logoUrl, previewMenuItems, restaurantEvents],
+  );
+
+  const eventCards = useMemo(
+    () => restaurantEvents.map((event) => eventToDisplay(event, restaurantDisplay)),
+    [restaurantDisplay, restaurantEvents],
+  );
+
+  const hoursRows = useMemo(
+    () => formatRestaurantHoursRows(restaurantDetails?.hours_json),
+    [restaurantDetails?.hours_json],
+  );
+  const detailTags = uniqueValues([
+    restaurantDetails?.cuisine_type,
+    restaurantDetails?.business_type,
+    ...(restaurant?.features ?? []),
+  ]);
+  const aboutText =
+    restaurantDetails?.description
+    ?? `${restaurant?.name ?? "This restaurant"} has not added a public description yet.`;
+
   const setRestaurantTab = (tab: PreviewTab) => {
     setTabState({ restaurantId: restaurant?.id ?? null, tab });
   };
@@ -335,6 +269,25 @@ export function RestaurantPreviewModal({
   const setRestaurantTime = (time: string) => {
     setTimeState({ restaurantId: restaurant?.id ?? null, time });
   };
+
+  useEffect(() => {
+    if (!restaurant) {
+      clearSlots();
+      return;
+    }
+
+    void fetchSlots(
+      restaurant.id,
+      previewDate,
+      Number.parseInt(partySize, 10) || 2,
+    );
+  }, [clearSlots, fetchSlots, partySize, previewDate, restaurant]);
+
+  useEffect(() => {
+    if (!restaurant || availableTimes.length === 0) return;
+    if (timeState.restaurantId === restaurant.id && availableTimes.includes(timeState.time)) return;
+    setTimeState({ restaurantId: restaurant.id, time: availableTimes[0] });
+  }, [availableTimes, restaurant, timeState.restaurantId, timeState.time]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -375,7 +328,11 @@ export function RestaurantPreviewModal({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="relative h-44 overflow-hidden border-b border-border bg-bg-elevated">
-              <StripeArt label={restaurant.initials} className="absolute inset-0 rounded-none" />
+              <StripeArt
+                label={restaurant.initials}
+                imageUrl={coverPhotoUrl}
+                className="absolute inset-0 rounded-none"
+              />
               <div className="absolute inset-0 bg-gradient-to-b from-transparent via-bg-base/45 to-bg-base" />
               <button
                 type="button"
@@ -390,10 +347,18 @@ export function RestaurantPreviewModal({
             <div className="mx-auto -mt-16 max-w-5xl px-4 pb-10 sm:px-6 lg:px-8">
               <section className="relative rounded-2xl border border-border bg-bg-surface/95 p-5 shadow-2xl shadow-black/30 backdrop-blur">
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
+                  <div className="flex gap-4">
+                    <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-bg-elevated font-mono text-sm font-semibold text-gold shadow-lg shadow-black/20">
+                      {logoUrl ? (
+                        <img src={logoUrl} alt={`${restaurant.name} logo`} className="size-full object-cover" />
+                      ) : (
+                        restaurant.initials
+                      )}
+                    </div>
+                    <div>
                     <div className="flex flex-wrap gap-2">
                       <span className="rounded-md border border-gold/30 bg-gold/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold">
-                        Tasting menu
+                        {restaurant.badge}
                       </span>
                       {restaurant.features.slice(0, 2).map((feature) => (
                         <span
@@ -403,9 +368,11 @@ export function RestaurantPreviewModal({
                           {feature}
                         </span>
                       ))}
-                      <span className="rounded-md border border-success/30 bg-success/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-success">
-                        Tables tonight
-                      </span>
+                      {availableTimes.length > 0 && (
+                        <span className="rounded-md border border-success/30 bg-success/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-success">
+                          {availableTimes.length} times today
+                        </span>
+                      )}
                     </div>
                     <h2 className="mt-3 font-serif text-4xl leading-none text-white sm:text-5xl">
                       {restaurant.name}
@@ -415,12 +382,15 @@ export function RestaurantPreviewModal({
                       <span className="text-gold">{restaurant.price}</span>
                       <span className="inline-flex items-center gap-1">
                         <Star className="size-3 fill-gold text-gold" />
-                        {restaurant.rating.toFixed(1)} · {restaurant.reviews.toLocaleString()} reviews
+                        {restaurant.reviews > 0
+                          ? `${restaurant.rating.toFixed(1)} · ${restaurant.reviews.toLocaleString()} reviews`
+                          : "New"}
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <MapPin className="size-3 text-text-muted" />
                         {restaurant.area}
                       </span>
+                    </div>
                     </div>
                   </div>
 
@@ -471,18 +441,19 @@ export function RestaurantPreviewModal({
                           <div className="mb-4 flex items-end justify-between">
                             <div>
                               <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-gold">
-                                Popular tonight
+                                Menu
                               </p>
                               <h3 className="mt-1 font-serif text-2xl text-white">
-                                Most-ordered this week
+                                Menu highlights
                               </h3>
                             </div>
                             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
                               {menuLoading && !hasSavedMenu ? "Loading" : `${menuHighlights.length} dishes`}
                             </p>
                           </div>
-                          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                            {menuHighlights.map((item) => (
+                          {menuHighlights.length > 0 ? (
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                              {menuHighlights.map((item) => (
                               <article
                                 key={item.id}
                                 className="overflow-hidden rounded-xl border border-border bg-bg-elevated"
@@ -511,9 +482,14 @@ export function RestaurantPreviewModal({
                                     ) : null}
                                   </div>
                                 </div>
-                              </article>
-                            ))}
-                          </div>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                              {menuLoading ? "Loading menu items..." : "No public menu items have been added yet."}
+                            </div>
+                          )}
                         </section>
 
                         {menuSections.map((section) => (
@@ -559,77 +535,51 @@ export function RestaurantPreviewModal({
                         <div className="mb-4 flex items-center justify-between">
                           <div>
                             <h3 className="font-serif text-2xl text-white">Photos</h3>
-                            <p className="text-xs text-text-muted">From recent service, updated weekly.</p>
+                            <p className="text-xs text-text-muted">Photos saved for this restaurant and menu.</p>
                           </div>
                           <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                            <Camera className="size-3.5" /> 189 photos
+                            <Camera className="size-3.5" /> {photoSources.length} photos
                           </span>
                         </div>
-                        <div className="grid h-[520px] grid-cols-2 gap-2 sm:grid-cols-3">
-                          <StripeArt label="Plate of the day" className="col-span-2 row-span-2 min-h-0" />
-                          <StripeArt label="Dining room" className="min-h-0" />
-                          <StripeArt label="Trout lunch" className="min-h-0" />
-                          <StripeArt label="Patio" className="min-h-0" />
-                          <StripeArt label="Wine room" className="min-h-0" />
-                        </div>
+                        {photoSources.length > 0 ? (
+                          <div className="grid h-[520px] grid-cols-2 gap-2 sm:grid-cols-3">
+                            {photoSources.slice(0, 5).map((imageUrl, index) => (
+                              <StripeArt
+                                key={imageUrl}
+                                label={restaurant.name}
+                                imageUrl={imageUrl}
+                                className={cn(index === 0 && "col-span-2 row-span-2", "min-h-0")}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                            No restaurant or menu photos have been added yet.
+                          </div>
+                        )}
                       </section>
                     )}
 
                     {activeTab === "reviews" && (
                       <div className="space-y-4">
                         <section className="rounded-2xl border border-border bg-bg-surface p-4">
-                          <div className="grid gap-5 sm:grid-cols-[160px_1fr_120px]">
+                          <div className="grid gap-5 sm:grid-cols-[160px_1fr]">
                             <div>
-                              <p className="font-serif text-5xl text-gold">{restaurant.rating.toFixed(1)}</p>
+                              <p className="font-serif text-5xl text-gold">
+                                {restaurant.reviews > 0 ? restaurant.rating.toFixed(1) : "New"}
+                              </p>
                               <Stars rating={restaurant.rating} />
                               <p className="mt-1 text-xs text-text-muted">
                                 {restaurant.reviews.toLocaleString()} reviews
                               </p>
                             </div>
-                            <div className="space-y-2">
-                              {[5, 4, 3, 2, 1].map((score, index) => (
-                                <div key={score} className="grid grid-cols-[16px_1fr_34px] items-center gap-3">
-                                  <span className="text-xs text-text-muted">{score}</span>
-                                  <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-                                    <div
-                                      className="h-full rounded-full bg-gold"
-                                      style={{ width: `${[82, 12, 4, 1, 1][index]}%` }}
-                                    />
-                                  </div>
-                                  <span className="text-right text-[10px] text-text-muted">
-                                    {[82, 12, 4, 1, 1][index]}%
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="space-y-1 text-xs text-text-secondary">
-                              <p>Food <span className="float-right text-gold">4.9</span></p>
-                              <p>Service <span className="float-right text-gold">4.8</span></p>
-                              <p>Ambience <span className="float-right text-gold">4.9</span></p>
-                              <p>Value <span className="float-right text-gold">4.4</span></p>
+                            <div className="rounded-xl bg-bg-elevated p-4 text-sm leading-relaxed text-text-secondary">
+                              {restaurant.reviews > 0
+                                ? `${restaurant.name} has ${restaurant.reviews.toLocaleString()} public review${restaurant.reviews === 1 ? "" : "s"} with an average rating of ${restaurant.rating.toFixed(1)}.`
+                                : "No public reviews have been recorded for this restaurant yet."}
                             </div>
                           </div>
                         </section>
-
-                        {REVIEW_ROWS.map((review) => (
-                          <article key={review.name} className="rounded-2xl border border-border bg-bg-surface p-4">
-                            <div className="flex items-start gap-3">
-                              <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-gold/30 bg-gold/10 font-mono text-[11px] text-gold">
-                                {review.name.slice(0, 2).toUpperCase()}
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div>
-                                    <p className="font-medium text-white">{review.name}</p>
-                                    <p className="text-[11px] text-text-muted">{review.context}</p>
-                                  </div>
-                                  <Stars rating={5} />
-                                </div>
-                                <p className="mt-3 text-sm leading-relaxed text-text-secondary">{review.text}</p>
-                              </div>
-                            </div>
-                          </article>
-                        ))}
                       </div>
                     )}
 
@@ -638,14 +588,11 @@ export function RestaurantPreviewModal({
                         <section className="rounded-2xl border border-border bg-bg-surface p-5">
                           <h3 className="font-serif text-2xl text-white">About {restaurant.name}</h3>
                           <p className="mt-3 text-sm leading-relaxed text-text-secondary">
-                            A modern dining room in the heart of {restaurant.area}. The kitchen works around a
-                            simple idea: careful technique, warm service, and a room that feels special without
-                            feeling stiff. The menu changes with the market and keeps a few guest favourites
-                            available every week.
+                            {aboutText}
                           </p>
-                          <p className="mt-3 text-xs text-text-muted">
-                            Open since 2019. Two AAA Diamonds. A Gold-tier Cenaiva partner.
-                          </p>
+                          {restaurantDetails?.website && (
+                            <p className="mt-3 text-xs text-text-muted">{restaurantDetails.website}</p>
+                          )}
                         </section>
                         <div className="grid gap-4 sm:grid-cols-2">
                           <section className="rounded-2xl border border-border bg-bg-surface p-5">
@@ -653,18 +600,10 @@ export function RestaurantPreviewModal({
                               Hours
                             </h4>
                             <dl className="mt-4 space-y-2 text-xs text-text-secondary">
-                              {[
-                                ["Mon", "Closed"],
-                                ["Tue", "5:30pm - 10pm"],
-                                ["Wed", "5:30pm - 10pm"],
-                                ["Thu", "5:30pm - 11pm"],
-                                ["Fri", "5:30pm - 11pm"],
-                                ["Sat", "5pm - 11pm"],
-                                ["Sun", "5pm - 9:30pm"],
-                              ].map(([day, hours]) => (
-                                <div key={day} className="flex justify-between gap-4">
-                                  <dt>{day}</dt>
-                                  <dd className="text-white">{hours}</dd>
+                              {hoursRows.map((row) => (
+                                <div key={row.key} className="flex justify-between gap-4">
+                                  <dt>{row.label}</dt>
+                                  <dd className={row.open ? "text-white" : "text-text-muted"}>{row.value}</dd>
                                 </div>
                               ))}
                             </dl>
@@ -674,18 +613,22 @@ export function RestaurantPreviewModal({
                               Details
                             </h4>
                             <div className="mt-4 space-y-2 text-xs text-text-secondary">
+                              {(restaurantDetails?.address || restaurant.area !== "—") && (
+                                <p className="inline-flex items-center gap-2">
+                                  <MapPin className="size-3 text-gold" /> {restaurantDetails?.address ?? restaurant.area}
+                                </p>
+                              )}
                               <p className="inline-flex items-center gap-2">
-                                <MapPin className="size-3 text-gold" /> 116 {restaurant.area} Ave, {restaurant.city}
+                                <Clock className="size-3 text-gold" /> {restaurantDetails?.timezone ?? "Timezone not set"}
                               </p>
-                              <p className="inline-flex items-center gap-2">
-                                <Clock className="size-3 text-gold" /> {restaurant.distanceKm.toFixed(1)} km away
-                              </p>
-                              <p className="inline-flex items-center gap-2">
-                                <Sparkles className="size-3 text-gold" /> Cenaiva accepted
-                              </p>
+                              {restaurantDetails?.phone && (
+                                <p className="inline-flex items-center gap-2">
+                                  <Sparkles className="size-3 text-gold" /> {restaurantDetails.phone}
+                                </p>
+                              )}
                             </div>
                             <div className="mt-5 flex flex-wrap gap-2">
-                              {["Patio", "Bar seating", "Private dining", "Late service"].map((tag) => (
+                              {detailTags.map((tag) => (
                                 <span
                                   key={tag}
                                   className="rounded-full border border-border bg-bg-elevated px-2 py-1 text-[11px] text-text-secondary"
@@ -703,18 +646,24 @@ export function RestaurantPreviewModal({
                       <section className="rounded-2xl border border-border bg-bg-surface p-4">
                         <h3 className="font-serif text-2xl text-white">Events at {restaurant.name}</h3>
                         <p className="mt-1 text-xs text-text-muted">
-                          Tasting menus, wine evenings, and chef's table experiences hosted on-site.
+                          Active events saved for this restaurant.
                         </p>
-                        <div className="mt-4 grid gap-4">
-                          {EVENT_ROWS.map((event) => (
-                            <EventPromotionDetailCard
-                              key={event.title}
-                              item={previewEventToDisplay(event, restaurant, currencyCode)}
-                              onReserve={() => onReserve(selectedTime)}
-                              className="shadow-none"
-                            />
-                          ))}
-                        </div>
+                        {eventCards.length > 0 ? (
+                          <div className="mt-4 grid gap-4">
+                            {eventCards.map((event) => (
+                              <EventPromotionDetailCard
+                                key={event.id}
+                                item={event}
+                                onReserve={() => selectedTime && onReserve(selectedTime)}
+                                className="shadow-none"
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-4 rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                            {eventsLoading ? "Loading events..." : "No active events have been added yet."}
+                          </div>
+                        )}
                       </section>
                     )}
                   </div>
@@ -726,7 +675,7 @@ export function RestaurantPreviewModal({
                     <div className="mt-4 grid grid-cols-2 gap-2">
                       <div className="rounded-xl bg-bg-elevated p-3">
                         <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-                        <p className="mt-1 text-sm text-white">Sat · Apr 27</p>
+                        <p className="mt-1 text-sm text-white">{previewDateLabel}</p>
                       </div>
                       <div className="rounded-xl bg-bg-elevated p-3">
                         <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
@@ -739,66 +688,75 @@ export function RestaurantPreviewModal({
                     <p className="mt-5 font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
                       Available times
                     </p>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      {availableTimes.map((time) => (
-                        <button
-                          key={time}
-                          type="button"
-                          onClick={() => setRestaurantTime(time)}
-                          className={cn(
-                            "rounded-md px-3 py-2 text-xs transition-colors",
-                            selectedTime === time
-                              ? "bg-gold text-black shadow-lg shadow-gold/20"
-                              : "bg-bg-elevated text-text-secondary hover:text-white",
-                          )}
-                        >
-                          {shortTime(time)}
-                        </button>
-                      ))}
-                    </div>
+                    {availableTimes.length > 0 ? (
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {availableTimes.map((time) => (
+                          <button
+                            key={time}
+                            type="button"
+                            onClick={() => setRestaurantTime(time)}
+                            className={cn(
+                              "rounded-md px-3 py-2 text-xs transition-colors",
+                              selectedTime === time
+                                ? "bg-gold text-black shadow-lg shadow-gold/20"
+                                : "bg-bg-elevated text-text-secondary hover:text-white",
+                            )}
+                          >
+                            {shortTime(time)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl bg-bg-elevated p-3 text-xs text-text-muted">
+                        {availabilityLoading ? "Checking availability..." : "No available times for this date."}
+                      </div>
+                    )}
 
                     <button
                       type="button"
-                      onClick={() => onReserve(selectedTime)}
-                      className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-black transition-opacity hover:opacity-90"
+                      onClick={() => selectedTime && onReserve(selectedTime)}
+                      disabled={!selectedTime}
+                      className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Continue with {shortTime(selectedTime)}
+                      {selectedTime ? `Continue with ${shortTime(selectedTime)}` : "No times available"}
                       <CalendarDays className="size-4" />
                     </button>
 
                     <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs text-text-secondary">
                       <p className="flex justify-between">
-                        <span>Deposit (refundable)</span>
-                        <span className="text-white">{formatCurrency(40, currencyCode)} / guest</span>
-                      </p>
-                      <p className="flex justify-between">
                         <span>Cancellation</span>
-                        <span className="text-white">24h notice</span>
+                        <span className="text-white">
+                          {restaurantDetails?.cancellation_hours
+                            ? `${restaurantDetails.cancellation_hours}h notice`
+                            : "Set by restaurant"}
+                        </span>
                       </p>
-                      <p className="flex justify-between">
-                        <span>Loyalty earned</span>
-                        <span className="text-gold">+185 pts</span>
-                      </p>
+                      {restaurantDetails?.no_show_fee != null && (
+                        <p className="flex justify-between">
+                          <span>No-show fee</span>
+                          <span className="text-white">{formatCurrency(restaurantDetails.no_show_fee, currencyCode)}</span>
+                        </p>
+                      )}
                     </div>
 
                     <p className="mt-5 flex gap-2 text-[11px] leading-relaxed text-text-muted">
                       <Info className="mt-0.5 size-3.5 shrink-0 text-gold" />
-                      Your last visit was 6 weeks ago. The team remembers your nut allergy.
+                      Availability is calculated from this restaurant's saved tables, reservations, and booking rules.
                     </p>
                   </div>
 
                   <div className="mt-3 rounded-2xl border border-border bg-bg-surface/70 p-4 text-xs text-text-secondary">
                     <p className="inline-flex items-center gap-2">
                       <Utensils className="size-3.5 text-gold" />
-                      Booked {restaurant.bookedToday} times today
+                      {restaurant.bookedToday} booking{restaurant.bookedToday === 1 ? "" : "s"} created today
                     </p>
                     <p className="mt-2 inline-flex items-center gap-2">
                       <MessageCircle className="size-3.5 text-gold" />
-                      Concierge notes available after booking
+                      {restaurantDetails?.accepts_walkins === false ? "Reservations only" : "Walk-ins accepted when available"}
                     </p>
                     <p className="mt-2 inline-flex items-center gap-2">
                       <Users className="size-3.5 text-gold" />
-                      Great for parties of 2-6
+                      Party size uses live availability
                     </p>
                   </div>
                 </aside>

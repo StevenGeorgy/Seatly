@@ -33,10 +33,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
 import { useAvailability } from "@/hooks/useAvailability";
+import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
+import { useRestaurantPreviewStats } from "@/hooks/useRestaurantPreviewStats";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -49,8 +52,10 @@ import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
 import { assignReservationTables } from "@/lib/table-assignment";
+import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -371,39 +376,105 @@ function PreviewDishCard({ item, compact = false }: { item: MenuItem; compact?: 
 const STAFF_PREVIEW_TABS = ["Menu", "Photos", "Reviews", "About", "Events"] as const;
 type StaffPreviewTab = (typeof STAFF_PREVIEW_TABS)[number];
 
-const STAFF_PREVIEW_TIMES = [
-  { label: "7:45pm", value: "7:45 PM" },
-  { label: "8pm", value: "8:00 PM" },
-  { label: "8:30pm", value: "8:30 PM" },
-  { label: "9pm", value: "9:00 PM" },
-  { label: "5:30pm", value: "5:30 PM" },
-  { label: "6:45pm", value: "6:45 PM" },
-];
+function todayDateValue(): string {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function todayDisplayValue(): string {
+  return new Date().toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function uniquePreviewValues(values: Array<string | null | undefined>): string[] {
+  return values
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .filter((value, index, list) => list.indexOf(value) === index);
+}
 
 function RestaurantStaffPreview({
   restaurant,
   menuItems,
+  hasSavedMenu,
   onBack,
   onStartBooking,
 }: {
   restaurant: Restaurant;
   menuItems: MenuItem[];
+  hasSavedMenu: boolean;
   onBack: () => void;
   onStartBooking: (time: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<StaffPreviewTab>("Menu");
   const [favorite, setFavorite] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [selectedTime, setSelectedTime] = useState(STAFF_PREVIEW_TIMES[0].value);
+  const [selectedTime, setSelectedTime] = useState("");
+  const previewDate = todayDateValue();
+  const previewDateLabel = todayDisplayValue();
+  const availability = useAvailability();
+  const { events: allEvents, loading: eventsLoading } = useAllActiveEvents();
+  const { stats } = useRestaurantPreviewStats(restaurant.id);
+  const savedMenuItems = hasSavedMenu ? menuItems : [];
+  const menuHighlights = savedMenuItems.slice(0, 4);
+  const menuSections = useMemo(() => {
+    const categories = uniquePreviewValues(savedMenuItems.map((item) => item.category));
+    return categories.map((category) => ({
+      category,
+      items: savedMenuItems.filter((item) => item.category === category),
+    }));
+  }, [savedMenuItems]);
+  const restaurantEvents = useMemo(
+    () => allEvents.filter((event) => event.restaurant_id === restaurant.id),
+    [allEvents, restaurant.id],
+  );
+  const restaurantDisplay = useMemo<RestaurantDisplayInfo>(() => ({
+    name: restaurant.name,
+    slug: restaurant.slug,
+    cuisine_type: restaurant.cuisine_type,
+    avg_rating: restaurant.avg_rating,
+    cover_photo_url: restaurant.cover_photo_url,
+    city: restaurant.city,
+    price_range: restaurant.price_range,
+  }), [restaurant]);
+  const eventCards = useMemo(
+    () => restaurantEvents.map((event) => eventToDisplay(event, restaurantDisplay)),
+    [restaurantDisplay, restaurantEvents],
+  );
+  const photoSources = useMemo(
+    () => uniquePreviewValues([
+      restaurant.cover_photo_url,
+      restaurant.logo_url,
+      ...savedMenuItems.map((item) => item.photoUrl ?? null),
+      ...restaurantEvents.map((event) => event.media_type === "image" ? event.media_url : event.cover_image_url),
+    ]),
+    [restaurant.cover_photo_url, restaurant.logo_url, restaurantEvents, savedMenuItems],
+  );
+  const availableTimes = useMemo(
+    () => availability.slots.map((slot) => slot.display_time).slice(0, 6),
+    [availability.slots],
+  );
+  const hoursRows = useMemo(() => formatRestaurantHoursRows(restaurant.hours_json), [restaurant.hours_json]);
+  const cuisine = restaurant.cuisine_type ?? "Restaurant";
+  const priceLabel = restaurant.price_range != null ? PRICE_LABELS[restaurant.price_range] : "—";
+  const rating = restaurant.avg_rating?.toFixed(1) ?? "New";
+  const reviewCount = restaurant.total_reviews ?? 0;
+  const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
 
-  const popular = menuItems.filter((item) => item.popular).slice(0, 4);
-  const snacks = menuItems.slice(0, 2);
-  const firstCourse = menuItems.slice(2, 4);
-  const cuisine = restaurant.cuisine_type ?? "Spanish Tapas";
-  const priceLabel = PRICE_LABELS[restaurant.price_range ?? 3] ?? "$$$";
-  const rating = restaurant.avg_rating?.toFixed(1) ?? "4.6";
-  const reviewCount = restaurant.total_reviews ?? 927;
-  const selectedTimeLabel = STAFF_PREVIEW_TIMES.find((time) => time.value === selectedTime)?.label ?? selectedTime;
+  useEffect(() => {
+    void availability.fetchSlots(restaurant.id, previewDate, 2);
+  }, [availability.fetchSlots, previewDate, restaurant.id]);
+
+  useEffect(() => {
+    if (availableTimes.length === 0) {
+      if (selectedTime) setSelectedTime("");
+      return;
+    }
+    if (!availableTimes.includes(selectedTime)) setSelectedTime(availableTimes[0]);
+  }, [availableTimes, selectedTime]);
 
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
@@ -429,30 +500,43 @@ function RestaurantStaffPreview({
         <section className="lg:col-span-2">
           <div className="rounded-3xl border border-border bg-bg-surface p-6 shadow-2xl shadow-black/40">
             <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex flex-wrap gap-2">
-                  <span className="rounded-full border border-gold/30 bg-gold/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-gold">
-                    Tasting menu
-                  </span>
-                  <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-text-secondary">
-                    Patio
-                  </span>
-                  <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-success">
-                    Tables tonight
-                  </span>
+              <div className="flex gap-4">
+                <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-bg-elevated font-mono text-sm font-semibold text-gold shadow-lg shadow-black/20">
+                  {restaurant.logo_url ? (
+                    <img src={restaurant.logo_url} alt={`${restaurant.name} logo`} className="size-full object-cover" />
+                  ) : (
+                    restaurant.name.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase()
+                  )}
                 </div>
-                <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
-                  <span>{cuisine}</span>
-                  <span className="font-semibold text-gold">{priceLabel}</span>
-                  <span className="inline-flex items-center gap-1">
-                    <Star className="size-3 fill-gold text-gold" />
-                    {rating} · {reviewCount} reviews
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <MapPin className="size-3" />
-                    {restaurant.city ?? "Toronto"}
-                  </span>
+                <div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full border border-gold/30 bg-gold/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-gold">
+                      {restaurant.business_type ?? "Restaurant"}
+                    </span>
+                    {restaurant.cuisine_type && (
+                      <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-text-secondary">
+                        {restaurant.cuisine_type}
+                      </span>
+                    )}
+                    {availableTimes.length > 0 && (
+                      <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-success">
+                        {availableTimes.length} times today
+                      </span>
+                    )}
+                  </div>
+                  <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+                    <span>{cuisine}</span>
+                    <span className="font-semibold text-gold">{priceLabel}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <Star className="size-3 fill-gold text-gold" />
+                      {reviewCount > 0 ? `${rating} · ${reviewCount.toLocaleString()} reviews` : "New"}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <MapPin className="size-3" />
+                      {restaurant.city ?? "—"}
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="flex gap-2">
@@ -505,58 +589,69 @@ function RestaurantStaffPreview({
               <div className="rounded-3xl border border-border bg-bg-surface p-5">
                 <div className="mb-5 flex items-end justify-between">
                   <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Popular tonight</p>
-                    <h2 className="mt-2 font-serif text-2xl text-white">Most-ordered this week</h2>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Menu</p>
+                    <h2 className="mt-2 font-serif text-2xl text-white">Menu highlights</h2>
                   </div>
                   <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
-                    {popular.length} dishes
+                    {menuHighlights.length} dishes
                   </span>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  {popular.map((item) => <PreviewDishCard key={item.id} item={item} />)}
-                </div>
+                {menuHighlights.length > 0 ? (
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {menuHighlights.map((item) => <PreviewDishCard key={item.id} item={item} />)}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                    No public menu items have been added yet.
+                  </div>
+                )}
               </div>
 
-              <div className="rounded-3xl border border-border bg-bg-surface p-5">
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="font-serif text-2xl text-white">Snacks & Bread</h2>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">{snacks.length} items</span>
+              {menuSections.map((section) => (
+                <div key={section.category} className="rounded-3xl border border-border bg-bg-surface p-5">
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 className="font-serif text-2xl text-white">{section.category}</h2>
+                    <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">{section.items.length} items</span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {section.items.map((item) => <PreviewDishCard key={item.id} item={item} compact />)}
+                  </div>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {snacks.map((item) => <PreviewDishCard key={item.id} item={item} compact />)}
-                </div>
-              </div>
-
-              <div className="rounded-3xl border border-border bg-bg-surface p-5">
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="font-serif text-2xl text-white">First Course</h2>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">{firstCourse.length} items</span>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {firstCourse.map((item) => <PreviewDishCard key={item.id} item={item} compact />)}
-                </div>
-              </div>
+              ))}
             </>
           ) : (
             <div className="rounded-3xl border border-border bg-bg-surface p-6">
               {activeTab === "Photos" && (
                 <>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Dining room</p>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Media</p>
                   <h2 className="mt-2 font-serif text-2xl text-white">Photos</h2>
-                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                    {["Dining", "Bar", "Patio", "Chef", "Table", "Dessert"].map((label) => (
-                      <div key={label} className="h-36"><PreviewArt label={label} /></div>
-                    ))}
-                  </div>
+                  {photoSources.length > 0 ? (
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      {photoSources.map((imageUrl) => (
+                        <div key={imageUrl} className="h-36">
+                          <PreviewArt label={restaurant.name} imageUrl={imageUrl} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      No restaurant or menu photos have been added yet.
+                    </div>
+                  )}
                 </>
               )}
               {activeTab === "Reviews" && (
                 <>
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Guest sentiment</p>
-                  <h2 className="mt-2 font-serif text-2xl text-white">{rating} from {reviewCount} reviews</h2>
+                  <h2 className="mt-2 font-serif text-2xl text-white">
+                    {reviewCount > 0 ? `${rating} from ${reviewCount.toLocaleString()} reviews` : "No reviews yet"}
+                  </h2>
                   <div className="mt-5 space-y-3 text-sm text-text-secondary">
-                    <p className="rounded-2xl bg-bg-elevated p-4">"The pacing, lighting, and hospitality made the room feel special from the first course."</p>
-                    <p className="rounded-2xl bg-bg-elevated p-4">"Great for a celebratory dinner. The staff remembered our preferences."</p>
+                    <p className="rounded-2xl bg-bg-elevated p-4">
+                      {reviewCount > 0
+                        ? `${restaurant.name} has an average public rating of ${rating}.`
+                        : "Public guest reviews will appear here once they are recorded."}
+                    </p>
                   </div>
                 </>
               )}
@@ -565,11 +660,22 @@ function RestaurantStaffPreview({
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">About</p>
                   <h2 className="mt-2 font-serif text-2xl text-white">{restaurant.name}</h2>
                   <p className="mt-4 leading-relaxed text-text-secondary">
-                    {restaurant.description ?? `${restaurant.name} is a polished ${cuisine.toLowerCase()} room with warm service, seasonal dishes, and tables available tonight.`}
+                    {restaurant.description ?? `${restaurant.name} has not added a public description yet.`}
                   </p>
                   <div className="mt-5 grid gap-3 text-sm text-text-secondary sm:grid-cols-2">
-                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.address ?? "Downtown Toronto"}</p>
-                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.phone ?? "Concierge available after booking"}</p>
+                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.address ?? "Address not set"}</p>
+                    <p className="rounded-2xl bg-bg-elevated p-4">{restaurant.phone ?? "Phone not set"}</p>
+                  </div>
+                  <div className="mt-5 rounded-2xl bg-bg-elevated p-4">
+                    <h3 className="font-serif text-lg text-white">Weekly hours</h3>
+                    <dl className="mt-3 space-y-2 text-xs text-text-secondary">
+                      {hoursRows.map((row) => (
+                        <div key={row.key} className="flex justify-between gap-4">
+                          <dt>{row.label}</dt>
+                          <dd className={row.open ? "text-white" : "text-text-muted"}>{row.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   </div>
                 </>
               )}
@@ -577,14 +683,22 @@ function RestaurantStaffPreview({
                 <>
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Upcoming</p>
                   <h2 className="mt-2 font-serif text-2xl text-white">Events</h2>
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                    {["Chef's counter tasting", "Late-night tapas", "Wine pairing weekend"].map((eventName) => (
-                      <button key={eventName} type="button" className="rounded-2xl border border-border bg-bg-elevated p-4 text-left transition-colors hover:border-gold/40">
-                        <p className="font-serif text-lg text-white">{eventName}</p>
-                        <p className="mt-2 text-xs text-text-secondary">Tap to preview event details.</p>
-                      </button>
-                    ))}
-                  </div>
+                  {eventCards.length > 0 ? (
+                    <div className="mt-5 grid gap-3">
+                      {eventCards.map((event) => (
+                        <EventPromotionDetailCard
+                          key={event.id}
+                          item={event}
+                          onReserve={() => selectedTime && onStartBooking(selectedTime)}
+                          className="shadow-none"
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      {eventsLoading ? "Loading events..." : "No active events have been added yet."}
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -597,7 +711,7 @@ function RestaurantStaffPreview({
             <div className="mt-5 grid grid-cols-2 gap-2">
               <div className="rounded-2xl bg-bg-elevated p-4">
                 <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Date</p>
-                <p className="mt-2 text-sm text-white">Sat · Apr 27</p>
+                <p className="mt-2 text-sm text-white">{previewDateLabel}</p>
               </div>
               <div className="rounded-2xl bg-bg-elevated p-4">
                 <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Party</p>
@@ -605,37 +719,54 @@ function RestaurantStaffPreview({
               </div>
             </div>
             <p className="mt-5 font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Available times</p>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              {STAFF_PREVIEW_TIMES.map((time) => (
-                <button
-                  key={time.value}
-                  type="button"
-                  onClick={() => setSelectedTime(time.value)}
-                  className={cn(
-                    "rounded-xl px-3 py-3 text-xs transition-colors",
-                    selectedTime === time.value ? "bg-gold text-bg-base" : "bg-bg-elevated text-text-secondary hover:text-white",
-                  )}
-                >
-                  {time.label}
-                </button>
-              ))}
-            </div>
-            <Button className="mt-4 h-12 w-full rounded-xl" onClick={() => onStartBooking(selectedTime)}>
-              Continue with {selectedTimeLabel}
+            {availableTimes.length > 0 ? (
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {availableTimes.map((time) => (
+                  <button
+                    key={time}
+                    type="button"
+                    onClick={() => setSelectedTime(time)}
+                    className={cn(
+                      "rounded-xl px-3 py-3 text-xs transition-colors",
+                      selectedTime === time ? "bg-gold text-bg-base" : "bg-bg-elevated text-text-secondary hover:text-white",
+                    )}
+                  >
+                    {formatCompactTimeLabel(time)}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-3 rounded-2xl bg-bg-elevated p-4 text-xs text-text-muted">
+                {availability.loading ? "Checking availability..." : "No available times for this date."}
+              </div>
+            )}
+            <Button
+              className="mt-4 h-12 w-full rounded-xl"
+              onClick={() => selectedTime && onStartBooking(selectedTime)}
+              disabled={!selectedTime}
+            >
+              {selectedTimeLabel ? `Continue with ${selectedTimeLabel}` : "No times available"}
             </Button>
             <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs">
-              <div className="flex justify-between"><span className="text-text-muted">Deposit (refundable)</span><span className="text-white">$40.00 / guest</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Cancellation</span><span className="text-white">24h notice</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Loyalty earned</span><span className="text-gold">+185 pts</span></div>
+              <div className="flex justify-between">
+                <span className="text-text-muted">Cancellation</span>
+                <span className="text-white">{restaurant.cancellation_hours}h notice</span>
+              </div>
+              {restaurant.no_show_fee != null && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">No-show fee</span>
+                  <span className="text-white">{formatCurrency(restaurant.no_show_fee, restaurant.currency)}</span>
+                </div>
+              )}
             </div>
             <p className="mt-5 rounded-xl bg-bg-elevated/60 p-3 text-xs leading-relaxed text-text-muted">
-              Your last visit was 6 weeks ago. The team remembers your nut allergy.
+              Availability is calculated from this restaurant's saved tables, reservations, and booking rules.
             </p>
           </div>
           <div className="rounded-3xl border border-border bg-bg-surface p-5 text-xs text-text-secondary">
-            <p>Booked 85 times today</p>
-            <p className="mt-3">Concierge notes available after booking</p>
-            <p className="mt-3">Great for parties of 2–6</p>
+            <p>{stats.bookedToday} booking{stats.bookedToday === 1 ? "" : "s"} today</p>
+            <p className="mt-3">{restaurant.accepts_walkins === false ? "Reservations only" : "Walk-ins accepted when available"}</p>
+            <p className="mt-3">Party size uses live availability</p>
           </div>
         </aside>
       </main>
@@ -1288,6 +1419,7 @@ export default function RestaurantPublicPage() {
       <RestaurantStaffPreview
         restaurant={restaurant}
         menuItems={menuItems}
+        hasSavedMenu={dbMenuItems.length > 0}
         onBack={() => navigate("/dashboard")}
         onStartBooking={(time) => {
           setDineIn((details) => ({ ...details, time }));

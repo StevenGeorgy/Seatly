@@ -13,8 +13,22 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
+import { CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 import {
   isDatabaseUuid,
   useFloorPlan,
@@ -23,8 +37,10 @@ import {
   type TableRow,
 } from "@/hooks/useFloorPlan";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useUser } from "@/hooks/useUser";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
+import { markReservationTablesSeated } from "@/lib/table-assignment";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -35,6 +51,10 @@ type TableShape = "round" | "rect";
 type FloorTable = {
   id: string;
   dbId?: string;
+  reservationId?: string | null;
+  reservationStatus?: string | null;
+  reservedAt?: string | null;
+  durationMinutes?: number | null;
   tableNumber?: string | null;
   label?: string | null;
   sectionId?: string | null;
@@ -272,9 +292,177 @@ const TBL_STATUS: Record<
 const BORDER_SOFT = "rgba(255,255,255,0.07)";
 const SURFACE_BG = "rgba(20,20,22,0.85)";
 const DEFAULT_ROOM: Room = { w: 720, h: 560 };
+const DEFAULT_TURN_TIME_MINUTES = 90;
+const RESERVATION_HOLD_BEFORE_MINUTES = 30;
+const TIME_WHEEL_INCREMENT_MINUTES = 15;
+const HOURS = Array.from({ length: 12 }, (_, index) => String(index + 1));
+const MINUTES = ["00", "15", "30", "45"];
+const PERIODS = ["AM", "PM"] as const;
+
+type FloorServiceAction = "walkin" | "reserve";
+type FloorServiceFormValues = {
+  guestName: string;
+  guestEmail: string;
+  guestPhone: string;
+  partySize: number;
+  reservationDate: string;
+  reservationTime: string;
+  specialRequest: string;
+};
+
+type ReservationLinkRow = {
+  reservation_id: string;
+  reservations:
+    | {
+        id: string;
+        status: string | null;
+        reserved_at: string | null;
+        duration_minutes: number | null;
+      }
+    | Array<{
+        id: string;
+        status: string | null;
+        reserved_at: string | null;
+        duration_minutes: number | null;
+      }>
+    | null;
+};
+
+type GuestLookupRow = { id: string };
 
 function tableDisplayLabel(table: FloorTable): string {
   return table.label || table.tableNumber || table.id;
+}
+
+function dateInputValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateInputValue(value: string): Date | undefined {
+  const [year, month, day] = value.split("-").map(Number);
+  if (![year, month, day].every(Number.isFinite)) return undefined;
+  const parsed = new Date(year, month - 1, day, 12, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function formatPickerDate(value: string): string {
+  const parsed = parseDateInputValue(value);
+  if (!parsed) return "Choose date";
+  return parsed.toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function timeInputValue(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function normalizeTimeValue(value: string): string {
+  const [hourPart, minutePart = "00"] = value.split(":");
+  const hour = Number(hourPart);
+  const minute = Number(minutePart);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return "";
+
+  const totalMinutes = hour * 60 + minute;
+  const roundedMinutes = Math.round(totalMinutes / TIME_WHEEL_INCREMENT_MINUTES) * TIME_WHEEL_INCREMENT_MINUTES;
+  const normalizedMinutes = ((roundedMinutes % 1440) + 1440) % 1440;
+  const normalizedHour = Math.floor(normalizedMinutes / 60);
+  const normalizedMinute = normalizedMinutes % 60;
+  return `${String(normalizedHour).padStart(2, "0")}:${String(normalizedMinute).padStart(2, "0")}`;
+}
+
+function toTimeValue(hour: string, minute: string, period: (typeof PERIODS)[number]): string {
+  const hourNumber = Number(hour);
+  const normalized = period === "AM"
+    ? hourNumber % 12
+    : hourNumber === 12 ? 12 : hourNumber + 12;
+  return `${String(normalized).padStart(2, "0")}:${minute}`;
+}
+
+function splitTimeValue(value: string): { hour: string; minute: string; period: (typeof PERIODS)[number] } {
+  if (!value) return { hour: "7", minute: "00", period: "PM" };
+  const normalizedValue = normalizeTimeValue(value);
+  const [hourPart, minutePart] = normalizedValue.split(":");
+  const hour24 = Number(hourPart);
+  const period: (typeof PERIODS)[number] = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return {
+    hour: String(hour12),
+    minute: minutePart ?? "00",
+    period,
+  };
+}
+
+function formatPickerTime(value: string): string {
+  if (!value) return "Choose time";
+  const normalizedValue = normalizeTimeValue(value);
+  if (!normalizedValue) return "Choose time";
+  const [hourPart, minutePart = "00"] = normalizedValue.split(":");
+  const hour24 = Number(hourPart);
+  const minute = Number(minutePart);
+  if (!Number.isFinite(hour24) || !Number.isFinite(minute)) return "Choose time";
+  const date = new Date();
+  date.setHours(hour24, minute, 0, 0);
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function roundToNextHalfHour(date: Date): Date {
+  const rounded = new Date(date);
+  rounded.setSeconds(0, 0);
+  const minutes = rounded.getMinutes();
+  const remainder = minutes % TIME_WHEEL_INCREMENT_MINUTES;
+  const addMinutes = remainder === 0 ? 0 : TIME_WHEEL_INCREMENT_MINUTES - remainder;
+  rounded.setMinutes(minutes + addMinutes);
+  return rounded;
+}
+
+function combineDateAndTime(dateValue: string, timeValue: string): Date | null {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const [hours, minutes] = timeValue.split(":").map(Number);
+  if (![year, month, day, hours, minutes].every(Number.isFinite)) return null;
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+function serviceTimeLabel(date: Date): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function restaurantTurnTimeMinutes(settings: { turnTimeMinutes?: number } | null | undefined): number {
+  const value = settings?.turnTimeMinutes;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : DEFAULT_TURN_TIME_MINUTES;
+}
+
+function reservationTableIds(row: ReservationRow): string[] {
+  const assigned = row.reservation_tables
+    ?.map((assignment) => assignment.table_id)
+    .filter((id): id is string => Boolean(id)) ?? [];
+  if (assigned.length > 0) return assigned;
+  return row.table_id ? [row.table_id] : [];
+}
+
+function reservationGuestName(row: ReservationRow): string {
+  return row.guests?.full_name ?? row.guest_full_name ?? "Guest";
+}
+
+function isReservationInFloorWindow(row: ReservationRow, now: Date, fallbackTurnMinutes: number): boolean {
+  const reservedAt = new Date(row.reserved_at);
+  if (Number.isNaN(reservedAt.getTime())) return false;
+  const duration = row.duration_minutes ?? fallbackTurnMinutes;
+  const windowStart = new Date(reservedAt.getTime() - RESERVATION_HOLD_BEFORE_MINUTES * 60_000);
+  const windowEnd = new Date(reservedAt.getTime() + duration * 60_000);
+  return now >= windowStart && now <= windowEnd;
+}
+
+function reservationPriority(row: ReservationRow): number {
+  if (row.status === "seated") return 3;
+  if (row.status === "confirmed") return 2;
+  return 0;
 }
 
 function toLocalStatus(status: string | null | undefined): Status {
@@ -805,6 +993,356 @@ type ActionKind =
   | "move"
   | "ready";
 
+function WheelColumn({
+  label,
+  values,
+  value,
+  onChange,
+}: {
+  label: string;
+  values: readonly string[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<number | null>(null);
+  const wheelDeltaRef = useRef(0);
+  const selectedIndex = Math.max(values.indexOf(value), 0);
+  const selectedValue = values[selectedIndex] ?? values[0] ?? "";
+  const move = (direction: 1 | -1) => {
+    const nextIndex = (selectedIndex + direction + values.length) % values.length;
+    onChange(values[nextIndex]);
+  };
+
+  useEffect(() => {
+    const selectedButton = scrollRef.current?.querySelector<HTMLButtonElement>(
+      `[data-wheel-value="${CSS.escape(selectedValue)}"]`,
+    );
+    selectedButton?.scrollIntoView({ block: "center" });
+  }, [selectedValue]);
+
+  const commitNearestValue = () => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const centerY = containerRect.top + containerRect.height / 2;
+    const options = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-wheel-option]"));
+    const nearest = options.reduce<HTMLButtonElement | null>((closest, option) => {
+      if (!closest) return option;
+      const optionRect = option.getBoundingClientRect();
+      const closestRect = closest.getBoundingClientRect();
+      const optionDistance = Math.abs(optionRect.top + optionRect.height / 2 - centerY);
+      const closestDistance = Math.abs(closestRect.top + closestRect.height / 2 - centerY);
+      return optionDistance < closestDistance ? option : closest;
+    }, null);
+
+    const nextValue = nearest?.dataset.wheelValue;
+    if (nextValue && nextValue !== value) onChange(nextValue);
+  };
+
+  return (
+    <div
+      role="listbox"
+      aria-label={label}
+      tabIndex={0}
+      onWheel={(event) => {
+        event.preventDefault();
+        wheelDeltaRef.current += event.deltaY;
+        if (Math.abs(wheelDeltaRef.current) < 24) return;
+        move(wheelDeltaRef.current > 0 ? 1 : -1);
+        wheelDeltaRef.current = 0;
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown") move(1);
+        if (event.key === "ArrowUp") move(-1);
+      }}
+      className="relative h-44 overflow-hidden rounded-3xl border border-border bg-bg-base/80 outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+    >
+      <div aria-hidden className="pointer-events-none absolute inset-x-5 top-1/2 z-10 h-9 -translate-y-1/2 border-y border-gold/20" />
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+          scrollTimerRef.current = window.setTimeout(commitNearestValue, 90);
+        }}
+        className="h-full overflow-y-auto overscroll-contain py-[72px] pr-1 [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin]"
+      >
+        {values.map((item) => {
+          const active = item === selectedValue;
+          return (
+            <button
+              key={item}
+              type="button"
+              role="option"
+              aria-selected={active}
+              data-wheel-option
+              data-wheel-value={item}
+              onClick={() => onChange(item)}
+              className={cn(
+                "flex h-9 w-full items-center justify-center text-lg transition-all",
+                active ? "scale-110 font-semibold text-gold" : "text-text-muted hover:text-text-secondary",
+              )}
+            >
+              {item}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FloorDatePickerButton({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = useMemo(() => parseDateInputValue(value), [value]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40"
+        >
+          <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+          <span className={cn("truncate text-sm leading-none", value ? "text-text-primary" : "text-text-muted")}>
+            {value ? formatPickerDate(value) : placeholder}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-2 text-text-primary shadow-2xl">
+        <Calendar
+          mode="single"
+          required={false}
+          showOutsideDays={false}
+          selected={selected}
+          onSelect={(date) => {
+            if (!date) return;
+            onChange(dateInputValue(date));
+            setOpen(false);
+          }}
+          classNames={{
+            day: "group/day relative flex-1 p-0 text-center select-none",
+            day_button: "relative isolate z-10 flex size-9 min-w-9 items-center justify-center rounded-md border-0 leading-none font-normal text-text-secondary hover:bg-gold/10 hover:text-white disabled:pointer-events-none disabled:opacity-30 data-[selected-single=true]:bg-gold data-[selected-single=true]:font-semibold data-[selected-single=true]:text-black data-[anchor=true]:border data-[anchor=true]:border-gold/60 data-[anchor=true]:text-gold",
+            hidden: "invisible pointer-events-none",
+            outside: "invisible pointer-events-none",
+            disabled: "text-text-muted opacity-25",
+            today: "text-white",
+          }}
+          className="rounded-md border-0 bg-transparent"
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function FloorTimePickerButton({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const parts = splitTimeValue(value);
+  const setPart = (next: Partial<typeof parts>) => {
+    const merged = { ...parts, ...next };
+    onChange(toTimeValue(merged.hour, merged.minute, merged.period));
+  };
+  const normalizedValue = normalizeTimeValue(value);
+
+  useEffect(() => {
+    if (value && normalizedValue && value !== normalizedValue) onChange(normalizedValue);
+  }, [normalizedValue, onChange, value]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex h-10 w-full items-center justify-between rounded-lg border border-border bg-bg-elevated px-3 text-left text-sm text-text-primary outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40"
+        >
+          <span className={normalizedValue ? "text-text-primary" : "text-text-muted"}>
+            {normalizedValue ? formatPickerTime(normalizedValue) : placeholder}
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Time</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 border-border bg-bg-elevated p-3">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+            Scroll columns
+          </p>
+          <p className="text-sm font-medium text-white">{normalizedValue ? formatPickerTime(normalizedValue) : "7:00 PM"}</p>
+        </div>
+        <div className="grid grid-cols-[1fr_1fr_0.9fr] gap-2">
+          <WheelColumn label="Hour" values={HOURS} value={parts.hour} onChange={(hour) => setPart({ hour })} />
+          <WheelColumn label="Minute" values={MINUTES} value={parts.minute} onChange={(minute) => setPart({ minute })} />
+          <WheelColumn label="Period" values={PERIODS} value={parts.period} onChange={(period) => setPart({ period: period as (typeof PERIODS)[number] })} />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange("")}>
+            Clear
+          </Button>
+          <Button type="button" size="sm" onClick={() => setOpen(false)}>
+            Done
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function FloorReservationDialog({
+  open,
+  action,
+  table,
+  turnTimeMinutes,
+  saving,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  action: FloorServiceAction | null;
+  table: FloorTable | null;
+  turnTimeMinutes: number;
+  saving: boolean;
+  onClose: () => void;
+  onSubmit: (values: FloorServiceFormValues) => Promise<void>;
+}) {
+  const now = useMemo(() => new Date(), [open]);
+  const reserveDefault = useMemo(() => roundToNextHalfHour(now), [now]);
+  const [guestName, setGuestName] = useState(action === "walkin" ? "Walk-in" : "");
+  const [guestEmail, setGuestEmail] = useState("");
+  const [guestPhone, setGuestPhone] = useState("");
+  const [partySize, setPartySize] = useState(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
+  const [reservationDate, setReservationDate] = useState(dateInputValue(action === "walkin" ? now : reserveDefault));
+  const [reservationTime, setReservationTime] = useState(normalizeTimeValue(timeInputValue(action === "walkin" ? now : reserveDefault)));
+  const [specialRequest, setSpecialRequest] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    const nextNow = new Date();
+    const nextReserveDefault = roundToNextHalfHour(nextNow);
+    const defaultDate = action === "walkin" ? nextNow : nextReserveDefault;
+    setGuestName(action === "walkin" ? "Walk-in" : "");
+    setGuestEmail("");
+    setGuestPhone("");
+    setPartySize(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
+    setReservationDate(dateInputValue(defaultDate));
+    setReservationTime(normalizeTimeValue(timeInputValue(defaultDate)));
+    setSpecialRequest("");
+  }, [action, open, table?.cap]);
+
+  const title = action === "walkin" ? "Seat a walk-in" : "Add a reservation";
+
+  const handleSubmit = async () => {
+    await onSubmit({
+      guestName,
+      guestEmail,
+      guestPhone,
+      partySize: Math.max(1, Number.parseInt(partySize, 10) || 1),
+      reservationDate,
+      reservationTime,
+      specialRequest,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen && !saving) onClose(); }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>
+            {title}
+            {table ? <span className="ml-2 text-sm font-normal text-text-muted">· Table {tableDisplayLabel(table)}</span> : null}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          <div className="grid gap-2">
+            <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Guest name</label>
+            <Input value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Walk-in" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Party size</label>
+              <Input
+                type="number"
+                min={1}
+                max={99}
+                value={partySize}
+                onChange={(event) => setPartySize(event.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Turn time</label>
+              <div className="flex h-10 items-center rounded-md border border-border bg-bg-elevated px-3 text-sm text-text-secondary">
+                {turnTimeMinutes} min
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Date</label>
+              <FloorDatePickerButton
+                value={reservationDate}
+                onChange={setReservationDate}
+                placeholder="Choose date"
+              />
+            </div>
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Time</label>
+              <FloorTimePickerButton
+                value={reservationTime}
+                onChange={setReservationTime}
+                placeholder="Choose time"
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Email</label>
+              <Input value={guestEmail} onChange={(event) => setGuestEmail(event.target.value)} placeholder="Optional" />
+            </div>
+            <div className="grid gap-2">
+              <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Phone</label>
+              <Input value={guestPhone} onChange={(event) => setGuestPhone(event.target.value)} placeholder="Optional" />
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Notes</label>
+            <Textarea
+              rows={3}
+              value={specialRequest}
+              onChange={(event) => setSpecialRequest(event.target.value)}
+              placeholder={action === "walkin" ? "Walk-in from floor plan" : "Optional reservation notes"}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void handleSubmit()} disabled={saving}>
+            {saving ? "Saving..." : action === "walkin" ? "Seat now" : "Add reservation"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TableCard({
   t,
   editing,
@@ -1259,6 +1797,7 @@ function EditCard({
 
 // ─── Main page ─────────────────────────────────────────────────────────────
 export default function FloorPlanPage() {
+  const { t } = useTranslation();
   const {
     tables: dbTables,
     floorPlans: dbFloorPlans,
@@ -1274,8 +1813,13 @@ export default function FloorPlanPage() {
     updateLayout,
     refetch: refetchFloorPlan,
   } = useFloorPlan({ pauseRealtime: true });
+  const {
+    reservations,
+    updateStatus: updateReservationStatus,
+    refetch: refetchReservations,
+  } = useReservations();
   const { rolesAtRestaurant } = useUser();
-  const { selectedRestaurantId } = useRestaurantScope();
+  const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
   const [floors, setFloors] = useState<Floor[]>(FLOORS);
   const [activeFloor, setActiveFloor] = useState("main");
   const [rooms, setRooms] = useState<Record<string, Room>>(ROOMS);
@@ -1292,6 +1836,9 @@ export default function FloorPlanPage() {
   const [renamingFloorId, setRenamingFloorId] = useState<string | null>(null);
   const [renameFloorValue, setRenameFloorValue] = useState("");
   const [confirmDeleteFloorId, setConfirmDeleteFloorId] = useState<string | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ action: FloorServiceAction; table: FloorTable } | null>(null);
+  const [savingService, setSavingService] = useState(false);
+  const turnTimeMinutes = restaurantTurnTimeMinutes(selectedRestaurant?.settings_json);
 
   // Visual scale for "100%". Keep this at true room scale so the floor
   // outline fills the viewport instead of feeling zoomed out.
@@ -1361,6 +1908,41 @@ export default function FloorPlanPage() {
         nextTables[floorId] = [...(nextTables[floorId] ?? []), tableRowToFloorTable(table)];
       });
 
+      const now = new Date();
+      const serviceReservations = reservations
+        .filter((reservation) => ["confirmed", "seated"].includes(reservation.status))
+        .filter((reservation) => isReservationInFloorWindow(reservation, now, turnTimeMinutes))
+        .sort((a, b) => {
+          const priorityDiff = reservationPriority(b) - reservationPriority(a);
+          if (priorityDiff !== 0) return priorityDiff;
+          return new Date(a.reserved_at).getTime() - new Date(b.reserved_at).getTime();
+        });
+
+      for (const reservation of serviceReservations) {
+        const assignedTableIds = new Set(reservationTableIds(reservation));
+        if (assignedTableIds.size === 0) continue;
+        const reservedAt = new Date(reservation.reserved_at);
+        const reservationStatus: Status = reservation.status === "seated" ? "occupied" : "reserved";
+
+        for (const floorId of Object.keys(nextTables)) {
+          nextTables[floorId] = nextTables[floorId].map((table) => {
+            const tableId = table.dbId ?? table.id;
+            if (!assignedTableIds.has(tableId)) return table;
+            return {
+              ...table,
+              reservationId: reservation.id,
+              reservationStatus: reservation.status,
+              reservedAt: reservation.reserved_at,
+              durationMinutes: reservation.duration_minutes,
+              status: reservationStatus,
+              guest: reservationGuestName(reservation),
+              party: reservation.party_size,
+              time: Number.isNaN(reservedAt.getTime()) ? null : serviceTimeLabel(reservedAt),
+            };
+          });
+        }
+      }
+
       setFloors(nextFloors);
       setRooms(nextRooms);
       setWalls(nextWalls);
@@ -1377,7 +1959,7 @@ export default function FloorPlanPage() {
     return () => {
       cancelled = true;
     };
-  }, [dbFloorPlans, dbSections, dbTables, floorPlanLoading]);
+  }, [dbFloorPlans, dbSections, dbTables, floorPlanLoading, reservations, turnTimeMinutes]);
 
   const tables = useMemo(() => tablesByFloor[activeFloor] ?? [], [activeFloor, tablesByFloor]);
   const walls = useMemo(() => wallsByFloor[activeFloor] ?? [], [activeFloor, wallsByFloor]);
@@ -1544,19 +2126,223 @@ export default function FloorPlanPage() {
     }
   };
 
+  const findGuestId = async (payload: FloorServiceFormValues): Promise<string | null> => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
+    const guestEmail = payload.guestEmail.trim();
+    const guestPhone = payload.guestPhone.trim();
+    if (!guestEmail && !guestPhone) return null;
+
+    const client = getSupabaseBrowserClient();
+    let query = client
+      .from("guests")
+      .select("id")
+      .eq("restaurant_id", selectedRestaurantId)
+      .limit(1);
+
+    if (guestEmail && guestPhone) {
+      query = query.or(`email.eq.${guestEmail},phone.eq.${guestPhone}`);
+    } else if (guestEmail) {
+      query = query.eq("email", guestEmail);
+    } else {
+      query = query.eq("phone", guestPhone);
+    }
+
+    const { data } = await query;
+    const first = (data ?? [])[0] as GuestLookupRow | undefined;
+    return first?.id ?? null;
+  };
+
+  const ensureTableAvailableForReservation = async (
+    tableId: string,
+    reservedAt: Date,
+    partySize: number,
+  ): Promise<void> => {
+    if (partySize > (tables.find((table) => (table.dbId ?? table.id) === tableId)?.cap ?? 0)) {
+      throw new Error("Party size exceeds this table's capacity.");
+    }
+
+    const client = getSupabaseBrowserClient();
+    const { data, error } = await client
+      .from("reservation_tables")
+      .select("reservation_id, reservations(id, status, reserved_at, duration_minutes)")
+      .eq("table_id", tableId)
+      .is("released_at", null);
+
+    if (error) throw new Error(error.message);
+
+    const requestedStart = reservedAt.getTime();
+    const requestedEnd = requestedStart + turnTimeMinutes * 60_000;
+    for (const link of (data ?? []) as ReservationLinkRow[]) {
+      const reservation = Array.isArray(link.reservations) ? link.reservations[0] : link.reservations;
+      if (!reservation || !["confirmed", "seated"].includes(reservation.status ?? "")) continue;
+      if (!reservation.reserved_at) continue;
+      const existingStart = new Date(reservation.reserved_at).getTime();
+      if (Number.isNaN(existingStart)) continue;
+      const existingDuration = reservation.duration_minutes ?? turnTimeMinutes;
+      const existingEnd = existingStart + existingDuration * 60_000;
+      if (existingStart < requestedEnd && existingEnd > requestedStart) {
+        throw new Error("This table is already reserved during that turn time.");
+      }
+    }
+  };
+
+  const createFloorReservation = async (
+    action: FloorServiceAction,
+    t: FloorTable,
+    values: FloorServiceFormValues,
+  ): Promise<string> => {
+    if (!selectedRestaurantId) throw new Error("No restaurant selected.");
+    const tableId = t.dbId ?? t.id;
+    if (!isDatabaseUuid(tableId)) throw new Error("Save this table before assigning reservations.");
+
+    const reservedAt = combineDateAndTime(values.reservationDate, values.reservationTime);
+    if (!reservedAt || Number.isNaN(reservedAt.getTime())) throw new Error("Choose a valid reservation time.");
+    const guestName = values.guestName.trim() || (action === "walkin" ? "Walk-in" : "");
+    if (!guestName) throw new Error("Guest name is required.");
+    await ensureTableAvailableForReservation(tableId, reservedAt, values.partySize);
+
+    const guestId = await findGuestId(values);
+    const client = getSupabaseBrowserClient();
+    const { data, error } = await client
+      .from("reservations")
+      .insert({
+        restaurant_id: selectedRestaurantId,
+        guest_id: guestId,
+        guest_full_name: guestName,
+        guest_email: values.guestEmail.trim() || null,
+        guest_phone: values.guestPhone.trim() || null,
+        party_size: values.partySize,
+        reserved_at: reservedAt.toISOString(),
+        duration_minutes: turnTimeMinutes,
+        table_id: tableId,
+        special_request: values.specialRequest.trim() || null,
+        status: action === "walkin" ? "seated" : "confirmed",
+        source: action === "walkin" ? "floor_walkin" : "floor_plan",
+        is_guest_checkout: true,
+        confirmed_at: new Date().toISOString(),
+        checked_in_at: action === "walkin" ? new Date().toISOString() : null,
+        seated_at: action === "walkin" ? new Date().toISOString() : null,
+        confirmation_code: crypto.randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase(),
+      })
+      .select("id")
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    const reservationId = (data as { id: string }).id;
+    const { error: assignmentError } = await client.from("reservation_tables").insert({
+      restaurant_id: selectedRestaurantId,
+      reservation_id: reservationId,
+      table_id: tableId,
+      is_primary: true,
+    });
+    if (assignmentError) throw new Error(assignmentError.message);
+
+    return reservationId;
+  };
+
+  const handleFloorReservationSubmit = async (values: FloorServiceFormValues) => {
+    if (!serviceDialog) return;
+    if (!isSupabaseConfigured()) {
+      toast.error(t("auth.errors.supabaseNotConfigured"));
+      return;
+    }
+
+    const { action, table } = serviceDialog;
+    setSavingService(true);
+    try {
+      await createFloorReservation(action, table, values);
+      const reservedAt = combineDateAndTime(values.reservationDate, values.reservationTime) ?? new Date();
+      const status: Status = action === "walkin" ? "occupied" : "reserved";
+      const nextParty = Math.max(1, values.partySize);
+      updateTable(table.id, {
+        status,
+        guest: values.guestName.trim() || (action === "walkin" ? "Walk-in" : "Guest"),
+        party: nextParty,
+        time: serviceTimeLabel(reservedAt),
+        durationMinutes: turnTimeMinutes,
+      }, true);
+      if (action === "walkin") {
+        void persistServiceStatus(table, "occupied", nextParty);
+      } else {
+        void persistServiceStatus(table, "reserved", 0);
+      }
+      await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
+      setServiceDialog(null);
+      toast.success(action === "walkin" ? "Walk-in seated." : "Reservation added.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save reservation.");
+    } finally {
+      setSavingService(false);
+    }
+  };
+
+  const seatReservedTable = async (t: FloorTable, partySize: number) => {
+    if (!t.reservationId) return;
+    const tableId = t.dbId ?? t.id;
+    if (!isDatabaseUuid(tableId)) {
+      toast.error("Save this table before seating reservations.");
+      return;
+    }
+
+    try {
+      const client = getSupabaseBrowserClient();
+      const seatedAt = new Date().toISOString();
+      const { error } = await client
+        .from("reservations")
+        .update({
+          status: "seated",
+          table_id: tableId,
+          checked_in_at: seatedAt,
+          seated_at: seatedAt,
+        })
+        .eq("id", t.reservationId);
+      if (error) throw new Error(error.message);
+
+      const seated = await markReservationTablesSeated(t.reservationId, partySize);
+      if (seated.error) throw new Error(seated.error);
+
+      await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
+      toast.success("Reservation seated.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not seat reservation.");
+      await refetchFloorPlan({ silent: true });
+    }
+  };
+
   const handleAction = (action: ActionKind, t: FloorTable) => {
-    if (action === "walkin" || action === "seat") {
+    if (action === "walkin" || action === "reserve") {
+      setServiceDialog({ action, table: t });
+      return;
+    }
+    if (action === "seat") {
       const nextParty = t.party || 2;
       updateTable(
         t.id,
         { status: "occupied", guest: t.guest || "Walk-in", party: nextParty, time: t.time || "now" },
         true,
       );
-      void persistServiceStatus(t, "occupied", nextParty);
+      if (action === "seat" && t.reservationId) {
+        void seatReservedTable(t, nextParty);
+      } else {
+        void persistServiceStatus(t, "occupied", nextParty);
+      }
     }
     if (action === "paid") {
       updateTable(t.id, { status: "cleaning", guest: null, party: 0, time: null }, true);
-      void persistServiceStatus(t, "cleaning", 0);
+      if (t.reservationId) {
+        void (async () => {
+          try {
+            await updateReservationStatus(t.reservationId ?? "", "completed");
+            await persistServiceStatus(t, "cleaning", 0);
+            await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Could not close reservation.");
+          }
+        })();
+      } else {
+        void persistServiceStatus(t, "cleaning", 0);
+      }
     }
     if (action === "ready") {
       updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
@@ -1564,7 +2350,19 @@ export default function FloorPlanPage() {
     }
     if (action === "cancel") {
       updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
-      void persistServiceStatus(t, "free", 0);
+      if (t.reservationId) {
+        void (async () => {
+          try {
+            await updateReservationStatus(t.reservationId ?? "", "no_show");
+            await persistServiceStatus(t, "free", 0);
+            await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Could not mark no-show.");
+          }
+        })();
+      } else {
+        void persistServiceStatus(t, "free", 0);
+      }
     }
   };
 
@@ -2546,6 +3344,15 @@ export default function FloorPlanPage() {
           )}
         </div>
       </div>
+      <FloorReservationDialog
+        open={serviceDialog !== null}
+        action={serviceDialog?.action ?? null}
+        table={serviceDialog?.table ?? null}
+        turnTimeMinutes={turnTimeMinutes}
+        saving={savingService}
+        onClose={() => setServiceDialog(null)}
+        onSubmit={handleFloorReservationSubmit}
+      />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 
 export type ExpenseCategory =
   | "food_cost"
+  | "food_supplies"
   | "beverages"
   | "utilities"
   | "rent"
@@ -15,8 +16,16 @@ export type ExpenseCategory =
   | "staff"
   | "supplies"
   | "maintenance"
+  | "cleaning"
+  | "sales"
+  | "preorders"
+  | "events"
+  | "catering"
+  | "delivery"
+  | "gift_cards"
   | "other";
 
+export type FinanceTransactionType = "expense" | "income";
 export type ExpenseStatus = "paid" | "due" | "scheduled" | "overdue";
 export type ExpenseFrequency = "one_time" | "weekly" | "bi_weekly" | "monthly" | "quarterly" | "yearly";
 export type RecurringExpenseFrequency = Exclude<ExpenseFrequency, "one_time">;
@@ -25,6 +34,7 @@ export type ExpenseRow = {
   id: string;
   restaurant_id: string;
   created_by?: string;
+  transaction_type?: FinanceTransactionType;
   category: ExpenseCategory | string;
   vendor_name: string | null;
   description: string | null;
@@ -48,6 +58,7 @@ export type ExpenseRow = {
 export type RecurringExpenseRule = {
   id: string;
   restaurant_id: string;
+  transaction_type?: FinanceTransactionType;
   vendor_name: string;
   category: ExpenseCategory | string;
   description: string | null;
@@ -72,6 +83,7 @@ export type ExpenseFilters = {
 };
 
 export type CreateExpensePayload = {
+  transaction_type: FinanceTransactionType;
   category: ExpenseCategory;
   vendor_name: string;
   description?: string | null;
@@ -155,14 +167,21 @@ export function useExpenses(filters?: ExpenseFilters) {
     if (filters?.dateFrom) query = query.gte("expense_date", filters.dateFrom);
     if (filters?.dateTo) query = query.lte("expense_date", filters.dateTo);
 
+    const recurringQuery = client
+      .from("recurring_expense_rules")
+      .select("*")
+      .eq("restaurant_id", selectedRestaurantId)
+      .eq("is_active", true)
+      .order("next_due_date", { ascending: true });
+
+    let rulesQuery = recurringQuery;
+    if (filters?.category) rulesQuery = rulesQuery.eq("category", filters.category);
+    if (filters?.dateFrom) rulesQuery = rulesQuery.gte("next_due_date", filters.dateFrom);
+    if (filters?.dateTo) rulesQuery = rulesQuery.lte("next_due_date", filters.dateTo);
+
     const [{ data, error: qErr }, { data: rulesData, error: rulesErr }] = await Promise.all([
       query,
-      client
-        .from("recurring_expense_rules")
-        .select("*")
-        .eq("restaurant_id", selectedRestaurantId)
-        .eq("is_active", true)
-        .order("next_due_date", { ascending: true }),
+      rulesQuery,
     ]);
 
     const combinedError = qErr ?? rulesErr;
@@ -192,6 +211,7 @@ export function useExpenses(filters?: ExpenseFilters) {
     if (payload.frequency !== "one_time") {
       const rulePayload = {
         restaurant_id: selectedRestaurantId,
+        transaction_type: payload.transaction_type,
         vendor_name: payload.vendor_name,
         category: payload.category,
         description: payload.description ?? null,
@@ -223,6 +243,7 @@ export function useExpenses(filters?: ExpenseFilters) {
     const expensePayload = {
       restaurant_id: selectedRestaurantId,
       created_by: profile.id,
+      transaction_type: payload.transaction_type,
       category: payload.category,
       vendor_name: payload.vendor_name,
       description: payload.description ?? null,
@@ -259,6 +280,7 @@ export function useExpenses(filters?: ExpenseFilters) {
     const { error: updateError } = await client
       .from("expenses")
       .update({
+        transaction_type: payload.transaction_type,
         category: payload.category,
         vendor_name: payload.vendor_name,
         description: payload.description ?? null,
@@ -291,6 +313,7 @@ export function useExpenses(filters?: ExpenseFilters) {
     const { error: updateError } = await client
       .from("recurring_expense_rules")
       .update({
+        transaction_type: payload.transaction_type,
         category: payload.category,
         vendor_name: payload.vendor_name,
         description: payload.description ?? null,
