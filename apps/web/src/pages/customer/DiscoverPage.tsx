@@ -44,9 +44,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { restaurantPriceLabelFromRange } from "@/lib/restaurant-price-level";
+import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
-
-const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
 const DATE_PRESETS = [
   { id: "today", label: "Today · Apr 27" },
@@ -66,7 +66,7 @@ const TIME_OPTIONS = [
   "9:30 PM",
 ];
 
-const PRICE_OPTIONS = ["$", "$$", "$$$", "$$$$"];
+const PRICE_OPTIONS = ["$", "$$", "$$$"];
 
 const FEATURE_OPTIONS = [
   "Outdoor",
@@ -80,13 +80,6 @@ const FEATURE_OPTIONS = [
 ];
 
 const PARTY_SIZES = [1, 2, 3, 4, 5, 6, 7, "8+"] as const;
-
-const BADGES = [
-  { label: "TOP RATED", min: 4.7 },
-  { label: "POPULAR", min: 4.4 },
-  { label: "CHEFS PICK", min: 4.0 },
-  { label: "NEW", min: 0 },
-];
 
 type DemoCard = {
   id: string;
@@ -104,6 +97,7 @@ type DemoCard = {
   city: string;
   distanceKm: number;
   features: string[];
+  dietaryTags: RestaurantDietaryTag[];
 };
 
 const DEMO_RESTAURANTS: DemoCard[] = [
@@ -113,7 +107,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     reviews: 1538,
     rating: 4.8,
     cuisine: "Modern French",
-    price: "$$$$",
+    price: "$$$",
     area: "Yorkville",
     bookedToday: 82,
     slots: ["7:00 PM", "7:15 PM", "7:45 PM", "8:30 PM"],
@@ -122,6 +116,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 0.4,
     features: ["Patio", "Tasting menu"],
+    dietaryTags: ["vegetarian"],
   },
   {
     id: "osteria-nova",
@@ -138,6 +133,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 1.2,
     features: ["Wine bar", "Late night"],
+    dietaryTags: ["vegetarian"],
   },
   {
     id: "ginkgo",
@@ -145,7 +141,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     reviews: 201,
     rating: 4.9,
     cuisine: "Japanese · Omakase",
-    price: "$$$$",
+    price: "$$$",
     area: "Queen W",
     bookedToday: 18,
     slots: [],
@@ -154,6 +150,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 2.1,
     features: ["Counter", "12-seat"],
+    dietaryTags: ["gluten_free"],
   },
   {
     id: "bistro-lumiere",
@@ -170,6 +167,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Montréal",
     distanceKm: 3.4,
     features: ["Wine list", "Patio"],
+    dietaryTags: ["vegetarian"],
   },
   {
     id: "le-pigeon-bleu",
@@ -186,6 +184,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Montréal",
     distanceKm: 4.1,
     features: ["Tasting menu"],
+    dietaryTags: [],
   },
   {
     id: "salt-ember",
@@ -202,6 +201,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 2.6,
     features: ["Bar seats", "Walk-in"],
+    dietaryTags: ["gluten_free"],
   },
   {
     id: "taps-public-house",
@@ -218,6 +218,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 17.8,
     features: ["Late night", "Pet-friendly"],
+    dietaryTags: [],
   },
   {
     id: "saffron-saffron",
@@ -234,6 +235,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Toronto",
     distanceKm: 3.0,
     features: ["Vegetarian", "Tasting menu"],
+    dietaryTags: ["halal", "vegetarian"],
   },
   {
     id: "praa-vancouver",
@@ -241,7 +243,7 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     reviews: 188,
     rating: 4.7,
     cuisine: "Pan-Asian",
-    price: "$$$$",
+    price: "$$$",
     area: "Yaletown · YVR",
     bookedToday: 49,
     slots: ["7:00 PM", "7:45 PM"],
@@ -250,42 +252,33 @@ const DEMO_RESTAURANTS: DemoCard[] = [
     city: "Vancouver",
     distanceKm: 6.2,
     features: ["Outdoor", "Live music"],
+    dietaryTags: ["vegan"],
   },
 ];
 
 function priceFromRange(range: number | null | undefined): string {
-  if (!range) return "$$";
-  return PRICE_LABELS[Math.min(Math.max(range, 1), 4)] ?? "$$";
-}
-
-function badgeFromRating(rating: number | null | undefined, idx: number): string {
-  if (idx === 0 && (rating ?? 0) >= BADGES[0].min) return BADGES[0].label;
-  if ((rating ?? 0) >= BADGES[1].min) return BADGES[1].label;
-  if ((rating ?? 0) >= BADGES[2].min) return BADGES[2].label;
-  return BADGES[3].label;
+  return restaurantPriceLabelFromRange(range);
 }
 
 function adaptRestaurant(r: Restaurant, idx: number): DemoCard {
   const initials = (r.name || "?").split(/\s+/).slice(0, 2).join(" ").toUpperCase();
-  const seed = (r.id.charCodeAt(0) + idx) % 4;
-  const baseSlots = ["6:45 PM", "7:00 PM", "7:30 PM", "7:45 PM", "8:00 PM", "8:30 PM", "9:00 PM"];
-  const slots = baseSlots.slice(seed, seed + 3 + (idx % 2));
   return {
     id: r.id,
     slug: r.slug,
     name: r.name,
     reviews: r.total_reviews ?? 0,
-    rating: r.avg_rating ?? 4.5,
-    cuisine: r.cuisine_type ?? "Restaurant",
+    rating: r.avg_rating ?? 0,
+    cuisine: r.cuisine_type ?? "",
     price: priceFromRange(r.price_range),
-    area: r.city ?? "—",
-    bookedToday: 20 + ((idx * 13) % 90),
-    slots: idx % 5 === 2 ? [] : slots,
+    area: r.city ?? r.address ?? "",
+    bookedToday: 0,
+    slots: [],
     initials,
-    badge: badgeFromRating(r.avg_rating, idx),
-    city: r.city ?? "—",
+    badge: r.business_type ?? "",
+    city: r.city ?? "",
     distanceKm: 0.4 + ((idx * 7) % 18) / 10,
-    features: ["Patio", "Tasting menu"].slice(0, (idx % 2) + 1),
+    features: [r.cuisine_type, r.business_type, r.city].filter(Boolean) as string[],
+    dietaryTags: normalizeRestaurantDietaryTags(r.settings_json?.dietaryTags),
   };
 }
 
@@ -327,6 +320,15 @@ function BadgeChip({ label }: { label: string }) {
   return (
     <span className="rounded-md border border-border bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
       {label}
+    </span>
+  );
+}
+
+function DietaryTagChip({ tag }: { tag: RestaurantDietaryTag }) {
+  const { t } = useTranslation();
+  return (
+    <span className="rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 text-[11px] text-gold">
+      {t(`restaurantDietaryTags.${tag}`)}
     </span>
   );
 }
@@ -412,6 +414,11 @@ function GridCard({
         <p className="text-xs text-text-secondary">
           {r.cuisine} · {r.price} · {r.area}
         </p>
+        {r.dietaryTags.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          </div>
+        ) : null}
         <p className="flex items-center gap-1.5 text-xs text-text-muted">
           <ArrowUpRight className="size-3 text-gold" />
           Booked {r.bookedToday} times today
@@ -508,6 +515,7 @@ function MapListCard({
           {r.distanceKm.toFixed(1)}km
         </p>
         <div className="flex flex-wrap gap-1.5">
+          {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
           {r.features.map((f) => (
             <span
               key={f}
@@ -1393,6 +1401,11 @@ export default function DiscoverPage() {
                             <p className="mt-0.5 text-xs text-text-secondary">
                               {r.cuisine} · <span className="text-gold">{r.price}</span>
                             </p>
+                            {r.dietaryTags.length > 0 ? (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+                              </div>
+                            ) : null}
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               {r.slots.slice(0, 3).map((s) => (
                                 <button

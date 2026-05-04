@@ -16,6 +16,7 @@ export function usePublicMenuCategories(restaurantId: string | null | undefined)
         return;
       }
       setLoading(true);
+      setCategories([]);
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("menu_categories")
@@ -46,12 +47,14 @@ export function usePublicMenuItems(restaurantId: string | null | undefined) {
         return;
       }
       setLoading(true);
+      setItems([]);
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("menu_items")
         .select("*")
         .eq("restaurant_id", restaurantId)
         .eq("is_active", true)
+        .eq("is_available", true)
         .order("sort_order");
       if (cancelled) return;
       setItems((data ?? []) as MenuItemRow[]);
@@ -124,6 +127,8 @@ export type SaveMenuItemPayload = {
   sort_order?: number;
 };
 
+export const PRICE_LEVEL_MENU_CATEGORY_NAMES = ["Mains", "Entrées"] as const;
+
 const SUPPORTED_MENU_IMAGE_TYPES: Array<{ mime: string; extensions: string[] }> = [
   { mime: "image/jpeg", extensions: ["jpg", "jpeg"] },
   { mime: "image/png", extensions: ["png"] },
@@ -168,7 +173,28 @@ export function useMenuCategories() {
       .eq("restaurant_id", selectedRestaurantId)
       .eq("is_active", true)
       .order("sort_order");
-    setCategories((data ?? []) as MenuCategoryRow[]);
+
+    const rows = (data ?? []) as MenuCategoryRow[];
+    const missingPriceCategories = PRICE_LEVEL_MENU_CATEGORY_NAMES.filter(
+      (name) => !rows.some((category) => category.name.trim().toLowerCase() === name.toLowerCase()),
+    );
+
+    if (missingPriceCategories.length > 0) {
+      const { data: inserted } = await client
+        .from("menu_categories")
+        .insert(missingPriceCategories.map((name, index) => ({
+          restaurant_id: selectedRestaurantId,
+          name,
+          description: name === "Mains" ? "Main dishes used for price level" : "Entrées used for price level",
+          sort_order: rows.length + index,
+          is_active: true,
+        })))
+        .select("*");
+
+      setCategories([...rows, ...((inserted ?? []) as MenuCategoryRow[])].sort((a, b) => a.sort_order - b.sort_order));
+    } else {
+      setCategories(rows);
+    }
     setLoading(false);
   }, [selectedRestaurantId]);
 

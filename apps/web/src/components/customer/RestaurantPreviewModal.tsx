@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bookmark,
@@ -26,6 +27,12 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
+import {
+  deriveRestaurantPriceLevel,
+  restaurantPriceLabelFromLevel,
+  restaurantPriceLevelFromLabel,
+} from "@/lib/restaurant-price-level";
+import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
 export type RestaurantPreviewSummary = {
   id: string;
@@ -42,6 +49,7 @@ export type RestaurantPreviewSummary = {
   city: string;
   distanceKm: number;
   features: string[];
+  dietaryTags?: RestaurantDietaryTag[];
   logoUrl?: string | null;
   coverPhotoUrl?: string | null;
 };
@@ -147,6 +155,7 @@ export function RestaurantPreviewModal({
   onToggleFavorite,
   onReserve,
 }: RestaurantPreviewModalProps) {
+  const { t } = useTranslation();
   const [tabState, setTabState] = useState<{ restaurantId: string | null; tab: PreviewTab }>({
     restaurantId: null,
     tab: "menu",
@@ -173,8 +182,8 @@ export function RestaurantPreviewModal({
 
   const availableTimes = useMemo(() => {
     const liveSlots = availabilitySlots.map((slot) => slot.display_time);
-    return Array.from(new Set([...liveSlots, ...(restaurant?.slots ?? [])])).slice(0, 6);
-  }, [availabilitySlots, restaurant?.slots]);
+    return Array.from(new Set(liveSlots)).slice(0, 6);
+  }, [availabilitySlots]);
 
   const selectedTime =
     restaurant && timeState.restaurantId === restaurant.id
@@ -185,16 +194,9 @@ export function RestaurantPreviewModal({
     () => activeEvents.filter((event) => event.restaurant_id === restaurant?.id),
     [activeEvents, restaurant?.id],
   );
-
-  const restaurantDisplay = useMemo<RestaurantDisplayInfo>(() => ({
-    name: restaurantDetails?.name ?? restaurant?.name ?? "Restaurant",
-    slug: restaurantDetails?.slug ?? null,
-    cuisine_type: restaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
-    avg_rating: restaurantDetails?.avg_rating ?? restaurant?.rating ?? null,
-    cover_photo_url: restaurantDetails?.cover_photo_url ?? null,
-    city: restaurantDetails?.city ?? restaurant?.city ?? null,
-    price_range: restaurantDetails?.price_range ?? Math.max(restaurant?.price.length ?? 0, 1),
-  }), [restaurant, restaurantDetails]);
+  const dietaryTags = normalizeRestaurantDietaryTags(
+    restaurantDetails?.settings_json?.dietaryTags ?? restaurant?.dietaryTags,
+  );
 
   const previewMenuItems = useMemo<PreviewMenuItem[]>(() => (
     dbMenuItems.map((item) => ({
@@ -207,6 +209,25 @@ export function RestaurantPreviewModal({
       imageUrl: item.photo_url,
     }))
   ), [dbCategories, dbMenuItems]);
+
+  const priceLevel = useMemo(
+    () => deriveRestaurantPriceLevel(
+      dbMenuItems,
+      restaurantDetails?.price_range ?? restaurantPriceLevelFromLabel(restaurant?.price),
+    ),
+    [dbMenuItems, restaurant?.price, restaurantDetails?.price_range],
+  );
+  const priceLabel = restaurantPriceLabelFromLevel(priceLevel);
+
+  const restaurantDisplay = useMemo<RestaurantDisplayInfo>(() => ({
+    name: restaurantDetails?.name ?? restaurant?.name ?? "",
+    slug: restaurantDetails?.slug ?? null,
+    cuisine_type: restaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
+    avg_rating: restaurantDetails?.avg_rating ?? restaurant?.rating ?? null,
+    cover_photo_url: restaurantDetails?.cover_photo_url ?? null,
+    city: restaurantDetails?.city ?? restaurant?.city ?? null,
+    price_range: priceLevel,
+  }), [priceLevel, restaurant, restaurantDetails]);
 
   const hasSavedMenu = previewMenuItems.length > 0;
 
@@ -260,7 +281,17 @@ export function RestaurantPreviewModal({
   ]);
   const aboutText =
     restaurantDetails?.description
-    ?? `${restaurant?.name ?? "This restaurant"} has not added a public description yet.`;
+    ?? null;
+  const headerBadges = uniqueValues([
+    restaurantDetails?.business_type,
+    restaurant?.badge,
+    ...((restaurant?.features ?? []).slice(0, 2)),
+  ]);
+  const headerMeta = uniqueValues([
+    restaurantDetails?.cuisine_type ?? restaurant?.cuisine,
+    priceLabel,
+    restaurantDetails?.city ?? restaurant?.area,
+  ]);
 
   const setRestaurantTab = (tab: PreviewTab) => {
     setTabState({ restaurantId: restaurant?.id ?? null, tab });
@@ -286,7 +317,9 @@ export function RestaurantPreviewModal({
   useEffect(() => {
     if (!restaurant || availableTimes.length === 0) return;
     if (timeState.restaurantId === restaurant.id && availableTimes.includes(timeState.time)) return;
-    setTimeState({ restaurantId: restaurant.id, time: availableTimes[0] });
+    void Promise.resolve().then(() => {
+      setTimeState({ restaurantId: restaurant.id, time: availableTimes[0] });
+    });
   }, [availableTimes, restaurant, timeState.restaurantId, timeState.time]);
 
   useEffect(() => {
@@ -357,15 +390,20 @@ export function RestaurantPreviewModal({
                     </div>
                     <div>
                     <div className="flex flex-wrap gap-2">
-                      <span className="rounded-md border border-gold/30 bg-gold/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold">
-                        {restaurant.badge}
-                      </span>
-                      {restaurant.features.slice(0, 2).map((feature) => (
+                      {headerBadges.map((feature) => (
                         <span
                           key={feature}
                           className="rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary"
                         >
                           {feature}
+                        </span>
+                      ))}
+                      {dietaryTags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-md border border-gold/30 bg-gold/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold"
+                        >
+                          {t(`restaurantDietaryTags.${tag}`)}
                         </span>
                       ))}
                       {availableTimes.length > 0 && (
@@ -378,17 +416,16 @@ export function RestaurantPreviewModal({
                       {restaurant.name}
                     </h2>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary">
-                      <span>{restaurant.cuisine}</span>
-                      <span className="text-gold">{restaurant.price}</span>
+                      {headerMeta.map((meta) => (
+                        <span key={meta} className={meta === priceLabel ? "text-gold" : undefined}>
+                          {meta}
+                        </span>
+                      ))}
                       <span className="inline-flex items-center gap-1">
                         <Star className="size-3 fill-gold text-gold" />
                         {restaurant.reviews > 0
                           ? `${restaurant.rating.toFixed(1)} · ${restaurant.reviews.toLocaleString()} reviews`
-                          : "New"}
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <MapPin className="size-3 text-text-muted" />
-                        {restaurant.area}
+                          : "No reviews yet"}
                       </span>
                     </div>
                     </div>
@@ -563,22 +600,24 @@ export function RestaurantPreviewModal({
                     {activeTab === "reviews" && (
                       <div className="space-y-4">
                         <section className="rounded-2xl border border-border bg-bg-surface p-4">
-                          <div className="grid gap-5 sm:grid-cols-[160px_1fr]">
-                            <div>
-                              <p className="font-serif text-5xl text-gold">
-                                {restaurant.reviews > 0 ? restaurant.rating.toFixed(1) : "New"}
-                              </p>
-                              <Stars rating={restaurant.rating} />
-                              <p className="mt-1 text-xs text-text-muted">
-                                {restaurant.reviews.toLocaleString()} reviews
-                              </p>
+                          {restaurant.reviews > 0 ? (
+                            <div className="grid gap-5 sm:grid-cols-[160px_1fr]">
+                              <div>
+                                <p className="font-serif text-5xl text-gold">{restaurant.rating.toFixed(1)}</p>
+                                <Stars rating={restaurant.rating} />
+                                <p className="mt-1 text-xs text-text-muted">
+                                  {restaurant.reviews.toLocaleString()} reviews
+                                </p>
+                              </div>
+                              <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-4 text-sm leading-relaxed text-text-secondary">
+                                Guest review details have not been added yet.
+                              </div>
                             </div>
-                            <div className="rounded-xl bg-bg-elevated p-4 text-sm leading-relaxed text-text-secondary">
-                              {restaurant.reviews > 0
-                                ? `${restaurant.name} has ${restaurant.reviews.toLocaleString()} public review${restaurant.reviews === 1 ? "" : "s"} with an average rating of ${restaurant.rating.toFixed(1)}.`
-                                : "No public reviews have been recorded for this restaurant yet."}
+                          ) : (
+                            <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                              No public reviews have been recorded for this restaurant yet.
                             </div>
-                          </div>
+                          )}
                         </section>
                       </div>
                     )}
@@ -587,9 +626,15 @@ export function RestaurantPreviewModal({
                       <div className="space-y-4">
                         <section className="rounded-2xl border border-border bg-bg-surface p-5">
                           <h3 className="font-serif text-2xl text-white">About {restaurant.name}</h3>
-                          <p className="mt-3 text-sm leading-relaxed text-text-secondary">
-                            {aboutText}
-                          </p>
+                          {aboutText ? (
+                            <p className="mt-3 text-sm leading-relaxed text-text-secondary">
+                              {aboutText}
+                            </p>
+                          ) : (
+                            <div className="mt-3 rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                              No public description has been added yet.
+                            </div>
+                          )}
                           {restaurantDetails?.website && (
                             <p className="mt-3 text-xs text-text-muted">{restaurantDetails.website}</p>
                           )}
@@ -613,7 +658,7 @@ export function RestaurantPreviewModal({
                               Details
                             </h4>
                             <div className="mt-4 space-y-2 text-xs text-text-secondary">
-                              {(restaurantDetails?.address || restaurant.area !== "—") && (
+                              {(restaurantDetails?.address || restaurant.area) && (
                                 <p className="inline-flex items-center gap-2">
                                   <MapPin className="size-3 text-gold" /> {restaurantDetails?.address ?? restaurant.area}
                                 </p>

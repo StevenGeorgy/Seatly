@@ -14,6 +14,7 @@ import {
   Flame,
   CalendarDays,
   Clock,
+  Utensils,
   Users,
   ChevronDown,
   Trash2,
@@ -56,6 +57,11 @@ import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/event
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
+import {
+  deriveRestaurantPriceLevel,
+  restaurantPriceLabelFromLevel,
+} from "@/lib/restaurant-price-level";
+import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -68,7 +74,6 @@ type MenuItem = {
   category: string;
   popular: boolean;
   dietary: string[];
-  emoji: string;
   photoUrl?: string | null;
   /** Key allergens present in this dish */
   allergens: string[];
@@ -96,96 +101,6 @@ type SplitCardRow = {
   cvc: string;
 };
 
-// ─── Menu data ───────────────────────────────────────────────────────────────
-const MENU: MenuItem[] = [
-  {
-    id: "m1",  name: "Bruschetta",          category: "Starters",  popular: true,  price: 14,
-    dietary: ["V"],       emoji: "🍅",
-    description: "Toasted sourdough, heirloom tomatoes, fresh basil, aged balsamic.",
-    allergens: ["gluten"],
-    ingredients: "Sourdough bread (wheat/gluten), tomatoes, basil, garlic, olive oil, balsamic vinegar",
-  },
-  {
-    id: "m2",  name: "Burrata & Prosciutto", category: "Starters",  popular: false, price: 18,
-    dietary: [],          emoji: "🧀",
-    description: "Creamy burrata, San Daniele prosciutto, honey, toasted walnuts.",
-    allergens: ["dairy", "nuts", "pork"],
-    ingredients: "Burrata (milk/dairy), prosciutto (pork), walnuts (tree nuts), honey, arugula, olive oil",
-  },
-  {
-    id: "m3",  name: "French Onion Soup",    category: "Starters",  popular: true,  price: 16,
-    dietary: [],          emoji: "🥣",
-    description: "Rich beef broth, caramelized onions, croutons, and a gruyère crust.",
-    allergens: ["gluten", "dairy"],
-    ingredients: "Beef broth, onions, croutons (wheat/gluten), gruyère cheese (dairy), butter (dairy), thyme",
-  },
-  {
-    id: "m4",  name: "Pan-Seared Salmon",    category: "Mains",     popular: true,  price: 34,
-    dietary: ["GF"],      emoji: "🐟",
-    description: "Atlantic salmon, lemon beurre blanc, seasonal vegetables, wild rice.",
-    allergens: ["fish", "dairy"],
-    ingredients: "Atlantic salmon (fish), butter (dairy), lemon, shallots, wild rice, seasonal vegetables",
-  },
-  {
-    id: "m5",  name: "Grilled Ribeye 12oz",  category: "Mains",     popular: true,  price: 56,
-    dietary: ["GF"],      emoji: "🥩",
-    description: "Prime dry-aged ribeye, truffle butter, house frites, seasonal greens.",
-    allergens: ["dairy"],
-    ingredients: "Beef ribeye, truffle butter (dairy), potatoes, seasonal greens, herbs",
-  },
-  {
-    id: "m6",  name: "Wild Mushroom Risotto", category: "Mains",    popular: false, price: 28,
-    dietary: ["V", "GF"], emoji: "🍄",
-    description: "Porcini & shiitake, parmesan foam, truffle oil.",
-    allergens: ["dairy"],
-    ingredients: "Arborio rice, porcini mushrooms, shiitake mushrooms, parmesan (dairy), butter (dairy), truffle oil, vegetable stock",
-  },
-  {
-    id: "m7",  name: "Duck Confit",           category: "Mains",    popular: false, price: 38,
-    dietary: ["GF"],      emoji: "🦆",
-    description: "Slow-cooked duck leg, lentilles du Puy, braised red cabbage, jus.",
-    allergens: [],
-    ingredients: "Duck leg, green lentils, red cabbage, duck jus, herbs, garlic",
-  },
-  {
-    id: "m8",  name: "Crème Brûlée",          category: "Desserts", popular: true,  price: 12,
-    dietary: ["V", "GF"], emoji: "🍮",
-    description: "Classic vanilla custard with a caramelized sugar crust.",
-    allergens: ["dairy", "eggs"],
-    ingredients: "Heavy cream (dairy), egg yolks (eggs), vanilla bean, sugar",
-  },
-  {
-    id: "m9",  name: "Chocolate Fondant",     category: "Desserts", popular: true,  price: 14,
-    dietary: ["V"],       emoji: "🍫",
-    description: "Warm dark chocolate lava cake, vanilla ice cream, berry coulis.",
-    allergens: ["gluten", "dairy", "eggs"],
-    ingredients: "Dark chocolate (may contain traces of nuts), butter (dairy), eggs, flour (gluten), vanilla ice cream (dairy), mixed berries",
-  },
-  {
-    id: "m10", name: "House Red Wine",         category: "Drinks",   popular: false, price: 14,
-    dietary: ["V", "GF"], emoji: "🍷",
-    description: "Côtes du Rhône — glass pour.",
-    allergens: ["sulphites"],
-    ingredients: "Red wine (sulphites)",
-  },
-  {
-    id: "m11", name: "Seasonal Cocktail",      category: "Drinks",   popular: true,  price: 16,
-    dietary: [],          emoji: "🍸",
-    description: "Ask about today's house-crafted cocktail.",
-    allergens: ["sulphites"],
-    ingredients: "Seasonal spirits, fresh fruit juice, syrups — ask your server for today's full ingredient list",
-  },
-  {
-    id: "m12", name: "Sparkling Water",        category: "Drinks",   popular: false, price: 7,
-    dietary: ["V", "GF"], emoji: "💧",
-    description: "San Pellegrino 750ml.",
-    allergens: [],
-    ingredients: "Sparkling mineral water",
-  },
-];
-
-const CATEGORIES = ["All", "Starters", "Mains", "Desserts", "Drinks"];
-const TIMES = ["5:00 PM","5:30 PM","6:00 PM","6:30 PM","7:00 PM","7:30 PM","7:45 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM"];
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
 const SEATING_PREFERENCES = [
   "",
@@ -207,8 +122,6 @@ const CUISINE_GRADIENT: Record<string, string> = {
   BBQ:      "from-stone-800 to-neutral-800",
   Indian:   "from-yellow-900 to-orange-900",
 };
-const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
-
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -396,6 +309,20 @@ function uniquePreviewValues(values: Array<string | null | undefined>): string[]
     .filter((value, index, list) => list.indexOf(value) === index);
 }
 
+function DietaryTagPill({ tag, compact = false }: { tag: RestaurantDietaryTag; compact?: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full border border-gold/30 bg-gold/10 font-mono uppercase tracking-[0.2em] text-gold",
+        compact ? "px-2 py-0.5 text-[9px]" : "px-3 py-1 text-[10px]",
+      )}
+    >
+      {t(`restaurantDietaryTags.${tag}`)}
+    </span>
+  );
+}
+
 function RestaurantStaffPreview({
   restaurant,
   menuItems,
@@ -416,9 +343,10 @@ function RestaurantStaffPreview({
   const previewDate = todayDateValue();
   const previewDateLabel = todayDisplayValue();
   const availability = useAvailability();
+  const fetchPreviewSlots = availability.fetchSlots;
   const { events: allEvents, loading: eventsLoading } = useAllActiveEvents();
   const { stats } = useRestaurantPreviewStats(restaurant.id);
-  const savedMenuItems = hasSavedMenu ? menuItems : [];
+  const savedMenuItems = useMemo(() => (hasSavedMenu ? menuItems : []), [hasSavedMenu, menuItems]);
   const menuHighlights = savedMenuItems.slice(0, 4);
   const menuSections = useMemo(() => {
     const categories = uniquePreviewValues(savedMenuItems.map((item) => item.category));
@@ -438,8 +366,8 @@ function RestaurantStaffPreview({
     avg_rating: restaurant.avg_rating,
     cover_photo_url: restaurant.cover_photo_url,
     city: restaurant.city,
-    price_range: restaurant.price_range,
-  }), [restaurant]);
+    price_range: deriveRestaurantPriceLevel(savedMenuItems, restaurant.price_range),
+  }), [restaurant, savedMenuItems]);
   const eventCards = useMemo(
     () => restaurantEvents.map((event) => eventToDisplay(event, restaurantDisplay)),
     [restaurantDisplay, restaurantEvents],
@@ -458,22 +386,27 @@ function RestaurantStaffPreview({
     [availability.slots],
   );
   const hoursRows = useMemo(() => formatRestaurantHoursRows(restaurant.hours_json), [restaurant.hours_json]);
-  const cuisine = restaurant.cuisine_type ?? "Restaurant";
-  const priceLabel = restaurant.price_range != null ? PRICE_LABELS[restaurant.price_range] : "—";
+  const priceLabel = restaurantPriceLabelFromLevel(deriveRestaurantPriceLevel(savedMenuItems, restaurant.price_range));
+  const dietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
   const rating = restaurant.avg_rating?.toFixed(1) ?? "New";
   const reviewCount = restaurant.total_reviews ?? 0;
   const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
+  const headerBadges = uniquePreviewValues([restaurant.business_type, restaurant.cuisine_type]);
 
   useEffect(() => {
-    void availability.fetchSlots(restaurant.id, previewDate, 2);
-  }, [availability.fetchSlots, previewDate, restaurant.id]);
+    void fetchPreviewSlots(restaurant.id, previewDate, 2);
+  }, [fetchPreviewSlots, previewDate, restaurant.id]);
 
   useEffect(() => {
     if (availableTimes.length === 0) {
-      if (selectedTime) setSelectedTime("");
+      if (selectedTime) {
+        void Promise.resolve().then(() => setSelectedTime(""));
+      }
       return;
     }
-    if (!availableTimes.includes(selectedTime)) setSelectedTime(availableTimes[0]);
+    if (!availableTimes.includes(selectedTime)) {
+      void Promise.resolve().then(() => setSelectedTime(availableTimes[0]));
+    }
   }, [availableTimes, selectedTime]);
 
   return (
@@ -510,14 +443,17 @@ function RestaurantStaffPreview({
                 </div>
                 <div>
                   <div className="flex flex-wrap gap-2">
-                    <span className="rounded-full border border-gold/30 bg-gold/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-gold">
-                      {restaurant.business_type ?? "Restaurant"}
-                    </span>
-                    {restaurant.cuisine_type && (
-                      <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-text-secondary">
-                        {restaurant.cuisine_type}
+                    {headerBadges.map((badge) => (
+                      <span
+                        key={badge}
+                        className="rounded-full border border-border bg-bg-elevated px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-text-secondary"
+                      >
+                        {badge}
                       </span>
-                    )}
+                    ))}
+                    {dietaryTags.map((tag) => (
+                      <DietaryTagPill key={tag} tag={tag} />
+                    ))}
                     {availableTimes.length > 0 && (
                       <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-success">
                         {availableTimes.length} times today
@@ -526,16 +462,18 @@ function RestaurantStaffPreview({
                   </div>
                   <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
-                    <span>{cuisine}</span>
+                    {restaurant.cuisine_type ? <span>{restaurant.cuisine_type}</span> : null}
                     <span className="font-semibold text-gold">{priceLabel}</span>
                     <span className="inline-flex items-center gap-1">
                       <Star className="size-3 fill-gold text-gold" />
-                      {reviewCount > 0 ? `${rating} · ${reviewCount.toLocaleString()} reviews` : "New"}
+                      {reviewCount > 0 ? `${rating} · ${reviewCount.toLocaleString()} reviews` : "No reviews yet"}
                     </span>
-                    <span className="inline-flex items-center gap-1">
-                      <MapPin className="size-3" />
-                      {restaurant.city ?? "—"}
-                    </span>
+                    {restaurant.city ? (
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="size-3" />
+                        {restaurant.city}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -649,7 +587,7 @@ function RestaurantStaffPreview({
                   <div className="mt-5 space-y-3 text-sm text-text-secondary">
                     <p className="rounded-2xl bg-bg-elevated p-4">
                       {reviewCount > 0
-                        ? `${restaurant.name} has an average public rating of ${rating}.`
+                        ? "Guest review details have not been added yet."
                         : "Public guest reviews will appear here once they are recorded."}
                     </p>
                   </div>
@@ -796,9 +734,7 @@ export default function RestaurantPublicPage() {
           : "/deals"
         : "/discover";
   const requestedBookingTime = searchParams.get("time") ?? searchParams.get("slot");
-  const initialBookingTime = requestedBookingTime && TIMES.includes(requestedBookingTime)
-    ? requestedBookingTime
-    : "7:00 PM";
+  const initialBookingTime = requestedBookingTime ?? "";
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
@@ -811,7 +747,6 @@ export default function RestaurantPublicPage() {
 
   // Map DB menu items to the local MenuItem shape used by the cart/allergen system
   const menuItems = useMemo<MenuItem[]>(() => {
-    if (dbMenuItems.length === 0) return MENU;
     return dbMenuItems.map((row) => ({
       id: row.id,
       name: row.name,
@@ -820,7 +755,6 @@ export default function RestaurantPublicPage() {
       category: row.category ?? (dbCategories.find((c) => c.id === row.category_id)?.name ?? "Other"),
       popular: row.is_featured,
       dietary: row.dietary_flags ?? [],
-      emoji: "🍽️",
       photoUrl: row.photo_url,
       allergens: row.allergens ?? [],
       ingredients: row.description ?? "",
@@ -828,8 +762,11 @@ export default function RestaurantPublicPage() {
   }, [dbMenuItems, dbCategories]);
 
   const categoryList = useMemo(
-    () => (dbCategories.length > 0 ? ["All", ...dbCategories.map((c) => c.name)] : CATEGORIES),
-    [dbCategories],
+    () => ["All", ...uniquePreviewValues([
+      ...dbCategories.map((c) => c.name),
+      ...menuItems.map((item) => item.category),
+    ])],
+    [dbCategories, menuItems],
   );
 
   const [step, setStep] = useState<Step>("details");
@@ -877,6 +814,7 @@ export default function RestaurantPublicPage() {
   const [existingReservationId, setExistingReservationId] = useState<string | null>(null);
   const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
   const availability = useAvailability();
+  const fetchRestaurantSlots = availability.fetchSlots;
 
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
@@ -934,7 +872,6 @@ export default function RestaurantPublicPage() {
         category: "",
         popular: false,
         dietary: [],
-        emoji: "🍽️",
         photoUrl: null,
         allergens: [],
         ingredients: "",
@@ -954,7 +891,7 @@ export default function RestaurantPublicPage() {
         setExistingReservationId(resv.id);
         // reserved_at is an ISO timestamp — split into YYYY-MM-DD + "h:mm AM/PM"
         let date = "";
-        let time = "7:00 PM";
+        let time = "";
         if (resv.reserved_at) {
           const d = new Date(resv.reserved_at);
           if (!Number.isNaN(d.getTime())) {
@@ -1041,19 +978,28 @@ export default function RestaurantPublicPage() {
 
   useEffect(() => {
     if (!restaurant?.id || !dineIn.date || typeof dineIn.party_size !== "number") return;
-    void availability.fetchSlots(restaurant.id, dineIn.date, dineIn.party_size);
-  }, [availability.fetchSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
+    void fetchRestaurantSlots(restaurant.id, dineIn.date, dineIn.party_size);
+  }, [fetchRestaurantSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
 
   const availableTimeOptions = useMemo(
-    () => (dineIn.date ? availability.slots.map((slot) => slot.display_time) : TIMES),
-    [availability.slots, dineIn.date],
+    () => availability.slots.map((slot) => slot.display_time),
+    [availability.slots],
   );
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
     if (availableTimeOptions.includes(dineIn.time)) return;
-    setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
+    void Promise.resolve().then(() => {
+      setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
+    });
   }, [availability.loading, availability.slots.length, availableTimeOptions, dineIn.date, dineIn.time]);
+
+  useEffect(() => {
+    if (!dineIn.date || availability.loading || availability.slots.length > 0 || !dineIn.time) return;
+    void Promise.resolve().then(() => {
+      setDineIn((details) => ({ ...details, time: "" }));
+    });
+  }, [availability.loading, availability.slots.length, dineIn.date, dineIn.time]);
 
   const filteredMenu = useMemo(() => {
     let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
@@ -1205,11 +1151,8 @@ export default function RestaurantPublicPage() {
 
   const handlePlaceOrder = useCallback(async () => {
     if (!restaurant) return;
-    const isRealUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(restaurant.id);
-    if (!isSupabaseConfigured() || !isRealUuid) {
-      // Mock mode — just show confirmation
-      setConfirmationCode(`SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`);
-      setStep("confirmed");
+    if (!isSupabaseConfigured()) {
+      setOrderError(t("auth.errors.supabaseNotConfigured"));
       return;
     }
 
@@ -1359,7 +1302,7 @@ export default function RestaurantPublicPage() {
         // 4. Insert order items
         const items = cart.map((item) => ({
           order_id: orderData.id,
-          menu_item_id: item.id.startsWith("m") ? null : item.id, // skip mock IDs
+          menu_item_id: item.id,
           name: item.name,
           quantity: item.qty,
           unit_price: roundMoney(item.price),
@@ -1392,7 +1335,7 @@ export default function RestaurantPublicPage() {
     } finally {
       setPlacing(false);
     }
-  }, [restaurant, cart, profile, dineIn, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, existingReservationId, existingOrderId]);
+  }, [restaurant, cart, profile, dineIn, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, existingReservationId, existingOrderId, t]);
 
   if (loading) {
     return (
@@ -1413,6 +1356,9 @@ export default function RestaurantPublicPage() {
       </div>
     );
   }
+
+  const publicPriceLabel = restaurantPriceLabelFromLevel(deriveRestaurantPriceLevel(dbMenuItems, restaurant.price_range));
+  const publicDietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
 
   if (isStaffPreview) {
     return (
@@ -1449,8 +1395,11 @@ export default function RestaurantPublicPage() {
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">{restaurant.name}</h1>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
               {restaurant.cuisine_type && <span className="text-text-secondary">{restaurant.cuisine_type}</span>}
-              {restaurant.price_range != null && <span className="font-medium text-gold">{PRICE_LABELS[restaurant.price_range]}</span>}
-              {restaurant.avg_rating != null && (
+              <span className="font-medium text-gold">{publicPriceLabel}</span>
+              {publicDietaryTags.map((tag) => (
+                <DietaryTagPill key={tag} tag={tag} compact />
+              ))}
+              {restaurant.avg_rating != null && (restaurant.total_reviews ?? 0) > 0 && (
                 <span className="flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5">
                   <Star className="size-3 fill-gold text-gold" />
                   <span className="font-bold text-gold">{restaurant.avg_rating.toFixed(1)}</span>
@@ -1730,7 +1679,9 @@ export default function RestaurantPublicPage() {
                         {item.photoUrl ? (
                           <img src={item.photoUrl} alt="" className="mt-0.5 size-10 shrink-0 rounded-lg object-cover" />
                         ) : (
-                          <span className="mt-0.5 text-xl">{item.emoji}</span>
+                          <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg bg-bg-elevated text-gold">
+                            <Utensils className="size-4" />
+                          </span>
                         )}
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-semibold text-text-primary">{item.name}</p>
@@ -1802,8 +1753,9 @@ export default function RestaurantPublicPage() {
               )}
 
               {/* Category chips */}
-              <div className="mb-4 flex flex-wrap gap-2">
-                {(categoryList.length > 1 ? categoryList : ["All", "Starters", "Mains", "Desserts", "Drinks"]).map((cat) => (
+              {categoryList.length > 1 ? (
+                <div className="mb-4 flex flex-wrap gap-2">
+                {categoryList.map((cat) => (
                   <button
                     key={cat}
                     type="button"
@@ -1817,7 +1769,8 @@ export default function RestaurantPublicPage() {
                     {cat}
                   </button>
                 ))}
-              </div>
+                </div>
+              ) : null}
 
               {/* Items */}
               <div className="flex flex-col gap-2.5">
@@ -1843,7 +1796,9 @@ export default function RestaurantPublicPage() {
                         {item.photoUrl ? (
                           <img src={item.photoUrl} alt="" className="size-12 shrink-0 rounded-xl object-cover" />
                         ) : (
-                          <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-bg-elevated text-2xl">{item.emoji}</div>
+                          <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-bg-elevated text-gold">
+                            <Utensils className="size-4" />
+                          </div>
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -1892,6 +1847,11 @@ export default function RestaurantPublicPage() {
                       </motion.div>
                     );
                   })}
+                  {filteredMenu.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-border bg-bg-surface p-5 text-sm text-text-muted">
+                      No public menu items have been added yet.
+                    </div>
+                  ) : null}
                 </AnimatePresence>
                 )}
               </div>
@@ -1934,7 +1894,9 @@ export default function RestaurantPublicPage() {
                       {item.photoUrl ? (
                         <img src={item.photoUrl} alt="" className="size-8 shrink-0 rounded-lg object-cover" />
                       ) : (
-                        <span className="text-base">{item.emoji}</span>
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-bg-elevated text-gold">
+                          <Utensils className="size-3.5" />
+                        </span>
                       )}
                       <span className="flex-1 text-sm text-text-secondary">
                         {item.qty}× {item.name}

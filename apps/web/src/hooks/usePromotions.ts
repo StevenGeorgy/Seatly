@@ -40,6 +40,7 @@ export type PromotionRow = {
   media_url: string | null;
   media_type: "image" | "pdf" | null;
   media_name: string | null;
+  is_private: boolean;
   is_recurring: boolean;
   recurrence_frequency: RecurrenceFrequency | null;
   recurrence_interval: number;
@@ -94,6 +95,7 @@ export function useAllActivePromotions() {
         )
       `)
       .eq("is_active", true)
+      .eq("is_private", false)
       .or(`and(is_recurring.eq.false,or(ends_at.is.null,ends_at.gt.${new Date().toISOString()})),and(is_recurring.eq.true,or(recurrence_end_at.is.null,recurrence_end_at.gt.${new Date().toISOString()}))`)
       .order("created_at", { ascending: false });
 
@@ -199,6 +201,31 @@ export function usePromotions() {
   }, [fetch]);
 
   return { promotions, loading, saving, refetch: fetch, createPromotion, updatePromotion, deletePromotion, uploadPromotionMedia };
+}
+
+export async function fetchPromotionById(id: string): Promise<PromotionWithRestaurant | null> {
+  if (!isSupabaseConfigured()) return null;
+
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("promotions")
+    .select(`
+      *,
+      restaurants (
+        name,
+        slug,
+        cuisine_type,
+        avg_rating,
+        cover_photo_url,
+        city,
+        price_range
+      )
+    `)
+    .eq("id", id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  return (data as unknown as PromotionWithRestaurant | null) ?? null;
 }
 
 export function getPromotionLabel(promo: Pick<PromotionRow, "promo_type" | "discount_value" | "discount_unit">): string {

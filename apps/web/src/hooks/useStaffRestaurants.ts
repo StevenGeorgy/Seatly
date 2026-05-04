@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { promiseWithTimeout } from "@/lib/promise-timeout";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import type { RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
 const STAFF_RESTAURANTS_FETCH_TIMEOUT_MS = 45_000;
 import type { UserRestaurantRole } from "@/types/auth";
@@ -15,6 +16,7 @@ export type RestaurantTheme = {
 export type RestaurantSettings = {
   theme?: RestaurantTheme;
   turnTimeMinutes?: number;
+  dietaryTags?: RestaurantDietaryTag[];
 };
 
 export type StaffRestaurantRow = {
@@ -45,26 +47,28 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    const ids = idKey ? idKey.split(",") : [];
-    if (ids.length === 0) {
-      setRestaurants([]);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-
-    if (!isSupabaseConfigured()) {
-      setRestaurants([]);
-      setError(new Error("Supabase env vars are not set."));
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-
     void (async () => {
+      const ids = idKey ? idKey.split(",") : [];
+      if (ids.length === 0) {
+        if (cancelled) return;
+        setRestaurants([]);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+
+      if (!isSupabaseConfigured()) {
+        if (cancelled) return;
+        setRestaurants([]);
+        setError(new Error("Supabase env vars are not set."));
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
       try {
         const client = getSupabaseBrowserClient();
         const query = client

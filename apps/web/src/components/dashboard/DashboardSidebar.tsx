@@ -39,6 +39,7 @@ import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { useRestaurantPreviewStats } from "@/hooks/useRestaurantPreviewStats";
 import { useUser } from "@/hooks/useUser";
 import { useNotifications } from "@/hooks/useNotifications";
+import { restaurantPriceLabelFromRange } from "@/lib/restaurant-price-level";
 import {
   DASHBOARD_NAV_ITEMS,
   canAccessDashboardPath,
@@ -47,7 +48,26 @@ import {
 import { cn } from "@/lib/utils";
 import type { StaffRole } from "@/types/auth";
 
-const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
+function RestaurantLogoBadge({
+  logoUrl,
+  fallback,
+  className,
+}: {
+  logoUrl: string | null | undefined;
+  fallback: string;
+  className: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-gold/30 bg-gold/10 font-mono font-semibold text-gold",
+        className,
+      )}
+    >
+      {logoUrl ? <img src={logoUrl} alt="" className="size-full object-cover" /> : fallback}
+    </span>
+  );
+}
 
 const ICONS: Record<string, typeof LayoutDashboard> = {
   "/dashboard": LayoutDashboard,
@@ -144,9 +164,9 @@ export function DashboardSidebar() {
         name: publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug,
         reviews: publicRestaurant?.total_reviews ?? 0,
         rating: publicRestaurant?.avg_rating ?? 0,
-        cuisine: publicRestaurant?.cuisine_type ?? "Restaurant",
-        price: PRICE_LABELS[publicRestaurant?.price_range ?? 0] ?? "—",
-        area: publicRestaurant?.city ?? "—",
+        cuisine: publicRestaurant?.cuisine_type ?? "",
+        price: restaurantPriceLabelFromRange(publicRestaurant?.price_range),
+        area: publicRestaurant?.city ?? publicRestaurant?.address ?? "",
         bookedToday: previewStats.bookedToday,
         slots: [],
         initials: (publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug)
@@ -154,10 +174,14 @@ export function DashboardSidebar() {
           .slice(0, 2)
           .join(" ")
           .toUpperCase(),
-        badge: publicRestaurant?.avg_rating ? "Rated" : "Preview",
-        city: publicRestaurant?.city ?? "—",
+        badge: publicRestaurant?.business_type ?? "",
+        city: publicRestaurant?.city ?? "",
         distanceKm: 0,
-        features: [publicRestaurant?.cuisine_type, publicRestaurant?.city].filter(Boolean) as string[],
+        features: [
+          publicRestaurant?.cuisine_type,
+          publicRestaurant?.business_type,
+          publicRestaurant?.city,
+        ].filter(Boolean) as string[],
         logoUrl: selectedRestaurant.logo_url,
         coverPhotoUrl: publicRestaurant?.cover_photo_url ?? selectedRestaurant.cover_photo_url,
       } satisfies RestaurantPreviewSummary)
@@ -180,9 +204,11 @@ export function DashboardSidebar() {
               className="relative w-full rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 text-left transition-colors hover:border-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
             >
               <div className="flex items-center gap-3">
-                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/40 bg-gold/10 font-mono text-xs font-semibold text-gold">
-                  {restaurantInitials}
-                </div>
+                <RestaurantLogoBadge
+                  logoUrl={selectedRestaurant?.logo_url}
+                  fallback={restaurantInitials}
+                  className="size-10 border-gold/40 text-xs"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-text-primary">
                     {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
@@ -230,9 +256,11 @@ export function DashboardSidebar() {
                         isSelected ? "bg-gold/10 text-text-primary" : "text-text-secondary hover:bg-bg-elevated",
                       )}
                     >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10 font-mono text-[11px] font-semibold text-gold">
-                        {restaurantInitialsFor(restaurant.name, restaurant.slug)}
-                      </span>
+                      <RestaurantLogoBadge
+                        logoUrl={restaurant.logo_url}
+                        fallback={restaurantInitialsFor(restaurant.name, restaurant.slug)}
+                        className="size-9 text-[11px]"
+                      />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{restaurantName}</span>
                         {restaurantRole ? (

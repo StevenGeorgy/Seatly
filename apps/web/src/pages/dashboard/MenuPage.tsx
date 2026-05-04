@@ -21,6 +21,7 @@ import {
   resolveMenuItemImage,
   useMenuCategories,
   useMenuItems,
+  PRICE_LEVEL_MENU_CATEGORY_NAMES,
   type MenuCategoryRow,
   type MenuItemRow,
 } from "@/hooks/useMenuItems";
@@ -35,8 +36,9 @@ const DEMO_CATEGORIES: MenuCategoryRow[] = [
   { id: "snacks", restaurant_id: DEMO_RESTAURANT_ID, name: "Snacks", name_fr: null, description: "Small bites", sort_order: 0, available_from: null, available_to: null, is_active: true },
   { id: "hors-doeuvre", restaurant_id: DEMO_RESTAURANT_ID, name: "Hors-d'oeuvre", name_fr: null, description: "Opening plates", sort_order: 1, available_from: null, available_to: null, is_active: true },
   { id: "mains", restaurant_id: DEMO_RESTAURANT_ID, name: "Mains", name_fr: null, description: "Larger plates", sort_order: 2, available_from: null, available_to: null, is_active: true },
-  { id: "desserts", restaurant_id: DEMO_RESTAURANT_ID, name: "Desserts", name_fr: null, description: "Sweet finish", sort_order: 3, available_from: null, available_to: null, is_active: true },
-  { id: "wine", restaurant_id: DEMO_RESTAURANT_ID, name: "Wine", name_fr: null, description: "By glass and bottle", sort_order: 4, available_from: null, available_to: null, is_active: true },
+  { id: "entrees", restaurant_id: DEMO_RESTAURANT_ID, name: "Entrées", name_fr: null, description: "Entrée plates", sort_order: 3, available_from: null, available_to: null, is_active: true },
+  { id: "desserts", restaurant_id: DEMO_RESTAURANT_ID, name: "Desserts", name_fr: null, description: "Sweet finish", sort_order: 4, available_from: null, available_to: null, is_active: true },
+  { id: "wine", restaurant_id: DEMO_RESTAURANT_ID, name: "Wine", name_fr: null, description: "By glass and bottle", sort_order: 5, available_from: null, available_to: null, is_active: true },
 ];
 
 const DEMO_ITEMS: MenuItemRow[] = [
@@ -46,11 +48,20 @@ const DEMO_ITEMS: MenuItemRow[] = [
   { id: "demo-bread", restaurant_id: DEMO_RESTAURANT_ID, category_id: "hors-doeuvre", category: "Hors-d'oeuvre", name: "Bread service", name_fr: null, description: "Sourdough, cultured butter", description_fr: null, price: 9, cost_price: 1.2, photo_url: null, allergens: [], dietary_flags: ["Vegetarian"], calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 4, spice_level: null, loyalty_points_value: null, sort_order: 3 },
   { id: "demo-olives", restaurant_id: DEMO_RESTAURANT_ID, category_id: "snacks", category: "Snacks", name: "Warm olives", name_fr: null, description: "Bay, orange, coriander", description_fr: null, price: 8, cost_price: 1, photo_url: null, allergens: [], dietary_flags: ["Vegan", "GF"], calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 3, spice_level: null, loyalty_points_value: null, sort_order: 0 },
   { id: "demo-hen", restaurant_id: DEMO_RESTAURANT_ID, category_id: "mains", category: "Mains", name: "Cornish hen", name_fr: null, description: "Leek, jus, turnip", description_fr: null, price: 38, cost_price: 12, photo_url: null, allergens: [], dietary_flags: null, calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 22, spice_level: null, loyalty_points_value: null, sort_order: 0 },
+  { id: "demo-ribeye", restaurant_id: DEMO_RESTAURANT_ID, category_id: "entrees", category: "Entrées", name: "Ribeye", name_fr: null, description: "12oz, peppercorn jus", description_fr: null, price: 58, cost_price: 19, photo_url: null, allergens: [], dietary_flags: null, calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 24, spice_level: null, loyalty_points_value: null, sort_order: 0 },
   { id: "demo-tart", restaurant_id: DEMO_RESTAURANT_ID, category_id: "desserts", category: "Desserts", name: "Maple tart", name_fr: null, description: "Creme fraiche, buckwheat", description_fr: null, price: 13, cost_price: 3, photo_url: null, allergens: ["GF"], dietary_flags: ["Vegetarian"], calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 5, spice_level: null, loyalty_points_value: null, sort_order: 0 },
   { id: "demo-gamay", restaurant_id: DEMO_RESTAURANT_ID, category_id: "wine", category: "Wine", name: "Gamay · Niagara", name_fr: null, description: "Red cherry, graphite", description_fr: null, price: 17, cost_price: 5, photo_url: null, allergens: [], dietary_flags: null, calories: null, is_available: true, is_preorderable: false, is_featured: false, is_active: true, preparation_time_minutes: 1, spice_level: null, loyalty_points_value: null, sort_order: 0 },
 ];
 
 const TAG_OPTIONS = ["Vegetarian", "Vegan", "GF", "DF", "Spicy", "Signature"];
+const PRICE_LEVEL_MENU_CATEGORY_NAMES_LOWER = PRICE_LEVEL_MENU_CATEGORY_NAMES.map((name) => name.toLowerCase());
+
+function isPriceLevelCategory(category: MenuCategoryRow | null | undefined): boolean {
+  return Boolean(
+    category &&
+    PRICE_LEVEL_MENU_CATEGORY_NAMES_LOWER.includes(category.name.trim().toLowerCase()),
+  );
+}
 
 function CharacterLimitStatus({ value, max, helper }: { value: string; max: number; helper: string }) {
   const atLimit = value.length >= max;
@@ -181,7 +192,23 @@ export default function MenuPage() {
     [...base, ...localCategories].forEach((category) => {
       if (!hiddenCategoryIds.has(category.id)) byId.set(category.id, category);
     });
-    return [...byId.values()].sort((a, b) => a.sort_order - b.sort_order);
+    const rows = [...byId.values()];
+    const maxSortOrder = rows.reduce((max, category) => Math.max(max, category.sort_order), -1);
+    PRICE_LEVEL_MENU_CATEGORY_NAMES.forEach((name, index) => {
+      if (rows.some((category) => category.name.trim().toLowerCase() === name.toLowerCase())) return;
+      rows.push({
+        id: `required-price-category-${name.toLowerCase()}`,
+        restaurant_id: selectedRestaurantId ?? DEMO_RESTAURANT_ID,
+        name,
+        name_fr: null,
+        description: name === "Mains" ? "Main dishes used for price level" : "Entrées used for price level",
+        sort_order: maxSortOrder + index + 1,
+        available_from: null,
+        available_to: null,
+        is_active: true,
+      });
+    });
+    return rows.sort((a, b) => a.sort_order - b.sort_order);
   }, [categories, hiddenCategoryIds, localCategories, selectedRestaurantId]);
 
   const activeCategoryId = selectedCategory && displayCategories.some((category) => category.id === selectedCategory)
@@ -230,6 +257,10 @@ export default function MenuPage() {
   };
 
   const openEditCategory = (category: MenuCategoryRow) => {
+    if (isPriceLevelCategory(category)) {
+      toast.info("Mains and Entrées are required for restaurant price level.");
+      return;
+    }
     setEditCategory(category);
     setNewCatName(category.name);
     setNewCatDesc((category.description ?? "").slice(0, MENU_CATEGORY_DESCRIPTION_MAX_LENGTH));
@@ -321,6 +352,13 @@ export default function MenuPage() {
   };
 
   const handleDeleteCategory = async (id: string) => {
+    const category = displayCategories.find((item) => item.id === id);
+    if (isPriceLevelCategory(category)) {
+      toast.error("Mains and Entrées cannot be removed because they set the restaurant price level.");
+      setDeleteCategoryId(null);
+      return;
+    }
+
     const itemCount = countsByCategory.get(id) ?? 0;
     if (itemCount > 0) {
       toast.error("Move or delete this category's items first.");
@@ -451,6 +489,11 @@ export default function MenuPage() {
             <p className="mt-2 text-xs text-text-muted">
               {displayItems.length} items · {availableCount} available
             </p>
+            {isPriceLevelCategory(activeCategory) ? (
+              <p className="mt-2 max-w-xl text-xs text-gold">
+                Items in Mains and Entrées are used to calculate the restaurant price level. Drinks, sauces, sides, and extras do not affect it.
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
@@ -500,6 +543,7 @@ export default function MenuPage() {
                 variant="ghost"
                 className="h-9 gap-2 rounded-lg px-3 text-xs text-text-secondary hover:bg-bg-elevated hover:text-white"
                 onClick={() => openEditCategory(activeCategory)}
+                disabled={isPriceLevelCategory(activeCategory)}
               >
                 <Pencil className="size-3.5" />
                 Edit category
@@ -508,6 +552,7 @@ export default function MenuPage() {
                 variant="ghost"
                 className="h-9 gap-2 rounded-lg px-3 text-xs text-danger hover:bg-danger/10 hover:text-danger"
                 onClick={() => setDeleteCategoryId(activeCategory.id)}
+                disabled={isPriceLevelCategory(activeCategory)}
               >
                 <Trash2 className="size-3.5" />
                 Delete category
@@ -831,13 +876,21 @@ export default function MenuPage() {
           <p className="text-sm text-text-secondary">
             {deleteCategoryId && (countsByCategory.get(deleteCategoryId) ?? 0) > 0
               ? "This category still has menu items. Move or delete those items before removing the category."
+              : deleteCategoryId && isPriceLevelCategory(displayCategories.find((category) => category.id === deleteCategoryId))
+                ? "Mains and Entrées are required for restaurant price level and cannot be removed."
               : "This category will be hidden from the menu. This cannot be undone."}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteCategoryId(null)}>Cancel</Button>
             <Button
               variant="destructive"
-              disabled={!!deleteCategoryId && (countsByCategory.get(deleteCategoryId) ?? 0) > 0}
+              disabled={
+                !!deleteCategoryId &&
+                (
+                  (countsByCategory.get(deleteCategoryId) ?? 0) > 0 ||
+                  isPriceLevelCategory(displayCategories.find((category) => category.id === deleteCategoryId))
+                )
+              }
               onClick={() => deleteCategoryId && void handleDeleteCategory(deleteCategoryId)}
             >
               Remove

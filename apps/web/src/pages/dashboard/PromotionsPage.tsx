@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -70,6 +71,7 @@ type FormState = {
   media_url: string;
   media_type: "image" | "pdf" | null;
   media_name: string;
+  is_private: boolean;
   is_recurring: boolean;
   recurrence_frequency: RecurrenceFrequency;
   recurrence_interval: string;
@@ -116,6 +118,7 @@ const DEFAULT_FORM: FormState = {
   media_url: "",
   media_type: null,
   media_name: "",
+  is_private: false,
   is_recurring: false,
   recurrence_frequency: "weekly",
   recurrence_interval: "1",
@@ -189,6 +192,7 @@ function formToPromotionPreview(
     media_url: (media?.url ?? form.media_url) || null,
     media_type: media?.type ?? form.media_type,
     media_name: (media?.name ?? form.media_name) || null,
+    is_private: form.is_private,
     is_recurring: form.is_recurring,
     recurrence_frequency: form.is_recurring ? form.recurrence_frequency : null,
     recurrence_interval: form.is_recurring ? Number(form.recurrence_interval) || 1 : 1,
@@ -852,6 +856,22 @@ function PromoFormDrawer({
                 </div>
               </section>
 
+              <section className="rounded-2xl border border-border bg-bg-elevated/35 p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <Label htmlFor="promo-private">Campaign-only promotion</Label>
+                    <p className="mt-1 text-xs text-text-muted">
+                      Keep active for invited guests, but hide it from public Deals and previews.
+                    </p>
+                  </div>
+                  <Switch
+                    id="promo-private"
+                    checked={form.is_private}
+                    onCheckedChange={(checked) => set("is_private", checked)}
+                  />
+                </div>
+              </section>
+
               {/* Type */}
               <div className="flex flex-col gap-1.5">
                 <Label>Deal Type *</Label>
@@ -1441,6 +1461,7 @@ export default function PromotionsPage() {
         media_url: editTarget.media_url ?? "",
         media_type: editTarget.media_type ?? null,
         media_name: editTarget.media_name ?? "",
+        is_private: editTarget.is_private ?? false,
         is_recurring: editTarget.is_recurring,
         recurrence_frequency: editTarget.recurrence_frequency ?? "weekly",
         recurrence_interval: String(editTarget.recurrence_interval ?? 1),
@@ -1544,6 +1565,7 @@ export default function PromotionsPage() {
       media_url: (upload?.url ?? form.media_url) || null,
       media_type: upload?.type ?? form.media_type,
       media_name: (upload?.name ?? form.media_name) || null,
+      is_private: form.is_private,
       is_recurring: form.is_recurring,
       recurrence_frequency: recurrenceFrequency,
       recurrence_interval: form.is_recurring ? Number(form.recurrence_interval) || 1 : 1,

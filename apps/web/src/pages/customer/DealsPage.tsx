@@ -28,10 +28,12 @@ import {
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import {
+  fetchEventById,
   useAllActiveEvents,
   type EventWithRestaurant,
 } from "@/hooks/useEvents";
 import {
+  fetchPromotionById,
   useAllActivePromotions,
   type PromotionWithRestaurant,
 } from "@/hooks/usePromotions";
@@ -122,19 +124,11 @@ const PRICE_FOR_TYPE: Record<string, string> = {
   Brunch: "$$",
 };
 
-const FALLBACK_RESTAURANT_SLOTS = ["6:30 PM", "6:45 PM", "7:15 PM", "7:45 PM", "8:30 PM", "9:00 PM"];
 const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
 
 function priceFromRange(range?: number | null): string {
   if (!range || range < 1) return "$$";
   return PRICE_LABELS[Math.min(Math.round(range), PRICE_LABELS.length - 1)] ?? "$$";
-}
-
-function badgeFromRating(rating: number | null | undefined, idx: number): string {
-  if (idx === 0 && (rating ?? 0) >= 4.7) return "TOP RATED";
-  if ((rating ?? 0) >= 4.4) return "POPULAR";
-  if ((rating ?? 0) >= 4.0) return "CHEFS PICK";
-  return "NEW";
 }
 
 function restaurantInitials(name: string): string {
@@ -146,24 +140,21 @@ function slugFromName(name: string): string {
 }
 
 function adaptRestaurantPreview(restaurant: Restaurant, idx: number): RestaurantPreviewSummary {
-  const seed = (restaurant.id.charCodeAt(0) + idx) % 4;
-  const slots = FALLBACK_RESTAURANT_SLOTS.slice(seed, seed + 3 + (idx % 2));
-
   return {
     id: restaurant.id,
     name: restaurant.name,
     reviews: restaurant.total_reviews ?? 0,
-    rating: restaurant.avg_rating ?? 4.5,
-    cuisine: restaurant.cuisine_type ?? "Restaurant",
+    rating: restaurant.avg_rating ?? 0,
+    cuisine: restaurant.cuisine_type ?? "",
     price: priceFromRange(restaurant.price_range),
-    area: restaurant.city ?? "Toronto",
-    bookedToday: 20 + ((idx * 13) % 90),
-    slots: idx % 5 === 2 ? [] : slots,
+    area: restaurant.city ?? restaurant.address ?? "",
+    bookedToday: 0,
+    slots: [],
     initials: restaurantInitials(restaurant.name),
-    badge: badgeFromRating(restaurant.avg_rating, idx),
-    city: restaurant.city ?? "Toronto",
+    badge: restaurant.business_type ?? "",
+    city: restaurant.city ?? "",
     distanceKm: 0.4 + ((idx * 7) % 18) / 10,
-    features: ["Patio", "Tasting menu"].slice(0, (idx % 2) + 1),
+    features: [restaurant.cuisine_type, restaurant.business_type, restaurant.city].filter(Boolean) as string[],
   };
 }
 
@@ -175,12 +166,12 @@ function displayToRestaurantPreview(item: EventPromotionDisplay): RestaurantPrev
     id: item.restaurantSlug ?? slugFromName(item.restaurantName),
     name: item.restaurantName,
     reviews: 0,
-    rating: Number.isFinite(rating) ? rating : 4.5,
+    rating: Number.isFinite(rating) ? rating : 0,
     cuisine: item.cuisineLabel,
     price: item.priceRangeLabel,
     area: item.cityLabel,
-    bookedToday: 21,
-    slots: FALLBACK_RESTAURANT_SLOTS,
+    bookedToday: 0,
+    slots: [],
     initials: restaurantInitials(item.restaurantName),
     badge: item.badgeLabel,
     city: item.cityLabel,
@@ -908,6 +899,38 @@ export default function DealsPage() {
     if (match) {
       void Promise.resolve().then(() => setDetailItem(match.detail ?? demoToDisplay(match)));
     }
+  }, [detailParam, events]);
+
+  useEffect(() => {
+    if (!detailParam) {
+      return;
+    }
+
+    const existingMatch = events.some((event) => {
+      const detail = event.detail ?? demoToDisplay(event);
+      return (
+        event.id === detailParam ||
+        detail.id === detailParam ||
+        `${detail.source}-${detail.id}` === detailParam
+      );
+    });
+    if (existingMatch) return;
+
+    const [source, ...idParts] = detailParam.split("-");
+    const id = idParts.join("-");
+    if ((source !== "event" && source !== "promotion") || !id) return;
+
+    let cancelled = false;
+    void (async () => {
+      const item = source === "event"
+        ? await fetchEventById(id).then((event) => event ? eventToDisplay(event) : null)
+        : await fetchPromotionById(id).then((promotion) => promotion ? promotionToDisplay(promotion) : null);
+
+      if (cancelled || !item) return;
+      setDetailItem(item);
+    })();
+
+    return () => { cancelled = true; };
   }, [detailParam, events]);
 
   return (

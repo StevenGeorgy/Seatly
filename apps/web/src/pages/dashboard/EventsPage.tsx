@@ -48,6 +48,7 @@ const eventSchema = z.object({
   end_date: z.string().min(1, "End date is required."),
   start_time: z.string().optional(),
   end_time: z.string().optional(),
+  is_private: z.boolean(),
   capacity_mode: z.enum(["limited", "unlimited"]),
   capacity: z.string().optional(),
   price_per_person: z.string().optional().refine((value) => !value || Number(value) >= 0, "Price must be zero or greater."),
@@ -72,6 +73,7 @@ const DEFAULT_EVENT_FORM: EventFormValues = {
   end_date: "",
   start_time: "",
   end_time: "",
+  is_private: false,
   capacity_mode: "limited",
   capacity: "",
   price_per_person: "",
@@ -87,6 +89,7 @@ function eventToFormValues(event: EventRow): EventFormValues {
     end_date: event.end_date ?? event.date,
     start_time: event.start_time ?? "",
     end_time: event.end_time ?? "",
+    is_private: event.is_private ?? false,
     capacity_mode: event.capacity == null ? "unlimited" : "limited",
     capacity: event.capacity?.toString() ?? "",
     price_per_person: event.price_per_person?.toString() ?? "",
@@ -312,6 +315,7 @@ function valuesToPayload(values: EventFormValues, isActive: boolean, media?: Eve
     capacity,
     price_per_person: values.price_per_person ? Number(values.price_per_person) : null,
     is_active: isActive,
+    is_private: values.is_private,
   };
 }
 
@@ -348,7 +352,7 @@ function valuesToPreview(
     media_name: media?.name ?? payload.media_name ?? existingEvent?.media_name ?? null,
     min_age: null,
     dress_code: null,
-    is_private: false,
+    is_private: values.is_private,
     theme: payload.theme ?? null,
     created_at: null,
   };
@@ -591,6 +595,7 @@ function EventFormDialog({
   const endDateValue = watch("end_date") ?? "";
   const startTimeValue = watch("start_time") ?? "";
   const endTimeValue = watch("end_time") ?? "";
+  const isPrivateValue = watch("is_private");
   const titleValue = watch("name") ?? "";
   const descriptionValue = watch("description") ?? "";
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -742,6 +747,20 @@ function EventFormDialog({
                     </SelectContent>
                   </Select>
                   {errors.theme && <p className="text-xs text-danger">{errors.theme.message}</p>}
+                </div>
+
+                <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-bg-surface/70 p-3">
+                  <div>
+                    <Label htmlFor="event-private">Campaign-only event</Label>
+                    <p className="mt-1 text-xs text-text-muted">
+                      Keep active for invited guests, but hide it from public Deals and previews.
+                    </p>
+                  </div>
+                  <Switch
+                    id="event-private"
+                    checked={isPrivateValue}
+                    onCheckedChange={(checked) => setValue("is_private", checked, { shouldValidate: true })}
+                  />
                 </div>
               </div>
             </section>

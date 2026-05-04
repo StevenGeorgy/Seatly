@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
@@ -6,15 +6,16 @@ import { format, parse, isValid } from "date-fns";
 import {
   Bell,
   CheckCircle2,
-  ChevronDown,
   CreditCard,
   Plus,
   Settings as SettingsIcon,
+  Upload,
   X,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DashboardTimeWheelPicker } from "@/components/dashboard/DashboardTimeWheelPicker";
 import { Button } from "@/components/ui/button";
 import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
@@ -28,9 +29,12 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
 import {
-  RESTAURANT_TIME_OPTIONS,
+  RESTAURANT_DIETARY_TAGS,
+  normalizeRestaurantDietaryTags,
+  type RestaurantDietaryTag,
+} from "@/lib/restaurant-dietary-tags";
+import {
   RESTAURANT_WEEKDAY_NUMBERS,
   RESTAURANT_WEEKDAYS,
   defaultRestaurantHours,
@@ -41,21 +45,6 @@ import {
   type RestaurantDayHours,
   type RestaurantSpecialDay,
 } from "@/lib/restaurant-hours";
-
-function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
-      >
-        {RESTAURANT_TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
-    </div>
-  );
-}
 
 const CURRENCY_OPTIONS = [
   { value: "cad", label: "CAD — Canadian Dollar" },
@@ -196,6 +185,10 @@ function revokeDraftUrl(url: string | null): void {
   if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
 }
 
+function dietaryTagsKey(tags: RestaurantDietaryTag[]): string {
+  return [...tags].sort().join("|");
+}
+
 function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
@@ -269,14 +262,20 @@ export default function SettingsPage() {
   const [coverFileDraft, setCoverFileDraft] = useState<File | null>(null);
   const [logoDraftPreviewUrl, setLogoDraftPreviewUrl] = useState<string | null>(null);
   const [coverDraftPreviewUrl, setCoverDraftPreviewUrl] = useState<string | null>(null);
+  const [logoMarkedForRemoval, setLogoMarkedForRemoval] = useState(false);
+  const [coverMarkedForRemoval, setCoverMarkedForRemoval] = useState(false);
+  const [draggingMediaKind, setDraggingMediaKind] = useState<RestaurantMediaKind | null>(null);
   const [currency, setCurrency] = useState(selectedRestaurant?.currency ?? "cad");
   const [hasBar, setHasBar] = useState(selectedRestaurant?.has_bar ?? false);
+  const [dietaryTags, setDietaryTags] = useState<RestaurantDietaryTag[]>(() => (
+    normalizeRestaurantDietaryTags(selectedRestaurant?.settings_json?.dietaryTags)
+  ));
   const [turnTimeMinutes, setTurnTimeMinutes] = useState(
     String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
   );
   const [savingRestaurant, setSavingRestaurant] = useState(false);
   const [restaurantInitial, setRestaurantInitial] = useState<{
-    name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean; turnTimeMinutes: string;
+    name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean; dietaryTags: RestaurantDietaryTag[]; turnTimeMinutes: string;
   } | null>(null);
   const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
   const normalizedTurnTime = normalizeTurnTime(turnTimeMinutes);
@@ -284,10 +283,12 @@ export default function SettingsPage() {
     logoFileDraft ||
     coverFileDraft ||
     logoUrlInput.trim() ||
-    coverUrlInput.trim(),
+    coverUrlInput.trim() ||
+    (logoMarkedForRemoval && savedLogoUrl) ||
+    (coverMarkedForRemoval && savedCoverPhotoUrl),
   );
-  const logoPreviewSrc = (logoDraftPreviewUrl ?? logoUrlInput.trim()) || savedLogoUrl;
-  const coverPreviewSrc = (coverDraftPreviewUrl ?? coverUrlInput.trim()) || savedCoverPhotoUrl;
+  const logoPreviewSrc = logoMarkedForRemoval ? "" : (logoDraftPreviewUrl ?? logoUrlInput.trim()) || savedLogoUrl;
+  const coverPreviewSrc = coverMarkedForRemoval ? "" : (coverDraftPreviewUrl ?? coverUrlInput.trim()) || savedCoverPhotoUrl;
 
   // Hours
   const [hours, setHours] = useState<RestaurantDayHours[]>(defaultRestaurantHours);
@@ -323,8 +324,12 @@ export default function SettingsPage() {
     setCoverFileDraft(null);
     setLogoDraftPreviewUrl(null);
     setCoverDraftPreviewUrl(null);
+    setLogoMarkedForRemoval(false);
+    setCoverMarkedForRemoval(false);
+    setDraggingMediaKind(null);
     setCurrency(selectedRestaurant?.currency ?? "cad");
     setHasBar(selectedRestaurant?.has_bar ?? false);
+    setDietaryTags(normalizeRestaurantDietaryTags(selectedRestaurant?.settings_json?.dietaryTags));
     setTurnTimeMinutes(String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES));
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
@@ -357,6 +362,7 @@ export default function SettingsPage() {
           cuisine: c, address: a, phone: p, description: d,
           currency: selectedRestaurant.currency ?? "cad",
           hasBar: selectedRestaurant.has_bar ?? false,
+          dietaryTags: normalizeRestaurantDietaryTags(selectedRestaurant.settings_json?.dietaryTags),
           turnTimeMinutes: String(selectedRestaurant.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
         });
         const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
@@ -364,7 +370,14 @@ export default function SettingsPage() {
         setSpecialDays(parsed.special);
         setCurrentPlan(data.plan ?? null);
       });
-  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.currency, selectedRestaurant?.has_bar]);
+  }, [
+    selectedRestaurant?.id,
+    selectedRestaurant?.name,
+    selectedRestaurant?.currency,
+    selectedRestaurant?.has_bar,
+    selectedRestaurant?.settings_json?.dietaryTags,
+    selectedRestaurant?.settings_json?.turnTimeMinutes,
+  ]);
 
   const restaurantDirty = useMemo(() => {
     if (!restaurantInitial) return false;
@@ -376,9 +389,18 @@ export default function SettingsPage() {
       restaurantInitial.description !== description ||
       restaurantInitial.currency !== currency ||
       restaurantInitial.hasBar !== hasBar ||
+      dietaryTagsKey(restaurantInitial.dietaryTags) !== dietaryTagsKey(dietaryTags) ||
       restaurantInitial.turnTimeMinutes !== turnTimeMinutes
     );
-  }, [restaurantInitial, restaurantName, cuisine, address, phone, description, currency, hasBar, turnTimeMinutes]);
+  }, [restaurantInitial, restaurantName, cuisine, address, phone, description, currency, hasBar, dietaryTags, turnTimeMinutes]);
+
+  const toggleDietaryTag = (tag: RestaurantDietaryTag) => {
+    setDietaryTags((current) => (
+      current.includes(tag)
+        ? current.filter((item) => item !== tag)
+        : [...current, tag]
+    ));
+  };
 
   const saveRestaurantSettings = async () => {
     if (!selectedRestaurant) return;
@@ -390,8 +412,8 @@ export default function SettingsPage() {
       return;
     }
 
-    const normalizedLogoUrl = logoUrlInput.trim() ? imageUrlFromInput(logoUrlInput) : undefined;
-    const normalizedCoverUrl = coverUrlInput.trim() ? imageUrlFromInput(coverUrlInput) : undefined;
+    const normalizedLogoUrl = !logoMarkedForRemoval && logoUrlInput.trim() ? imageUrlFromInput(logoUrlInput) : undefined;
+    const normalizedCoverUrl = !coverMarkedForRemoval && coverUrlInput.trim() ? imageUrlFromInput(coverUrlInput) : undefined;
     if (normalizedLogoUrl === false || normalizedCoverUrl === false) {
       toast.error(t("dashboard.settings.invalidImageUrl"));
       return;
@@ -402,11 +424,14 @@ export default function SettingsPage() {
     const existingSettings = (selectedRestaurant.settings_json ?? {}) as RestaurantSettings;
     const updatedSettings: RestaurantSettings = {
       ...existingSettings,
+      dietaryTags,
       turnTimeMinutes: normalizedTurnTime,
     };
 
     const mediaUpdates: Partial<Record<RestaurantMediaField, string | null>> = {};
-    if (logoFileDraft) {
+    if (logoMarkedForRemoval) {
+      mediaUpdates.logo_url = null;
+    } else if (logoFileDraft) {
       const uploadedLogoUrl = await uploadRestaurantMediaFile("logo", logoFileDraft);
       if (!uploadedLogoUrl) {
         setSavingRestaurant(false);
@@ -417,7 +442,9 @@ export default function SettingsPage() {
       mediaUpdates.logo_url = normalizedLogoUrl;
     }
 
-    if (coverFileDraft) {
+    if (coverMarkedForRemoval) {
+      mediaUpdates.cover_photo_url = null;
+    } else if (coverFileDraft) {
       const uploadedCoverUrl = await uploadRestaurantMediaFile("cover", coverFileDraft);
       if (!uploadedCoverUrl) {
         setSavingRestaurant(false);
@@ -447,7 +474,7 @@ export default function SettingsPage() {
 
     const nextSavedLogoUrl = mediaUpdates.logo_url !== undefined ? mediaUpdates.logo_url ?? "" : savedLogoUrl;
     const nextSavedCoverPhotoUrl = mediaUpdates.cover_photo_url !== undefined ? mediaUpdates.cover_photo_url ?? "" : savedCoverPhotoUrl;
-    setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar, turnTimeMinutes });
+    setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar, dietaryTags, turnTimeMinutes });
     setSavedLogoUrl(nextSavedLogoUrl);
     setSavedCoverPhotoUrl(nextSavedCoverPhotoUrl);
     setLogoUrlInput("");
@@ -456,6 +483,8 @@ export default function SettingsPage() {
     setCoverFileDraft(null);
     setLogoDraftPreviewUrl(null);
     setCoverDraftPreviewUrl(null);
+    setLogoMarkedForRemoval(false);
+    setCoverMarkedForRemoval(false);
     refreshRestaurants();
     toast.success(t("dashboard.settings.saved"));
   };
@@ -484,11 +513,7 @@ export default function SettingsPage() {
     return data.publicUrl;
   };
 
-  const handleRestaurantMediaFile = (kind: RestaurantMediaKind, event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
+  const applyRestaurantMediaDraft = (kind: RestaurantMediaKind, file: File) => {
     const image = resolveRestaurantImage(file);
     if (!image) {
       toast.error(t("dashboard.settings.invalidRestaurantImage", { formats: RESTAURANT_IMAGE_FORMATS }));
@@ -500,26 +525,73 @@ export default function SettingsPage() {
       setLogoFileDraft(file);
       setLogoUrlInput("");
       setLogoDraftPreviewUrl(previewUrl);
+      setLogoMarkedForRemoval(false);
     } else {
       setCoverFileDraft(file);
       setCoverUrlInput("");
       setCoverDraftPreviewUrl(previewUrl);
+      setCoverMarkedForRemoval(false);
     }
+  };
+
+  const handleRestaurantMediaFile = (kind: RestaurantMediaKind, event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    applyRestaurantMediaDraft(kind, file);
+  };
+
+  const handleRestaurantMediaDragOver = (kind: RestaurantMediaKind, event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    if (!selectedRestaurant || savingRestaurant) return;
+    event.dataTransfer.dropEffect = "copy";
+    setDraggingMediaKind(kind);
+  };
+
+  const handleRestaurantMediaDragLeave = (event: DragEvent<HTMLElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setDraggingMediaKind(null);
+  };
+
+  const handleRestaurantMediaDrop = (kind: RestaurantMediaKind, event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    setDraggingMediaKind(null);
+    if (!selectedRestaurant || savingRestaurant) return;
+    const file = event.dataTransfer.files?.[0];
+    if (!file) return;
+    applyRestaurantMediaDraft(kind, file);
   };
 
   const handleRestaurantMediaUrl = (kind: RestaurantMediaKind, value: string) => {
     if (kind === "logo") {
       setLogoUrlInput(value);
+      setLogoMarkedForRemoval(false);
       if (value.trim()) {
         setLogoFileDraft(null);
         setLogoDraftPreviewUrl(null);
       }
     } else {
       setCoverUrlInput(value);
+      setCoverMarkedForRemoval(false);
       if (value.trim()) {
         setCoverFileDraft(null);
         setCoverDraftPreviewUrl(null);
       }
+    }
+  };
+
+  const removeRestaurantMedia = (kind: RestaurantMediaKind) => {
+    if (kind === "logo") {
+      setLogoUrlInput("");
+      setLogoFileDraft(null);
+      setLogoDraftPreviewUrl(null);
+      setLogoMarkedForRemoval(Boolean(savedLogoUrl));
+    } else {
+      setCoverUrlInput("");
+      setCoverFileDraft(null);
+      setCoverDraftPreviewUrl(null);
+      setCoverMarkedForRemoval(Boolean(savedCoverPhotoUrl));
     }
   };
 
@@ -543,6 +615,9 @@ export default function SettingsPage() {
     setCoverFileDraft(null);
     setLogoDraftPreviewUrl(null);
     setCoverDraftPreviewUrl(null);
+    setLogoMarkedForRemoval(false);
+    setCoverMarkedForRemoval(false);
+    setDraggingMediaKind(null);
   };
 
   const saveHours = async () => {
@@ -784,6 +859,32 @@ export default function SettingsPage() {
                   <Switch checked={hasBar} onCheckedChange={setHasBar} />
                 </FieldRow>
                 <FieldRow
+                  label={t("dashboard.settings.dietaryTags")}
+                  hint={t("dashboard.settings.dietaryTagsHint")}
+                >
+                  <div className="flex flex-wrap gap-2">
+                    {RESTAURANT_DIETARY_TAGS.map((tag) => {
+                      const active = dietaryTags.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => toggleDietaryTag(tag)}
+                          className={cn(
+                            "rounded-full border px-3 py-2 text-xs font-medium transition-colors",
+                            active
+                              ? "border-gold bg-gold/15 text-gold"
+                              : "border-border bg-bg-elevated text-text-secondary hover:border-gold/30 hover:text-text-primary",
+                          )}
+                          aria-pressed={active}
+                        >
+                          {t(`restaurantDietaryTags.${tag}`)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </FieldRow>
+                <FieldRow
                   label={t("dashboard.settings.turnTime")}
                   hint={t("dashboard.settings.turnTimeHint")}
                 >
@@ -833,22 +934,55 @@ export default function SettingsPage() {
                     />
 
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
-                      <div className="rounded-2xl border border-border/70 bg-bg-elevated/40 p-4">
+                      <div
+                        onDragOver={(event) => handleRestaurantMediaDragOver("logo", event)}
+                        onDragLeave={handleRestaurantMediaDragLeave}
+                        onDrop={(event) => handleRestaurantMediaDrop("logo", event)}
+                        className={cn(
+                          "rounded-2xl border border-border/70 bg-bg-elevated/40 p-4 transition-colors",
+                          draggingMediaKind === "logo" && "border-gold/60 bg-gold/10",
+                        )}
+                      >
                         <p className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
                           {t("dashboard.settings.logo")}
                         </p>
-                        <div className="flex items-center gap-3">
-                          <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-gold/30 bg-gold/10 font-serif text-lg text-gold">
-                            {logoPreviewSrc ? (
+                        <button
+                          type="button"
+                          disabled={savingRestaurant || !selectedRestaurant}
+                          onClick={() => logoInputRef.current?.click()}
+                          onDragOver={(event) => handleRestaurantMediaDragOver("logo", event)}
+                          onDragLeave={handleRestaurantMediaDragLeave}
+                          onDrop={(event) => handleRestaurantMediaDrop("logo", event)}
+                          className={cn(
+                            "flex min-h-44 w-full flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-border bg-bg-base/70 p-6 text-center transition-colors",
+                            "hover:border-info/70 hover:bg-bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/40 disabled:cursor-not-allowed disabled:opacity-70",
+                            draggingMediaKind === "logo" && "border-info/70 bg-info/10",
+                          )}
+                        >
+                          <span className="flex size-14 items-center justify-center rounded-2xl text-info">
+                            <Upload className="size-10" strokeWidth={1.7} />
+                          </span>
+                          {logoPreviewSrc ? (
+                            <span className="mt-4 flex size-20 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-gold/10 font-serif text-lg text-gold">
                               <img
                                 src={logoPreviewSrc}
                                 alt={t("dashboard.settings.logoPreviewAlt")}
                                 className="size-full object-cover"
                               />
-                            ) : (
-                              (restaurantName || "MV").slice(0, 2).toUpperCase()
-                            )}
-                          </div>
+                            </span>
+                          ) : (
+                            <span className="mt-4 flex size-20 items-center justify-center rounded-2xl border border-gold/30 bg-gold/10 font-serif text-lg text-gold">
+                              {(restaurantName || "MV").slice(0, 2).toUpperCase()}
+                            </span>
+                          )}
+                          <span className="mt-4 block text-base font-semibold text-text-primary">
+                            {t("dashboard.settings.mediaDropTitle")}
+                          </span>
+                          <span className="mt-1 block text-sm text-text-muted">
+                            {t("dashboard.settings.mediaDropHint")}
+                          </span>
+                        </button>
+                        <div className="mt-3 flex flex-wrap gap-2">
                           <Button
                             type="button"
                             variant="outline"
@@ -857,6 +991,15 @@ export default function SettingsPage() {
                             onClick={() => logoInputRef.current?.click()}
                           >
                             {t("dashboard.settings.replaceLogo")}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={savingRestaurant || !selectedRestaurant || !logoPreviewSrc}
+                            onClick={() => removeRestaurantMedia("logo")}
+                          >
+                            {t("dashboard.settings.removeLogo")}
                           </Button>
                         </div>
                         <Input
@@ -867,23 +1010,49 @@ export default function SettingsPage() {
                         />
                       </div>
 
-                      <div className="rounded-2xl border border-border/70 bg-bg-elevated/40 p-4">
+                      <div
+                        onDragOver={(event) => handleRestaurantMediaDragOver("cover", event)}
+                        onDragLeave={handleRestaurantMediaDragLeave}
+                        onDrop={(event) => handleRestaurantMediaDrop("cover", event)}
+                        className={cn(
+                          "rounded-2xl border border-border/70 bg-bg-elevated/40 p-4 transition-colors",
+                          draggingMediaKind === "cover" && "border-info/60 bg-info/10",
+                        )}
+                      >
                         <p className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
                           {t("dashboard.settings.coverPhoto")}
                         </p>
-                        <div className="overflow-hidden rounded-xl border border-border bg-bg-base">
+                        <button
+                          type="button"
+                          disabled={savingRestaurant || !selectedRestaurant}
+                          onClick={() => coverInputRef.current?.click()}
+                          onDragOver={(event) => handleRestaurantMediaDragOver("cover", event)}
+                          onDragLeave={handleRestaurantMediaDragLeave}
+                          onDrop={(event) => handleRestaurantMediaDrop("cover", event)}
+                          className={cn(
+                            "flex aspect-video w-full flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-border bg-bg-base/70 p-6 text-center transition-colors",
+                            "hover:border-info/70 hover:bg-bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-info/40 disabled:cursor-not-allowed disabled:opacity-70",
+                            draggingMediaKind === "cover" && "border-info/70 bg-info/10",
+                          )}
+                        >
                           {coverPreviewSrc ? (
                             <img
                               src={coverPreviewSrc}
                               alt={t("dashboard.settings.coverPreviewAlt")}
-                              className="aspect-video w-full object-cover"
+                              className="size-full object-cover"
                             />
                           ) : (
-                            <div className="flex aspect-video w-full items-center justify-center text-xs text-text-muted">
-                              {t("dashboard.settings.noCoverPhoto")}
-                            </div>
+                            <>
+                              <Upload className="size-12 text-info" strokeWidth={1.7} />
+                              <span className="mt-5 block text-lg font-semibold text-text-primary">
+                                {t("dashboard.settings.mediaDropTitle")}
+                              </span>
+                              <span className="mt-2 block text-sm text-text-muted">
+                                {t("dashboard.settings.mediaDropHint")}
+                              </span>
+                            </>
                           )}
-                        </div>
+                        </button>
                         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                           <Input
                             value={coverUrlInput}
@@ -899,6 +1068,16 @@ export default function SettingsPage() {
                             className="shrink-0"
                           >
                             {t("dashboard.settings.uploadCover")}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={savingRestaurant || !selectedRestaurant || !coverPreviewSrc}
+                            onClick={() => removeRestaurantMedia("cover")}
+                            className="shrink-0"
+                          >
+                            {t("dashboard.settings.removeCover")}
                           </Button>
                         </div>
                       </div>
@@ -941,10 +1120,24 @@ export default function SettingsPage() {
                     <div key={day} className="grid grid-cols-[120px_minmax(0,1fr)_auto] items-center gap-4 border-t border-border/50 px-6 py-4 sm:px-7">
                       <span className={cn("text-sm", hours[i].open ? "text-text-primary" : "text-text-muted")}>{day}</span>
                       {hours[i].open ? (
-                        <div className="flex items-center gap-2 text-sm text-text-primary">
-                          <TimeSelect value={hours[i].from} onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, from: v } : d))} />
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-text-primary">
+                          <DashboardTimeWheelPicker
+                            value={hours[i].from}
+                            onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, from: v } : d))}
+                            valueFormat="12h"
+                            ariaLabel={`${day} opening time`}
+                            helperLabel="Opening time"
+                            doneLabel="Done"
+                          />
                           <span className="text-xs text-text-muted">—</span>
-                          <TimeSelect value={hours[i].to} onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, to: v } : d))} />
+                          <DashboardTimeWheelPicker
+                            value={hours[i].to}
+                            onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, to: v } : d))}
+                            valueFormat="12h"
+                            ariaLabel={`${day} closing time`}
+                            helperLabel="Closing time"
+                            doneLabel="Done"
+                          />
                         </div>
                       ) : (
                         <span className="text-sm text-text-muted">Closed</span>

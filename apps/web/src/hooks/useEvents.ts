@@ -55,6 +55,7 @@ export type CreateEventPayload = {
   media_type?: "image" | "pdf" | null;
   media_name?: string | null;
   is_active?: boolean;
+  is_private?: boolean;
 };
 
 export type EventMediaUpload = {
@@ -127,6 +128,7 @@ export function useAllActiveEvents() {
         )
       `)
       .eq("is_active", true)
+      .eq("is_private", false)
       .or(`end_date.gte.${today},and(end_date.is.null,date.gte.${today})`)
       .order("date", { ascending: true });
 
@@ -186,7 +188,7 @@ export function useEvents() {
         is_active: payload.is_active ?? true,
         tickets_sold: 0,
         is_recurring: false,
-        is_private: false,
+        is_private: payload.is_private ?? false,
       });
     setSaving(false);
     if (error) return error.message;
@@ -238,4 +240,29 @@ export function useEvents() {
   }, [fetchEvents]);
 
   return { events, loading, saving, error, refetch: fetchEvents, createEvent, updateEvent, deleteEvent, uploadEventMedia };
+}
+
+export async function fetchEventById(id: string): Promise<EventWithRestaurant | null> {
+  if (!isSupabaseConfigured()) return null;
+
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("events")
+    .select(`
+      *,
+      restaurants (
+        name,
+        slug,
+        cuisine_type,
+        avg_rating,
+        cover_photo_url,
+        city,
+        price_range
+      )
+    `)
+    .eq("id", id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  return (data as unknown as EventWithRestaurant | null) ?? null;
 }
