@@ -31,7 +31,6 @@ const NotFoundPage = lazy(() => import("@/pages/NotFoundPage"));
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
-const HostViewPage = lazy(() => import("@/pages/dashboard/HostViewPage"));
 const OrdersPage = lazy(() => import("@/pages/dashboard/OrdersPage"));
 const MenuPage = lazy(() => import("@/pages/dashboard/MenuPage"));
 const CrmPage = lazy(() => import("@/pages/dashboard/CrmPage"));
@@ -156,7 +155,6 @@ export function AppRoutes() {
           <Route index element={<OverviewPage />} />
           <Route path="reservations" element={<ReservationsPage />} />
           <Route path="floor-plan" element={<FloorPlanPage />} />
-          <Route path="host-view" element={<HostViewPage />} />
           <Route path="staff-invites" element={<HostPage />} />
           <Route path="host" element={<Navigate to="/dashboard/staff-invites" replace />} />
           <Route path="orders" element={<OrdersPage />} />

@@ -264,7 +264,7 @@ export function useReservations(filters?: ReservationFilters) {
           shift_name: payload.availability_slot.shift_name,
           table_ids: slotTableIds,
           duration_minutes: payload.availability_slot.duration_minutes ?? null,
-          source: "host_view",
+          source: "floor_plan_host",
         },
         p_approval_profile_id: null,
       });

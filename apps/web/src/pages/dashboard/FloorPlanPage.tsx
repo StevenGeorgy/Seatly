@@ -15,7 +15,6 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { CalendarDays, Search, Users } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -336,11 +335,34 @@ type HostQuickPanelProps = {
   date: string;
   partySize: number;
   slots: AvailabilitySlot[];
+  selectedSlot: AvailabilitySlot | null;
   loading: boolean;
+  saving: boolean;
+  maxSeats: number;
+  guestName: string;
+  guestEmail: string;
+  guestPhone: string;
+  specialRequest: string;
+  tableLabelsById: Record<string, string>;
   onDateChange: (date: string) => void;
   onPartySizeChange: (partySize: number) => void;
   onCheckAvailability: () => void;
-  onOpenHostView: (slot?: AvailabilitySlot) => void;
+  onSelectSlot: (slot: AvailabilitySlot) => void;
+  onGuestNameChange: (value: string) => void;
+  onGuestEmailChange: (value: string) => void;
+  onGuestPhoneChange: (value: string) => void;
+  onSpecialRequestChange: (value: string) => void;
+  onCreateReservation: () => void;
+};
+
+type TableDayReservation = {
+  id: string;
+  guestName: string;
+  partySize: number;
+  reservedAt: string;
+  durationMinutes: number | null;
+  status: string;
+  tableCount: number;
 };
 
 function tableDisplayLabel(table: FloorTable): string {
@@ -463,6 +485,11 @@ function reservationGuestName(row: ReservationRow): string {
   return row.guests?.full_name ?? row.guest_full_name ?? "Guest";
 }
 
+function reservationDateValue(row: ReservationRow): string | null {
+  const reservedAt = new Date(row.reserved_at);
+  return Number.isNaN(reservedAt.getTime()) ? null : dateInputValue(reservedAt);
+}
+
 function reservationTableGroupDetails(row: ReservationRow): { size: number; capacity: number } {
   const assigned = row.reservation_tables?.flatMap((assignment) =>
     assignment.tables ? [{ capacity: assignment.tables.capacity }] : [],
@@ -489,6 +516,14 @@ function reservationPriority(row: ReservationRow): number {
   if (row.status === "seated") return 3;
   if (row.status === "confirmed") return 2;
   return 0;
+}
+
+function statusLabel(status: string): string {
+  return status
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function toLocalStatus(status: string | null | undefined): Status {
@@ -1136,10 +1171,12 @@ function FloorDatePickerButton({
   value,
   onChange,
   placeholder,
+  disableBefore,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
+  disableBefore?: Date;
 }) {
   const [open, setOpen] = useState(false);
   const selected = useMemo(() => parseDateInputValue(value), [value]);
@@ -1168,6 +1205,7 @@ function FloorDatePickerButton({
             onChange(dateInputValue(date));
             setOpen(false);
           }}
+          disabled={disableBefore ? { before: disableBefore } : undefined}
           classNames={{
             day: "group/day relative flex-1 p-0 text-center select-none",
             day_button: "relative isolate z-10 flex size-9 min-w-9 items-center justify-center rounded-md border-0 leading-none font-normal text-text-secondary hover:bg-gold/10 hover:text-white disabled:pointer-events-none disabled:opacity-30 data-[selected-single=true]:bg-gold data-[selected-single=true]:font-semibold data-[selected-single=true]:text-black data-[anchor=true]:border data-[anchor=true]:border-gold/60 data-[anchor=true]:text-gold",
@@ -1388,6 +1426,8 @@ function TableCard({
   t,
   editing,
   canAdjustSeats,
+  dayReservations,
+  reservationDayLabel,
   onAction,
   onClose,
   onSeatChange,
@@ -1396,6 +1436,8 @@ function TableCard({
   t: FloorTable;
   editing: boolean;
   canAdjustSeats: boolean;
+  dayReservations: TableDayReservation[];
+  reservationDayLabel: string;
   onAction: (a: ActionKind, t: FloorTable) => void;
   onClose: () => void;
   onSeatChange: (t: FloorTable, n: number) => void;
@@ -1491,6 +1533,54 @@ function TableCard({
             <div className="text-[13px] leading-relaxed text-text-secondary">{s.hint}.</div>
           </div>
         ) : null}
+
+        {!editing && (
+          <div className="mb-5 border-y py-4" style={{ borderColor: BORDER_SOFT }}>
+            <div className={cn(eyebrowCls, "mb-2")}>Reservations · {reservationDayLabel}</div>
+            {dayReservations.length > 0 ? (
+              <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                {dayReservations.map((reservation) => {
+                  const reservedAt = new Date(reservation.reservedAt);
+                  const isCurrent = reservation.id === t.reservationId;
+                  return (
+                    <div
+                      key={reservation.id}
+                      className={cn(
+                        "rounded-lg border px-3 py-2",
+                        isCurrent ? "border-gold/30 bg-gold/10" : "border-border/70 bg-white/[0.02]",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[13px] font-medium text-white">{reservation.guestName}</p>
+                          <p className="mt-0.5 text-[11px] text-text-muted">
+                            Party of {reservation.partySize}
+                            {reservation.tableCount > 1 ? ` · ${reservation.tableCount} tables` : ""}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="font-mono text-[11px] text-gold">
+                            {Number.isNaN(reservedAt.getTime()) ? "Time TBD" : serviceTimeLabel(reservedAt)}
+                          </p>
+                          <p className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                            {statusLabel(reservation.status)}
+                          </p>
+                        </div>
+                      </div>
+                      {isCurrent ? (
+                        <p className="mt-2 text-[11px] text-gold-light">Current table booking</p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[12.5px] leading-relaxed text-text-muted">
+                No reservations assigned to this table for this day.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="space-y-2">
           {!editing && t.status === "free" && (
@@ -1768,68 +1858,139 @@ function HostQuickPanel({
   date,
   partySize,
   slots,
+  selectedSlot,
   loading,
+  saving,
+  maxSeats,
+  guestName,
+  guestEmail,
+  guestPhone,
+  specialRequest,
+  tableLabelsById,
   onDateChange,
   onPartySizeChange,
   onCheckAvailability,
-  onOpenHostView,
+  onSelectSlot,
+  onGuestNameChange,
+  onGuestEmailChange,
+  onGuestPhoneChange,
+  onSpecialRequestChange,
+  onCreateReservation,
 }: HostQuickPanelProps) {
+  const today = useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return now;
+  }, []);
+  const selectedTableLabels = selectedSlot?.table_ids
+    ?.map((tableId) => tableLabelsById[tableId] ?? tableId.slice(0, 8))
+    .join(", ");
+  const overCapacity = partySize > maxSeats;
+
   return (
     <div className="overflow-hidden rounded-xl p-5" style={cardStyle}>
       <div className={cn(eyebrowCls, "mb-2")}>Host booking</div>
       <p className="mb-4 text-[12.5px] leading-relaxed text-text-muted">
-        Check open times from the floor, then finish details in Host View.
+        Check every available turn from the floor plan and book without leaving this view.
       </p>
       <div className="grid grid-cols-[1fr_96px] gap-2">
-        <Input
-          type="date"
+        <FloorDatePickerButton
           value={date}
-          onChange={(event) => onDateChange(event.target.value)}
-          className="h-9 bg-transparent text-[13px]"
+          onChange={onDateChange}
+          placeholder="Choose date"
+          disableBefore={today}
         />
         <Input
           type="number"
           min="1"
-          max="99"
+          max={maxSeats}
           value={partySize}
-          onChange={(event) => onPartySizeChange(Math.max(1, Number(event.target.value) || 1))}
-          className="h-9 bg-transparent text-[13px]"
+          onChange={(event) => onPartySizeChange(Number(event.target.value))}
+          className="h-10 bg-bg-elevated text-[13px]"
         />
       </div>
+      <p className={cn("mt-2 text-[11px]", overCapacity ? "text-danger" : "text-text-muted")}>
+        Max bookable seats: {maxSeats}
+      </p>
       <Button
         type="button"
         size="sm"
         className="mt-3 w-full"
         onClick={onCheckAvailability}
-        disabled={loading}
+        disabled={loading || overCapacity}
       >
         <Search className="size-3.5" />
         {loading ? "Checking..." : "Check times"}
       </Button>
-      <div className="mt-4 space-y-2">
-        {slots.slice(0, 4).map((slot) => (
+      <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
+        {slots.map((slot) => {
+          const selected = selectedSlot?.date_time === slot.date_time;
+          const tableCount = slot.table_ids?.length ?? 0;
+          return (
           <button
             key={`${slot.shift_id}-${slot.date_time}`}
             type="button"
-            onClick={() => onOpenHostView(slot)}
-            className="flex w-full items-center justify-between rounded-lg border border-border/70 bg-white/[0.02] px-3 py-2 text-left text-[12.5px] text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+            onClick={() => onSelectSlot(slot)}
+            className={cn(
+              "w-full rounded-lg border px-3 py-2 text-left text-[12.5px] transition-colors",
+              selected
+                ? "border-gold bg-gold/10 text-white"
+                : "border-border/70 bg-white/[0.02] text-text-secondary hover:border-gold/40 hover:text-white",
+            )}
           >
-            <span>{slot.display_time}</span>
-            <span className="flex items-center gap-1 text-text-muted">
-              <Users className="size-3" />
-              {slot.table_ids?.length ?? 0}
+            <span className="flex items-center justify-between gap-2">
+              <span>{slot.display_time}</span>
+              <span className="flex items-center gap-1 text-text-muted">
+                <Users className="size-3" />
+                {tableCount} table{tableCount === 1 ? "" : "s"}
+              </span>
+            </span>
+            <span className="mt-1 block truncate text-[11px] text-text-muted">
+              {slot.table_ids?.map((tableId) => tableLabelsById[tableId] ?? tableId.slice(0, 8)).join(", ") || "Table assignment pending"}
             </span>
           </button>
-        ))}
+          );
+        })}
         {!loading && slots.length === 0 && (
           <p className="rounded-lg border border-dashed border-border/70 px-3 py-3 text-[12px] text-text-muted">
             No times loaded yet.
           </p>
         )}
       </div>
-      <Button type="button" variant="outline" size="sm" className="mt-3 w-full" onClick={() => onOpenHostView()}>
-        Open Host View
-      </Button>
+      <div className="mt-4 rounded-lg border border-border/70 bg-white/[0.02] p-3">
+        <div className={cn(eyebrowCls, "mb-2")}>Selected turn</div>
+        {selectedSlot ? (
+          <div className="space-y-1 text-[12px] text-text-secondary">
+            <p className="text-white">{selectedSlot.display_time} · {selectedSlot.shift_name}</p>
+            <p>{selectedSlot.duration_minutes ?? "Turn"} min turn</p>
+            <p className="truncate">Tables: {selectedTableLabels || "Assigned by availability"}</p>
+          </div>
+        ) : (
+          <p className="text-[12px] text-text-muted">Select a time slot to book.</p>
+        )}
+      </div>
+      <div className="mt-4 space-y-3">
+        <Input value={guestName} onChange={(event) => onGuestNameChange(event.target.value)} placeholder="Guest name" />
+        <div className="grid grid-cols-1 gap-2">
+          <Input value={guestPhone} onChange={(event) => onGuestPhoneChange(event.target.value)} placeholder="Phone" />
+          <Input value={guestEmail} onChange={(event) => onGuestEmailChange(event.target.value)} placeholder="Email" />
+        </div>
+        <Textarea
+          value={specialRequest}
+          onChange={(event) => onSpecialRequestChange(event.target.value)}
+          placeholder="Notes, seating preference, allergies..."
+          className="min-h-20"
+        />
+        <Button
+          type="button"
+          size="sm"
+          className="w-full"
+          onClick={onCreateReservation}
+          disabled={saving || !selectedSlot || !guestName.trim() || overCapacity}
+        >
+          {saving ? "Booking..." : "Book selected turn"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1917,7 +2078,6 @@ function EditCard({
 // ─── Main page ─────────────────────────────────────────────────────────────
 export default function FloorPlanPage() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const {
     tables: dbTables,
     floorPlans: dbFloorPlans,
@@ -1961,7 +2121,13 @@ export default function FloorPlanPage() {
   const [hostQuickDate, setHostQuickDate] = useState(() => dateInputValue(new Date()));
   const [hostQuickPartySize, setHostQuickPartySize] = useState(2);
   const [hostQuickSlots, setHostQuickSlots] = useState<AvailabilitySlot[]>([]);
+  const [hostQuickSelectedSlot, setHostQuickSelectedSlot] = useState<AvailabilitySlot | null>(null);
   const [hostQuickLoading, setHostQuickLoading] = useState(false);
+  const [hostQuickSaving, setHostQuickSaving] = useState(false);
+  const [hostQuickGuestName, setHostQuickGuestName] = useState("");
+  const [hostQuickGuestEmail, setHostQuickGuestEmail] = useState("");
+  const [hostQuickGuestPhone, setHostQuickGuestPhone] = useState("");
+  const [hostQuickSpecialRequest, setHostQuickSpecialRequest] = useState("");
   const turnTimeMinutes = restaurantTurnTimeMinutes(selectedRestaurant?.settings_json);
 
   // Visual scale for "100%". Keep this at true room scale so the floor
@@ -1985,20 +2151,74 @@ export default function FloorPlanPage() {
         : false,
     [rolesAtRestaurant, selectedRestaurantId],
   );
+  const maxBookableSeats = useMemo(
+    () => Math.max(
+      1,
+      dbTables
+        .filter((table) => table.is_active !== false && table.status !== "blocked")
+        .reduce((total, table) => total + Math.max(0, table.capacity ?? 0), 0),
+    ),
+    [dbTables],
+  );
+  const tableLabelsById = useMemo(() => {
+    const labels: Record<string, string> = {};
+    dbTables.forEach((table) => {
+      labels[table.id] = table.label || table.table_number || table.id.slice(0, 8);
+    });
+    return labels;
+  }, [dbTables]);
+  const reservationsByTableForHostDate = useMemo(() => {
+    const byTable: Record<string, TableDayReservation[]> = {};
+    reservations
+      .filter((reservation) => ["pending", "confirmed", "seated"].includes(reservation.status))
+      .filter((reservation) => reservationDateValue(reservation) === hostQuickDate)
+      .forEach((reservation) => {
+        const tableIds = reservationTableIds(reservation);
+        if (tableIds.length === 0) return;
+        const details: TableDayReservation = {
+          id: reservation.id,
+          guestName: reservationGuestName(reservation),
+          partySize: reservation.party_size,
+          reservedAt: reservation.reserved_at,
+          durationMinutes: reservation.duration_minutes,
+          status: reservation.status,
+          tableCount: tableIds.length,
+        };
+        tableIds.forEach((tableId) => {
+          byTable[tableId] = [...(byTable[tableId] ?? []), details];
+        });
+      });
+
+    Object.values(byTable).forEach((rows) => {
+      rows.sort((a, b) => new Date(a.reservedAt).getTime() - new Date(b.reservedAt).getTime());
+    });
+    return byTable;
+  }, [hostQuickDate, reservations]);
 
   const loadHostQuickAvailability = async () => {
     if (!selectedRestaurantId) {
       toast.error("Select a restaurant first.");
       return;
     }
+    const nextPartySize = Math.max(1, Math.floor(hostQuickPartySize) || 1);
+    if (nextPartySize > maxBookableSeats) {
+      setHostQuickSlots([]);
+      setHostQuickSelectedSlot(null);
+      toast.error(`Party size cannot exceed ${maxBookableSeats} seats.`);
+      return;
+    }
     setHostQuickLoading(true);
+    setHostQuickSelectedSlot(null);
     try {
-      const result = await fetchAvailabilitySlots(selectedRestaurantId, hostQuickDate, hostQuickPartySize);
+      const result = await fetchAvailabilitySlots(selectedRestaurantId, hostQuickDate, nextPartySize);
       if (result.error) {
         toast.error(result.error);
         setHostQuickSlots([]);
       } else {
         setHostQuickSlots(result.slots);
+        if (result.slots.length === 0) {
+          toast.info("No available slots for that date and party size.");
+        }
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not load availability.");
@@ -2008,13 +2228,110 @@ export default function FloorPlanPage() {
     }
   };
 
-  const openHostView = (slot?: AvailabilitySlot) => {
-    const params = new URLSearchParams({
-      date: hostQuickDate,
-      partySize: String(hostQuickPartySize),
-    });
-    if (slot) params.set("time", slot.date_time);
-    navigate(`/dashboard/host-view?${params.toString()}`);
+  const createHostQuickReservation = async () => {
+    if (!selectedRestaurantId || !hostQuickSelectedSlot) {
+      toast.error("Select an available time.");
+      return;
+    }
+    const guestName = hostQuickGuestName.trim();
+    if (!guestName) {
+      toast.error("Guest name is required.");
+      return;
+    }
+    const partySize = Math.max(1, Math.floor(hostQuickPartySize) || 1);
+    if (partySize > maxBookableSeats) {
+      toast.error(`Party size cannot exceed ${maxBookableSeats} seats.`);
+      return;
+    }
+    if (!isSupabaseConfigured()) {
+      toast.error(t("auth.errors.supabaseNotConfigured"));
+      return;
+    }
+
+    setHostQuickSaving(true);
+    try {
+      const client = getSupabaseBrowserClient();
+      const { data: reservationId, error } = await client.rpc("create_staff_reservation", {
+        p_restaurant_id: selectedRestaurantId,
+        p_guest_name: guestName,
+        p_guest_email: hostQuickGuestEmail.trim() || null,
+        p_guest_phone: hostQuickGuestPhone.trim() || null,
+        p_party_size: partySize,
+        p_reserved_at: hostQuickSelectedSlot.date_time,
+        p_special_request: hostQuickSpecialRequest.trim() || null,
+      });
+      if (error) throw new Error(error.message);
+      if (!reservationId || typeof reservationId !== "string") throw new Error("Reservation could not be created.");
+
+      const slotTableIds = (hostQuickSelectedSlot.table_ids ?? []).filter(Boolean);
+      const { error: shiftUpdateError } = await client
+        .from("reservations")
+        .update({ shift_id: hostQuickSelectedSlot.shift_id })
+        .eq("id", reservationId);
+      if (shiftUpdateError) throw new Error(shiftUpdateError.message);
+
+      const { data: activeAssignments, error: assignmentCheckError } = await client
+        .from("reservation_tables")
+        .select("table_id")
+        .eq("reservation_id", reservationId)
+        .is("released_at", null);
+      if (assignmentCheckError) throw new Error(assignmentCheckError.message);
+
+      const assignedTableIds = (activeAssignments ?? [])
+        .map((row) => row.table_id)
+        .filter((tableId): tableId is string => Boolean(tableId));
+      if (slotTableIds.length > 0) {
+        const expected = [...slotTableIds].sort().join(",");
+        const actual = [...assignedTableIds].sort().join(",");
+        if (expected !== actual) {
+          throw new Error("Reservation table assignment changed before booking completed. Refresh availability and try again.");
+        }
+      }
+
+      const { error: auditError } = await client.rpc("write_staff_audit_event", {
+        p_restaurant_id: selectedRestaurantId,
+        p_action: "reservation.host_create",
+        p_entity_type: "reservation",
+        p_entity_id: reservationId,
+        p_before_json: {},
+        p_after_json: {
+          guest_name: guestName,
+          guest_email: hostQuickGuestEmail.trim() || null,
+          guest_phone: hostQuickGuestPhone.trim() || null,
+          party_size: partySize,
+          reserved_at: hostQuickSelectedSlot.date_time,
+          shift_id: hostQuickSelectedSlot.shift_id,
+          shift_name: hostQuickSelectedSlot.shift_name,
+          table_ids: assignedTableIds,
+          duration_minutes: hostQuickSelectedSlot.duration_minutes ?? null,
+          source: "floor_plan_host",
+        },
+        p_approval_profile_id: null,
+      });
+      if (auditError) throw new Error(auditError.message);
+
+      setHostQuickGuestName("");
+      setHostQuickGuestEmail("");
+      setHostQuickGuestPhone("");
+      setHostQuickSpecialRequest("");
+      setHostQuickSelectedSlot(null);
+      await Promise.all([refreshHostQuickAvailability(), refetchReservations(), refetchFloorPlan({ silent: true })]);
+      toast.success("Reservation added from the floor plan.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create reservation.");
+    } finally {
+      setHostQuickSaving(false);
+    }
+  };
+
+  const refreshHostQuickAvailability = async () => {
+    if (!selectedRestaurantId) return;
+    const partySize = Math.max(1, Math.floor(hostQuickPartySize) || 1);
+    if (partySize > maxBookableSeats) return;
+    const result = await fetchAvailabilitySlots(selectedRestaurantId, hostQuickDate, partySize);
+    if (!result.error) {
+      setHostQuickSlots(result.slots);
+    }
   };
 
   useEffect(() => {
@@ -2026,6 +2343,10 @@ export default function FloorPlanPage() {
       setConfirmDeleteFloorId(null);
     });
   }, [canEditLayout, editing]);
+
+  useEffect(() => {
+    setHostQuickPartySize((current) => Math.min(Math.max(1, current), maxBookableSeats));
+  }, [maxBookableSeats]);
 
   useEffect(() => {
     if (floorPlanLoading) return;
@@ -2065,7 +2386,7 @@ export default function FloorPlanPage() {
 
       const now = new Date();
       const serviceReservations = reservations
-        .filter((reservation) => ["confirmed", "seated"].includes(reservation.status))
+        .filter((reservation) => ["pending", "confirmed", "seated"].includes(reservation.status))
         .filter((reservation) => isReservationInFloorWindow(reservation, now, turnTimeMinutes))
         .sort((a, b) => {
           const priorityDiff = reservationPriority(b) - reservationPriority(a);
@@ -2306,7 +2627,7 @@ export default function FloorPlanPage() {
     const requestedEnd = requestedStart + turnTimeMinutes * 60_000;
     for (const link of (data ?? []) as ReservationLinkRow[]) {
       const reservation = Array.isArray(link.reservations) ? link.reservations[0] : link.reservations;
-      if (!reservation || !["confirmed", "seated"].includes(reservation.status ?? "")) continue;
+      if (!reservation || !["pending", "confirmed", "seated"].includes(reservation.status ?? "")) continue;
       if (!reservation.reserved_at) continue;
       const existingStart = new Date(reservation.reserved_at).getTime();
       if (Number.isNaN(existingStart)) continue;
@@ -3464,6 +3785,8 @@ export default function FloorPlanPage() {
               t={selTable}
               editing={editing && canEditLayout}
               canAdjustSeats={canEditLayout}
+              dayReservations={reservationsByTableForHostDate[selTable.dbId ?? selTable.id] ?? []}
+              reservationDayLabel={formatPickerDate(hostQuickDate)}
               onAction={handleAction}
               onSeatChange={setSeats}
               onDelete={(t) => deleteTable(t.id)}
@@ -3500,11 +3823,32 @@ export default function FloorPlanPage() {
                 date: hostQuickDate,
                 partySize: hostQuickPartySize,
                 slots: hostQuickSlots,
+                selectedSlot: hostQuickSelectedSlot,
                 loading: hostQuickLoading,
-                onDateChange: setHostQuickDate,
-                onPartySizeChange: setHostQuickPartySize,
+                saving: hostQuickSaving,
+                maxSeats: maxBookableSeats,
+                guestName: hostQuickGuestName,
+                guestEmail: hostQuickGuestEmail,
+                guestPhone: hostQuickGuestPhone,
+                specialRequest: hostQuickSpecialRequest,
+                tableLabelsById,
+                onDateChange: (date) => {
+                  setHostQuickDate(date);
+                  setHostQuickSlots([]);
+                  setHostQuickSelectedSlot(null);
+                },
+                onPartySizeChange: (partySize) => {
+                  setHostQuickPartySize(Math.min(Math.max(1, Math.floor(partySize) || 1), maxBookableSeats));
+                  setHostQuickSlots([]);
+                  setHostQuickSelectedSlot(null);
+                },
                 onCheckAvailability: loadHostQuickAvailability,
-                onOpenHostView: openHostView,
+                onSelectSlot: (slot) => setHostQuickSelectedSlot(slot),
+                onGuestNameChange: setHostQuickGuestName,
+                onGuestEmailChange: setHostQuickGuestEmail,
+                onGuestPhoneChange: setHostQuickGuestPhone,
+                onSpecialRequestChange: setHostQuickSpecialRequest,
+                onCreateReservation: createHostQuickReservation,
               }}
             />
           )}

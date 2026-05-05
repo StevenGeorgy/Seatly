@@ -72,7 +72,6 @@ const PERMISSION_OPTIONS: Array<{ key: DashboardPermissionKey; labelKey: string 
   { key: "overview", labelKey: "dashboard.host.permissionOverview" },
   { key: "reservations", labelKey: "dashboard.host.permissionReservations" },
   { key: "floorPlan", labelKey: "dashboard.host.permissionFloorPlan" },
-  { key: "hostView", labelKey: "dashboard.host.permissionHostView" },
   { key: "staffInvites", labelKey: "dashboard.host.permissionStaffInvites" },
   { key: "orders", labelKey: "dashboard.host.permissionOrders" },
   { key: "menu", labelKey: "dashboard.host.permissionMenu" },
@@ -103,7 +102,7 @@ const ROLE_PRESETS: Record<InviteRole, DashboardPermissionKey[]> = {
     "restaurant",
     "settings",
   ],
-  host: ["reservations", "floorPlan", "hostView"],
+  host: ["reservations", "floorPlan"],
 };
 
 const INVITABLE_ROLES = new Set<StaffRole>(ROLE_OPTIONS.map((option) => option.value));
