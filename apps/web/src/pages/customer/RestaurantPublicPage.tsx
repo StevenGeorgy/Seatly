@@ -1,6 +1,6 @@
-import { useState, useMemo, useId, useEffect, useCallback } from "react";
+import { useState, useMemo, useId, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { format, isValid, parse, startOfToday } from "date-fns";
+import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -35,7 +35,9 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
-import { useAvailability } from "@/hooks/useAvailability";
+import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
+import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
+import { fetchAvailabilitySlots, useAvailability } from "@/hooks/useAvailability";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
@@ -52,14 +54,13 @@ import {
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
-import { assignReservationTables } from "@/lib/table-assignment";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 import {
   deriveRestaurantPriceLevel,
-  restaurantPriceLabelFromLevel,
+  deriveRestaurantPriceLevelFromMenu,
 } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
@@ -95,6 +96,15 @@ type DineInDetails = {
   occasion: string;
 };
 
+type PublicBookingResponse = {
+  reservation_id?: string;
+  order_id?: string | null;
+  confirmation_code?: string;
+  confirmation_delivery?: "sent" | "skipped" | "failed";
+  confirmation_delivery_channel?: "email" | "sms" | null;
+  error?: string;
+};
+
 type SplitCardRow = {
   number: string;
   expiry: string;
@@ -112,7 +122,6 @@ const SEATING_PREFERENCES = [
   "Bar seating",
   "Quiet corner",
 ];
-const DEFAULT_TURN_TIME_MINUTES = 90;
 const CUISINE_GRADIENT: Record<string, string> = {
   French:   "from-indigo-900 to-blue-900",
   Japanese: "from-rose-900 to-pink-900",
@@ -124,18 +133,6 @@ const CUISINE_GRADIENT: Record<string, string> = {
 };
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-/** Convert "7:00 PM" → "19:00" for timestamptz storage. */
-function convertTo24h(time12: string): string {
-  const match = time12.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!match) return "19:00";
-  let h = parseInt(match[1], 10);
-  const m = match[2];
-  const period = match[3].toUpperCase();
-  if (period === "PM" && h !== 12) h += 12;
-  if (period === "AM" && h === 12) h = 0;
-  return `${h.toString().padStart(2, "0")}:${m}`;
 }
 
 /** Demo checkout: enough digits for a test PAN, expiry, and CVC. */
@@ -150,11 +147,6 @@ function formatCardPanInput(value: string): string {
     .slice(0, 16)
     .replace(/(.{4})/g, "$1 ")
     .trim();
-}
-
-function restaurantTurnTimeMinutes(restaurant: Restaurant): number {
-  const value = restaurant.settings_json?.turnTimeMinutes;
-  return typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_TURN_TIME_MINUTES;
 }
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
@@ -294,12 +286,89 @@ function todayDateValue(): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function todayDisplayValue(): string {
-  return new Date().toLocaleDateString("en-CA", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
+function dateValueFromDiscoverPreset(value: string | null): string {
+  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date();
+  if (value === "tomorrow") {
+    date.setDate(date.getDate() + 1);
+  } else if (value === "sat") {
+    date.setDate(date.getDate() + ((6 - date.getDay() + 7) % 7 || 7));
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function dateKey(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+function SeatWheel({
+  maxSeats,
+  value,
+  onCommit,
+}: {
+  maxSeats: number;
+  value: number;
+  onCommit: (value: number) => void;
+}) {
+  const seats = useMemo(() => Array.from({ length: Math.max(1, maxSeats) }, (_, index) => index + 1), [maxSeats]);
+  const [draftValue, setDraftValue] = useState(value);
+  const scrollToSeat = (seat: number) => {
+    setDraftValue(Math.min(Math.max(1, seat), maxSeats));
+  };
+  const commitSeat = (seat: number) => {
+    onCommit(Math.min(Math.max(1, seat), maxSeats));
+  };
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setDraftValue(value));
+  }, [value]);
+
+  return (
+    <div>
+      <div
+        role="listbox"
+        aria-label="Party size"
+        tabIndex={0}
+        onWheel={(event) => {
+          event.preventDefault();
+          if (Math.abs(event.deltaY) < 4) return;
+          scrollToSeat(draftValue + (event.deltaY > 0 ? 1 : -1));
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") scrollToSeat(draftValue + 1);
+          if (event.key === "ArrowUp") scrollToSeat(draftValue - 1);
+          if (event.key === "Enter") commitSeat(draftValue);
+        }}
+        className="max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-base p-2 outline-none [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-gold/40"
+      >
+        {seats.map((seat) => {
+          const active = seat === draftValue;
+          return (
+            <button
+              key={seat}
+              type="button"
+              role="option"
+              aria-selected={active}
+              onClick={() => commitSeat(seat)}
+              className={cn(
+                "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",
+                active ? "bg-gold text-bg-base" : "text-text-secondary hover:bg-bg-elevated hover:text-white",
+              )}
+            >
+              {seat} seat{seat === 1 ? "" : "s"}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => commitSeat(draftValue)}
+        className="mt-2 h-10 w-full rounded-xl bg-gold text-sm font-semibold text-bg-base transition-opacity hover:opacity-90"
+      >
+        Select {draftValue} guest{draftValue === 1 ? "" : "s"}
+      </button>
+    </div>
+  );
 }
 
 function uniquePreviewValues(values: Array<string | null | undefined>): string[] {
@@ -334,14 +403,29 @@ function RestaurantStaffPreview({
   menuItems: MenuItem[];
   hasSavedMenu: boolean;
   onBack: () => void;
-  onStartBooking: (time: string) => void;
+  onStartBooking: (slot: string, partySize: number, shiftId?: string, displayTime?: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<StaffPreviewTab>("Menu");
   const [favorite, setFavorite] = useState(false);
   const [saved, setSaved] = useState(false);
   const [selectedTime, setSelectedTime] = useState("");
-  const previewDate = todayDateValue();
-  const previewDateLabel = todayDisplayValue();
+  const [previewDate, setPreviewDate] = useState(todayDateValue());
+  const [previewPartySize, setPreviewPartySize] = useState(2);
+  const previewDateTriggerId = useId();
+  const [previewDatePopoverOpen, setPreviewDatePopoverOpen] = useState(false);
+  const [previewPartyPopoverOpen, setPreviewPartyPopoverOpen] = useState(false);
+  const [previewCalendarMonth, setPreviewCalendarMonth] = useState(() => new Date());
+  const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
+  const [dateAvailabilityLoading, setDateAvailabilityLoading] = useState(false);
+  const previewCalendarDay = useMemo(() => {
+    const parsedDate = parse(previewDate, "yyyy-MM-dd", new Date());
+    return isValid(parsedDate) ? parsedDate : undefined;
+  }, [previewDate]);
+  const previewDateLabel = new Date(`${previewDate}T12:00:00`).toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
   const availability = useAvailability();
   const fetchPreviewSlots = availability.fetchSlots;
   const { events: allEvents, loading: eventsLoading } = useAllActiveEvents();
@@ -363,7 +447,7 @@ function RestaurantStaffPreview({
     name: restaurant.name,
     slug: restaurant.slug,
     cuisine_type: restaurant.cuisine_type,
-    avg_rating: restaurant.avg_rating,
+    avg_rating: null,
     cover_photo_url: restaurant.cover_photo_url,
     city: restaurant.city,
     price_range: deriveRestaurantPriceLevel(savedMenuItems, restaurant.price_range),
@@ -381,23 +465,62 @@ function RestaurantStaffPreview({
     ]),
     [restaurant.cover_photo_url, restaurant.logo_url, restaurantEvents, savedMenuItems],
   );
-  const availableTimes = useMemo(
-    () => availability.slots.map((slot) => slot.display_time).slice(0, 6),
-    [availability.slots],
-  );
+  const availableSlots = useMemo(() => availability.slots, [availability.slots]);
+  const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
   const hoursRows = useMemo(() => formatRestaurantHoursRows(restaurant.hours_json), [restaurant.hours_json]);
-  const priceLabel = restaurantPriceLabelFromLevel(deriveRestaurantPriceLevel(savedMenuItems, restaurant.price_range));
+  const priceLevel = deriveRestaurantPriceLevelFromMenu(savedMenuItems);
   const dietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
-  const rating = restaurant.avg_rating?.toFixed(1) ?? "New";
-  const reviewCount = restaurant.total_reviews ?? 0;
   const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
+  const selectedAvailabilitySlot = availableSlots.find((slot) => slot.display_time === selectedTime);
+  const maxPreviewPartySize = Math.max(1, availability.floorCapacity ?? 50);
+  const unavailableDate = (date: Date) => {
+    if (date < startOfToday()) return true;
+    if (dateAvailabilityLoading) return false;
+    return !availableDateKeys.has(dateKey(date));
+  };
   const headerBadges = uniquePreviewValues([restaurant.business_type, restaurant.cuisine_type]);
 
   useEffect(() => {
-    void fetchPreviewSlots(restaurant.id, previewDate, 2);
-  }, [fetchPreviewSlots, previewDate, restaurant.id]);
+    void fetchPreviewSlots(restaurant.id, previewDate, previewPartySize);
+  }, [fetchPreviewSlots, previewDate, previewPartySize, restaurant.id]);
 
   useEffect(() => {
+    let cancelled = false;
+    const monthStart = startOfMonth(previewCalendarMonth);
+    const monthEnd = endOfMonth(previewCalendarMonth);
+    const days: string[] = [];
+    for (let cursor = monthStart; cursor <= monthEnd; cursor = addDays(cursor, 1)) {
+      if (cursor >= startOfToday()) days.push(dateKey(cursor));
+    }
+
+    void Promise.resolve().then(() => {
+      if (!cancelled) setDateAvailabilityLoading(true);
+    });
+    void Promise.all(
+      days.map(async (day) => {
+        const result = await fetchAvailabilitySlots(restaurant.id, day, previewPartySize);
+        return result.slots.length > 0 ? day : null;
+      }),
+    )
+      .then((availableDays) => {
+        if (!cancelled) {
+          setAvailableDateKeys(new Set(availableDays.filter((day): day is string => Boolean(day))));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableDateKeys(new Set());
+      })
+      .finally(() => {
+        if (!cancelled) setDateAvailabilityLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewCalendarMonth, previewPartySize, restaurant.id]);
+
+  useEffect(() => {
+    if (availability.loading) return;
     if (availableTimes.length === 0) {
       if (selectedTime) {
         void Promise.resolve().then(() => setSelectedTime(""));
@@ -407,7 +530,7 @@ function RestaurantStaffPreview({
     if (!availableTimes.includes(selectedTime)) {
       void Promise.resolve().then(() => setSelectedTime(availableTimes[0]));
     }
-  }, [availableTimes, selectedTime]);
+  }, [availability.loading, availableTimes, selectedTime]);
 
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
@@ -463,11 +586,7 @@ function RestaurantStaffPreview({
                   <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
                     {restaurant.cuisine_type ? <span>{restaurant.cuisine_type}</span> : null}
-                    <span className="font-semibold text-gold">{priceLabel}</span>
-                    <span className="inline-flex items-center gap-1">
-                      <Star className="size-3 fill-gold text-gold" />
-                      {reviewCount > 0 ? `${rating} · ${reviewCount.toLocaleString()} reviews` : "No reviews yet"}
-                    </span>
+                    <RestaurantPriceMeter level={priceLevel} />
                     {restaurant.city ? (
                       <span className="inline-flex items-center gap-1">
                         <MapPin className="size-3" />
@@ -477,7 +596,12 @@ function RestaurantStaffPreview({
                   </div>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
+                <RestaurantSocialLinks
+                  settingsJson={restaurant.settings_json}
+                  websiteFallback={restaurant.website}
+                  linkClassName="size-10"
+                />
                 <button
                   type="button"
                   aria-pressed={favorite}
@@ -581,14 +705,10 @@ function RestaurantStaffPreview({
               {activeTab === "Reviews" && (
                 <>
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Guest sentiment</p>
-                  <h2 className="mt-2 font-serif text-2xl text-white">
-                    {reviewCount > 0 ? `${rating} from ${reviewCount.toLocaleString()} reviews` : "No reviews yet"}
-                  </h2>
+                  <h2 className="mt-2 font-serif text-2xl text-white">No reviews yet</h2>
                   <div className="mt-5 space-y-3 text-sm text-text-secondary">
                     <p className="rounded-2xl bg-bg-elevated p-4">
-                      {reviewCount > 0
-                        ? "Guest review details have not been added yet."
-                        : "Public guest reviews will appear here once they are recorded."}
+                      Public guest reviews will appear here once they are recorded.
                     </p>
                   </div>
                 </>
@@ -627,7 +747,7 @@ function RestaurantStaffPreview({
                         <EventPromotionDetailCard
                           key={event.id}
                           item={event}
-                          onReserve={() => selectedTime && onStartBooking(selectedTime)}
+                          onReserve={() => selectedAvailabilitySlot && onStartBooking(selectedAvailabilitySlot.date_time, previewPartySize, selectedAvailabilitySlot.shift_id, selectedTimeLabel)}
                           className="shadow-none"
                         />
                       ))}
@@ -647,14 +767,69 @@ function RestaurantStaffPreview({
           <div className="rounded-3xl border border-border bg-bg-surface p-6">
             <h2 className="font-serif text-2xl text-white">Reserve a table</h2>
             <div className="mt-5 grid grid-cols-2 gap-2">
-              <div className="rounded-2xl bg-bg-elevated p-4">
-                <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Date</p>
-                <p className="mt-2 text-sm text-white">{previewDateLabel}</p>
-              </div>
-              <div className="rounded-2xl bg-bg-elevated p-4">
-                <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Party</p>
-                <p className="mt-2 text-sm text-white">2 guests</p>
-              </div>
+              <Popover open={previewDatePopoverOpen} onOpenChange={setPreviewDatePopoverOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    id={previewDateTriggerId}
+                    type="button"
+                    className="flex items-center gap-3 rounded-2xl bg-bg-elevated p-4 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                  >
+                    <CalendarDays className="size-4 text-gold" />
+                    <span>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Date</p>
+                      <p className="mt-2 text-sm text-white">{previewDateLabel}</p>
+                    </span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
+                >
+                  <Calendar
+                    mode="single"
+                    required={false}
+                    selected={previewCalendarDay}
+                    month={previewCalendarMonth}
+                    onMonthChange={setPreviewCalendarMonth}
+                    onSelect={(date) => {
+                      if (!date) return;
+                      setPreviewDate(format(date, "yyyy-MM-dd"));
+                      setPreviewDatePopoverOpen(false);
+                    }}
+                    disabled={unavailableDate}
+                    className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                  />
+                </PopoverContent>
+              </Popover>
+              <Popover open={previewPartyPopoverOpen} onOpenChange={setPreviewPartyPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-3 rounded-2xl bg-bg-elevated p-4 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                  >
+                    <Users className="size-4 text-gold" />
+                    <span>
+                      <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Party</p>
+                      <p className="mt-2 text-sm text-white">
+                        {previewPartySize} guest{previewPartySize === 1 ? "" : "s"}
+                      </p>
+                    </span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  className="w-48 border-border bg-bg-elevated p-2 text-text-primary shadow-2xl"
+                >
+                  <SeatWheel
+                    maxSeats={maxPreviewPartySize}
+                    value={previewPartySize}
+                    onCommit={(party) => {
+                      setPreviewPartySize(party);
+                      setPreviewPartyPopoverOpen(false);
+                    }}
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
             <p className="mt-5 font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Available times</p>
             {availableTimes.length > 0 ? (
@@ -675,28 +850,16 @@ function RestaurantStaffPreview({
               </div>
             ) : (
               <div className="mt-3 rounded-2xl bg-bg-elevated p-4 text-xs text-text-muted">
-                {availability.loading ? "Checking availability..." : "No available times for this date."}
+                {availability.loading ? "Checking availability..." : "Unavailable for this date and party size."}
               </div>
             )}
             <Button
               className="mt-4 h-12 w-full rounded-xl"
-              onClick={() => selectedTime && onStartBooking(selectedTime)}
-              disabled={!selectedTime}
+              onClick={() => selectedAvailabilitySlot && onStartBooking(selectedAvailabilitySlot.date_time, previewPartySize, selectedAvailabilitySlot.shift_id, selectedTimeLabel)}
+              disabled={!selectedAvailabilitySlot}
             >
               {selectedTimeLabel ? `Continue with ${selectedTimeLabel}` : "No times available"}
             </Button>
-            <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs">
-              <div className="flex justify-between">
-                <span className="text-text-muted">Cancellation</span>
-                <span className="text-white">{restaurant.cancellation_hours}h notice</span>
-              </div>
-              {restaurant.no_show_fee != null && (
-                <div className="flex justify-between">
-                  <span className="text-text-muted">No-show fee</span>
-                  <span className="text-white">{formatCurrency(restaurant.no_show_fee, restaurant.currency)}</span>
-                </div>
-              )}
-            </div>
             <p className="mt-5 rounded-xl bg-bg-elevated/60 p-3 text-xs leading-relaxed text-text-muted">
               Availability is calculated from this restaurant's saved tables, reservations, and booking rules.
             </p>
@@ -734,7 +897,25 @@ export default function RestaurantPublicPage() {
           : "/deals"
         : "/discover";
   const requestedBookingTime = searchParams.get("time") ?? searchParams.get("slot");
-  const initialBookingTime = requestedBookingTime ?? "";
+  const requestedBookingSlot = searchParams.get("slot");
+  const requestedShiftId = searchParams.get("shift_id") ?? "";
+  const requestedIsoSlot = requestedBookingSlot?.match(/^\d{4}-\d{2}-\d{2}T/)
+    ? requestedBookingSlot
+    : requestedBookingTime?.match(/^\d{4}-\d{2}-\d{2}T/)
+      ? requestedBookingTime
+      : "";
+  const initialBookingTime = requestedBookingTime?.match(/^\d{4}-\d{2}-\d{2}T/)
+    ? formatCompactTimeLabel(new Date(requestedBookingTime))
+    : requestedBookingTime
+      ? formatCompactTimeLabel(requestedBookingTime)
+      : "";
+  const initialBookingDate = requestedIsoSlot
+    ? requestedIsoSlot.slice(0, 10)
+    : dateValueFromDiscoverPreset(searchParams.get("date"));
+  const initialPartySize = Math.max(1, Number.parseInt(searchParams.get("people") ?? "2", 10) || 2);
+  const bookingLockedFromPreview = Boolean(
+    searchParams.get("slot") ?? searchParams.get("time") ?? searchParams.get("date") ?? searchParams.get("people"),
+  );
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
@@ -747,18 +928,23 @@ export default function RestaurantPublicPage() {
 
   // Map DB menu items to the local MenuItem shape used by the cart/allergen system
   const menuItems = useMemo<MenuItem[]>(() => {
-    return dbMenuItems.map((row) => ({
-      id: row.id,
-      name: row.name,
-      description: row.description ?? "",
-      price: row.price,
-      category: row.category ?? (dbCategories.find((c) => c.id === row.category_id)?.name ?? "Other"),
-      popular: row.is_featured,
-      dietary: row.dietary_flags ?? [],
-      photoUrl: row.photo_url,
-      allergens: row.allergens ?? [],
-      ingredients: row.description ?? "",
-    }));
+    const activeCategoriesById = new Map(dbCategories.map((category) => [category.id, category]));
+    return dbMenuItems.flatMap((row) => {
+      const category = row.category_id ? activeCategoriesById.get(row.category_id) : null;
+      if (!category) return [];
+      return [{
+        id: row.id,
+        name: row.name,
+        description: row.description ?? "",
+        price: row.price,
+        category: category.name,
+        popular: row.is_featured,
+        dietary: row.dietary_flags ?? [],
+        photoUrl: row.photo_url,
+        allergens: row.allergens ?? [],
+        ingredients: row.description ?? "",
+      }];
+    });
   }, [dbMenuItems, dbCategories]);
 
   const categoryList = useMemo(
@@ -775,10 +961,34 @@ export default function RestaurantPublicPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
 
   const [dineIn, setDineIn] = useState<DineInDetails>({
-    date: "", time: initialBookingTime, party_size: 2,
+    date: initialBookingDate, time: initialBookingTime, party_size: initialPartySize,
     seating_preference: "",
     name: "", email: "", phone: "", allergies: "", occasion: "",
   });
+
+  useEffect(() => {
+    if (!bookingLockedFromPreview || cameFromCenaivaPrepay) return;
+    void Promise.resolve().then(() => {
+      setDineIn((details) => {
+        const nextDate = initialBookingDate || details.date;
+        const nextTime = initialBookingTime || details.time;
+        const nextPartySize = initialPartySize || details.party_size;
+        if (
+          details.date === nextDate &&
+          details.time === nextTime &&
+          details.party_size === nextPartySize
+        ) {
+          return details;
+        }
+        return {
+          ...details,
+          date: nextDate,
+          time: nextTime,
+          party_size: nextPartySize,
+        };
+      });
+    });
+  }, [bookingLockedFromPreview, cameFromCenaivaPrepay, initialBookingDate, initialBookingTime, initialPartySize]);
 
   // Pre-fill contact fields from logged-in profile (only on first load)
   useEffect(() => {
@@ -962,8 +1172,13 @@ export default function RestaurantPublicPage() {
   const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
   const [customTipAmount, setCustomTipAmount] = useState("");
   const [placing, setPlacing] = useState(false);
+  const placingRef = useRef(false);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [confirmationCode, setConfirmationCode] = useState<string>("");
+  const [confirmationDelivery, setConfirmationDelivery] = useState<{
+    status: "sent" | "skipped" | "failed";
+    channel: "email" | "sms" | null;
+  }>({ status: "skipped", channel: null });
 
   const currency = restaurant?.currency ?? "cad";
   const gradient = CUISINE_GRADIENT[restaurant?.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-900";
@@ -982,24 +1197,35 @@ export default function RestaurantPublicPage() {
   }, [fetchRestaurantSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
 
   const availableTimeOptions = useMemo(
-    () => availability.slots.map((slot) => slot.display_time),
+    () => availability.slots.map((slot) => formatCompactTimeLabel(slot.display_time)),
     [availability.slots],
+  );
+
+  const displayedTimeOptions = useMemo(
+    () => (
+      dineIn.time && !availableTimeOptions.includes(dineIn.time)
+        ? [dineIn.time, ...availableTimeOptions]
+        : availableTimeOptions
+    ),
+    [availableTimeOptions, dineIn.time],
   );
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
     if (availableTimeOptions.includes(dineIn.time)) return;
+    if (bookingLockedFromPreview && initialBookingTime && dineIn.time === initialBookingTime) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
     });
-  }, [availability.loading, availability.slots.length, availableTimeOptions, dineIn.date, dineIn.time]);
+  }, [availability.loading, availability.slots.length, availableTimeOptions, bookingLockedFromPreview, dineIn.date, dineIn.time, initialBookingTime]);
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length > 0 || !dineIn.time) return;
+    if (bookingLockedFromPreview && requestedIsoSlot) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: "" }));
     });
-  }, [availability.loading, availability.slots.length, dineIn.date, dineIn.time]);
+  }, [availability.loading, availability.slots.length, bookingLockedFromPreview, dineIn.date, dineIn.time, requestedIsoSlot]);
 
   const filteredMenu = useMemo(() => {
     let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
@@ -1137,6 +1363,24 @@ export default function RestaurantPublicPage() {
     setCart((prev) => prev.filter((c) => c.id !== id));
   }
 
+  const selectedAvailabilitySlot = availability.slots.find((slot) =>
+    (requestedIsoSlot && slot.date_time === requestedIsoSlot) ||
+    formatCompactTimeLabel(slot.display_time) === dineIn.time,
+  );
+  const selectedPreviewSlot =
+    requestedIsoSlot && requestedShiftId && dineIn.time
+      ? {
+          shift_id: requestedShiftId,
+          shift_name: "Selected",
+          date_time: requestedIsoSlot,
+          display_time: dineIn.time,
+        }
+      : null;
+  const selectedBookingSlot = selectedAvailabilitySlot ?? selectedPreviewSlot;
+  const maxBookablePartySize = availability.floorCapacity ?? (
+    typeof dineIn.party_size === "number" ? Math.max(50, dineIn.party_size) : 50
+  );
+
   const canProceedDetails = () => {
     return (
       dineIn.date &&
@@ -1144,21 +1388,22 @@ export default function RestaurantPublicPage() {
       dineIn.email &&
       typeof dineIn.party_size === "number" &&
       dineIn.party_size >= 1 &&
-      !availability.loading &&
-      availability.slots.some((slot) => slot.display_time === dineIn.time || slot.date_time === `${dineIn.date}T${convertTo24h(dineIn.time)}:00`)
+      dineIn.party_size <= maxBookablePartySize &&
+      Boolean(selectedBookingSlot)
     );
   };
 
-  const handlePlaceOrder = useCallback(async () => {
+  async function handlePlaceOrder() {
+    if (placingRef.current) return;
     if (!restaurant) return;
     if (!isSupabaseConfigured()) {
       setOrderError(t("auth.errors.supabaseNotConfigured"));
       return;
     }
 
+    placingRef.current = true;
     setPlacing(true);
     setOrderError(null);
-    const code = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
     try {
       const client = getSupabaseBrowserClient();
@@ -1168,95 +1413,70 @@ export default function RestaurantPublicPage() {
       const contactEmail = dineIn.email;
       const contactPhone = dineIn.phone;
 
-      // 1. Upsert a guest record for this restaurant
-      let guestId: string | null = null;
-      if (profile) {
-        // Check if guest record already exists for this user + restaurant
-        const { data: existingGuest } = await client
-          .from("guests")
-          .select("id")
-          .eq("restaurant_id", restaurant.id)
-          .eq("user_profile_id", profile.id)
-          .maybeSingle();
-
-        if (existingGuest) {
-          guestId = existingGuest.id;
-        } else {
-          const { data: newGuest, error: guestErr } = await client
-            .from("guests")
-            .insert({
-              restaurant_id: restaurant.id,
-              user_profile_id: profile.id,
-              full_name: contactName,
-              email: contactEmail,
-              phone: contactPhone,
-              dietary_restrictions: dineIn.allergies ? dineIn.allergies.split(",").map((s: string) => s.trim()).filter(Boolean) : [],
-              seating_preference: dineIn.seating_preference || null,
-            })
-            .select("id")
-            .single();
-          if (guestErr) throw new Error(`Guest: ${guestErr.message}`);
-          guestId = newGuest.id;
-        }
-      }
-
-      // 2. Create or reuse the reservation. When we arrived via a Cenaiva
+      // 1. Create or reuse the reservation. When we arrived via a Cenaiva
       //    order_id deep-link, both the reservation and the order already
       //    exist — creating a second one would double-book the table and
       //    also fails ("T19:00:00") because dineIn.date is only mirrored
       //    from the existing row.
-      let reservationId: string;
       if (existingReservationId) {
-        reservationId = existingReservationId;
+        // Existing voice-created reservations are already table-assigned.
       } else {
-        const reservedAt = `${dineIn.date}T${convertTo24h(dineIn.time)}:00`;
+        const selectedSlot = selectedBookingSlot;
+        if (!selectedSlot) {
+          throw new Error("Please choose an available time.");
+        }
         const partySize = typeof dineIn.party_size === "number" ? dineIn.party_size : 1;
-        const durationMinutes = restaurantTurnTimeMinutes(restaurant);
-        const { data: resData, error: resErr } = await client
-          .from("reservations")
-          .insert({
+        const cartItems = cart.map((item) => ({
+          menu_item_id: item.id,
+          name: item.name,
+          quantity: item.qty,
+          unit_price: roundMoney(item.price),
+        }));
+        const { data: sessionData } = await client.auth.getSession();
+        const token = sessionData.session?.access_token ?? null;
+        const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/create-public-booking`, {
+          method: "POST",
+          headers: {
+            apikey: getSupabaseAnonKey(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
             restaurant_id: restaurant.id,
-            guest_id: guestId,
+            shift_id: selectedSlot.shift_id,
+            date_time: selectedSlot.date_time,
             party_size: partySize,
-            reserved_at: reservedAt,
-            duration_minutes: durationMinutes,
-            status: "pending",
-            source: "web",
-            special_request: dineIn.allergies || null,
-            occasion: dineIn.occasion || null,
-            confirmation_code: code,
-            is_guest_checkout: !profile,
-            guest_full_name: contactName,
+            guest_name: contactName,
             guest_email: contactEmail,
             guest_phone: contactPhone,
-            dietary_notes: dineIn.allergies || null,
-          })
-          .select("id")
-          .single();
-        if (resErr) throw new Error(`Reservation: ${resErr.message}`);
-        reservationId = resData.id;
-
-        const assignment = await assignReservationTables({
-          reservationId,
-          restaurantId: restaurant.id,
-          reservedAt,
-          partySize,
-          turnMinutes: durationMinutes,
+            allergies: dineIn.allergies || null,
+            seating_preference: dineIn.seating_preference || null,
+            occasion: dineIn.occasion || null,
+            cart_items: cartItems,
+            subtotal: roundMoney(discountedSubtotal),
+            tax_amount: roundMoney(tax),
+            tip_amount: roundMoney(tipAmount),
+            total_amount: roundMoney(totalNow),
+            discount_amount: discount > 0 ? roundMoney(discount) : null,
+            discount_reason: activePromo?.title ?? null,
+            promotion_id: activePromo?.id ?? null,
+            payment_method: paymentSplitMode === "split" ? "split" : "card",
+          }),
         });
-        if (assignment.error) {
-          await client
-            .from("reservations")
-            .update({
-              status: "cancelled",
-              cancelled_at: new Date().toISOString(),
-              cancellation_reason: "No available table for party size.",
-            })
-            .eq("id", reservationId);
-          throw new Error(assignment.error);
+        const body = await res.json().catch(() => ({})) as PublicBookingResponse;
+        if (!res.ok || body.error || !body.reservation_id) {
+          throw new Error(body.error ?? "Reservation failed");
         }
+        setConfirmationCode(body.confirmation_code ?? "");
+        setConfirmationDelivery({
+          status: body.confirmation_delivery ?? "skipped",
+          channel: body.confirmation_delivery_channel ?? null,
+        });
       }
 
-      // 3. Create (or update) the order.
+      // 2. Update an existing Cenaiva preorder, if this page was opened from a
+      //    voice checkout deep-link. New manual bookings are created by the
+      //    Edge Function above so table assignment cannot be bypassed.
       if (existingOrderId) {
         // Cenaiva already created the order with line items. Update tip /
         // payment / discount on the existing row and mark it pending.
@@ -1275,52 +1495,9 @@ export default function RestaurantPublicPage() {
           })
           .eq("id", existingOrderId);
         if (orderUpdErr) throw new Error(`Order: ${orderUpdErr.message}`);
-      } else if (cart.length > 0) {
-        const { data: orderData, error: orderErr } = await client
-          .from("orders")
-          .insert({
-            restaurant_id: restaurant.id,
-            reservation_id: reservationId,
-            guest_id: guestId,
-            is_preorder: true,
-            order_type: "dine_in",
-            status: "pending",
-            subtotal: roundMoney(discountedSubtotal),
-            tax_amount: roundMoney(tax),
-            tip_amount: roundMoney(tipAmount),
-            total_amount: roundMoney(totalNow),
-            discount_amount: discount > 0 ? roundMoney(discount) : null,
-            discount_reason: activePromo?.title ?? null,
-            promotion_id: activePromo?.id ?? null,
-            payment_method: paymentSplitMode === "split" ? "split" : "card",
-            confirmation_code: code,
-          })
-          .select("id")
-          .single();
-        if (orderErr) throw new Error(`Order: ${orderErr.message}`);
-
-        // 4. Insert order items
-        const items = cart.map((item) => ({
-          order_id: orderData.id,
-          menu_item_id: item.id,
-          name: item.name,
-          quantity: item.qty,
-          unit_price: roundMoney(item.price),
-          line_total: roundMoney(item.price * item.qty),
-          status: "pending",
-        }));
-        const { error: itemsErr } = await client.from("order_items").insert(items);
-        if (itemsErr) throw new Error(`Order items: ${itemsErr.message}`);
       }
 
-      // 5. Increment promotion usage counter
-      if (activePromo) {
-        await client.from("promotions")
-          .update({ current_uses: activePromo.current_uses + 1 })
-          .eq("id", activePromo.id);
-      }
-
-      // 6. Save phone to user profile if it changed (so it's remembered next time)
+      // 3. Save phone to user profile if it changed (so it's remembered next time)
       if (profile && contactPhone && contactPhone !== (profile.phone ?? "")) {
         await client
           .from("user_profiles")
@@ -1328,14 +1505,14 @@ export default function RestaurantPublicPage() {
           .eq("id", profile.id);
       }
 
-      setConfirmationCode(code);
       setStep("confirmed");
     } catch (err) {
       setOrderError(err instanceof Error ? err.message : "Failed to place order");
     } finally {
+      placingRef.current = false;
       setPlacing(false);
     }
-  }, [restaurant, cart, profile, dineIn, tax, tipAmount, totalNow, paymentSplitMode, discount, discountedSubtotal, activePromo, existingReservationId, existingOrderId, t]);
+  }
 
   if (loading) {
     return (
@@ -1357,7 +1534,7 @@ export default function RestaurantPublicPage() {
     );
   }
 
-  const publicPriceLabel = restaurantPriceLabelFromLevel(deriveRestaurantPriceLevel(dbMenuItems, restaurant.price_range));
+  const publicPriceLevel = deriveRestaurantPriceLevelFromMenu(menuItems);
   const publicDietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
 
   if (isStaffPreview) {
@@ -1367,10 +1544,13 @@ export default function RestaurantPublicPage() {
         menuItems={menuItems}
         hasSavedMenu={dbMenuItems.length > 0}
         onBack={() => navigate("/dashboard")}
-        onStartBooking={(time) => {
-          setDineIn((details) => ({ ...details, time }));
+        onStartBooking={(slot, partySize, shiftId, displayTime) => {
+          const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot) ? slot.slice(0, 10) : todayDateValue();
+          const slotTime = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
+          setDineIn((details) => ({ ...details, date: slotDate, time: slotTime, party_size: partySize }));
           setStep("details");
-          navigate(`/${restaurant.slug || restaurant.id}?back=dashboard&time=${encodeURIComponent(time)}`);
+          const shiftQuery = shiftId ? `&shift_id=${encodeURIComponent(shiftId)}` : "";
+          navigate(`/${restaurant.slug || restaurant.id}?back=dashboard&slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(slotTime)}&people=${partySize}&date=${slotDate}${shiftQuery}`);
         }}
       />
     );
@@ -1395,7 +1575,7 @@ export default function RestaurantPublicPage() {
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">{restaurant.name}</h1>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
               {restaurant.cuisine_type && <span className="text-text-secondary">{restaurant.cuisine_type}</span>}
-              <span className="font-medium text-gold">{publicPriceLabel}</span>
+              <RestaurantPriceMeter level={publicPriceLevel} />
               {publicDietaryTags.map((tag) => (
                 <DietaryTagPill key={tag} tag={tag} compact />
               ))}
@@ -1414,6 +1594,13 @@ export default function RestaurantPublicPage() {
                   <Phone className="size-3" />{restaurant.phone}
                 </a>
               )}
+              <RestaurantSocialLinks
+                settingsJson={restaurant.settings_json}
+                websiteFallback={restaurant.website}
+                className="gap-1"
+                linkClassName="size-7 border-transparent bg-transparent"
+                iconClassName="size-3.5"
+              />
             </div>
           </div>
         </div>
@@ -1448,12 +1635,23 @@ export default function RestaurantPublicPage() {
                         <Label htmlFor={dineInDateTriggerId} className="mb-1.5 block text-xs text-text-muted">
                           Date <span className="text-danger">*</span>
                         </Label>
-                        <Popover open={dineInDatePopoverOpen} onOpenChange={setDineInDatePopoverOpen}>
+                        <Popover
+                          open={bookingLockedFromPreview ? false : dineInDatePopoverOpen}
+                          onOpenChange={(open) => {
+                            if (!bookingLockedFromPreview) setDineInDatePopoverOpen(open);
+                          }}
+                        >
                           <PopoverTrigger asChild>
                             <button
                               id={dineInDateTriggerId}
                               type="button"
-                              className="relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
+                              disabled={bookingLockedFromPreview}
+                              className={cn(
+                                "relative flex h-10 w-full items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base",
+                                bookingLockedFromPreview
+                                  ? "cursor-not-allowed opacity-55"
+                                  : "cursor-pointer hover:border-gold/30",
+                              )}
                             >
                               <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
                               <span
@@ -1518,11 +1716,17 @@ export default function RestaurantPublicPage() {
                           <select
                             value={dineIn.time}
                             onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
-                            disabled={dineIn.date ? availability.loading || availability.slots.length === 0 : false}
-                            className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40"
+                            disabled={
+                              bookingLockedFromPreview ||
+                              (dineIn.date ? availability.loading || availability.slots.length === 0 : false)
+                            }
+                            className={cn(
+                              "h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40",
+                              bookingLockedFromPreview && "cursor-not-allowed opacity-55",
+                            )}
                           >
-                            {availableTimeOptions.length > 0 ? (
-                              availableTimeOptions.map((time) => (
+                            {displayedTimeOptions.length > 0 ? (
+                              displayedTimeOptions.map((time) => (
                                 <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
                               ))
                             ) : (
@@ -1534,7 +1738,11 @@ export default function RestaurantPublicPage() {
                         {dineIn.date && availability.loading ? (
                           <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>
                         ) : dineIn.date && availability.slots.length === 0 ? (
-                          <p className="mt-1.5 text-[11px] text-warning">No tables fit this party on that date.</p>
+                          <p className="mt-1.5 text-[11px] text-warning">
+                            {typeof dineIn.party_size === "number" && dineIn.party_size > maxBookablePartySize
+                              ? `Maximum party size is ${maxBookablePartySize}.`
+                              : "No tables fit this party on that date."}
+                          </p>
                         ) : null}
                       </div>
                       <div>
@@ -1545,8 +1753,9 @@ export default function RestaurantPublicPage() {
                             id="di-party"
                             type="number"
                             min={1}
-                            max={50}
+                            max={maxBookablePartySize}
                             value={dineIn.party_size}
+                            disabled={bookingLockedFromPreview}
                             onChange={(e) => {
                               const raw = e.target.value;
                               if (raw === "") {
@@ -1554,13 +1763,26 @@ export default function RestaurantPublicPage() {
                                 return;
                               }
                               const v = parseInt(raw, 10);
-                              if (!isNaN(v) && v >= 1 && v <= 50) {
+                              if (!isNaN(v) && v >= 1 && v <= maxBookablePartySize) {
                                 setDineIn((d) => ({ ...d, party_size: v }));
                               }
                             }}
-                            className="h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            className={cn(
+                              "h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                              bookingLockedFromPreview && "cursor-not-allowed opacity-55",
+                            )}
                           />
                         </div>
+                        {bookingLockedFromPreview ? (
+                          <p className="mt-1.5 text-[11px] text-text-muted">
+                            {t("customerPublic.booking.selectedFromPreview")}
+                          </p>
+                        ) : null}
+                        {availability.floorCapacity != null ? (
+                          <p className="mt-1.5 text-[11px] text-text-muted">
+                            Max party size: {availability.floorCapacity}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
 
@@ -1860,7 +2082,9 @@ export default function RestaurantPublicPage() {
               <div className="sticky bottom-4 mt-5">
                 <Button
                   className="h-12 w-full text-base font-semibold shadow-xl"
+                  disabled={placing}
                   onClick={() => {
+                    if (placing) return;
                     if (cartCount === 0) {
                       void handlePlaceOrder();
                     } else {
@@ -1869,7 +2093,7 @@ export default function RestaurantPublicPage() {
                   }}
                 >
                   {cartCount === 0
-                    ? "Skip preorder · Confirm booking"
+                    ? placing ? t("customerPublic.booking.confirmingBooking") : "Skip preorder · Confirm booking"
                     : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
                   <ChevronRight className="size-4 ml-1" />
                 </Button>
@@ -2273,7 +2497,13 @@ export default function RestaurantPublicPage() {
                 <p className="mt-1 font-mono text-xl font-bold tracking-widest text-gold">
                   {confirmationCode}
                 </p>
-                <p className="mt-1 text-xs text-text-muted">A confirmation has been sent to your email.</p>
+                <p className="mt-1 text-xs text-text-muted">
+                  {confirmationDelivery.status === "sent" && confirmationDelivery.channel === "sms"
+                    ? t("customerPublic.booking.confirmationSentSms")
+                    : confirmationDelivery.status === "sent"
+                      ? t("customerPublic.booking.confirmationSentEmail")
+                      : t("customerPublic.booking.confirmationSaved")}
+                </p>
               </div>
 
               <div className="flex w-full flex-col gap-2">
@@ -2295,6 +2525,7 @@ export default function RestaurantPublicPage() {
                         setCardExpiry("");
                         setCardCvc("");
                         setConfirmationCode("");
+                        setConfirmationDelivery({ status: "skipped", channel: null });
                         setOrderError(null);
                       }}
                     >

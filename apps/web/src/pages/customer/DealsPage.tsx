@@ -12,11 +12,8 @@ import {
   Check,
   Flame,
   LayoutGrid,
-  LocateFixed,
   LogOut,
   Map as MapIcon,
-  Minus,
-  Plus,
   Search,
   Settings,
   SlidersHorizontal,
@@ -27,6 +24,7 @@ import {
 
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
+import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
 import {
   fetchEventById,
   useAllActiveEvents,
@@ -64,6 +62,7 @@ import {
   promotionToDisplay,
   type EventPromotionDisplay,
 } from "@/lib/customer/eventPromotionDisplay";
+import { restaurantPriceLabelFromRange } from "@/lib/restaurant-price-level";
 
 type EventType =
   | "Tasting Menu"
@@ -77,7 +76,6 @@ type EventType =
 type DemoEvent = {
   id: string;
   type: EventType;
-  spotsLeft: number;
   availability: string;
   restaurant: string;
   title: string;
@@ -87,7 +85,9 @@ type DemoEvent = {
   imageUrl: string | null;
   city: string;
   category: "Tonight" | "This Weekend" | "This Week";
-  detail?: EventPromotionDisplay;
+  detail: EventPromotionDisplay;
+  lat: number | null;
+  lng: number | null;
 };
 
 const DATE_FILTERS = ["Tonight", "This Weekend", "This Week", "All Dates"] as const;
@@ -124,190 +124,32 @@ const PRICE_FOR_TYPE: Record<string, string> = {
   Brunch: "$$",
 };
 
-const PRICE_LABELS = ["—", "$", "$$", "$$$", "$$$$"];
-
 function priceFromRange(range?: number | null): string {
-  if (!range || range < 1) return "$$";
-  return PRICE_LABELS[Math.min(Math.round(range), PRICE_LABELS.length - 1)] ?? "$$";
+  return restaurantPriceLabelFromRange(range);
 }
 
 function restaurantInitials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).join(" ").toUpperCase() || "RESTAURANT";
 }
 
-function slugFromName(name: string): string {
-  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "restaurant";
-}
-
-function adaptRestaurantPreview(restaurant: Restaurant, idx: number): RestaurantPreviewSummary {
+function adaptRestaurantPreview(restaurant: Restaurant, bookedToday: number): RestaurantPreviewSummary {
   return {
     id: restaurant.id,
+    slug: restaurant.slug,
     name: restaurant.name,
-    reviews: restaurant.total_reviews ?? 0,
-    rating: restaurant.avg_rating ?? 0,
     cuisine: restaurant.cuisine_type ?? "",
     price: priceFromRange(restaurant.price_range),
     area: restaurant.city ?? restaurant.address ?? "",
-    bookedToday: 0,
+    bookedToday,
     slots: [],
     initials: restaurantInitials(restaurant.name),
     badge: restaurant.business_type ?? "",
     city: restaurant.city ?? "",
-    distanceKm: 0.4 + ((idx * 7) % 18) / 10,
     features: [restaurant.cuisine_type, restaurant.business_type, restaurant.city].filter(Boolean) as string[],
+    logoUrl: restaurant.logo_url,
+    coverPhotoUrl: restaurant.cover_photo_url,
   };
 }
-
-function displayToRestaurantPreview(item: EventPromotionDisplay): RestaurantPreviewSummary {
-  const ratingMatch = item.ratingLabel.match(/\d+(?:\.\d+)?/);
-  const rating = ratingMatch ? Number(ratingMatch[0]) : 4.5;
-
-  return {
-    id: item.restaurantSlug ?? slugFromName(item.restaurantName),
-    name: item.restaurantName,
-    reviews: 0,
-    rating: Number.isFinite(rating) ? rating : 0,
-    cuisine: item.cuisineLabel,
-    price: item.priceRangeLabel,
-    area: item.cityLabel,
-    bookedToday: 0,
-    slots: [],
-    initials: restaurantInitials(item.restaurantName),
-    badge: item.badgeLabel,
-    city: item.cityLabel,
-    distanceKm: 0.8,
-    features: [item.badgeLabel, item.availabilityLabel].filter(Boolean).slice(0, 2),
-  };
-}
-
-const DEMO_EVENTS: DemoEvent[] = [
-  {
-    id: "truffle-barolo",
-    type: "Tasting Menu",
-    spotsLeft: 6,
-    availability: "6 left",
-    restaurant: "Nova Ristorante",
-    title: "Truffle & Barolo Tasting Night",
-    when: "Tonight at 7pm",
-    price: "$185 / person",
-    initials: "TRUFFLE",
-    imageUrl: null,
-    city: "Toronto",
-    category: "Tonight",
-  },
-  {
-    id: "happy-cocktails",
-    type: "Happy Hour",
-    spotsLeft: 24,
-    availability: "24 left",
-    restaurant: "Le Petit Jardin",
-    title: "Happy Hour: Craft Cocktails 2-for-1",
-    when: "Tonight at 4pm",
-    price: "From $9",
-    initials: "COCKTAILS",
-    imageUrl: null,
-    city: "Toronto",
-    category: "Tonight",
-  },
-  {
-    id: "vinyl-bbq",
-    type: "Event",
-    spotsLeft: 14,
-    availability: "14 left",
-    restaurant: "The Smokehouse",
-    title: "Vinyl Night — Bourbon & BBQ Pairings",
-    when: "Tonight at 8:30pm",
-    price: "$65 / person",
-    initials: "VINYL",
-    imageUrl: null,
-    city: "Toronto",
-    category: "Tonight",
-  },
-  {
-    id: "late-three-forty",
-    type: "Prix Fixe",
-    spotsLeft: 8,
-    availability: "8 left",
-    restaurant: "Bistro Lumière",
-    title: "Late Service — Three for Forty",
-    when: "Tonight at 9:30pm",
-    price: "$40 / person",
-    initials: "BISTRO",
-    imageUrl: null,
-    city: "Montréal",
-    category: "Tonight",
-  },
-  {
-    id: "wine-friday",
-    type: "Wine",
-    spotsLeft: 12,
-    availability: "12 left",
-    restaurant: "Maison Verre",
-    title: "Côtes du Rhône Flight Friday",
-    when: "Friday at 7pm",
-    price: "$95 / person",
-    initials: "WINE",
-    imageUrl: null,
-    city: "Toronto",
-    category: "This Weekend",
-  },
-  {
-    id: "omakase-sat",
-    type: "Tasting Menu",
-    spotsLeft: 4,
-    availability: "4 left",
-    restaurant: "Ginkgo",
-    title: "Omakase 12-course",
-    when: "Saturday at 6:30pm",
-    price: "$240 / person",
-    initials: "OMAKASE",
-    imageUrl: null,
-    city: "Toronto",
-    category: "This Weekend",
-  },
-  {
-    id: "brunch-pigeon",
-    type: "Brunch",
-    spotsLeft: 18,
-    availability: "18 left",
-    restaurant: "Le Pigeon Bleu",
-    title: "Sunday Bottomless Brunch",
-    when: "Sunday at 11am",
-    price: "$58 / person",
-    initials: "BRUNCH",
-    imageUrl: null,
-    city: "Montréal",
-    category: "This Weekend",
-  },
-  {
-    id: "promo-osteria",
-    type: "Promotion",
-    spotsLeft: 30,
-    availability: "30 left",
-    restaurant: "Osteria Nova",
-    title: "Wood-fired Wednesday — 25% off pizza",
-    when: "Wed at 5pm",
-    price: "Save 25%",
-    initials: "PIZZA",
-    imageUrl: null,
-    city: "Toronto",
-    category: "This Week",
-  },
-  {
-    id: "salt-tomahawk",
-    type: "Event",
-    spotsLeft: 9,
-    availability: "9 left",
-    restaurant: "Salt & Ember",
-    title: "Tomahawk for Two",
-    when: "Thu at 8pm",
-    price: "$220 / table",
-    initials: "STEAK",
-    imageUrl: null,
-    city: "Toronto",
-    category: "This Week",
-  },
-];
 
 const TYPE_BADGE_LABEL: Record<EventType, string> = {
   "Tasting Menu": "TASTING MENU",
@@ -319,7 +161,7 @@ const TYPE_BADGE_LABEL: Record<EventType, string> = {
   Brunch: "BRUNCH",
 };
 
-function adaptPromotion(p: PromotionWithRestaurant, idx: number): DemoEvent {
+function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
   const detail = promotionToDisplay(p);
   const initials = (p.title || p.restaurants.name)
     .split(/\s+/)
@@ -339,9 +181,6 @@ function adaptPromotion(p: PromotionWithRestaurant, idx: number): DemoEvent {
       type = "Promotion";
       break;
   }
-  const remaining =
-    p.max_uses != null ? Math.max(p.max_uses - p.current_uses, 0) : 12 + (idx % 20);
-
   let priceLabel = detail.priceLabel;
   if (p.discount_unit === "percent" && p.discount_value)
     priceLabel = `Save ${p.discount_value}%`;
@@ -356,7 +195,6 @@ function adaptPromotion(p: PromotionWithRestaurant, idx: number): DemoEvent {
   return {
     id: `promotion-${p.id}`,
     type,
-    spotsLeft: remaining,
     availability: detail.availabilityLabel,
     restaurant: p.restaurants.name,
     title: p.title,
@@ -367,10 +205,12 @@ function adaptPromotion(p: PromotionWithRestaurant, idx: number): DemoEvent {
     city: p.restaurants.city ?? "—",
     category: "This Week",
     detail,
+    lat: p.restaurants.lat,
+    lng: p.restaurants.lng,
   };
 }
 
-function adaptEvent(event: EventWithRestaurant, idx: number): DemoEvent {
+function adaptEvent(event: EventWithRestaurant): DemoEvent {
   const detail = eventToDisplay(event);
   const theme = event.theme?.toLowerCase() ?? "";
   let type: EventType = "Event";
@@ -379,13 +219,9 @@ function adaptEvent(event: EventWithRestaurant, idx: number): DemoEvent {
   else if (theme.includes("prix")) type = "Prix Fixe";
   else if (theme.includes("brunch")) type = "Brunch";
 
-  const seatsLeft =
-    event.capacity == null ? 10 + (idx % 10) : Math.max(event.capacity - event.tickets_sold, 0);
-
   return {
     id: `event-${event.id}`,
     type,
-    spotsLeft: seatsLeft,
     availability: detail.availabilityLabel,
     restaurant: event.restaurants.name,
     title: event.name,
@@ -396,36 +232,8 @@ function adaptEvent(event: EventWithRestaurant, idx: number): DemoEvent {
     city: event.restaurants.city ?? "—",
     category: "This Week",
     detail,
-  };
-}
-
-function demoToDisplay(event: DemoEvent): EventPromotionDisplay {
-  return {
-    id: event.id,
-    source: event.type === "Promotion" ? "promotion" : "event",
-    restaurantName: event.restaurant,
-    restaurantSlug: null,
-    cuisineLabel: event.type,
-    cityLabel: event.city,
-    priceRangeLabel: PRICE_FOR_TYPE[event.type] ?? "$$",
-    ratingLabel: "New",
-    title: event.title,
-    description: null,
-    badgeLabel: TYPE_BADGE_LABEL[event.type],
-    availabilityLabel: event.availability,
-    imageUrl: event.imageUrl,
-    imageLabel: event.initials,
-    mediaUrl: null,
-    mediaType: null,
-    mediaName: null,
-    dateLabel: event.when,
-    timeLabel: "Available during service",
-    priceLabel: event.price,
-    perCoverLabel: event.price,
-    seatsLabel: event.availability,
-    actionLabel: "Book",
-    promoCode: null,
-    isActive: true,
+    lat: event.restaurants.lat,
+    lng: event.restaurants.lng,
   };
 }
 
@@ -665,6 +473,7 @@ function MapPin({
   active: boolean;
   onClick: () => void;
 }) {
+  if (e.lat == null || e.lng == null) return null;
   return (
     <button
       type="button"
@@ -675,10 +484,7 @@ function MapPin({
           ? "z-20 border-gold bg-gold text-black"
           : "border-gold/40 bg-bg-surface text-white hover:border-gold",
       )}
-      style={{
-        left: `${20 + ((e.id.charCodeAt(0) * 9) % 60)}%`,
-        top: `${20 + ((e.id.charCodeAt(1) * 7) % 60)}%`,
-      }}
+      style={{ left: `${Math.max(8, Math.min(92, 50 + e.lng))}%`, top: `${Math.max(8, Math.min(92, 50 - e.lat))}%` }}
     >
       {e.restaurant}
     </button>
@@ -710,7 +516,6 @@ export default function DealsPage() {
   const [time, setTime] = useState("7:30 PM");
   const [partySize, setPartySize] = useState("2");
   const [activePrices, setActivePrices] = useState<Set<string>>(new Set());
-  const [distanceKm, setDistanceKm] = useState(20);
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -719,27 +524,29 @@ export default function DealsPage() {
   const [favoriteRestaurants, setFavoriteRestaurants] = useState<Set<string>>(new Set());
 
   const loading = promotionsLoading || eventsLoading;
+  const restaurantIds = useMemo(() => publicRestaurants.map((restaurant) => restaurant.id), [publicRestaurants]);
+  const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
 
   const events: DemoEvent[] = useMemo(() => {
-    const realItems = [
+    return [
       ...activeEvents.map(adaptEvent),
       ...promotions.map(adaptPromotion),
     ];
-    if (realItems.length > 0) return realItems;
-    return DEMO_EVENTS;
   }, [activeEvents, promotions]);
 
   const restaurantPreviews = useMemo(
-    () => publicRestaurants.map(adaptRestaurantPreview),
-    [publicRestaurants],
+    () => publicRestaurants.map((restaurant) => adaptRestaurantPreview(
+      restaurant,
+      statsByRestaurantId[restaurant.id]?.bookedToday ?? 0,
+    )),
+    [publicRestaurants, statsByRestaurantId],
   );
   const detailParam = searchParams.get("detail");
 
   const filtered = useMemo(() => {
-    let list = events.map((e, i) => ({
+    let list = events.map((e) => ({
       ...e,
       _price: PRICE_FOR_TYPE[e.type] ?? "$$",
-      _distanceKm: 0.4 + ((i * 7) % 18) / 10,
     }));
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -769,9 +576,8 @@ export default function DealsPage() {
     if (activePrices.size > 0) {
       list = list.filter((e) => activePrices.has(e._price));
     }
-    list = list.filter((e) => e._distanceKm <= distanceKm);
     return list;
-  }, [events, search, dateFilter, typeFilter, activePrices, distanceKm]);
+  }, [events, search, dateFilter, typeFilter, activePrices]);
 
   const activeFilterCount =
     (dateFilter !== "Tonight" ? 1 : 0) +
@@ -779,7 +585,6 @@ export default function DealsPage() {
     (time !== "7:30 PM" ? 1 : 0) +
     (partySize !== "2" ? 1 : 0) +
     (activePrices.size > 0 ? 1 : 0) +
-    (distanceKm !== 20 ? 1 : 0) +
     (search.trim() ? 1 : 0);
 
   const togglePrice = (p: string) =>
@@ -797,7 +602,6 @@ export default function DealsPage() {
     setTime("7:30 PM");
     setPartySize("2");
     setActivePrices(new Set());
-    setDistanceKm(20);
     setSearch("");
   };
 
@@ -821,7 +625,7 @@ export default function DealsPage() {
     });
 
   const openDetail = (e: DemoEvent) => {
-    setDetailItem(e.detail ?? demoToDisplay(e));
+    setDetailItem(e.detail);
   };
 
   const closeDetail = () => {
@@ -841,13 +645,12 @@ export default function DealsPage() {
           (slug && restaurant.id.toLowerCase() === slug) ||
           restaurant.name.toLowerCase() === item.restaurantName.toLowerCase()
         );
-      }) ?? displayToRestaurantPreview(item);
-
-    setPreviewRestaurant(preview);
+      });
+    if (preview) setPreviewRestaurant(preview);
   };
 
   const openRestaurantPreviewFromEvent = (e: DemoEvent) => {
-    openRestaurantPreview(e.detail ?? demoToDisplay(e));
+    openRestaurantPreview(e.detail);
   };
 
   const markCurrentDealsReturn = (detailKey: string) => {
@@ -863,7 +666,6 @@ export default function DealsPage() {
     const restaurantKey = item.restaurantSlug ?? matchingPreview?.id;
 
     if (!restaurantKey) {
-      openRestaurantPreview(item);
       return;
     }
 
@@ -881,14 +683,14 @@ export default function DealsPage() {
   };
 
   const bookEvent = (e: DemoEvent) => {
-    bookItem(e.detail ?? demoToDisplay(e));
+    bookItem(e.detail);
   };
 
   useEffect(() => {
     if (!detailParam) return;
 
     const match = events.find((event) => {
-      const detail = event.detail ?? demoToDisplay(event);
+      const detail = event.detail;
       return (
         event.id === detailParam ||
         detail.id === detailParam ||
@@ -897,7 +699,7 @@ export default function DealsPage() {
     });
 
     if (match) {
-      void Promise.resolve().then(() => setDetailItem(match.detail ?? demoToDisplay(match)));
+      void Promise.resolve().then(() => setDetailItem(match.detail));
     }
   }, [detailParam, events]);
 
@@ -907,7 +709,7 @@ export default function DealsPage() {
     }
 
     const existingMatch = events.some((event) => {
-      const detail = event.detail ?? demoToDisplay(event);
+      const detail = event.detail;
       return (
         event.id === detailParam ||
         detail.id === detailParam ||
@@ -1240,7 +1042,7 @@ export default function DealsPage() {
                     </div>
                   </div>
 
-                  {/* Type + Distance */}
+                  {/* Type */}
                   <div>
                     <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
                       Type
@@ -1264,26 +1066,6 @@ export default function DealsPage() {
                           </button>
                         );
                       })}
-                    </div>
-
-                    <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
-                      Distance
-                    </p>
-                    <div className="mt-4 px-1">
-                      <input
-                        type="range"
-                        min={0}
-                        max={20}
-                        step={1}
-                        value={distanceKm}
-                        onChange={(e) => setDistanceKm(Number(e.target.value))}
-                        className="w-full accent-gold"
-                      />
-                      <div className="mt-2 flex justify-between font-mono text-[10px] uppercase tracking-wider text-text-muted">
-                        <span>0km</span>
-                        <span className="text-gold">{distanceKm}km</span>
-                        <span>20km</span>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -1494,21 +1276,8 @@ export default function DealsPage() {
             </div>
 
             <div className="lg:h-full lg:min-h-0">
-              <div
-                className="relative h-[560px] overflow-hidden rounded-2xl border border-border lg:h-full"
-                style={{
-                  backgroundImage:
-                    "radial-gradient(circle at 30% 30%, rgba(201,168,76,0.08) 0%, transparent 40%), radial-gradient(circle at 70% 70%, rgba(201,168,76,0.05) 0%, transparent 50%), linear-gradient(180deg, #0a0a0a 0%, #1a1a1a 100%)",
-                }}
-              >
-                <div
-                  className="absolute inset-0 opacity-30"
-                  style={{
-                    backgroundImage:
-                      "linear-gradient(rgba(201,168,76,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(201,168,76,0.06) 1px, transparent 1px)",
-                    backgroundSize: "48px 48px",
-                  }}
-                />
+              <div className="relative h-[560px] overflow-hidden rounded-2xl border border-border bg-bg-surface lg:h-full">
+                <div className="absolute inset-0 bg-gold/5" />
                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
                   <div className="size-4 rounded-full bg-blue-500 ring-4 ring-blue-500/30" />
                 </div>
@@ -1527,26 +1296,8 @@ export default function DealsPage() {
                   onClick={() => setSelectedId(null)}
                   className="absolute left-4 top-4 inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-surface/90 px-3 py-1.5 text-xs font-medium text-white backdrop-blur hover:border-gold/40"
                 >
-                  <LocateFixed className="size-3.5 text-gold" />
-                  Re-center
+                  Clear selection
                 </button>
-
-                <div className="absolute right-4 top-4 flex flex-col gap-1">
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-surface/90 text-white hover:border-gold/40"
-                    aria-label="Zoom in"
-                  >
-                    <Plus className="size-4" />
-                  </button>
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-surface/90 text-white hover:border-gold/40"
-                    aria-label="Zoom out"
-                  >
-                    <Minus className="size-4" />
-                  </button>
-                </div>
 
                 {selectedId &&
                   (() => {
@@ -1622,12 +1373,22 @@ export default function DealsPage() {
             return next;
           });
         }}
-        onReserve={(slot) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
           if (!previewRestaurant) return;
+          const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot)
+            ? slot.slice(0, 10)
+            : customDate
+              ? format(customDate, "yyyy-MM-dd")
+              : format(new Date(), "yyyy-MM-dd");
+          const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
           const params = new URLSearchParams({
             back: "deals",
-            time: slot,
+            slot,
+            time: timeParam,
+            people: selectedPartySize,
+            date: slotDate,
           });
+          if (shiftId) params.set("shift_id", shiftId);
           if (detailItem) {
             const returnDetail = `${detailItem.source}-${detailItem.id}`;
             params.set("returnDetail", returnDetail);

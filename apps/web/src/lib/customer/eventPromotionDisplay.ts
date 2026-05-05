@@ -47,16 +47,6 @@ export type EventPromotionDisplay = {
   isActive: boolean;
 };
 
-const DEFAULT_RESTAURANT: RestaurantDisplayInfo = {
-  name: "Cenaiva restaurant",
-  slug: null,
-  cuisine_type: null,
-  avg_rating: null,
-  cover_photo_url: null,
-  city: null,
-  price_range: null,
-};
-
 function formatDate(date: string | null | undefined): string {
   if (!date) return "Date to be announced";
   const parsed = new Date(`${date}T00:00:00`);
@@ -137,7 +127,8 @@ function formatPromotionRecurrence(promotion: PromotionRow | PromotionWithRestau
 
 function eventRestaurant(event: EventRow | EventWithRestaurant, fallback?: RestaurantDisplayInfo): RestaurantDisplayInfo {
   if ("restaurants" in event && event.restaurants) return event.restaurants;
-  return fallback ?? DEFAULT_RESTAURANT;
+  if (fallback) return fallback;
+  throw new Error("Event is missing restaurant data.");
 }
 
 function promotionRestaurant(
@@ -145,7 +136,8 @@ function promotionRestaurant(
   fallback?: RestaurantDisplayInfo,
 ): RestaurantDisplayInfo {
   if ("restaurants" in promotion && promotion.restaurants) return promotion.restaurants;
-  return fallback ?? DEFAULT_RESTAURANT;
+  if (fallback) return fallback;
+  throw new Error("Promotion is missing restaurant data.");
 }
 
 export function eventToDisplay(

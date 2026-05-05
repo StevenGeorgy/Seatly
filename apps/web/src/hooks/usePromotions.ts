@@ -58,6 +58,8 @@ export type PromotionWithRestaurant = PromotionRow & {
     cover_photo_url: string | null;
     city: string | null;
     price_range: number | null;
+    lat: number | null;
+    lng: number | null;
   };
 };
 
@@ -91,7 +93,9 @@ export function useAllActivePromotions() {
           avg_rating,
           cover_photo_url,
           city,
-          price_range
+          price_range,
+          lat,
+          lng
         )
       `)
       .eq("is_active", true)
@@ -103,7 +107,9 @@ export function useAllActivePromotions() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void fetch(); }, [fetch]);
+  useEffect(() => {
+    void Promise.resolve().then(fetch);
+  }, [fetch]);
 
   return { promotions, loading, refetch: fetch };
 }
@@ -133,7 +139,9 @@ export function usePromotions() {
     setLoading(false);
   }, [selectedRestaurantId]);
 
-  useEffect(() => { void fetch(); }, [fetch]);
+  useEffect(() => {
+    void Promise.resolve().then(fetch);
+  }, [fetch]);
 
   /** Returns null on success, or an error string on failure. */
   const createPromotion = useCallback(async (payload: CreatePromotionPayload): Promise<string | null> => {
@@ -218,7 +226,9 @@ export async function fetchPromotionById(id: string): Promise<PromotionWithResta
         avg_rating,
         cover_photo_url,
         city,
-        price_range
+        price_range,
+        lat,
+        lng
       )
     `)
     .eq("id", id)

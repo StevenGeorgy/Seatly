@@ -37,6 +37,8 @@ export type EventWithRestaurant = EventRow & {
     cover_photo_url: string | null;
     city: string | null;
     price_range: number | null;
+    lat: number | null;
+    lng: number | null;
   };
 };
 
@@ -124,7 +126,9 @@ export function useAllActiveEvents() {
           avg_rating,
           cover_photo_url,
           city,
-          price_range
+          price_range,
+          lat,
+          lng
         )
       `)
       .eq("is_active", true)
@@ -136,7 +140,9 @@ export function useAllActiveEvents() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void fetchEvents(); }, [fetchEvents]);
+  useEffect(() => {
+    void Promise.resolve().then(fetchEvents);
+  }, [fetchEvents]);
 
   return { events, loading, refetch: fetchEvents };
 }
@@ -174,7 +180,9 @@ export function useEvents() {
     setLoading(false);
   }, [selectedRestaurantId]);
 
-  useEffect(() => { void fetchEvents(); }, [fetchEvents]);
+  useEffect(() => {
+    void Promise.resolve().then(fetchEvents);
+  }, [fetchEvents]);
 
   const createEvent = useCallback(async (payload: CreateEventPayload): Promise<string | null> => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) return "No restaurant selected.";
@@ -257,7 +265,9 @@ export async function fetchEventById(id: string): Promise<EventWithRestaurant | 
         avg_rating,
         cover_photo_url,
         city,
-        price_range
+        price_range,
+        lat,
+        lng
       )
     `)
     .eq("id", id)

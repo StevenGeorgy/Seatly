@@ -41,6 +41,8 @@ type BookingPreview = {
   confirmationCode: string;
   tag: string;
   slug: string;
+  logoUrl: string | null;
+  coverPhotoUrl: string | null;
 };
 
 const profileFormSchema = z.object({
@@ -58,63 +60,6 @@ const ACCOUNT_NAV: { id: Section; label: string; icon: typeof CalendarDays }[] =
   { id: "payment", label: "Payment", icon: CreditCard },
   { id: "preferences", label: "Preferences", icon: Settings },
 ];
-
-const DEMO_UPCOMING: BookingPreview[] = [
-  {
-    id: "demo-maison",
-    restaurantName: "Maison Verre",
-    reservedAt: fixedDate(2026, 3, 27, 19, 15),
-    partySize: 2,
-    status: "confirmed",
-    confirmationCode: "MV-7K2N91",
-    tag: "Patio",
-    slug: "maison-verre",
-  },
-  {
-    id: "demo-osteria",
-    restaurantName: "Osteria Nova",
-    reservedAt: fixedDate(2026, 4, 9, 21, 0),
-    partySize: 4,
-    status: "pending",
-    confirmationCode: "ON-3K9X14",
-    tag: "Wine bar",
-    slug: "osteria-nova",
-  },
-];
-
-const DEMO_PAST: BookingPreview[] = [
-  {
-    id: "demo-past",
-    restaurantName: "Le Petit Jardin",
-    reservedAt: fixedDate(2026, 2, 14, 18, 30),
-    partySize: 2,
-    status: "completed",
-    confirmationCode: "LP-8M4V22",
-    tag: "Date night",
-    slug: "le-petit-jardin",
-  },
-];
-
-const DEMO_CANCELLED: BookingPreview[] = [
-  {
-    id: "demo-cancelled",
-    restaurantName: "Blue Heron",
-    reservedAt: fixedDate(2026, 1, 22, 12, 0),
-    partySize: 5,
-    status: "cancelled",
-    confirmationCode: "BH-2Q7L10",
-    tag: "Brunch",
-    slug: "blue-heron",
-  },
-];
-
-function fixedDate(year: number, month: number, day: number, hour: number, minute: number): Date {
-  return new Date(year, month, day, hour, minute, 0, 0);
-}
-
-function stripeLabel(name: string): string {
-  return name.split(/\s+/).slice(0, 1).join("").toUpperCase();
-}
 
 function adaptReservation(row: MyReservationRow): BookingPreview {
   const reservedAt = new Date(row.reserved_at);
@@ -135,20 +80,29 @@ function adaptReservation(row: MyReservationRow): BookingPreview {
     partySize: row.party_size,
     status,
     confirmationCode: row.confirmation_code ?? "PENDING",
-    tag: row.table?.label ? `Table ${row.table.label}` : "Dining room",
+    tag: row.table?.label ? `Table ${row.table.label}` : "Reservation",
     slug: row.restaurant?.slug ?? "",
+    logoUrl: row.restaurant?.logo_url ?? null,
+    coverPhotoUrl: row.restaurant?.cover_photo_url ?? null,
   };
 }
 
-function StripeThumb({ label }: { label: string }) {
+function BookingThumb({ booking }: { booking: BookingPreview }) {
   return (
     <div className="relative flex size-28 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-bg-elevated lg:size-32">
-      <div className="absolute inset-0 opacity-60 [background-image:repeating-linear-gradient(135deg,var(--gold)_0_1px,transparent_1px_14px)]" />
-      <div className="absolute inset-0 bg-black/45" />
-      <div className="relative size-10 rounded-full bg-gold/30 ring-4 ring-black/25" />
-      <span className="absolute bottom-3 left-1/2 -translate-x-1/2 font-mono text-[10px] uppercase tracking-[0.25em] text-gold/70">
-        {label}
-      </span>
+      {booking.coverPhotoUrl ? (
+        <img src={booking.coverPhotoUrl} alt={`${booking.restaurantName} cover`} className="absolute inset-0 size-full object-cover" />
+      ) : (
+        <div className="absolute inset-0 bg-gradient-to-br from-gold/15 via-bg-elevated to-bg-base" />
+      )}
+      <div className="absolute inset-0 bg-black/35" />
+      <div className="relative flex size-12 items-center justify-center overflow-hidden rounded-xl border border-gold/30 bg-bg-elevated font-mono text-[10px] font-semibold text-gold">
+        {booking.logoUrl ? (
+          <img src={booking.logoUrl} alt={`${booking.restaurantName} logo`} className="size-full object-cover" />
+        ) : (
+          booking.restaurantName.split(/\s+/).filter(Boolean).slice(0, 1).join("").toUpperCase()
+        )}
+      </div>
     </div>
   );
 }
@@ -187,7 +141,7 @@ function BookingRow({ booking }: { booking: BookingPreview }) {
       transition={{ duration: 0.25 }}
       className="flex gap-5 border-b border-border/60 p-5 last:border-b-0 sm:p-6 lg:gap-6 lg:p-7"
     >
-      <StripeThumb label={stripeLabel(booking.restaurantName)} />
+      <BookingThumb booking={booking} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <BookingStatus status={booking.status} />
@@ -304,15 +258,13 @@ export default function AccountPage() {
     const completedRows = pastRows.filter((row) => row.status !== "cancelled");
 
     return {
-      upcoming: upcomingRows.length > 0 ? upcomingRows : DEMO_UPCOMING,
-      past: completedRows.length > 0 ? completedRows : DEMO_PAST,
-      cancelled: cancelledRows.length > 0 ? cancelledRows : DEMO_CANCELLED,
+      upcoming: upcomingRows,
+      past: completedRows,
+      cancelled: cancelledRows,
     };
   }, [past, upcoming]);
 
   const activeBookings = bookingLists[bookingTab];
-  const totalMeals = bookingLists.past.length + bookingLists.upcoming.length;
-  const loyaltyPoints = 2418 + totalMeals * 95;
 
   const initials = (profile?.full_name ?? profile?.email ?? "SK")
     .split(" ")
@@ -321,8 +273,10 @@ export default function AccountPage() {
     .slice(0, 2)
     .toUpperCase();
 
-  const displayName = profile?.full_name ?? "Sara Kapoor";
-  const memberSince = "Member since 2024";
+  const displayName = profile?.full_name ?? profile?.email ?? "Guest";
+  const memberSince = profile?.created_at
+    ? `Member since ${format(new Date(profile.created_at), "yyyy")}`
+    : "Member";
 
   const onSubmit = async (values: ProfileFormValues) => {
     const csvToArray = (csv: string) =>
@@ -388,8 +342,15 @@ export default function AccountPage() {
           <section className="mt-5 overflow-hidden rounded-2xl border border-border bg-bg-surface/70">
             {reservationsLoading && upcoming.length === 0 && past.length === 0 ? (
               <div className="p-8 text-sm text-text-muted">Loading reservations...</div>
-            ) : (
+            ) : activeBookings.length > 0 ? (
               activeBookings.map((booking) => <BookingRow key={booking.id} booking={booking} />)
+            ) : (
+              <div className="p-8">
+                <EmptyPanel
+                  title="No reservations yet"
+                  body="Your real Cenaiva reservations will appear here once you book."
+                />
+              </div>
             )}
           </section>
         </>
@@ -417,20 +378,14 @@ export default function AccountPage() {
       return (
         <>
           <SectionHeading title="Loyalty" body="Track rewards across Cenaiva partner restaurants." />
-          <div className="mt-5 rounded-2xl border border-gold/30 bg-gold/10 p-6">
+          <div className="mt-5 rounded-2xl border border-border bg-bg-surface p-6">
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
               Loyalty balance
             </p>
-            <p className="mt-3 font-serif text-5xl text-white">{loyaltyPoints.toLocaleString()}</p>
+            <p className="mt-3 font-serif text-3xl text-white">No loyalty balance yet</p>
             <p className="mt-2 text-sm text-text-secondary">
-              {Math.max(0, 3500 - loyaltyPoints).toLocaleString()} points to Platinum.
+              Points will appear here once loyalty records are connected to your account.
             </p>
-            <div className="mt-5 h-2 overflow-hidden rounded-full bg-bg-elevated">
-              <div
-                className="h-full rounded-full bg-gold"
-                style={{ width: `${Math.min((loyaltyPoints / 3500) * 100, 100)}%` }}
-              />
-            </div>
           </div>
         </>
       );
@@ -445,13 +400,13 @@ export default function AccountPage() {
               <Sparkles className="size-5 text-gold" /> Remembered preferences
             </p>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <PreferenceTile label="Allergies" value={profile?.allergies?.join(", ") || "Nut allergy"} />
+              <PreferenceTile label="Allergies" value={profile?.allergies?.join(", ") || "No allergies saved"} />
               <PreferenceTile
                 label="Dietary"
                 value={profile?.dietary_restrictions?.join(", ") || "No restrictions"}
               />
-              <PreferenceTile label="Seating" value={profile?.seating_preference || "Patio when available"} />
-              <PreferenceTile label="Occasion" value="Date nights and anniversaries" />
+              <PreferenceTile label="Seating" value={profile?.seating_preference || "No seating preference saved"} />
+              <PreferenceTile label="Language" value={profile?.preferred_language || "No language preference saved"} />
             </div>
           </div>
         </>
@@ -553,9 +508,9 @@ export default function AccountPage() {
               <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-gold">
                 Loyalty balance
               </p>
-              <p className="mt-3 font-serif text-5xl text-gold">{loyaltyPoints.toLocaleString()}</p>
+              <p className="mt-3 font-serif text-3xl text-gold">Not connected</p>
               <p className="mt-1 text-xs text-text-muted">
-                +{(totalMeals * 55).toLocaleString()} pts this year
+                Loyalty points will show here when available.
               </p>
             </div>
 

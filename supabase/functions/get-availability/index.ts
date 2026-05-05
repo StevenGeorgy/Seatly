@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { localDayOfWeek, localToUTC } from "../_shared/time.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -85,19 +86,28 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const date = new Date(dateStr);
-    // `shifts.days_of_week` stores 0-6 (0=Sun … 6=Sat) — same convention as
-    // JS `Date.prototype.getDay()` — so use the value directly. The previous
-    // ISO 1-7 mapping caused Sunday lookups (and Saturday lookups when the
-    // server clock had already rolled past UTC midnight) to find no shifts.
-    const dayOfWeek = date.getDay();
     const dateOnly = dateStr.slice(0, 10);
 
     const { data: restaurantRow } = await supabase
       .from("restaurants")
-      .select("settings_json, hours_json")
+      .select("settings_json, hours_json, timezone")
       .eq("id", restaurantId)
       .single();
+    const timezone =
+      typeof restaurantRow?.timezone === "string" && restaurantRow.timezone.trim()
+        ? restaurantRow.timezone
+        : "America/Toronto";
+    const dayOfWeek = localDayOfWeek(dateOnly, timezone);
+    const { data: floorCapacityData } = await supabase.rpc("restaurant_floor_capacity", {
+      p_restaurant_id: restaurantId,
+    });
+    const floorCapacity = Number.isFinite(Number(floorCapacityData)) ? Number(floorCapacityData) : 0;
+    if (partySize < 1 || partySize > floorCapacity) {
+      return new Response(
+        JSON.stringify({ slots: [], floor_capacity: floorCapacity }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
     const configuredTurnMinutes =
       typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
         ? restaurantRow.settings_json.turnTimeMinutes
@@ -128,8 +138,8 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const start = `${dateOnly}T00:00:00`;
-    const end = `${dateOnly}T23:59:59`;
+    const start = localToUTC(dateOnly, "00:00", timezone);
+    const end = localToUTC(dateOnly, "23:59", timezone);
     const { data: reservations } = await supabase
       .from("reservations")
       .select("shift_id, reserved_at, party_size, duration_minutes")
@@ -145,11 +155,11 @@ Deno.serve(async (req: Request) => {
       date_time: string;
       display_time: string;
       table_ids: string[];
+      duration_minutes: number;
+      floor_capacity: number;
     }[] = [];
 
     for (const shift of shifts) {
-      if (partySize < (shift.min_party_size || 1) || partySize > (shift.max_party_size || 20)) continue;
-
       const [sH, sM] = (shift.start_time || "17:00").split(":").map(Number);
       const [eH, eM] = (shift.end_time || "23:00").split(":").map(Number);
       const slotMins = shift.slot_duration_minutes || 30;
@@ -165,8 +175,8 @@ Deno.serve(async (req: Request) => {
       if (endMin <= slotMin) continue;
 
       while (slotMin + slotMins <= endMin) {
-        const slotStart = new Date(date);
-        slotStart.setHours(Math.floor(slotMin / 60), slotMin % 60, 0, 0);
+        const slotTime = `${String(Math.floor(slotMin / 60)).padStart(2, "0")}:${String(slotMin % 60).padStart(2, "0")}`;
+        const slotStart = new Date(localToUTC(dateOnly, slotTime, timezone));
         const slotEnd = new Date(slotStart.getTime() + turnMins * 60 * 1000);
 
         const shiftResvs = (reservations || []).filter((r) => r.shift_id === shift.id);
@@ -205,18 +215,21 @@ Deno.serve(async (req: Request) => {
             time: slotStart.toISOString().slice(0, 19).replace("T", " "),
             date_time: slotStart.toISOString(),
             display_time: slotStart.toLocaleTimeString("en-US", {
+              timeZone: timezone,
               hour: "numeric",
               minute: "2-digit",
               hour12: true,
             }),
             table_ids: assignedTableIds,
+            duration_minutes: turnMins,
+            floor_capacity: floorCapacity,
           });
         }
         slotMin += slotMins;
       }
     }
 
-    return new Response(JSON.stringify({ slots }), {
+    return new Response(JSON.stringify({ slots, floor_capacity: floorCapacity }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {

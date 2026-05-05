@@ -84,3 +84,10 @@ export function deriveRestaurantPriceLevel(
   if (average != null) return restaurantPriceLevelFromAverage(average);
   return normalizeRestaurantPriceLevel(fallbackRange) ?? DEFAULT_RESTAURANT_PRICE_LEVEL;
 }
+
+export function deriveRestaurantPriceLevelFromMenu(
+  items: RestaurantPriceMenuItem[],
+): RestaurantPriceLevel | null {
+  const average = averageMainEntreePrice(items);
+  return average != null ? restaurantPriceLevelFromAverage(average) : null;
+}

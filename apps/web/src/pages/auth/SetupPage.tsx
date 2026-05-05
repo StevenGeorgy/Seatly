@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -162,8 +163,6 @@ export default function SetupPage() {
   // Step 5 — Settings
   const [depositEnabled, setDepositEnabled] = useState(false);
   const [depositAmount, setDepositAmount] = useState("25");
-  const [cancellationHours, setCancellationHours] = useState("24");
-  const [noShowFee, setNoShowFee] = useState("");
   const [acceptsWalkins, setAcceptsWalkins] = useState(true);
   const [loyaltyEnabled, setLoyaltyEnabled] = useState(true);
   const [pointsPerDollar, setPointsPerDollar] = useState("1");
@@ -237,8 +236,6 @@ export default function SetupPage() {
           currency:        values.currency,
           hours_json:      hoursJson,
           accepts_walkins: acceptsWalkins,
-          no_show_fee:     noShowFee ? parseFloat(noShowFee) : null,
-          cancellation_hours: parseInt(cancellationHours, 10),
         },
       });
 
@@ -339,7 +336,20 @@ export default function SetupPage() {
                   </div>
                   <div className="flex flex-col gap-2">
                     <Label>Cuisine Type <span className="text-danger">*</span></Label>
-                    <Input {...form.register("cuisine_type")} placeholder="e.g. Italian, Japanese" />
+                    <Controller
+                      control={form.control}
+                      name="cuisine_type"
+                      render={({ field }) => (
+                        <CuisineSelect
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          placeholder={t("dashboard.settings.cuisineSelectPlaceholder")}
+                        />
+                      )}
+                    />
+                    {form.formState.errors.cuisine_type && (
+                      <p className="text-xs text-danger">{form.formState.errors.cuisine_type.message}</p>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col gap-2">
@@ -637,23 +647,6 @@ export default function SetupPage() {
                   </div>
                 </div>
 
-                {/* Cancellation window */}
-                <div className="rounded-2xl border border-border bg-bg-surface p-5">
-                  <p className="mb-3 text-sm font-semibold text-text-primary">Cancellation window</p>
-                  <p className="mb-3 text-xs text-text-muted">How many hours before the reservation can guests cancel for free?</p>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min={0}
-                      max={168}
-                      value={cancellationHours}
-                      onChange={(e) => setCancellationHours(e.target.value)}
-                      className="h-10 w-24 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                    />
-                    <span className="text-sm text-text-secondary">hours before reservation</span>
-                  </div>
-                </div>
-
                 {/* Deposit */}
                 <div className="rounded-2xl border border-border bg-bg-surface p-5">
                   <div className="flex items-center justify-between">
@@ -695,23 +688,6 @@ export default function SetupPage() {
                       </motion.div>
                     )}
                   </AnimatePresence>
-                </div>
-
-                {/* No-show fee */}
-                <div className="rounded-2xl border border-border bg-bg-surface p-5">
-                  <p className="mb-1 text-sm font-semibold text-text-primary">No-show fee</p>
-                  <p className="mb-3 text-xs text-text-muted">Charge guests who don't show up and don't cancel. Leave blank to disable.</p>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min={0}
-                      value={noShowFee}
-                      onChange={(e) => setNoShowFee(e.target.value)}
-                      placeholder="0.00"
-                      className="h-10 w-28 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                    />
-                    <span className="text-xs text-text-muted">per person (optional)</span>
-                  </div>
                 </div>
 
                 {/* Loyalty */}

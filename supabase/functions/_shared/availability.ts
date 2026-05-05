@@ -7,10 +7,13 @@ export interface AvailabilitySlot {
   date_time: string;   // UTC ISO — pass directly to complete_booking
   display_time: string; // Local time shown to user
   table_ids?: string[];
+  duration_minutes?: number;
+  floor_capacity?: number;
 }
 
 export interface AvailabilityResult {
   slots: AvailabilitySlot[];
+  floor_capacity?: number;
   /** Human-readable opening window ("5:00 PM to 10:00 PM") the assistant
    *  should speak INSTEAD of enumerating individual slots. Computed from
    *  the earliest and latest bookable slot across all matching shifts. */
@@ -74,6 +77,19 @@ export async function getAvailability(
     typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
       ? restaurantRow.settings_json.turnTimeMinutes
       : null;
+  const { data: floorCapacityData } = await supabaseAdmin.rpc("restaurant_floor_capacity", {
+    p_restaurant_id: restaurant_id,
+  });
+  const floorCapacity = Number.isFinite(Number(floorCapacityData)) ? Number(floorCapacityData) : 0;
+  if (party_size < 1 || party_size > floorCapacity) {
+    return {
+      slots: [],
+      floor_capacity: floorCapacity,
+      message: floorCapacity > 0
+        ? `This restaurant can take parties up to ${floorCapacity}.`
+        : "This restaurant does not have a saved floor plan yet.",
+    };
+  }
 
   const dayOfWeek = localDayOfWeek(dateOnly, timezone);
   // localDayOfWeek returns JS-style 0-6 (0=Sun ... 6=Sat) — the same
@@ -123,7 +139,7 @@ export async function getAvailability(
   }
 
   if (configuredHours === "closed") {
-    return { slots: [], hours_window: null, message: "No availability on that date." };
+    return { slots: [], floor_capacity: floorCapacity, hours_window: null, message: "No availability on that date." };
   }
 
   // Fetch matching shifts — also select blackout_dates and advance_booking_days
@@ -137,7 +153,7 @@ export async function getAvailability(
     .contains("days_of_week", [dayOfWeek]);
 
   if (!shifts?.length) {
-    return { slots: [], message: "No availability on that date." };
+    return { slots: [], floor_capacity: floorCapacity, message: "No availability on that date." };
   }
 
   // Query reservations using UTC bounds for the restaurant's local day
@@ -157,11 +173,6 @@ export async function getAvailability(
   const requestDate = new Date(dateOnly);
 
   for (const shift of shifts) {
-    // Enforce party size bounds
-    if (party_size < (shift.min_party_size ?? 1) || party_size > (shift.max_party_size ?? 20)) {
-      continue;
-    }
-
     // Enforce advance_booking_days — don't show if booking window hasn't opened
     const advanceDays = shift.advance_booking_days ?? 30;
     const maxBookingDate = new Date(todayDate.getTime() + advanceDays * 86_400_000);
@@ -237,6 +248,8 @@ export async function getAvailability(
             hour12: true,
           }),
           table_ids: assignedTableIds,
+          duration_minutes: turnMins,
+          floor_capacity: floorCapacity,
         });
       }
 
@@ -254,5 +267,5 @@ export async function getAvailability(
     (limited.length
       ? `${limited[0].display_time} to ${limited[limited.length - 1].display_time}`
       : null);
-  return { slots: limited, hours_window };
+  return { slots: limited, floor_capacity: floorCapacity, hours_window };
 }

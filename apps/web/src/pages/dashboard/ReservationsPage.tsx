@@ -47,6 +47,8 @@ type ReservationBoardRow = {
   notes: string;
   status: QuickFilter | "completed";
   tag?: string;
+  tableCount: number;
+  tableCapacity: number;
   source?: ReservationRow;
   startsAt: number;
   durationMinutes: number;
@@ -129,11 +131,17 @@ function reservationTableLabel(rowData: ReservationRow, t: TranslationFn): strin
   return t("dashboard.reservations.unassigned");
 }
 
+function reservationAssignedTables(rowData: ReservationRow): Array<{ capacity: number }> {
+  const assignments = rowData.reservation_tables ?? [];
+  if (assignments.length > 0) {
+    return assignments.flatMap((assignment) => assignment.tables ? [{ capacity: assignment.tables.capacity }] : []);
+  }
+  return rowData.tables ? [{ capacity: rowData.tables.capacity }] : [];
+}
+
 function adaptReservation(rowData: ReservationRow, t: TranslationFn): ReservationBoardRow {
   const date = new Date(rowData.reserved_at);
-  const guest = rowData.is_guest_checkout
-    ? t("dashboard.reservations.notApplicable")
-    : rowData.guests?.full_name ?? rowData.guest_full_name ?? t("dashboard.reservations.notApplicable");
+  const guest = rowData.guests?.full_name ?? rowData.guest_full_name ?? t("dashboard.reservations.notApplicable");
   const phone = rowData.guest_phone ?? rowData.guests?.phone ?? rowData.guest_email ?? rowData.guests?.email ?? "-";
   const status = normalizeStatus(rowData);
   const durationMinutes = rowData.duration_minutes ?? DEFAULT_DURATION_MINUTES;
@@ -143,6 +151,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     rowData.dietary_notes ||
     "-";
   const table = reservationTableLabel(rowData, t);
+  const assignedTables = reservationAssignedTables(rowData);
 
   return {
     id: rowData.id,
@@ -154,7 +163,11 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     duration: formatDurationMinutes(durationMinutes, t),
     notes,
     status,
-    tag: rowData.source === "walk_in" ? "Walk-in" : rowData.deposit_amount ? "Deposit" : undefined,
+    tag: assignedTables.length > 1
+      ? t("dashboard.reservations.largePartyTag", { count: assignedTables.length })
+      : rowData.source === "walk_in" ? "Walk-in" : rowData.deposit_amount ? "Deposit" : undefined,
+    tableCount: assignedTables.length,
+    tableCapacity: assignedTables.reduce((total, table) => total + table.capacity, 0),
     source: rowData,
     startsAt: timeToBoardMinutes(format(date, "h:mm a")),
     durationMinutes,
@@ -187,7 +200,7 @@ function buildTimelineRows(rows: ReservationBoardRow[]): TimelineTableRow[] {
     rowMap.set(key, {
       table: key,
       room: table.includes(" · ") ? table.split(" · ").at(-1) ?? "Floor" : "Floor",
-      seats: reservation.party,
+      seats: reservation.tableCapacity || reservation.party,
       bookings: [reservation],
     });
   }
@@ -894,8 +907,26 @@ function ReservationsTable({
                       <p className="font-medium text-white">{reservation.guest}</p>
                       <p className="mt-0.5 text-xs text-text-muted">{reservation.phone}</p>
                     </td>
-                    <td className="px-5 py-4 text-text-secondary">{reservation.party}</td>
-                    <td className="px-5 py-4 text-text-secondary">{reservation.table}</td>
+                    <td className="px-5 py-4 text-text-secondary">
+                      <div className="flex flex-col gap-1">
+                        <span>{reservation.party}</span>
+                        {reservation.tableCount > 1 ? (
+                          <span className="w-fit rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+                            {t("dashboard.reservations.largePartyTag", { count: reservation.tableCount })}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-text-secondary">
+                      <div className="flex flex-col gap-1">
+                        <span>{reservation.table}</span>
+                        {reservation.tableCapacity > 0 ? (
+                          <span className="text-[11px] text-text-muted">
+                            {t("dashboard.reservations.tableCapacity", { count: reservation.tableCapacity })}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="px-5 py-4 text-text-secondary">{reservation.duration}</td>
                     <td className="px-5 py-4">
                       <StatusBadge

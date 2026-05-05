@@ -39,6 +39,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
+import { useNotifications } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -57,103 +58,9 @@ type BookingCard = {
   confirmationCode?: string;
   address?: string;
   phone?: string;
+  logoUrl?: string | null;
+  coverPhotoUrl?: string | null;
 };
-
-const DEMO_UPCOMING: BookingCard[] = [
-  {
-    id: "demo-sakura",
-    initials: "SAKURA",
-    cuisineLine: "OMAKASE · JAPANESE · YORKVILLE",
-    restaurantName: "Sakura Omakase",
-    restaurantSlug: "sakura-omakase",
-    reservedAt: addDays(new Date(), 2, 18, 30),
-    partySize: 4,
-    occasion: "Birthday",
-    status: "confirmed",
-    confirmationCode: "CN-AX42K9",
-    address: "126 Cumberland St",
-    phone: "+1 (416) 555-0184",
-  },
-  {
-    id: "demo-maison",
-    initials: "MAISON",
-    cuisineLine: "MODERN FRENCH · KING WEST",
-    restaurantName: "Maison Verre",
-    restaurantSlug: "maison-verre",
-    reservedAt: addDays(new Date(), 11, 19, 45),
-    partySize: 2,
-    status: "confirmed",
-    confirmationCode: "CN-MV88P2",
-  },
-  {
-    id: "demo-aurora",
-    initials: "AURORA",
-    cuisineLine: "NORDIC · TASTING MENU · DISTILLERY",
-    restaurantName: "Aurora",
-    restaurantSlug: "aurora",
-    reservedAt: addDays(new Date(), 15, 20, 15),
-    partySize: 6,
-    occasion: "Anniversary",
-    status: "pending",
-    confirmationCode: "CN-AU14R7",
-  },
-];
-
-const DEMO_PAST: BookingCard[] = [
-  {
-    id: "demo-nova",
-    initials: "NOVA",
-    cuisineLine: "ITALIAN · WOOD-FIRED · FINANCIAL",
-    restaurantName: "Nova Ristorante",
-    restaurantSlug: "nova-ristorante",
-    reservedAt: addDays(new Date(), -22, 19, 30),
-    partySize: 6,
-    occasion: "Celebration",
-    status: "completed",
-  },
-  {
-    id: "demo-jardin",
-    initials: "JARDIN",
-    cuisineLine: "FRENCH BISTRO · ANNEX",
-    restaurantName: "Le Petit Jardin",
-    restaurantSlug: "le-petit-jardin",
-    reservedAt: addDays(new Date(), -54, 18, 0),
-    partySize: 2,
-    occasion: "Date night",
-    status: "completed",
-  },
-  {
-    id: "demo-casa",
-    initials: "CASA",
-    cuisineLine: "MEXICAN · MEZCAL · LESLIEVILLE",
-    restaurantName: "Casa Tomatillo",
-    restaurantSlug: "casa-tomatillo",
-    reservedAt: addDays(new Date(), -88, 20, 45),
-    partySize: 3,
-    status: "completed",
-  },
-];
-
-const DEMO_CANCELLED: BookingCard[] = [
-  {
-    id: "demo-blue",
-    initials: "HERON",
-    cuisineLine: "BRUNCH · COASTAL · LIBERTY VIL",
-    restaurantName: "Blue Heron",
-    restaurantSlug: "blue-heron",
-    reservedAt: addDays(new Date(), -10, 11, 0),
-    partySize: 5,
-    occasion: "Brunch",
-    status: "cancelled",
-  },
-];
-
-function addDays(base: Date, days: number, hour = 19, minute = 0): Date {
-  const d = new Date(base);
-  d.setDate(d.getDate() + days);
-  d.setHours(hour, minute, 0, 0);
-  return d;
-}
 
 function adapt(r: MyReservationRow): BookingCard {
   const reservedAt = new Date(r.reserved_at);
@@ -170,30 +77,40 @@ function adapt(r: MyReservationRow): BookingCard {
   return {
     id: r.id,
     initials,
-    cuisineLine: name.toUpperCase(),
     restaurantName: name,
     restaurantSlug: r.restaurant?.slug ?? "",
     reservedAt,
     partySize: r.party_size,
     confirmationCode: r.confirmation_code ?? undefined,
+    cuisineLine: [r.restaurant?.cuisine_type, r.restaurant?.city].filter(Boolean).join(" · ").toUpperCase() || name.toUpperCase(),
+    address: r.restaurant?.address ?? undefined,
+    phone: r.restaurant?.phone ?? undefined,
+    logoUrl: r.restaurant?.logo_url ?? null,
+    coverPhotoUrl: r.restaurant?.cover_photo_url ?? null,
     status,
   };
 }
 
-function StripePlaceholder({ label }: { label: string }) {
+function BookingRestaurantImage({ booking }: { booking: BookingCard }) {
   return (
-    <div
-      className="relative flex aspect-[16/9] w-full items-center justify-center overflow-hidden"
-      style={{
-        backgroundImage:
-          "repeating-linear-gradient(135deg, rgba(201,168,76,0.18) 0 14px, rgba(0,0,0,0.55) 14px 28px)",
-        backgroundColor: "#1a1a1a",
-      }}
-    >
-      <div className="size-9 rounded-full bg-gold/40 ring-4 ring-black/30" />
-      <span className="absolute bottom-3 left-1/2 -translate-x-1/2 font-mono text-[10px] tracking-[0.3em] text-gold/70">
-        {label}
-      </span>
+    <div className="relative flex aspect-[16/9] w-full items-center justify-center overflow-hidden bg-bg-elevated">
+      {booking.coverPhotoUrl ? (
+        <img
+          src={booking.coverPhotoUrl}
+          alt={`${booking.restaurantName} cover`}
+          className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-105"
+        />
+      ) : (
+        <div className="absolute inset-0 bg-gradient-to-br from-gold/15 via-bg-elevated to-bg-base" />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/5 via-black/25 to-bg-base/85" />
+      <div className="relative flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-bg-elevated font-mono text-xs font-semibold text-gold shadow-lg shadow-black/30">
+        {booking.logoUrl ? (
+          <img src={booking.logoUrl} alt={`${booking.restaurantName} logo`} className="size-full object-cover" />
+        ) : (
+          booking.initials
+        )}
+      </div>
     </div>
   );
 }
@@ -203,7 +120,7 @@ function StatusChip({ status }: { status: BookingCard["status"] }) {
     confirmed: { label: "Confirmed", cls: "text-white" },
     pending: { label: "Pending", cls: "text-amber-400" },
     completed: { label: "Completed", cls: "text-text-secondary" },
-    cancelled: { label: "Confirmed", cls: "text-text-muted line-through" },
+    cancelled: { label: "Cancelled", cls: "text-text-muted line-through" },
   };
   const item = map[status];
   return <span className={cn("text-sm font-medium", item.cls)}>{item.label}</span>;
@@ -236,7 +153,7 @@ function BookingCardView({
       className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface transition-colors hover:border-gold/40"
     >
       <div className="relative">
-        <StripePlaceholder label={b.initials} />
+        <BookingRestaurantImage booking={b} />
         {variant === "upcoming" && (
           <span className="absolute left-3 top-3 rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
             {relativeLabel(b.reservedAt)}
@@ -325,7 +242,7 @@ function NextReservationCard({
     days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
 
   return (
-    <div className="rounded-2xl border border-gold/40 bg-bg-surface/60 p-5 shadow-[0_0_0_1px_rgba(201,168,76,0.05)]">
+    <div className="rounded-2xl border border-gold/40 bg-bg-surface/60 p-5 shadow-lg shadow-gold/5">
       <div className="flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
         <span className="inline-flex items-center gap-2">
           <span className="size-1.5 rounded-full bg-gold" /> Next reservation
@@ -361,27 +278,32 @@ function NextReservationCard({
       </ul>
 
       <div className="mt-5 grid grid-cols-2 gap-3">
-        <Button
-          asChild
-          className="h-10 rounded-md font-semibold"
-        >
-          <a
-            href={
-              b.address
-                ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(b.address + " " + b.restaurantName)}`
-                : "#"
-            }
-            target="_blank"
-            rel="noreferrer"
-          >
+        {b.address ? (
+          <Button asChild className="h-10 rounded-md font-semibold">
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(b.address + " " + b.restaurantName)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <MapPin className="size-4" /> Directions
+            </a>
+          </Button>
+        ) : (
+          <Button disabled className="h-10 rounded-md font-semibold">
             <MapPin className="size-4" /> Directions
-          </a>
-        </Button>
-        <Button asChild variant="outline" className="h-10 rounded-md font-medium">
-          <a href={b.phone ? `tel:${b.phone}` : "#"}>
+          </Button>
+        )}
+        {b.phone ? (
+          <Button asChild variant="outline" className="h-10 rounded-md font-medium">
+            <a href={`tel:${b.phone}`}>
+              <Phone className="size-4" /> Call
+            </a>
+          </Button>
+        ) : (
+          <Button disabled variant="outline" className="h-10 rounded-md font-medium">
             <Phone className="size-4" /> Call
-          </a>
-        </Button>
+          </Button>
+        )}
         <Button variant="outline" className="h-10 rounded-md font-medium">
           <PencilLine className="size-4" /> Modify
         </Button>
@@ -454,30 +376,6 @@ function QuickActions({
   );
 }
 
-function LoyaltyCard({ meals }: { meals: number }) {
-  const points = 1240;
-  const target = 2000;
-  const remaining = target - points;
-  const pct = Math.min((points / target) * 100, 100);
-  return (
-    <div className="rounded-2xl border border-border bg-bg-surface/60 p-5">
-      <p className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
-        <Sparkles className="size-3" /> Loyalty status
-      </p>
-      <p className="mt-4 font-serif text-2xl text-white">Gold tier</p>
-      <p className="mt-1 text-xs text-text-muted">
-        {meals} meals · {points.toLocaleString()} points
-      </p>
-      <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-        <div className="h-full rounded-full bg-gold" style={{ width: `${pct}%` }} />
-      </div>
-      <p className="mt-3 text-xs text-text-muted">
-        {remaining.toLocaleString()} points to <span className="text-gold">Platinum</span>
-      </p>
-    </div>
-  );
-}
-
 function StatTile({
   value,
   label,
@@ -514,25 +412,22 @@ export default function BookingsPage() {
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
   const { upcoming, past, loading } = useMyReservations();
+  const { unreadCount } = useNotifications();
   const assistant = useAssistant();
 
   const [tab, setTab] = useState<Tab>("upcoming");
   const [search, setSearch] = useState("");
 
   const upcomingCards = useMemo(() => {
-    if (upcoming.length > 0) return upcoming.map(adapt);
-    return DEMO_UPCOMING;
+    return upcoming.map(adapt);
   }, [upcoming]);
 
   const { pastCompleted, cancelled } = useMemo(() => {
-    if (past.length > 0) {
-      const adapted = past.map(adapt);
-      return {
-        pastCompleted: adapted.filter((b) => b.status !== "cancelled"),
-        cancelled: adapted.filter((b) => b.status === "cancelled"),
-      };
-    }
-    return { pastCompleted: DEMO_PAST, cancelled: DEMO_CANCELLED };
+    const adapted = past.map(adapt);
+    return {
+      pastCompleted: adapted.filter((b) => b.status !== "cancelled"),
+      cancelled: adapted.filter((b) => b.status === "cancelled"),
+    };
   }, [past]);
 
   const filterBySearch = (list: BookingCard[]) => {
@@ -601,9 +496,11 @@ export default function BookingsPage() {
               aria-label="Notifications"
             >
               <Bell className="size-4" />
-              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-gold font-mono text-[10px] font-bold text-black">
-                3
-              </span>
+              {unreadCount > 0 && (
+                <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-gold font-mono text-[10px] font-bold text-black">
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
+              )}
             </button>
 
             <DropdownMenu>
@@ -740,7 +637,7 @@ export default function BookingsPage() {
                     Add to calendar
                   </button>
                 </div>
-                {loading && upcomingCards === DEMO_UPCOMING && (
+                {loading && (
                   <p className="mt-4 text-xs text-text-muted">Loading reservations…</p>
                 )}
                 {upcomingFiltered.length === 0 ? (
@@ -834,7 +731,6 @@ export default function BookingsPage() {
               onConcierge={() => assistant?.open(undefined, undefined, { autoListen: false })}
               onParty={() => navigate("/account")}
             />
-            <LoyaltyCard meals={pastCompleted.length} />
           </aside>
         </div>
       </main>

@@ -49,6 +49,10 @@ function n2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
+function normalizeEmail(email?: string | null): string | null {
+  return typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
+}
+
 async function getRestaurantTurnTimeMinutes(restaurantId: string, shiftId?: string | null): Promise<number> {
   const { data } = await supabaseAdmin.rpc("restaurant_turn_time_minutes", {
     p_restaurant_id: restaurantId,
@@ -102,18 +106,36 @@ export async function completeBooking(
     .eq("id", user_profile_id)
     .single();
 
-  // Find or create guest record for this restaurant
-  const { data: existingGuest } = await supabaseAdmin
-    .from("guests")
-    .select("id")
-    .eq("restaurant_id", restaurant_id)
-    .eq("user_profile_id", user_profile_id)
-    .maybeSingle();
+  const resolvedEmail = normalizeEmail(guest_email ?? userProfile?.email ?? null);
+  const resolvedPhone = guest_phone ?? userProfile?.phone ?? "";
+
+  const { data: canonicalGuestId, error: canonicalGuestErr } = await supabaseAdmin.rpc("canonical_guest_id", {
+    p_restaurant_id: restaurant_id,
+    p_user_profile_id: user_profile_id,
+    p_email: resolvedEmail,
+    p_phone: resolvedPhone,
+  });
+  if (canonicalGuestErr) {
+    return {
+      success: false,
+      confirmation_code: "",
+      order_type,
+      reservation_id: null,
+      order_id: null,
+      guest_id: null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: "CAD",
+      checkout_url: null,
+      error: `Guest lookup failed: ${canonicalGuestErr.message}`,
+    };
+  }
 
   const guestFields = {
     full_name: guest_name ?? userProfile?.full_name ?? "Guest",
-    email: guest_email ?? userProfile?.email ?? "",
-    phone: guest_phone ?? userProfile?.phone ?? "",
+    email: resolvedEmail ?? "",
+    phone: resolvedPhone,
     ...(userProfile?.dietary_restrictions?.length
       ? { dietary_restrictions: userProfile.dietary_restrictions }
       : {}),
@@ -126,7 +148,7 @@ export async function completeBooking(
       : {}),
   };
 
-  let guestId = existingGuest?.id as string | undefined;
+  let guestId = typeof canonicalGuestId === "string" ? canonicalGuestId : undefined;
   if (!guestId) {
     const { data: newGuest, error: guestErr } = await supabaseAdmin
       .from("guests")

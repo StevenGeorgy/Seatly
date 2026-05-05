@@ -46,6 +46,7 @@ import {
   getStaffRoleSet,
 } from "@/lib/auth/dashboard-access";
 import { cn } from "@/lib/utils";
+import { formatCompactTimeLabel } from "@/lib/utils/time";
 import type { StaffRole } from "@/types/auth";
 
 function RestaurantLogoBadge({
@@ -162,8 +163,6 @@ export function DashboardSidebar() {
     ? ({
         id: selectedRestaurant.id,
         name: publicRestaurant?.name ?? selectedRestaurant.name ?? selectedRestaurant.slug,
-        reviews: publicRestaurant?.total_reviews ?? 0,
-        rating: publicRestaurant?.avg_rating ?? 0,
         cuisine: publicRestaurant?.cuisine_type ?? "",
         price: restaurantPriceLabelFromRange(publicRestaurant?.price_range),
         area: publicRestaurant?.city ?? publicRestaurant?.address ?? "",
@@ -335,7 +334,9 @@ export function DashboardSidebar() {
                         isActive ? "text-gold" : "text-text-muted group-hover:text-text-secondary",
                       )}
                     />
-                    <span className="truncate">{t(item.labelKey)}</span>
+                    <span className="truncate">
+                      {item.path === "/dashboard/orders" ? t("dashboard.orders.preordersTitle") : t(item.labelKey)}
+                    </span>
                   </>
                 )}
               </NavLink>
@@ -548,13 +549,15 @@ export function DashboardSidebar() {
         currencyCode={selectedRestaurant?.currency ?? "cad"}
         onClose={() => setPreviewOpen(false)}
         onToggleFavorite={() => setPreviewFavorite((value) => !value)}
-        onReserve={(slot) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
           if (!selectedRestaurant) return;
           const publicPath = `/${selectedRestaurant.slug ?? selectedRestaurant.id}`;
+          const shiftQuery = shiftId ? `&shift_id=${encodeURIComponent(shiftId)}` : "";
+          const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
           const query =
             slot === "waitlist"
               ? "back=dashboard"
-              : `slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(slot)}&people=2&back=dashboard`;
+              : `slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(timeParam)}&people=${selectedPartySize}${shiftQuery}&back=dashboard`;
           setPreviewOpen(false);
           void navigate(`${publicPath}?${query}`);
         }}

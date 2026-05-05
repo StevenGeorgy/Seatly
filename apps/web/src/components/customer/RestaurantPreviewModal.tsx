@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
+import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import {
   Bookmark,
   CalendarDays,
@@ -11,15 +12,18 @@ import {
   MapPin,
   MessageCircle,
   Sparkles,
-  Star,
   Utensils,
   Users,
   X,
 } from "lucide-react";
 
+import { Calendar } from "@/components/ui/calendar";
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
+import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
+import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
-import { useAvailability } from "@/hooks/useAvailability";
+import { fetchAvailabilitySlots, useAvailability } from "@/hooks/useAvailability";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useRestaurant } from "@/hooks/useRestaurant";
@@ -28,17 +32,15 @@ import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 import {
-  deriveRestaurantPriceLevel,
-  restaurantPriceLabelFromLevel,
+  deriveRestaurantPriceLevelFromMenu,
   restaurantPriceLevelFromLabel,
 } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
 export type RestaurantPreviewSummary = {
   id: string;
+  slug?: string;
   name: string;
-  reviews: number;
-  rating: number;
   cuisine: string;
   price: string;
   area: string;
@@ -47,7 +49,7 @@ export type RestaurantPreviewSummary = {
   initials: string;
   badge: string;
   city: string;
-  distanceKm: number;
+  distanceKm?: number;
   features: string[];
   dietaryTags?: RestaurantDietaryTag[];
   logoUrl?: string | null;
@@ -60,10 +62,12 @@ type RestaurantPreviewModalProps = {
   restaurant: RestaurantPreviewSummary | null;
   favorite: boolean;
   partySize: string;
+  bookingDate?: string;
+  preferredTime?: string;
   currencyCode?: string;
   onClose: () => void;
   onToggleFavorite: () => void;
-  onReserve: (slot: string) => void;
+  onReserve: (slot: string, partySize: string, shiftId?: string, displayTime?: string) => void;
 };
 
 const TABS: { id: PreviewTab; label: string }[] = [
@@ -89,12 +93,8 @@ function todayDateValue(): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function todayDisplayValue(): string {
-  return new Date().toLocaleDateString("en-CA", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
+function isUuid(value: string | null | undefined): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value ?? "");
 }
 
 function uniqueValues(values: Array<string | null | undefined>): string[] {
@@ -106,6 +106,80 @@ function uniqueValues(values: Array<string | null | undefined>): string[] {
 
 function shortTime(time: string): string {
   return formatCompactTimeLabel(time);
+}
+
+function dateKey(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+function SeatWheel({
+  maxSeats,
+  value,
+  onCommit,
+}: {
+  maxSeats: number;
+  value: number;
+  onCommit: (value: number) => void;
+}) {
+  const seats = useMemo(() => Array.from({ length: Math.max(1, maxSeats) }, (_, index) => index + 1), [maxSeats]);
+  const [draftValue, setDraftValue] = useState(value);
+  const scrollToSeat = (seat: number) => {
+    setDraftValue(Math.min(Math.max(1, seat), maxSeats));
+  };
+  const commitSeat = (seat: number) => {
+    onCommit(Math.min(Math.max(1, seat), maxSeats));
+  };
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setDraftValue(value));
+  }, [value]);
+
+  return (
+    <div>
+      <div
+        role="listbox"
+        aria-label="Party size"
+        tabIndex={0}
+        onWheel={(event) => {
+          event.preventDefault();
+          if (Math.abs(event.deltaY) < 4) return;
+          scrollToSeat(draftValue + (event.deltaY > 0 ? 1 : -1));
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") scrollToSeat(draftValue + 1);
+          if (event.key === "ArrowUp") scrollToSeat(draftValue - 1);
+          if (event.key === "Enter") commitSeat(draftValue);
+        }}
+        className="max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-base p-2 outline-none [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-gold/40"
+      >
+        {seats.map((seat) => {
+          const active = seat === draftValue;
+          return (
+            <button
+              key={seat}
+              type="button"
+              role="option"
+              aria-selected={active}
+              onClick={() => commitSeat(seat)}
+              className={cn(
+                "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",
+                active ? "bg-gold text-bg-base" : "text-text-secondary hover:bg-bg-elevated hover:text-white",
+              )}
+            >
+              {seat} seat{seat === 1 ? "" : "s"}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => commitSeat(draftValue)}
+        className="mt-2 h-10 w-full rounded-xl bg-gold text-sm font-semibold text-bg-base transition-opacity hover:opacity-90"
+      >
+        Select {draftValue} guest{draftValue === 1 ? "" : "s"}
+      </button>
+    </div>
+  );
 }
 
 function StripeArt({
@@ -135,21 +209,12 @@ function StripeArt({
   );
 }
 
-function Stars({ rating }: { rating: number }) {
-  const full = Math.round(rating);
-  return (
-    <span className="inline-flex items-center gap-0.5 text-gold">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <Star key={i} className={cn("size-3", i < full ? "fill-gold" : "text-text-muted")} />
-      ))}
-    </span>
-  );
-}
-
 export function RestaurantPreviewModal({
   restaurant,
   favorite,
   partySize,
+  bookingDate,
+  preferredTime,
   currencyCode = "cad",
   onClose,
   onToggleFavorite,
@@ -164,26 +229,85 @@ export function RestaurantPreviewModal({
     restaurantId: null,
     time: "",
   });
+  const [bookingState, setBookingState] = useState<{
+    restaurantId: string | null;
+    date: string;
+    partySize: number;
+  }>({
+    restaurantId: null,
+    date: "",
+    partySize: 2,
+  });
+  const bookingDateTriggerId = useId();
+  const [bookingDatePopoverOpen, setBookingDatePopoverOpen] = useState(false);
+  const [partyPopoverOpen, setPartyPopoverOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const parsedDate = parse(bookingDate ?? todayDateValue(), "yyyy-MM-dd", new Date());
+    return isValid(parsedDate) ? parsedDate : new Date();
+  });
+  const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
+  const [dateAvailabilityLoading, setDateAvailabilityLoading] = useState(false);
 
+  const previewRestaurantKey = restaurant?.slug ?? restaurant?.id;
+  const { restaurant: restaurantDetails } = useRestaurant(previewRestaurantKey);
+  const matchedRestaurantDetails =
+    restaurantDetails
+    && restaurant
+    && (
+      restaurantDetails.id === restaurant.id
+      || restaurantDetails.slug === restaurant.id
+      || restaurantDetails.slug === restaurant.slug
+    )
+      ? restaurantDetails
+      : null;
+  const resolvedRestaurantId = matchedRestaurantDetails?.id ?? (isUuid(restaurant?.id) ? restaurant?.id ?? null : null);
   const activeTab =
     restaurant && tabState.restaurantId === restaurant.id ? tabState.tab : "menu";
-  const previewDate = todayDateValue();
-  const previewDateLabel = todayDisplayValue();
-  const { restaurant: restaurantDetails } = useRestaurant(restaurant?.id);
-  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
-  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
+  const fallbackPreviewDate = bookingDate ?? todayDateValue();
+  const fallbackPartySize = Math.max(1, Number.parseInt(partySize, 10) || 2);
+  const previewDate =
+    restaurant && bookingState.restaurantId === restaurant.id && bookingState.date
+      ? bookingState.date
+      : fallbackPreviewDate;
+  const selectedPartySize =
+    restaurant && bookingState.restaurantId === restaurant.id
+      ? bookingState.partySize
+      : fallbackPartySize;
+  const previewDateLabel = new Date(`${previewDate}T12:00:00`).toLocaleDateString("en-CA", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  const previewCalendarDay = useMemo(() => {
+    const parsedDate = parse(previewDate, "yyyy-MM-dd", new Date());
+    return isValid(parsedDate) ? parsedDate : undefined;
+  }, [previewDate]);
+  const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId);
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId);
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
   const {
     slots: availabilitySlots,
     loading: availabilityLoading,
     fetchSlots,
     clearSlots,
+    floorCapacity,
   } = useAvailability();
+  const maxPreviewPartySize = Math.max(1, floorCapacity ?? 50);
+  const unavailableDate = (date: Date) => {
+    if (date < startOfToday()) return true;
+    if (dateAvailabilityLoading) return false;
+    return !availableDateKeys.has(dateKey(date));
+  };
 
-  const availableTimes = useMemo(() => {
-    const liveSlots = availabilitySlots.map((slot) => slot.display_time);
-    return Array.from(new Set(liveSlots)).slice(0, 6);
+  const availableSlots = useMemo(() => {
+    const seen = new Set<string>();
+    return availabilitySlots.filter((slot) => {
+      if (seen.has(slot.display_time)) return false;
+      seen.add(slot.display_time);
+      return true;
+    });
   }, [availabilitySlots]);
+  const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
 
   const selectedTime =
     restaurant && timeState.restaurantId === restaurant.id
@@ -191,43 +315,45 @@ export function RestaurantPreviewModal({
       : availableTimes[0] ?? "";
 
   const restaurantEvents = useMemo(
-    () => activeEvents.filter((event) => event.restaurant_id === restaurant?.id),
-    [activeEvents, restaurant?.id],
+    () => activeEvents.filter((event) => event.restaurant_id === resolvedRestaurantId),
+    [activeEvents, resolvedRestaurantId],
   );
   const dietaryTags = normalizeRestaurantDietaryTags(
-    restaurantDetails?.settings_json?.dietaryTags ?? restaurant?.dietaryTags,
+    matchedRestaurantDetails?.settings_json?.dietaryTags ?? restaurant?.dietaryTags,
   );
 
-  const previewMenuItems = useMemo<PreviewMenuItem[]>(() => (
-    dbMenuItems.map((item) => ({
-      id: item.id,
-      category: item.category ?? dbCategories.find((category) => category.id === item.category_id)?.name ?? "Other",
-      name: item.name,
-      description: item.description ?? "",
-      price: item.price,
-      badge: item.is_featured ? "Popular" : null,
-      imageUrl: item.photo_url,
-    }))
-  ), [dbCategories, dbMenuItems]);
+  const previewMenuItems = useMemo<PreviewMenuItem[]>(() => {
+    const activeCategoriesById = new Map(dbCategories.map((category) => [category.id, category]));
+    return dbMenuItems.flatMap((item) => {
+      const category = item.category_id ? activeCategoriesById.get(item.category_id) : null;
+      if (!category) return [];
+      return [{
+        id: item.id,
+        category: category.name,
+        name: item.name,
+        description: item.description ?? "",
+        price: item.price,
+        badge: item.is_featured ? "Popular" : null,
+        imageUrl: item.photo_url,
+      }];
+    });
+  }, [dbCategories, dbMenuItems]);
 
   const priceLevel = useMemo(
-    () => deriveRestaurantPriceLevel(
-      dbMenuItems,
-      restaurantDetails?.price_range ?? restaurantPriceLevelFromLabel(restaurant?.price),
-    ),
-    [dbMenuItems, restaurant?.price, restaurantDetails?.price_range],
+    () => deriveRestaurantPriceLevelFromMenu(previewMenuItems),
+    [previewMenuItems],
   );
-  const priceLabel = restaurantPriceLabelFromLevel(priceLevel);
+  const eventPriceLevel = priceLevel ?? restaurantPriceLevelFromLabel(restaurant?.price);
 
   const restaurantDisplay = useMemo<RestaurantDisplayInfo>(() => ({
-    name: restaurantDetails?.name ?? restaurant?.name ?? "",
-    slug: restaurantDetails?.slug ?? null,
-    cuisine_type: restaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
-    avg_rating: restaurantDetails?.avg_rating ?? restaurant?.rating ?? null,
-    cover_photo_url: restaurantDetails?.cover_photo_url ?? null,
-    city: restaurantDetails?.city ?? restaurant?.city ?? null,
-    price_range: priceLevel,
-  }), [priceLevel, restaurant, restaurantDetails]);
+    name: matchedRestaurantDetails?.name ?? restaurant?.name ?? "",
+    slug: matchedRestaurantDetails?.slug ?? null,
+    cuisine_type: matchedRestaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
+    avg_rating: null,
+    cover_photo_url: matchedRestaurantDetails?.cover_photo_url ?? null,
+    city: matchedRestaurantDetails?.city ?? restaurant?.city ?? null,
+    price_range: eventPriceLevel,
+  }), [eventPriceLevel, restaurant, matchedRestaurantDetails]);
 
   const hasSavedMenu = previewMenuItems.length > 0;
 
@@ -252,8 +378,8 @@ export function RestaurantPreviewModal({
       .filter((section) => section.items.length > 0);
   }, [dbCategories, hasSavedMenu, previewMenuItems]);
 
-  const logoUrl = restaurantDetails?.logo_url ?? restaurant?.logoUrl ?? null;
-  const coverPhotoUrl = restaurantDetails?.cover_photo_url ?? restaurant?.coverPhotoUrl ?? null;
+  const logoUrl = matchedRestaurantDetails?.logo_url ?? restaurant?.logoUrl ?? null;
+  const coverPhotoUrl = matchedRestaurantDetails?.cover_photo_url ?? restaurant?.coverPhotoUrl ?? null;
 
   const photoSources = useMemo(
     () => uniqueValues([
@@ -271,26 +397,25 @@ export function RestaurantPreviewModal({
   );
 
   const hoursRows = useMemo(
-    () => formatRestaurantHoursRows(restaurantDetails?.hours_json),
-    [restaurantDetails?.hours_json],
+    () => formatRestaurantHoursRows(matchedRestaurantDetails?.hours_json),
+    [matchedRestaurantDetails?.hours_json],
   );
   const detailTags = uniqueValues([
-    restaurantDetails?.cuisine_type,
-    restaurantDetails?.business_type,
+    matchedRestaurantDetails?.cuisine_type,
+    matchedRestaurantDetails?.business_type,
     ...(restaurant?.features ?? []),
   ]);
   const aboutText =
-    restaurantDetails?.description
+    matchedRestaurantDetails?.description
     ?? null;
   const headerBadges = uniqueValues([
-    restaurantDetails?.business_type,
+    matchedRestaurantDetails?.business_type,
     restaurant?.badge,
     ...((restaurant?.features ?? []).slice(0, 2)),
   ]);
   const headerMeta = uniqueValues([
-    restaurantDetails?.cuisine_type ?? restaurant?.cuisine,
-    priceLabel,
-    restaurantDetails?.city ?? restaurant?.area,
+    matchedRestaurantDetails?.cuisine_type ?? restaurant?.cuisine,
+    matchedRestaurantDetails?.city ?? restaurant?.area,
   ]);
 
   const setRestaurantTab = (tab: PreviewTab) => {
@@ -299,6 +424,29 @@ export function RestaurantPreviewModal({
 
   const setRestaurantTime = (time: string) => {
     setTimeState({ restaurantId: restaurant?.id ?? null, time });
+  };
+
+  const setRestaurantDate = (date: string) => {
+    setBookingState({
+      restaurantId: restaurant?.id ?? null,
+      date,
+      partySize: selectedPartySize,
+    });
+  };
+
+  const setRestaurantPartySize = (party: number) => {
+    const clamped = Math.min(Math.max(1, party), maxPreviewPartySize);
+    setBookingState({
+      restaurantId: restaurant?.id ?? null,
+      date: previewDate,
+      partySize: clamped,
+    });
+  };
+
+  const reserveSelectedSlot = () => {
+    const slot = availableSlots.find((availableSlot) => availableSlot.display_time === selectedTime);
+    if (!slot) return;
+    onReserve(slot.date_time, String(selectedPartySize), slot.shift_id, formatCompactTimeLabel(slot.display_time));
   };
 
   useEffect(() => {
@@ -310,17 +458,65 @@ export function RestaurantPreviewModal({
     void fetchSlots(
       restaurant.id,
       previewDate,
-      Number.parseInt(partySize, 10) || 2,
+      selectedPartySize,
     );
-  }, [clearSlots, fetchSlots, partySize, previewDate, restaurant]);
+  }, [clearSlots, fetchSlots, previewDate, restaurant, selectedPartySize]);
 
   useEffect(() => {
+    if (!restaurant) return;
+    let cancelled = false;
+    const monthStart = startOfMonth(calendarMonth);
+    const monthEnd = endOfMonth(calendarMonth);
+    const days: string[] = [];
+    for (let cursor = monthStart; cursor <= monthEnd; cursor = addDays(cursor, 1)) {
+      if (cursor >= startOfToday()) days.push(dateKey(cursor));
+    }
+
+    void Promise.resolve().then(() => {
+      if (!cancelled) setDateAvailabilityLoading(true);
+    });
+    void Promise.all(
+      days.map(async (day) => {
+        const result = await fetchAvailabilitySlots(restaurant.id, day, selectedPartySize);
+        return result.slots.length > 0 ? day : null;
+      }),
+    )
+      .then((availableDays) => {
+        if (!cancelled) {
+          setAvailableDateKeys(new Set(availableDays.filter((day): day is string => Boolean(day))));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableDateKeys(new Set());
+      })
+      .finally(() => {
+        if (!cancelled) setDateAvailabilityLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [calendarMonth, restaurant, selectedPartySize]);
+
+  useEffect(() => {
+    if (!restaurant || availabilityLoading) return;
+    if (availableTimes.length === 0) {
+      if (timeState.restaurantId === restaurant.id && timeState.time) {
+        void Promise.resolve().then(() => {
+          setTimeState({ restaurantId: restaurant.id, time: "" });
+        });
+      }
+      return;
+    }
     if (!restaurant || availableTimes.length === 0) return;
     if (timeState.restaurantId === restaurant.id && availableTimes.includes(timeState.time)) return;
     void Promise.resolve().then(() => {
-      setTimeState({ restaurantId: restaurant.id, time: availableTimes[0] });
+      setTimeState({
+        restaurantId: restaurant.id,
+        time: preferredTime && availableTimes.includes(preferredTime) ? preferredTime : availableTimes[0],
+      });
     });
-  }, [availableTimes, restaurant, timeState.restaurantId, timeState.time]);
+  }, [availabilityLoading, availableTimes, preferredTime, restaurant, timeState.restaurantId, timeState.time]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -360,7 +556,7 @@ export function RestaurantPreviewModal({
             transition={{ duration: 0.24 }}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="relative h-44 overflow-hidden border-b border-border bg-bg-elevated">
+            <div className="relative h-60 overflow-hidden border-b border-border bg-bg-elevated">
               <StripeArt
                 label={restaurant.initials}
                 imageUrl={coverPhotoUrl}
@@ -416,22 +612,19 @@ export function RestaurantPreviewModal({
                       {restaurant.name}
                     </h2>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary">
+                      <RestaurantPriceMeter level={priceLevel} />
                       {headerMeta.map((meta) => (
-                        <span key={meta} className={meta === priceLabel ? "text-gold" : undefined}>
-                          {meta}
-                        </span>
+                        <span key={meta}>{meta}</span>
                       ))}
-                      <span className="inline-flex items-center gap-1">
-                        <Star className="size-3 fill-gold text-gold" />
-                        {restaurant.reviews > 0
-                          ? `${restaurant.rating.toFixed(1)} · ${restaurant.reviews.toLocaleString()} reviews`
-                          : "No reviews yet"}
-                      </span>
                     </div>
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <RestaurantSocialLinks
+                      settingsJson={matchedRestaurantDetails?.settings_json}
+                      websiteFallback={matchedRestaurantDetails?.website}
+                    />
                     <button
                       type="button"
                       onClick={onToggleFavorite}
@@ -600,24 +793,9 @@ export function RestaurantPreviewModal({
                     {activeTab === "reviews" && (
                       <div className="space-y-4">
                         <section className="rounded-2xl border border-border bg-bg-surface p-4">
-                          {restaurant.reviews > 0 ? (
-                            <div className="grid gap-5 sm:grid-cols-[160px_1fr]">
-                              <div>
-                                <p className="font-serif text-5xl text-gold">{restaurant.rating.toFixed(1)}</p>
-                                <Stars rating={restaurant.rating} />
-                                <p className="mt-1 text-xs text-text-muted">
-                                  {restaurant.reviews.toLocaleString()} reviews
-                                </p>
-                              </div>
-                              <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-4 text-sm leading-relaxed text-text-secondary">
-                                Guest review details have not been added yet.
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
-                              No public reviews have been recorded for this restaurant yet.
-                            </div>
-                          )}
+                          <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                            No public reviews have been recorded for this restaurant yet.
+                          </div>
                         </section>
                       </div>
                     )}
@@ -635,8 +813,8 @@ export function RestaurantPreviewModal({
                               No public description has been added yet.
                             </div>
                           )}
-                          {restaurantDetails?.website && (
-                            <p className="mt-3 text-xs text-text-muted">{restaurantDetails.website}</p>
+                          {matchedRestaurantDetails?.website && (
+                            <p className="mt-3 text-xs text-text-muted">{matchedRestaurantDetails.website}</p>
                           )}
                         </section>
                         <div className="grid gap-4 sm:grid-cols-2">
@@ -658,17 +836,17 @@ export function RestaurantPreviewModal({
                               Details
                             </h4>
                             <div className="mt-4 space-y-2 text-xs text-text-secondary">
-                              {(restaurantDetails?.address || restaurant.area) && (
-                                <p className="inline-flex items-center gap-2">
-                                  <MapPin className="size-3 text-gold" /> {restaurantDetails?.address ?? restaurant.area}
+                              {(matchedRestaurantDetails?.address || restaurant.area) && (
+                                <p className="flex items-center gap-2">
+                                  <MapPin className="size-3 text-gold" /> {matchedRestaurantDetails?.address ?? restaurant.area}
                                 </p>
                               )}
-                              <p className="inline-flex items-center gap-2">
-                                <Clock className="size-3 text-gold" /> {restaurantDetails?.timezone ?? "Timezone not set"}
+                              <p className="flex items-center gap-2">
+                                <Clock className="size-3 text-gold" /> {matchedRestaurantDetails?.timezone ?? "Timezone not set"}
                               </p>
-                              {restaurantDetails?.phone && (
-                                <p className="inline-flex items-center gap-2">
-                                  <Sparkles className="size-3 text-gold" /> {restaurantDetails.phone}
+                              {matchedRestaurantDetails?.phone && (
+                                <p className="flex items-center gap-2">
+                                  <Sparkles className="size-3 text-gold" /> {matchedRestaurantDetails.phone}
                                 </p>
                               )}
                             </div>
@@ -699,7 +877,7 @@ export function RestaurantPreviewModal({
                               <EventPromotionDetailCard
                                 key={event.id}
                                 item={event}
-                                onReserve={() => selectedTime && onReserve(selectedTime)}
+                                onReserve={reserveSelectedSlot}
                                 className="shadow-none"
                               />
                             ))}
@@ -718,16 +896,69 @@ export function RestaurantPreviewModal({
                   <div className="rounded-2xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/30">
                     <h3 className="font-serif text-xl text-white">Reserve a table</h3>
                     <div className="mt-4 grid grid-cols-2 gap-2">
-                      <div className="rounded-xl bg-bg-elevated p-3">
-                        <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-                        <p className="mt-1 text-sm text-white">{previewDateLabel}</p>
-                      </div>
-                      <div className="rounded-xl bg-bg-elevated p-3">
-                        <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
-                        <p className="mt-1 text-sm text-white">
-                          {partySize} guest{partySize === "1" ? "" : "s"}
-                        </p>
-                      </div>
+                      <Popover open={bookingDatePopoverOpen} onOpenChange={setBookingDatePopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            id={bookingDateTriggerId}
+                            type="button"
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                          >
+                            <CalendarDays className="size-4 text-gold" />
+                            <span>
+                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
+                              <p className="mt-1 text-sm text-white">{previewDateLabel}</p>
+                            </span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="start"
+                          className="z-[90] w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
+                        >
+                          <Calendar
+                            mode="single"
+                            required={false}
+                            selected={previewCalendarDay}
+                            month={calendarMonth}
+                            onMonthChange={setCalendarMonth}
+                            onSelect={(date) => {
+                              if (!date) return;
+                              setRestaurantDate(format(date, "yyyy-MM-dd"));
+                              setBookingDatePopoverOpen(false);
+                            }}
+                            disabled={unavailableDate}
+                            className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      <Popover open={partyPopoverOpen} onOpenChange={setPartyPopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                          >
+                            <Users className="size-4 text-gold" />
+                            <span>
+                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
+                              <p className="mt-1 text-sm text-white">
+                                {selectedPartySize} guest{selectedPartySize === 1 ? "" : "s"}
+                              </p>
+                            </span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="start"
+                          className="z-[90] w-48 border-border bg-bg-elevated p-2 text-text-primary shadow-2xl"
+                        >
+                          <SeatWheel
+                            maxSeats={maxPreviewPartySize}
+                            value={selectedPartySize}
+                            onCommit={(party) => {
+                              setRestaurantPartySize(party);
+                              setPartyPopoverOpen(false);
+                            }}
+                          />
+                        </PopoverContent>
+                      </Popover>
                     </div>
 
                     <p className="mt-5 font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
@@ -753,13 +984,13 @@ export function RestaurantPreviewModal({
                       </div>
                     ) : (
                       <div className="mt-3 rounded-xl bg-bg-elevated p-3 text-xs text-text-muted">
-                        {availabilityLoading ? "Checking availability..." : "No available times for this date."}
+                        {availabilityLoading ? "Checking availability..." : "Unavailable for this date and party size."}
                       </div>
                     )}
 
                     <button
                       type="button"
-                      onClick={() => selectedTime && onReserve(selectedTime)}
+                      onClick={reserveSelectedSlot}
                       disabled={!selectedTime}
                       className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -767,39 +998,22 @@ export function RestaurantPreviewModal({
                       <CalendarDays className="size-4" />
                     </button>
 
-                    <div className="mt-5 space-y-2 border-t border-border pt-4 text-xs text-text-secondary">
-                      <p className="flex justify-between">
-                        <span>Cancellation</span>
-                        <span className="text-white">
-                          {restaurantDetails?.cancellation_hours
-                            ? `${restaurantDetails.cancellation_hours}h notice`
-                            : "Set by restaurant"}
-                        </span>
-                      </p>
-                      {restaurantDetails?.no_show_fee != null && (
-                        <p className="flex justify-between">
-                          <span>No-show fee</span>
-                          <span className="text-white">{formatCurrency(restaurantDetails.no_show_fee, currencyCode)}</span>
-                        </p>
-                      )}
-                    </div>
-
                     <p className="mt-5 flex gap-2 text-[11px] leading-relaxed text-text-muted">
                       <Info className="mt-0.5 size-3.5 shrink-0 text-gold" />
                       Availability is calculated from this restaurant's saved tables, reservations, and booking rules.
                     </p>
                   </div>
 
-                  <div className="mt-3 rounded-2xl border border-border bg-bg-surface/70 p-4 text-xs text-text-secondary">
-                    <p className="inline-flex items-center gap-2">
+                  <div className="mt-3 space-y-2 rounded-2xl border border-border bg-bg-surface/70 p-4 text-xs text-text-secondary">
+                    <p className="flex items-center gap-2">
                       <Utensils className="size-3.5 text-gold" />
                       {restaurant.bookedToday} booking{restaurant.bookedToday === 1 ? "" : "s"} created today
                     </p>
-                    <p className="mt-2 inline-flex items-center gap-2">
+                    <p className="flex items-center gap-2">
                       <MessageCircle className="size-3.5 text-gold" />
-                      {restaurantDetails?.accepts_walkins === false ? "Reservations only" : "Walk-ins accepted when available"}
+                      {matchedRestaurantDetails?.accepts_walkins === false ? "Reservations only" : "Walk-ins accepted when available"}
                     </p>
-                    <p className="mt-2 inline-flex items-center gap-2">
+                    <p className="flex items-center gap-2">
                       <Users className="size-3.5 text-gold" />
                       Party size uses live availability
                     </p>

@@ -13,10 +13,18 @@ export type RestaurantTheme = {
   backgroundColor?: string;
 };
 
+export type RestaurantBusinessProfile = {
+  legalName?: string | null;
+  websiteUrl?: string | null;
+  instagramUrl?: string | null;
+  facebookUrl?: string | null;
+};
+
 export type RestaurantSettings = {
   theme?: RestaurantTheme;
   turnTimeMinutes?: number;
   dietaryTags?: RestaurantDietaryTag[];
+  businessProfile?: RestaurantBusinessProfile;
 };
 
 export type StaffRestaurantRow = {
@@ -25,11 +33,17 @@ export type StaffRestaurantRow = {
   slug: string;
   logo_url: string | null;
   cover_photo_url: string | null;
+  email: string | null;
+  city: string | null;
+  province: string | null;
+  country: string | null;
+  business_type: string | null;
   currency: string;
   timezone: string;
   hours_json: Record<string, unknown> | null;
   settings_json: RestaurantSettings | null;
   has_bar: boolean;
+  accepts_walkins: boolean | null;
 };
 
 /**
@@ -73,7 +87,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         const client = getSupabaseBrowserClient();
         const query = client
           .from("restaurants")
-          .select("id, name, slug, logo_url, cover_photo_url, currency, timezone, hours_json, settings_json, has_bar")
+          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins")
           .in("id", ids);
         const { data, error: qErr } = await promiseWithTimeout(
           Promise.resolve(query) as Promise<{

@@ -24,8 +24,10 @@ export function useRestaurantPreviewStats(restaurantId: string | null | undefine
 
   useEffect(() => {
     if (!restaurantId || !isSupabaseConfigured()) {
-      setStats(EMPTY_STATS);
-      setLoading(false);
+      void Promise.resolve().then(() => {
+        setStats(EMPTY_STATS);
+        setLoading(false);
+      });
       return;
     }
 
@@ -39,8 +41,8 @@ export function useRestaurantPreviewStats(restaurantId: string | null | undefine
         .from("reservations")
         .select("id", { count: "exact", head: true })
         .eq("restaurant_id", restaurantId)
-        .gte("reserved_at", from)
-        .lte("reserved_at", to);
+        .gte("created_at", from)
+        .lte("created_at", to);
 
       if (cancelled) return;
       setStats({ bookedToday: count ?? 0 });
@@ -53,4 +55,56 @@ export function useRestaurantPreviewStats(restaurantId: string | null | undefine
   }, [restaurantId]);
 
   return { stats, loading };
+}
+
+export function useRestaurantPreviewStatsByRestaurantIds(restaurantIds: string[]) {
+  const [statsByRestaurantId, setStatsByRestaurantId] = useState<Record<string, RestaurantPreviewStats>>({});
+  const [loading, setLoading] = useState(true);
+  const restaurantKey = restaurantIds.filter(Boolean).sort().join("|");
+
+  useEffect(() => {
+    const ids = restaurantKey ? restaurantKey.split("|") : [];
+    if (ids.length === 0 || !isSupabaseConfigured()) {
+      void Promise.resolve().then(() => {
+        setStatsByRestaurantId({});
+        setLoading(false);
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const { from, to } = todayRange();
+
+    void (async () => {
+      setLoading(true);
+      const client = getSupabaseBrowserClient();
+      const { data } = await client
+        .from("reservations")
+        .select("restaurant_id")
+        .in("restaurant_id", ids)
+        .gte("created_at", from)
+        .lte("created_at", to);
+
+      if (cancelled) return;
+      const nextStats = ids.reduce<Record<string, RestaurantPreviewStats>>((acc, id) => {
+        acc[id] = { bookedToday: 0 };
+        return acc;
+      }, {});
+      (data ?? []).forEach((row) => {
+        const restaurantId = (row as { restaurant_id?: unknown }).restaurant_id;
+        if (typeof restaurantId !== "string") return;
+        nextStats[restaurantId] = {
+          bookedToday: (nextStats[restaurantId]?.bookedToday ?? 0) + 1,
+        };
+      });
+      setStatsByRestaurantId(nextStats);
+      setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantKey]);
+
+  return { statsByRestaurantId, loading };
 }

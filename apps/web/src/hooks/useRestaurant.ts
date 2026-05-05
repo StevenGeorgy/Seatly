@@ -44,12 +44,36 @@ export type Restaurant = {
 
 type RestaurantPriceItemRow = RestaurantPriceMenuItem & {
   restaurant_id: string;
+  category_id: string | null;
 };
 
-function applyDerivedPriceLevels(restaurants: Restaurant[], menuItems: RestaurantPriceItemRow[]): Restaurant[] {
+type RestaurantPriceCategoryRow = {
+  id: string;
+  restaurant_id: string;
+  name: string;
+};
+
+function itemsWithActiveCategoryNames(
+  menuItems: RestaurantPriceItemRow[],
+  categories: RestaurantPriceCategoryRow[],
+): RestaurantPriceItemRow[] {
+  const categoriesById = new Map(categories.map((category) => [category.id, category]));
+  return menuItems.flatMap((item) => {
+    const category = item.category_id ? categoriesById.get(item.category_id) : null;
+    if (!category || category.restaurant_id !== item.restaurant_id) return [];
+    return [{ ...item, category: category.name }];
+  });
+}
+
+function applyDerivedPriceLevels(
+  restaurants: Restaurant[],
+  menuItems: RestaurantPriceItemRow[],
+  categories: RestaurantPriceCategoryRow[],
+): Restaurant[] {
   if (restaurants.length === 0) return restaurants;
 
-  const itemsByRestaurant = menuItems.reduce<Map<string, RestaurantPriceItemRow[]>>((map, item) => {
+  const categorizedItems = itemsWithActiveCategoryNames(menuItems, categories);
+  const itemsByRestaurant = categorizedItems.reduce<Map<string, RestaurantPriceItemRow[]>>((map, item) => {
     const existing = map.get(item.restaurant_id) ?? [];
     existing.push(item);
     map.set(item.restaurant_id, existing);
@@ -96,13 +120,24 @@ export function usePublicRestaurants() {
 
       const { data: menuData } = await client
         .from("menu_items")
-        .select("restaurant_id, name, category, price, is_active, is_available")
+        .select("restaurant_id, category_id, name, category, price, is_active, is_available")
         .in("restaurant_id", rows.map((restaurant) => restaurant.id))
         .eq("is_active", true)
-        .eq("is_available", true);
+        .eq("is_available", true)
+        .not("category_id", "is", null);
+
+      const { data: categoryData } = await client
+        .from("menu_categories")
+        .select("id, restaurant_id, name")
+        .in("restaurant_id", rows.map((restaurant) => restaurant.id))
+        .eq("is_active", true);
 
       if (cancelled) return;
-      setRestaurants(applyDerivedPriceLevels(rows, (menuData ?? []) as RestaurantPriceItemRow[]));
+      setRestaurants(applyDerivedPriceLevels(
+        rows,
+        (menuData ?? []) as RestaurantPriceItemRow[],
+        (categoryData ?? []) as RestaurantPriceCategoryRow[],
+      ));
       setLoading(false);
     })();
 
@@ -155,13 +190,24 @@ export function useRestaurant(slugOrId?: string) {
         const row = data as Restaurant;
         const { data: menuData } = await client
           .from("menu_items")
-          .select("restaurant_id, name, category, price, is_active, is_available")
+          .select("restaurant_id, category_id, name, category, price, is_active, is_available")
           .eq("restaurant_id", row.id)
           .eq("is_active", true)
-          .eq("is_available", true);
+          .eq("is_available", true)
+          .not("category_id", "is", null);
+
+        const { data: categoryData } = await client
+          .from("menu_categories")
+          .select("id, restaurant_id, name")
+          .eq("restaurant_id", row.id)
+          .eq("is_active", true);
 
         if (cancelled) return;
-        setRestaurant(applyDerivedPriceLevels([row], (menuData ?? []) as RestaurantPriceItemRow[])[0]);
+        setRestaurant(applyDerivedPriceLevels(
+          [row],
+          (menuData ?? []) as RestaurantPriceItemRow[],
+          (categoryData ?? []) as RestaurantPriceCategoryRow[],
+        )[0]);
       }
       setLoading(false);
     })();

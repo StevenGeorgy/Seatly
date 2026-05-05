@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { format, parse, isValid } from "date-fns";
 import {
@@ -11,11 +11,14 @@ import {
   Settings as SettingsIcon,
   Upload,
   X,
+  Trash2,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { DashboardTimeWheelPicker } from "@/components/dashboard/DashboardTimeWheelPicker";
+import { BusinessTypeSelect } from "@/components/restaurant/BusinessTypeSelect";
+import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
 import { Button } from "@/components/ui/button";
 import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
@@ -27,13 +30,15 @@ import { Switch } from "@/components/ui/switch";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { applyRestaurantTheme } from "@/lib/theme";
-import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
+import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
 import {
   RESTAURANT_DIETARY_TAGS,
   normalizeRestaurantDietaryTags,
   type RestaurantDietaryTag,
 } from "@/lib/restaurant-dietary-tags";
+import { normalizeRestaurantCuisine } from "@/lib/restaurant-cuisines";
+import { normalizeRestaurantBusinessType } from "@/lib/restaurant-business-types";
 import {
   RESTAURANT_WEEKDAY_NUMBERS,
   RESTAURANT_WEEKDAYS,
@@ -75,6 +80,33 @@ const RESTAURANT_IMAGE_ACCEPT = SUPPORTED_RESTAURANT_IMAGE_TYPES
 
 type RestaurantMediaKind = "logo" | "cover";
 type RestaurantMediaField = "logo_url" | "cover_photo_url";
+type RestaurantInitialState = {
+  name: string;
+  cuisine: string;
+  address: string;
+  contactEmail: string;
+  phone: string;
+  city: string;
+  province: string;
+  country: string;
+  businessType: string;
+  legalName: string;
+  websiteUrl: string;
+  instagramUrl: string;
+  facebookUrl: string;
+  description: string;
+  currency: string;
+  acceptsWalkins: boolean;
+  dietaryTags: RestaurantDietaryTag[];
+  turnTimeMinutes: string;
+};
+
+const EMPTY_BUSINESS_PROFILE: Required<RestaurantBusinessProfile> = {
+  legalName: "",
+  websiteUrl: "",
+  instagramUrl: "",
+  facebookUrl: "",
+};
 
 function isLight(hex: string): boolean {
   const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -181,6 +213,25 @@ function imageUrlFromInput(value: string): string | null | false {
   }
 }
 
+function urlFromInput(value: string): string | null | false {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return parsed.toString();
+  } catch {
+    return false;
+  }
+}
+
+function validOptionalEmail(value: string): boolean {
+  const trimmed = value.trim();
+  return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}
+
 function revokeDraftUrl(url: string | null): void {
   if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
 }
@@ -237,7 +288,8 @@ const NOTIFICATION_GROUPS = [
 export default function SettingsPage() {
   const { t } = useTranslation();
   const { pathname } = useLocation();
-  const { selectedRestaurant, refreshRestaurants } = useRestaurantScope();
+  const navigate = useNavigate();
+  const { selectedRestaurant, refreshRestaurants, restaurants } = useRestaurantScope();
   const [restaurantInfoSection, setRestaurantInfoSection] = useState<RestaurantInfoSectionKey>("restaurant");
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("billing");
   const normalizedPathname = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
@@ -252,7 +304,16 @@ export default function SettingsPage() {
   const [restaurantName, setRestaurantName] = useState(selectedRestaurant?.name ?? "");
   const [cuisine, setCuisine] = useState("");
   const [address, setAddress] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [city, setCity] = useState(selectedRestaurant?.city ?? "");
+  const [province, setProvince] = useState(selectedRestaurant?.province ?? "");
+  const [country, setCountry] = useState(selectedRestaurant?.country ?? "");
+  const [businessType, setBusinessType] = useState<string>(normalizeRestaurantBusinessType(selectedRestaurant?.business_type));
+  const [legalName, setLegalName] = useState(selectedRestaurant?.settings_json?.businessProfile?.legalName ?? "");
+  const [websiteUrl, setWebsiteUrl] = useState(selectedRestaurant?.settings_json?.businessProfile?.websiteUrl ?? "");
+  const [instagramUrl, setInstagramUrl] = useState(selectedRestaurant?.settings_json?.businessProfile?.instagramUrl ?? "");
+  const [facebookUrl, setFacebookUrl] = useState(selectedRestaurant?.settings_json?.businessProfile?.facebookUrl ?? "");
   const [description, setDescription] = useState("");
   const [savedLogoUrl, setSavedLogoUrl] = useState(selectedRestaurant?.logo_url ?? "");
   const [savedCoverPhotoUrl, setSavedCoverPhotoUrl] = useState(selectedRestaurant?.cover_photo_url ?? "");
@@ -266,7 +327,7 @@ export default function SettingsPage() {
   const [coverMarkedForRemoval, setCoverMarkedForRemoval] = useState(false);
   const [draggingMediaKind, setDraggingMediaKind] = useState<RestaurantMediaKind | null>(null);
   const [currency, setCurrency] = useState(selectedRestaurant?.currency ?? "cad");
-  const [hasBar, setHasBar] = useState(selectedRestaurant?.has_bar ?? false);
+  const [acceptsWalkins, setAcceptsWalkins] = useState(selectedRestaurant?.accepts_walkins ?? true);
   const [dietaryTags, setDietaryTags] = useState<RestaurantDietaryTag[]>(() => (
     normalizeRestaurantDietaryTags(selectedRestaurant?.settings_json?.dietaryTags)
   ));
@@ -274,9 +335,9 @@ export default function SettingsPage() {
     String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
   );
   const [savingRestaurant, setSavingRestaurant] = useState(false);
-  const [restaurantInitial, setRestaurantInitial] = useState<{
-    name: string; cuisine: string; address: string; phone: string; description: string; currency: string; hasBar: boolean; dietaryTags: RestaurantDietaryTag[]; turnTimeMinutes: string;
-  } | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState("");
+  const [deletingRestaurant, setDeletingRestaurant] = useState(false);
+  const [restaurantInitial, setRestaurantInitial] = useState<RestaurantInitialState | null>(null);
   const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
   const normalizedTurnTime = normalizeTurnTime(turnTimeMinutes);
   const mediaDirty = Boolean(
@@ -316,6 +377,17 @@ export default function SettingsPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset editable form fields when switching restaurants
     setRestaurantName(selectedRestaurant?.name ?? "");
+    setCuisine("");
+    setContactEmail(selectedRestaurant?.email ?? "");
+    setCity(selectedRestaurant?.city ?? "");
+    setProvince(selectedRestaurant?.province ?? "");
+    setCountry(selectedRestaurant?.country ?? "");
+    setBusinessType(normalizeRestaurantBusinessType(selectedRestaurant?.business_type));
+    setLegalName(selectedRestaurant?.settings_json?.businessProfile?.legalName ?? "");
+    setWebsiteUrl(selectedRestaurant?.settings_json?.businessProfile?.websiteUrl ?? "");
+    setInstagramUrl(selectedRestaurant?.settings_json?.businessProfile?.instagramUrl ?? "");
+    setFacebookUrl(selectedRestaurant?.settings_json?.businessProfile?.facebookUrl ?? "");
+    setDeleteConfirmationName("");
     setSavedLogoUrl(selectedRestaurant?.logo_url ?? "");
     setSavedCoverPhotoUrl(selectedRestaurant?.cover_photo_url ?? "");
     setLogoUrlInput("");
@@ -328,13 +400,13 @@ export default function SettingsPage() {
     setCoverMarkedForRemoval(false);
     setDraggingMediaKind(null);
     setCurrency(selectedRestaurant?.currency ?? "cad");
-    setHasBar(selectedRestaurant?.has_bar ?? false);
+    setAcceptsWalkins(selectedRestaurant?.accepts_walkins ?? true);
     setDietaryTags(normalizeRestaurantDietaryTags(selectedRestaurant?.settings_json?.dietaryTags));
     setTurnTimeMinutes(String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES));
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
     setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
-  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.logo_url, selectedRestaurant?.cover_photo_url, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.has_bar]);
+  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.logo_url, selectedRestaurant?.cover_photo_url, selectedRestaurant?.email, selectedRestaurant?.city, selectedRestaurant?.province, selectedRestaurant?.country, selectedRestaurant?.business_type, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.accepts_walkins]);
 
   useEffect(() => () => revokeDraftUrl(logoDraftPreviewUrl), [logoDraftPreviewUrl]);
   useEffect(() => () => revokeDraftUrl(coverDraftPreviewUrl), [coverDraftPreviewUrl]);
@@ -344,26 +416,60 @@ export default function SettingsPage() {
     const client = getSupabaseBrowserClient();
     void client
       .from("restaurants")
-      .select("cuisine_type, address, phone, description, hours_json, plan")
+      .select("cuisine_type, address, email, phone, city, province, country, business_type, description, hours_json, plan, accepts_walkins, settings_json")
       .eq("id", selectedRestaurant.id)
       .single()
       .then(({ data }) => {
         if (!data) return;
-        const c = data.cuisine_type ?? "";
+        const c = normalizeRestaurantCuisine(data.cuisine_type);
         const a = data.address ?? "";
+        const e = data.email ?? "";
         const p = (data as { phone?: string | null }).phone ?? "";
+        const cityValue = data.city ?? "";
+        const provinceValue = data.province ?? "";
+        const countryValue = data.country ?? "";
+        const businessTypeValue = normalizeRestaurantBusinessType(data.business_type);
+        const settings = (data.settings_json ?? {}) as RestaurantSettings;
+        const businessProfile = settings.businessProfile ?? EMPTY_BUSINESS_PROFILE;
+        const legalNameValue = businessProfile.legalName ?? "";
+        const websiteUrlValue = businessProfile.websiteUrl ?? "";
+        const instagramUrlValue = businessProfile.instagramUrl ?? "";
+        const facebookUrlValue = businessProfile.facebookUrl ?? "";
         const d = (data.description ?? "").slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH);
+        const accepts = data.accepts_walkins ?? true;
         setCuisine(c);
         setAddress(a);
+        setContactEmail(e);
         setPhone(p);
+        setCity(cityValue);
+        setProvince(provinceValue);
+        setCountry(countryValue);
+        setBusinessType(businessTypeValue);
+        setLegalName(legalNameValue);
+        setWebsiteUrl(websiteUrlValue);
+        setInstagramUrl(instagramUrlValue);
+        setFacebookUrl(facebookUrlValue);
         setDescription(d);
+        setAcceptsWalkins(accepts);
         setRestaurantInitial({
           name: selectedRestaurant.name ?? "",
-          cuisine: c, address: a, phone: p, description: d,
+          cuisine: c,
+          address: a,
+          contactEmail: e,
+          phone: p,
+          city: cityValue,
+          province: provinceValue,
+          country: countryValue,
+          businessType: businessTypeValue,
+          legalName: legalNameValue,
+          websiteUrl: websiteUrlValue,
+          instagramUrl: instagramUrlValue,
+          facebookUrl: facebookUrlValue,
+          description: d,
           currency: selectedRestaurant.currency ?? "cad",
-          hasBar: selectedRestaurant.has_bar ?? false,
-          dietaryTags: normalizeRestaurantDietaryTags(selectedRestaurant.settings_json?.dietaryTags),
-          turnTimeMinutes: String(selectedRestaurant.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
+          acceptsWalkins: accepts,
+          dietaryTags: normalizeRestaurantDietaryTags(settings.dietaryTags),
+          turnTimeMinutes: String(settings.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
         });
         const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
@@ -374,9 +480,7 @@ export default function SettingsPage() {
     selectedRestaurant?.id,
     selectedRestaurant?.name,
     selectedRestaurant?.currency,
-    selectedRestaurant?.has_bar,
-    selectedRestaurant?.settings_json?.dietaryTags,
-    selectedRestaurant?.settings_json?.turnTimeMinutes,
+    selectedRestaurant?.accepts_walkins,
   ]);
 
   const restaurantDirty = useMemo(() => {
@@ -385,14 +489,23 @@ export default function SettingsPage() {
       restaurantInitial.name !== restaurantName ||
       restaurantInitial.cuisine !== cuisine ||
       restaurantInitial.address !== address ||
+      restaurantInitial.contactEmail !== contactEmail ||
       restaurantInitial.phone !== phone ||
+      restaurantInitial.city !== city ||
+      restaurantInitial.province !== province ||
+      restaurantInitial.country !== country ||
+      restaurantInitial.businessType !== businessType ||
+      restaurantInitial.legalName !== legalName ||
+      restaurantInitial.websiteUrl !== websiteUrl ||
+      restaurantInitial.instagramUrl !== instagramUrl ||
+      restaurantInitial.facebookUrl !== facebookUrl ||
       restaurantInitial.description !== description ||
       restaurantInitial.currency !== currency ||
-      restaurantInitial.hasBar !== hasBar ||
+      restaurantInitial.acceptsWalkins !== acceptsWalkins ||
       dietaryTagsKey(restaurantInitial.dietaryTags) !== dietaryTagsKey(dietaryTags) ||
       restaurantInitial.turnTimeMinutes !== turnTimeMinutes
     );
-  }, [restaurantInitial, restaurantName, cuisine, address, phone, description, currency, hasBar, dietaryTags, turnTimeMinutes]);
+  }, [restaurantInitial, restaurantName, cuisine, address, contactEmail, phone, city, province, country, businessType, legalName, websiteUrl, instagramUrl, facebookUrl, description, currency, acceptsWalkins, dietaryTags, turnTimeMinutes]);
 
   const toggleDietaryTag = (tag: RestaurantDietaryTag) => {
     setDietaryTags((current) => (
@@ -402,11 +515,45 @@ export default function SettingsPage() {
     ));
   };
 
+  const deleteConfirmationMatches = selectedRestaurant?.name
+    ? deleteConfirmationName.trim() === selectedRestaurant.name.trim()
+    : false;
+
+  const deleteRestaurant = async () => {
+    if (!selectedRestaurant || !deleteConfirmationMatches) return;
+    if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
+
+    setDeletingRestaurant(true);
+    const client = getSupabaseBrowserClient();
+    const { error, data } = await client.functions.invoke<{ ok?: boolean; error?: string }>("delete-restaurant", {
+      body: {
+        restaurant_id: selectedRestaurant.id,
+        confirmationName: deleteConfirmationName.trim(),
+      },
+    });
+    setDeletingRestaurant(false);
+
+    if (error || data?.error) {
+      toast.error(data?.error ?? error?.message ?? t("dashboard.settings.deleteRestaurantFailed"));
+      return;
+    }
+
+    toast.success(t("dashboard.settings.deleteRestaurantSuccess"));
+    setDeleteConfirmationName("");
+    refreshRestaurants();
+    const fallbackRestaurant = restaurants.find((restaurant) => restaurant.id !== selectedRestaurant.id);
+    void navigate(fallbackRestaurant ? "/dashboard" : "/setup", { replace: true });
+  };
+
   const saveRestaurantSettings = async () => {
     if (!selectedRestaurant) return;
     if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
     const nextName = restaurantName.trim();
     if (!nextName) return;
+    if (!validOptionalEmail(contactEmail)) {
+      toast.error(t("dashboard.settings.invalidContactEmail"));
+      return;
+    }
     if (!normalizedTurnTime) {
       toast.error(t("dashboard.settings.invalidTurnTime"));
       return;
@@ -418,6 +565,13 @@ export default function SettingsPage() {
       toast.error(t("dashboard.settings.invalidImageUrl"));
       return;
     }
+    const normalizedWebsiteUrl = urlFromInput(websiteUrl);
+    const normalizedInstagramUrl = urlFromInput(instagramUrl);
+    const normalizedFacebookUrl = urlFromInput(facebookUrl);
+    if (normalizedWebsiteUrl === false || normalizedInstagramUrl === false || normalizedFacebookUrl === false) {
+      toast.error(t("dashboard.settings.invalidBusinessUrl"));
+      return;
+    }
 
     setSavingRestaurant(true);
     const client = getSupabaseBrowserClient();
@@ -426,6 +580,12 @@ export default function SettingsPage() {
       ...existingSettings,
       dietaryTags,
       turnTimeMinutes: normalizedTurnTime,
+      businessProfile: {
+        legalName: legalName.trim() || null,
+        websiteUrl: normalizedWebsiteUrl,
+        instagramUrl: normalizedInstagramUrl,
+        facebookUrl: normalizedFacebookUrl,
+      },
     };
 
     const mediaUpdates: Partial<Record<RestaurantMediaField, string | null>> = {};
@@ -459,12 +619,17 @@ export default function SettingsPage() {
       .from("restaurants")
       .update({
         name: nextName,
-        cuisine_type: cuisine.trim() || null,
+        cuisine_type: cuisine || null,
         address: address.trim() || null,
+        email: contactEmail.trim() || null,
         phone: phone.trim() || null,
+        city: city.trim() || null,
+        province: province.trim() || null,
+        country: country.trim() || null,
+        business_type: businessType || null,
         description: description.trim().slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH) || null,
         currency,
-        has_bar: hasBar,
+        accepts_walkins: acceptsWalkins,
         settings_json: updatedSettings,
         ...mediaUpdates,
       })
@@ -474,7 +639,34 @@ export default function SettingsPage() {
 
     const nextSavedLogoUrl = mediaUpdates.logo_url !== undefined ? mediaUpdates.logo_url ?? "" : savedLogoUrl;
     const nextSavedCoverPhotoUrl = mediaUpdates.cover_photo_url !== undefined ? mediaUpdates.cover_photo_url ?? "" : savedCoverPhotoUrl;
-    setRestaurantInitial({ name: nextName, cuisine, address, phone, description, currency, hasBar, dietaryTags, turnTimeMinutes });
+    const nextLegalName = legalName.trim();
+    const nextWebsiteUrl = normalizedWebsiteUrl ?? "";
+    const nextInstagramUrl = normalizedInstagramUrl ?? "";
+    const nextFacebookUrl = normalizedFacebookUrl ?? "";
+    setLegalName(nextLegalName);
+    setWebsiteUrl(nextWebsiteUrl);
+    setInstagramUrl(nextInstagramUrl);
+    setFacebookUrl(nextFacebookUrl);
+    setRestaurantInitial({
+      name: nextName,
+      cuisine,
+      address,
+      contactEmail,
+      phone,
+      city,
+      province,
+      country,
+      businessType,
+      legalName: nextLegalName,
+      websiteUrl: nextWebsiteUrl,
+      instagramUrl: nextInstagramUrl,
+      facebookUrl: nextFacebookUrl,
+      description,
+      currency,
+      acceptsWalkins,
+      dietaryTags,
+      turnTimeMinutes,
+    });
     setSavedLogoUrl(nextSavedLogoUrl);
     setSavedCoverPhotoUrl(nextSavedCoverPhotoUrl);
     setLogoUrlInput("");
@@ -600,10 +792,19 @@ export default function SettingsPage() {
     setRestaurantName(restaurantInitial.name);
     setCuisine(restaurantInitial.cuisine);
     setAddress(restaurantInitial.address);
+    setContactEmail(restaurantInitial.contactEmail);
     setPhone(restaurantInitial.phone);
+    setCity(restaurantInitial.city);
+    setProvince(restaurantInitial.province);
+    setCountry(restaurantInitial.country);
+    setBusinessType(restaurantInitial.businessType);
+    setLegalName(restaurantInitial.legalName);
+    setWebsiteUrl(restaurantInitial.websiteUrl);
+    setInstagramUrl(restaurantInitial.instagramUrl);
+    setFacebookUrl(restaurantInitial.facebookUrl);
     setDescription(restaurantInitial.description);
     setCurrency(restaurantInitial.currency);
-    setHasBar(restaurantInitial.hasBar);
+    setAcceptsWalkins(restaurantInitial.acceptsWalkins);
     setTurnTimeMinutes(restaurantInitial.turnTimeMinutes);
     discardRestaurantMedia();
   };
@@ -809,13 +1010,48 @@ export default function SettingsPage() {
                   <Input value={restaurantName} onChange={(e) => setRestaurantName(e.target.value)} />
                 </FieldRow>
                 <FieldRow label="Cuisine" hint="Shown on listings and search filters.">
-                  <Input value={cuisine} onChange={(e) => setCuisine(e.target.value)} placeholder="Modern French" />
+                  <CuisineSelect
+                    value={cuisine}
+                    onValueChange={setCuisine}
+                    placeholder={t("dashboard.settings.cuisineSelectPlaceholder")}
+                  />
                 </FieldRow>
                 <FieldRow label="Address">
                   <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="142 Yorkville Ave, Toronto, ON M5R 1C2" />
                 </FieldRow>
-                <FieldRow label="Phone">
+                <FieldRow label={t("dashboard.settings.city")}>
+                  <Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Toronto" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.province")}>
+                  <Input value={province} onChange={(e) => setProvince(e.target.value)} placeholder="ON" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.country")}>
+                  <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Canada" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.businessType")} hint={t("dashboard.settings.businessTypeHint")}>
+                  <BusinessTypeSelect
+                    value={businessType}
+                    onValueChange={setBusinessType}
+                    placeholder={t("dashboard.settings.businessTypeSelectPlaceholder")}
+                  />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.legalName")} hint={t("dashboard.settings.legalNameHint")}>
+                  <Input value={legalName} onChange={(e) => setLegalName(e.target.value)} placeholder="Cenaiva Restaurant Group Inc." />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.contactEmail")}>
+                  <Input value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="hello@example.com" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.phone")}>
                   <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(416) 555-0142" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.websiteUrl")}>
+                  <Input value={websiteUrl} onChange={(e) => setWebsiteUrl(e.target.value)} placeholder="https://example.com" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.instagramUrl")}>
+                  <Input value={instagramUrl} onChange={(e) => setInstagramUrl(e.target.value)} placeholder="https://instagram.com/example" />
+                </FieldRow>
+                <FieldRow label={t("dashboard.settings.facebookUrl")}>
+                  <Input value={facebookUrl} onChange={(e) => setFacebookUrl(e.target.value)} placeholder="https://facebook.com/example" />
                 </FieldRow>
                 <FieldRow
                   label="Description"
@@ -855,8 +1091,23 @@ export default function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </FieldRow>
-                <FieldRow label="Bar / drinks station" hint="Enables the Bar Only filter on Orders.">
-                  <Switch checked={hasBar} onCheckedChange={setHasBar} />
+                <FieldRow
+                  label={t("dashboard.settings.acceptWalkins")}
+                  hint={t("dashboard.settings.acceptWalkinsHint")}
+                >
+                  <div className="flex max-w-xl items-center justify-between gap-4 rounded-2xl border border-border bg-bg-elevated/45 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">
+                        {acceptsWalkins
+                          ? t("dashboard.settings.walkinsAccepted")
+                          : t("dashboard.settings.reservationsOnly")}
+                      </p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {t("dashboard.settings.acceptWalkinsPreviewHint")}
+                      </p>
+                    </div>
+                    <Switch checked={acceptsWalkins} onCheckedChange={setAcceptsWalkins} />
+                  </div>
                 </FieldRow>
                 <FieldRow
                   label={t("dashboard.settings.dietaryTags")}
@@ -1105,6 +1356,48 @@ export default function SettingsPage() {
                   {savingRestaurant ? t("routes.loading") : "Save changes"}
                 </Button>
               </div>
+              <Card>
+                <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] sm:px-7">
+                  <div>
+                    <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-danger">
+                      <Trash2 className="size-3.5" />
+                      {t("dashboard.settings.dangerZone")}
+                    </p>
+                    <h3 className="mt-2 font-serif text-xl text-white">
+                      {t("dashboard.settings.deleteRestaurant")}
+                    </h3>
+                    <p className="mt-2 max-w-2xl text-sm text-text-muted">
+                      {t("dashboard.settings.deleteRestaurantHint")}
+                    </p>
+                    <p className="mt-3 text-xs text-danger">
+                      {t("dashboard.settings.deleteRestaurantWarning")}
+                    </p>
+                  </div>
+                  <div className="space-y-3 rounded-2xl border border-danger/30 bg-danger/5 p-4">
+                    <label className="block text-xs font-medium text-text-secondary" htmlFor="delete-restaurant-confirmation">
+                      {t("dashboard.settings.deleteRestaurantConfirmLabel", {
+                        name: selectedRestaurant?.name ?? "",
+                      })}
+                    </label>
+                    <Input
+                      id="delete-restaurant-confirmation"
+                      value={deleteConfirmationName}
+                      onChange={(event) => setDeleteConfirmationName(event.target.value)}
+                      placeholder={selectedRestaurant?.name ?? ""}
+                      disabled={deletingRestaurant || !selectedRestaurant}
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      className="w-full"
+                      disabled={!deleteConfirmationMatches || deletingRestaurant || !selectedRestaurant}
+                      onClick={() => void deleteRestaurant()}
+                    >
+                      {deletingRestaurant ? t("routes.loading") : t("dashboard.settings.deleteRestaurantAction")}
+                    </Button>
+                  </div>
+                </div>
+              </Card>
             </div>
           )}
 

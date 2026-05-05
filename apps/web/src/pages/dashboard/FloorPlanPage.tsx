@@ -67,6 +67,8 @@ type FloorTable = {
   status: Status;
   guest: string | null;
   party: number;
+  tableGroupSize?: number;
+  tableGroupCapacity?: number;
   time: string | null;
   long?: boolean;
 };
@@ -450,6 +452,19 @@ function reservationGuestName(row: ReservationRow): string {
   return row.guests?.full_name ?? row.guest_full_name ?? "Guest";
 }
 
+function reservationTableGroupDetails(row: ReservationRow): { size: number; capacity: number } {
+  const assigned = row.reservation_tables?.flatMap((assignment) =>
+    assignment.tables ? [{ capacity: assignment.tables.capacity }] : [],
+  ) ?? [];
+  if (assigned.length > 0) {
+    return {
+      size: assigned.length,
+      capacity: assigned.reduce((total, table) => total + table.capacity, 0),
+    };
+  }
+  return row.tables ? { size: 1, capacity: row.tables.capacity } : { size: 0, capacity: 0 };
+}
+
 function isReservationInFloorWindow(row: ReservationRow, now: Date, fallbackTurnMinutes: number): boolean {
   const reservedAt = new Date(row.reserved_at);
   if (Number.isNaN(reservedAt.getTime())) return false;
@@ -684,6 +699,19 @@ function TableNode({
           {t.guest} · {t.time}
         </text>
       )}
+      {density === "full" && t.tableGroupSize && t.tableGroupSize > 1 ? (
+        <text
+          x={cx}
+          y={cy + 34}
+          textAnchor="middle"
+          fontSize="9.5"
+          fill="var(--warning)"
+          style={{ pointerEvents: "none", letterSpacing: "0.02em" }}
+          fontFamily="Geist, system-ui"
+        >
+          {t.tableGroupSize} tables · {t.party} guests
+        </text>
+      ) : null}
     </g>
   );
 }
@@ -1220,7 +1248,7 @@ function FloorReservationDialog({
   onClose: () => void;
   onSubmit: (values: FloorServiceFormValues) => Promise<void>;
 }) {
-  const now = useMemo(() => new Date(), [open]);
+  const now = useMemo(() => new Date(), []);
   const reserveDefault = useMemo(() => roundToNextHalfHour(now), [now]);
   const [guestName, setGuestName] = useState(action === "walkin" ? "Walk-in" : "");
   const [guestEmail, setGuestEmail] = useState("");
@@ -1235,13 +1263,15 @@ function FloorReservationDialog({
     const nextNow = new Date();
     const nextReserveDefault = roundToNextHalfHour(nextNow);
     const defaultDate = action === "walkin" ? nextNow : nextReserveDefault;
-    setGuestName(action === "walkin" ? "Walk-in" : "");
-    setGuestEmail("");
-    setGuestPhone("");
-    setPartySize(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
-    setReservationDate(dateInputValue(defaultDate));
-    setReservationTime(normalizeTimeValue(timeInputValue(defaultDate)));
-    setSpecialRequest("");
+    void Promise.resolve().then(() => {
+      setGuestName(action === "walkin" ? "Walk-in" : "");
+      setGuestEmail("");
+      setGuestPhone("");
+      setPartySize(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
+      setReservationDate(dateInputValue(defaultDate));
+      setReservationTime(normalizeTimeValue(timeInputValue(defaultDate)));
+      setSpecialRequest("");
+    });
   }, [action, open, table?.cap]);
 
   const title = action === "walkin" ? "Seat a walk-in" : "Add a reservation";
@@ -1439,6 +1469,11 @@ function TableCard({
             <div className="mt-1 text-[12px] tabular-nums text-text-secondary">
               Party of {t.party} · {t.time}
             </div>
+            {t.tableGroupSize && t.tableGroupSize > 1 ? (
+              <div className="mt-2 w-fit rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
+                Large party · {t.tableGroupSize} tables · {t.tableGroupCapacity ?? t.cap} seats
+              </div>
+            ) : null}
           </div>
         ) : !editing ? (
           <div className="mb-5 border-y py-4" style={{ borderColor: BORDER_SOFT }}>
@@ -1923,6 +1958,7 @@ export default function FloorPlanPage() {
         if (assignedTableIds.size === 0) continue;
         const reservedAt = new Date(reservation.reserved_at);
         const reservationStatus: Status = reservation.status === "seated" ? "occupied" : "reserved";
+        const tableGroup = reservationTableGroupDetails(reservation);
 
         for (const floorId of Object.keys(nextTables)) {
           nextTables[floorId] = nextTables[floorId].map((table) => {
@@ -1937,6 +1973,8 @@ export default function FloorPlanPage() {
               status: reservationStatus,
               guest: reservationGuestName(reservation),
               party: reservation.party_size,
+              tableGroupSize: tableGroup.size,
+              tableGroupCapacity: tableGroup.capacity,
               time: Number.isNaN(reservedAt.getTime()) ? null : serviceTimeLabel(reservedAt),
             };
           });

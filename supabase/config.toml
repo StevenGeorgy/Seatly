@@ -55,3 +55,9 @@ verify_jwt = false
 
 [functions.approve-staff-action]
 verify_jwt = false
+
+[functions.create-public-booking]
+verify_jwt = false
+
+[functions.get-availability]
+verify_jwt = false

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { format } from "date-fns";
+import { addDays, format } from "date-fns";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,12 +11,10 @@ import {
   X,
   Check,
   Heart,
-  ArrowUpRight,
   Bell,
   ArrowLeft,
   ArrowRight,
   Plus,
-  Minus,
   LocateFixed,
   LogOut,
   User,
@@ -27,9 +25,11 @@ import { useUser } from "@/hooks/useUser";
 import { useMyStaffInvites } from "@/hooks/useMyStaffInvites";
 import { useNotifications } from "@/hooks/useNotifications";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
+import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewModal";
+import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -44,16 +44,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { restaurantPriceLabelFromRange } from "@/lib/restaurant-price-level";
+import { normalizeRestaurantPriceLevel, restaurantPriceLabelFromRange, type RestaurantPriceLevel } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
-const DATE_PRESETS = [
-  { id: "today", label: "Today · Apr 27" },
-  { id: "tomorrow", label: "Tomorrow · Apr 28" },
-  { id: "sat", label: "Sat · May 3" },
-  { id: "custom", label: "Pick a date…" },
-];
+function datePresetOptions() {
+  const today = new Date();
+  const tomorrow = addDays(today, 1);
+  const saturday = addDays(today, (6 - today.getDay() + 7) % 7 || 7);
+  return [
+    { id: "today", label: `Today · ${format(today, "MMM d")}` },
+    { id: "tomorrow", label: `Tomorrow · ${format(tomorrow, "MMM d")}` },
+    { id: "sat", label: `${format(saturday, "EEE")} · ${format(saturday, "MMM d")}` },
+    { id: "custom", label: "Pick a date…" },
+  ];
+}
 
 const TIME_OPTIONS = [
   "6:00 PM",
@@ -68,251 +73,105 @@ const TIME_OPTIONS = [
 
 const PRICE_OPTIONS = ["$", "$$", "$$$"];
 
-const FEATURE_OPTIONS = [
-  "Outdoor",
-  "Tasting menu",
-  "Vegetarian",
-  "Late night",
-  "Walk-in",
-  "Bar seats",
-  "Pet-friendly",
-  "Live music",
-];
+const FEATURE_OPTIONS = ["Vegetarian", "Vegan", "Gluten-free", "Halal", "Kosher", "Walk-ins accepted"];
 
 const PARTY_SIZES = [1, 2, 3, 4, 5, 6, 7, "8+"] as const;
 
-type DemoCard = {
+type RestaurantCard = {
   id: string;
   slug?: string;
   name: string;
-  reviews: number;
-  rating: number;
   cuisine: string;
   price: string;
+  priceLevel: RestaurantPriceLevel | null;
   area: string;
   bookedToday: number;
   slots: string[];
   initials: string;
   badge: string;
   city: string;
-  distanceKm: number;
   features: string[];
   dietaryTags: RestaurantDietaryTag[];
+  logoUrl: string | null;
+  coverPhotoUrl: string | null;
+  acceptsWalkins: boolean;
+  lat: number | null;
+  lng: number | null;
 };
-
-const DEMO_RESTAURANTS: DemoCard[] = [
-  {
-    id: "maison-verre",
-    name: "Maison Verre",
-    reviews: 1538,
-    rating: 4.8,
-    cuisine: "Modern French",
-    price: "$$$",
-    area: "Yorkville",
-    bookedToday: 82,
-    slots: ["7:00 PM", "7:15 PM", "7:45 PM", "8:30 PM"],
-    initials: "MAISON",
-    badge: "TOP RATED",
-    city: "Toronto",
-    distanceKm: 0.4,
-    features: ["Patio", "Tasting menu"],
-    dietaryTags: ["vegetarian"],
-  },
-  {
-    id: "osteria-nova",
-    name: "Osteria Nova",
-    reviews: 488,
-    rating: 4.7,
-    cuisine: "Italian · Wood-fired",
-    price: "$$$",
-    area: "King West",
-    bookedToday: 64,
-    slots: ["6:45 PM", "7:30 PM", "9:00 PM"],
-    initials: "OSTERIA",
-    badge: "POPULAR",
-    city: "Toronto",
-    distanceKm: 1.2,
-    features: ["Wine bar", "Late night"],
-    dietaryTags: ["vegetarian"],
-  },
-  {
-    id: "ginkgo",
-    name: "Ginkgo",
-    reviews: 201,
-    rating: 4.9,
-    cuisine: "Japanese · Omakase",
-    price: "$$$",
-    area: "Queen W",
-    bookedToday: 18,
-    slots: [],
-    initials: "GINKGO",
-    badge: "CHEFS PICK",
-    city: "Toronto",
-    distanceKm: 2.1,
-    features: ["Counter", "12-seat"],
-    dietaryTags: ["gluten_free"],
-  },
-  {
-    id: "bistro-lumiere",
-    name: "Bistro Lumière",
-    reviews: 274,
-    rating: 4.5,
-    cuisine: "Bistronomy",
-    price: "$$$",
-    area: "Mile End · MTL",
-    bookedToday: 41,
-    slots: ["6:00 PM", "7:00 PM", "8:15 PM"],
-    initials: "BISTRO",
-    badge: "POPULAR",
-    city: "Montréal",
-    distanceKm: 3.4,
-    features: ["Wine list", "Patio"],
-    dietaryTags: ["vegetarian"],
-  },
-  {
-    id: "le-pigeon-bleu",
-    name: "Le Pigeon Bleu",
-    reviews: 156,
-    rating: 4.4,
-    cuisine: "Québécois",
-    price: "$$$",
-    area: "Plateau · MTL",
-    bookedToday: 27,
-    slots: ["7:30 PM", "8:30 PM"],
-    initials: "LE",
-    badge: "NEW",
-    city: "Montréal",
-    distanceKm: 4.1,
-    features: ["Tasting menu"],
-    dietaryTags: [],
-  },
-  {
-    id: "salt-ember",
-    name: "Salt & Ember",
-    reviews: 622,
-    rating: 4.6,
-    cuisine: "Live-fire grill",
-    price: "$$$",
-    area: "Ossington",
-    bookedToday: 118,
-    slots: ["7:15 PM", "8:00 PM", "8:45 PM", "9:30 PM"],
-    initials: "SALT",
-    badge: "POPULAR",
-    city: "Toronto",
-    distanceKm: 2.6,
-    features: ["Bar seats", "Walk-in"],
-    dietaryTags: ["gluten_free"],
-  },
-  {
-    id: "taps-public-house",
-    name: "Taps Public House",
-    reviews: 1238,
-    rating: 4.3,
-    cuisine: "Fusion / Eclectic",
-    price: "$$$",
-    area: "Mississauga",
-    bookedToday: 64,
-    slots: ["9:30 PM", "9:45 PM", "10:00 PM"],
-    initials: "TAPS",
-    badge: "POPULAR",
-    city: "Toronto",
-    distanceKm: 17.8,
-    features: ["Late night", "Pet-friendly"],
-    dietaryTags: [],
-  },
-  {
-    id: "saffron-saffron",
-    name: "Saffron",
-    reviews: 312,
-    rating: 4.5,
-    cuisine: "Modern Indian",
-    price: "$$$",
-    area: "Liberty Village",
-    bookedToday: 53,
-    slots: ["6:30 PM", "7:30 PM", "9:00 PM"],
-    initials: "SAFFRON",
-    badge: "CHEFS PICK",
-    city: "Toronto",
-    distanceKm: 3.0,
-    features: ["Vegetarian", "Tasting menu"],
-    dietaryTags: ["halal", "vegetarian"],
-  },
-  {
-    id: "praa-vancouver",
-    name: "Praa",
-    reviews: 188,
-    rating: 4.7,
-    cuisine: "Pan-Asian",
-    price: "$$$",
-    area: "Yaletown · YVR",
-    bookedToday: 49,
-    slots: ["7:00 PM", "7:45 PM"],
-    initials: "PRAA",
-    badge: "TOP RATED",
-    city: "Vancouver",
-    distanceKm: 6.2,
-    features: ["Outdoor", "Live music"],
-    dietaryTags: ["vegan"],
-  },
-];
 
 function priceFromRange(range: number | null | undefined): string {
   return restaurantPriceLabelFromRange(range);
 }
 
-function adaptRestaurant(r: Restaurant, idx: number): DemoCard {
+function adaptRestaurant(r: Restaurant, bookedToday: number): RestaurantCard {
   const initials = (r.name || "?").split(/\s+/).slice(0, 2).join(" ").toUpperCase();
+  const dietaryTags = normalizeRestaurantDietaryTags(r.settings_json?.dietaryTags);
+  const features = [
+    r.cuisine_type,
+    r.business_type,
+    r.accepts_walkins === false ? null : "Walk-ins accepted",
+    ...dietaryTags.map((tag) => tag.replace(/_/g, "-")),
+  ].filter(Boolean) as string[];
   return {
     id: r.id,
     slug: r.slug,
     name: r.name,
-    reviews: r.total_reviews ?? 0,
-    rating: r.avg_rating ?? 0,
     cuisine: r.cuisine_type ?? "",
     price: priceFromRange(r.price_range),
+    priceLevel: normalizeRestaurantPriceLevel(r.price_range),
     area: r.city ?? r.address ?? "",
-    bookedToday: 0,
+    bookedToday,
     slots: [],
     initials,
     badge: r.business_type ?? "",
     city: r.city ?? "",
-    distanceKm: 0.4 + ((idx * 7) % 18) / 10,
-    features: [r.cuisine_type, r.business_type, r.city].filter(Boolean) as string[],
-    dietaryTags: normalizeRestaurantDietaryTags(r.settings_json?.dietaryTags),
+    features,
+    dietaryTags,
+    logoUrl: r.logo_url,
+    coverPhotoUrl: r.cover_photo_url,
+    acceptsWalkins: r.accepts_walkins !== false,
+    lat: r.lat,
+    lng: r.lng,
   };
 }
 
-function StripePlaceholder({ label, className }: { label: string; className?: string }) {
-  return (
-    <div
-      className={cn(
-        "relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden",
-        className,
-      )}
-      style={{
-        backgroundImage:
-          "repeating-linear-gradient(135deg, rgba(201,168,76,0.18) 0 14px, rgba(0,0,0,0.55) 14px 28px)",
-        backgroundColor: "#1a1a1a",
-      }}
-    >
-      <div className="size-9 rounded-full bg-gold/40 ring-4 ring-black/30" />
-      <span className="absolute bottom-3 left-1/2 -translate-x-1/2 font-mono text-[10px] tracking-[0.3em] text-gold/70">
-        {label}
-      </span>
-    </div>
-  );
+function dateParamFromSelection(dateId: string, customDate: Date | undefined): string {
+  if (dateId === "custom" && customDate) return format(customDate, "yyyy-MM-dd");
+  const today = new Date();
+  if (dateId === "tomorrow") return format(addDays(today, 1), "yyyy-MM-dd");
+  if (dateId === "sat") return format(addDays(today, (6 - today.getDay() + 7) % 7 || 7), "yyyy-MM-dd");
+  return format(today, "yyyy-MM-dd");
 }
 
-function Stars({ rating }: { rating: number }) {
-  const full = Math.round(rating);
+function RestaurantCardImage({
+  restaurant,
+  className,
+  logoClassName,
+}: {
+  restaurant: RestaurantCard;
+  className?: string;
+  logoClassName?: string;
+}) {
   return (
-    <span className="flex items-center gap-0.5 text-gold">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <span key={i} className={i < full ? "" : "text-text-muted"}>
-          ★
-        </span>
-      ))}
-    </span>
+    <div className={cn("relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-bg-elevated", className)}>
+      {restaurant.coverPhotoUrl ? (
+        <img
+          src={restaurant.coverPhotoUrl}
+          alt={`${restaurant.name} cover`}
+          className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-105"
+        />
+      ) : (
+        <div className="absolute inset-0 bg-gradient-to-br from-gold/15 via-bg-elevated to-bg-base" />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/20 to-bg-base/80" />
+      <div className={cn("relative flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-bg-elevated font-mono text-xs font-semibold text-gold shadow-lg shadow-black/30", logoClassName)}>
+        {restaurant.logoUrl ? (
+          <img src={restaurant.logoUrl} alt={`${restaurant.name} logo`} className="size-full object-cover" />
+        ) : (
+          restaurant.initials
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -368,13 +227,11 @@ function GridCard({
   r,
   favorite,
   onToggleFav,
-  onSlotClick,
   onOpen,
 }: {
-  r: DemoCard;
+  r: RestaurantCard;
   favorite: boolean;
   onToggleFav: () => void;
-  onSlotClick: (slot: string) => void;
   onOpen: () => void;
 }) {
   return (
@@ -395,10 +252,12 @@ function GridCard({
       className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
     >
       <div className="relative">
-        <StripePlaceholder label={r.initials} className="aspect-auto h-44 sm:h-48 xl:h-52" />
-        <div className="absolute left-3 top-3">
-          <BadgeChip label={r.badge} />
-        </div>
+        <RestaurantCardImage restaurant={r} className="aspect-auto h-44 sm:h-48 xl:h-52" />
+        {r.badge ? (
+          <div className="absolute left-3 top-3">
+            <BadgeChip label={r.badge} />
+          </div>
+        ) : null}
         <div className="absolute right-3 top-3">
           <FavoriteButton active={favorite} onToggle={onToggleFav} />
         </div>
@@ -406,52 +265,28 @@ function GridCard({
       <div className="flex flex-1 flex-col gap-3 p-5">
         <div>
           <p className="font-serif text-xl text-white">{r.name}</p>
-          <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
-            <Stars rating={r.rating} />
-            <span>{r.reviews.toLocaleString()} reviews</span>
-          </div>
         </div>
-        <p className="text-xs text-text-secondary">
-          {r.cuisine} · {r.price} · {r.area}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+          <RestaurantPriceMeter level={r.priceLevel} />
+          {r.cuisine ? <span>{r.cuisine}</span> : null}
+          {r.area ? <span>{r.area}</span> : null}
+        </div>
         {r.dietaryTags.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
           </div>
         ) : null}
-        <p className="flex items-center gap-1.5 text-xs text-text-muted">
-          <ArrowUpRight className="size-3 text-gold" />
-          Booked {r.bookedToday} times today
-        </p>
         <div className="mt-auto pt-2">
-          {r.slots.length === 0 ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSlotClick("waitlist");
-              }}
-              className="inline-flex items-center justify-center rounded-md border border-gold/30 bg-gold/10 px-4 py-2 text-xs font-semibold text-gold hover:bg-gold/20"
-            >
-              Waitlist
-            </button>
-          ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {r.slots.slice(0, 3).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSlotClick(s);
-                  }}
-                  className="rounded-md bg-gold py-2 text-xs font-semibold text-black hover:opacity-90"
-                >
-                  {formatCompactTimeLabel(s)}
-                </button>
-              ))}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen();
+            }}
+            className="inline-flex items-center justify-center rounded-md border border-gold/30 bg-gold/10 px-4 py-2 text-xs font-semibold text-gold hover:bg-gold/20"
+          >
+            View preview
+          </button>
         </div>
       </div>
     </motion.div>
@@ -462,15 +297,13 @@ function MapListCard({
   r,
   favorite,
   onToggleFav,
-  onSlotClick,
   onHover,
   highlighted,
   onOpen,
 }: {
-  r: DemoCard;
+  r: RestaurantCard;
   favorite: boolean;
   onToggleFav: () => void;
-  onSlotClick: (slot: string) => void;
   onHover: (id: string | null) => void;
   highlighted: boolean;
   onOpen: () => void;
@@ -494,29 +327,26 @@ function MapListCard({
       )}
     >
       <div className="relative w-40 shrink-0 overflow-hidden rounded-xl">
-        <StripePlaceholder label={r.initials} className="aspect-square" />
-        <div className="absolute left-2 top-2">
-          <BadgeChip label={r.badge} />
-        </div>
+        <RestaurantCardImage restaurant={r} className="aspect-square" logoClassName="size-12" />
+        {r.badge ? (
+          <div className="absolute left-2 top-2">
+            <BadgeChip label={r.badge} />
+          </div>
+        ) : null}
         <div className="absolute right-2 top-2">
           <FavoriteButton active={favorite} onToggle={onToggleFav} />
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-2">
         <p className="font-serif text-xl text-white">{r.name}</p>
-        <div className="flex items-center gap-2 text-xs text-text-secondary">
-          <Stars rating={r.rating} />
-          <span>
-            {r.rating.toFixed(1)} · {r.reviews.toLocaleString()} reviews
-          </span>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+          <RestaurantPriceMeter level={r.priceLevel} />
+          {r.cuisine ? <span>{r.cuisine}</span> : null}
+          {r.area ? <span>{r.area}</span> : null}
         </div>
-        <p className="text-xs text-text-secondary">
-          {r.cuisine} · <span className="text-gold">{r.price}</span> · {r.area} ·{" "}
-          {r.distanceKm.toFixed(1)}km
-        </p>
         <div className="flex flex-wrap gap-1.5">
           {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
-          {r.features.map((f) => (
+          {r.features.slice(0, 3).map((f) => (
             <span
               key={f}
               className="rounded-full border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-text-secondary"
@@ -525,40 +355,9 @@ function MapListCard({
             </span>
           ))}
         </div>
-        <p className="flex items-center gap-1.5 text-xs text-text-muted">
-          <ArrowUpRight className="size-3 text-gold" />
-          Booked {r.bookedToday} times today
+        <p className="text-xs text-text-muted">
+          {r.acceptsWalkins ? "Walk-ins accepted when available" : "Reservations only"}
         </p>
-        <div className="mt-1">
-          {r.slots.length === 0 ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSlotClick("waitlist");
-              }}
-              className="inline-flex items-center justify-center rounded-md border border-gold/30 bg-gold/10 px-4 py-2 text-xs font-semibold text-gold hover:bg-gold/20"
-            >
-              Waitlist
-            </button>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {r.slots.slice(0, 4).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSlotClick(s);
-                  }}
-                  className="rounded-md bg-gold px-3 py-1.5 text-xs font-semibold text-black hover:opacity-90"
-                >
-                  {formatCompactTimeLabel(s)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -569,10 +368,11 @@ function MapPin({
   active,
   onClick,
 }: {
-  r: DemoCard;
+  r: RestaurantCard;
   active: boolean;
   onClick: () => void;
 }) {
+  if (r.lat == null || r.lng == null) return null;
   return (
     <button
       type="button"
@@ -583,10 +383,7 @@ function MapPin({
           ? "z-20 border-gold bg-gold text-black shadow-gold/40"
           : "border-gold/40 bg-bg-surface text-white hover:border-gold",
       )}
-      style={{
-        left: `${20 + ((r.id.charCodeAt(0) * 7) % 60)}%`,
-        top: `${20 + ((r.id.charCodeAt(1) * 5) % 60)}%`,
-      }}
+      style={{ left: `${Math.max(8, Math.min(92, 50 + r.lng))}%`, top: `${Math.max(8, Math.min(92, 50 - r.lat))}%` }}
     >
       {r.name} <span className={active ? "text-black/70" : "text-gold"}>{r.price}</span>
     </button>
@@ -618,22 +415,24 @@ export default function DiscoverPage() {
   const [partySize, setPartySize] = useState<string>(
     searchParams.get("people") ?? "2",
   );
-  const [activePrices, setActivePrices] = useState<Set<string>>(new Set(["$$$"]));
-  const [activeFeatures, setActiveFeatures] = useState<Set<string>>(
-    new Set(["Vegetarian", "Walk-in"]),
-  );
-  const [distanceKm, setDistanceKm] = useState(5);
+  const [activePrices, setActivePrices] = useState<Set<string>>(new Set());
+  const [activeFeatures, setActiveFeatures] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [previewRestaurant, setPreviewRestaurant] = useState<DemoCard | null>(null);
+  const [previewRestaurant, setPreviewRestaurant] = useState<RestaurantCard | null>(null);
   const previewParam = searchParams.get("preview");
   const previewSource = searchParams.get("from");
+  const restaurantIds = useMemo(() => restaurants.map((restaurant) => restaurant.id), [restaurants]);
+  const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
+  const datePresets = useMemo(() => datePresetOptions(), []);
 
-  const cards: DemoCard[] = useMemo(() => {
-    if (restaurants.length > 0) return restaurants.map(adaptRestaurant);
-    return DEMO_RESTAURANTS;
-  }, [restaurants]);
+  const cards: RestaurantCard[] = useMemo(() => {
+    return restaurants.map((restaurant) => adaptRestaurant(
+      restaurant,
+      statsByRestaurantId[restaurant.id]?.bookedToday ?? 0,
+    ));
+  }, [restaurants, statsByRestaurantId]);
 
   const filtered = useMemo(() => {
     let list = cards;
@@ -649,9 +448,11 @@ export default function DiscoverPage() {
     if (activePrices.size > 0) {
       list = list.filter((r) => activePrices.has(r.price));
     }
-    list = list.filter((r) => r.distanceKm <= distanceKm);
+    if (activeFeatures.size > 0) {
+      list = list.filter((r) => r.features.some((feature) => activeFeatures.has(feature)));
+    }
     return list;
-  }, [cards, search, activePrices, distanceKm]);
+  }, [cards, search, activePrices, activeFeatures]);
 
   const urlPreviewRestaurant = useMemo(() => {
     if (!previewParam) return null;
@@ -698,20 +499,27 @@ export default function DiscoverPage() {
     setPartySize("2");
     setActivePrices(new Set());
     setActiveFeatures(new Set());
-    setDistanceKm(20);
   };
 
-  const handleSlotClick = (r: DemoCard, slot: string) => {
+  const handleSlotClick = (
+    r: RestaurantCard,
+    slot: string,
+    selectedPartySize = partySize,
+    shiftId?: string,
+    displayTime?: string,
+  ) => {
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
-    if (slot === "waitlist") {
-      // visual-only — could route to waitlist page
-      navigate(`/${r.slug ?? r.id}${isDashboardPreview ? "?back=dashboard" : ""}`);
-      return;
-    }
-    navigate(`/${r.slug ?? r.id}?slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(slot)}&people=${partySize}${backQuery}`);
+    const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot)
+      ? slot.slice(0, 10)
+      : dateParamFromSelection(dateId, customDate);
+    const shiftQuery = shiftId ? `&shift_id=${encodeURIComponent(shiftId)}` : "";
+    const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
+    navigate(
+      `/${r.slug ?? r.id}?slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(timeParam)}&people=${selectedPartySize}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
+    );
   };
 
-  const openRestaurantPreview = (r: DemoCard) => {
+  const openRestaurantPreview = (r: RestaurantCard) => {
     setPreviewRestaurant(r);
   };
 
@@ -874,7 +682,7 @@ export default function DiscoverPage() {
           Good evening, <span className="capitalize">{greetingName}</span>.
         </h1>
         <p className="mt-3 text-base text-text-secondary">
-          {filtered.length} reservations available within 20 minutes of you.
+          {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
         </p>
 
         {/* Search bar + view toggle */}
@@ -978,7 +786,7 @@ export default function DiscoverPage() {
                       Date
                     </p>
                     <ul className="mt-3 space-y-2">
-                      {DATE_PRESETS.map((p) => {
+                      {datePresets.map((p) => {
                         const active = dateId === p.id;
                         const isCustom = p.id === "custom";
                         const label =
@@ -1124,7 +932,7 @@ export default function DiscoverPage() {
                     </div>
                   </div>
 
-                  {/* Features + Distance */}
+                  {/* Features */}
                   <div>
                     <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
                       Features
@@ -1148,26 +956,6 @@ export default function DiscoverPage() {
                           </button>
                         );
                       })}
-                    </div>
-
-                    <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
-                      Distance
-                    </p>
-                    <div className="mt-4 px-1">
-                      <input
-                        type="range"
-                        min={0}
-                        max={20}
-                        step={1}
-                        value={distanceKm}
-                        onChange={(e) => setDistanceKm(Number(e.target.value))}
-                        className="w-full accent-gold"
-                      />
-                      <div className="mt-2 flex justify-between font-mono text-[10px] uppercase tracking-wider text-text-muted">
-                        <span>0km</span>
-                        <span className="text-gold">{distanceKm}km</span>
-                        <span>20km</span>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -1270,7 +1058,6 @@ export default function DiscoverPage() {
                           r={r}
                           favorite={favorites.has(r.id)}
                           onToggleFav={() => toggleFavorite(r.id)}
-                          onSlotClick={(slot) => handleSlotClick(r, slot)}
                           onOpen={() => openRestaurantPreview(r)}
                         />
                       ))}
@@ -1300,7 +1087,6 @@ export default function DiscoverPage() {
                     r={r}
                     favorite={favorites.has(r.id)}
                     onToggleFav={() => toggleFavorite(r.id)}
-                    onSlotClick={(slot) => handleSlotClick(r, slot)}
                     onHover={(id) => {
                       setHoveredId(id);
                       if (id) setSelectedId(id);
@@ -1314,29 +1100,16 @@ export default function DiscoverPage() {
 
             {/* Map area */}
             <div className="lg:h-full lg:min-h-0">
-              <div
-                className="relative h-[560px] overflow-hidden rounded-2xl border border-border lg:h-full"
-                style={{
-                  backgroundImage:
-                    "radial-gradient(circle at 30% 30%, rgba(201,168,76,0.08) 0%, transparent 40%), radial-gradient(circle at 70% 70%, rgba(201,168,76,0.05) 0%, transparent 50%), linear-gradient(180deg, #0a0a0a 0%, #1a1a1a 100%)",
-                }}
-              >
+              <div className="relative h-[560px] overflow-hidden rounded-2xl border border-border bg-bg-surface lg:h-full">
                 {/* faint grid */}
-                <div
-                  className="absolute inset-0 opacity-30"
-                  style={{
-                    backgroundImage:
-                      "linear-gradient(rgba(201,168,76,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(201,168,76,0.06) 1px, transparent 1px)",
-                    backgroundSize: "48px 48px",
-                  }}
-                />
+                <div className="absolute inset-0 bg-gold/5" />
 
                 {/* you-are-here pulse */}
                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
                   <div className="size-4 rounded-full bg-blue-500 ring-4 ring-blue-500/30" />
                 </div>
 
-                {filtered.slice(0, 12).map((r) => (
+                {filtered.filter((r) => r.lat != null && r.lng != null).slice(0, 12).map((r) => (
                   <MapPin
                     key={r.id}
                     r={r}
@@ -1355,32 +1128,6 @@ export default function DiscoverPage() {
                   Re-center
                 </button>
 
-                {/* Zoom */}
-                <div className="absolute right-4 top-4 flex flex-col gap-1">
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-surface/90 text-white hover:border-gold/40"
-                    aria-label="Zoom in"
-                  >
-                    <Plus className="size-4" />
-                  </button>
-                  <button
-                    type="button"
-                    className="flex size-8 items-center justify-center rounded-md border border-border bg-bg-surface/90 text-white hover:border-gold/40"
-                    aria-label="Zoom out"
-                  >
-                    <Minus className="size-4" />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  className="absolute bottom-12 right-4 inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-surface/90 px-3 py-1.5 text-xs font-medium text-white backdrop-blur hover:border-gold/40"
-                >
-                  <Search className="size-3.5 text-gold" />
-                  Search this area
-                </button>
-
                 {/* Selected restaurant card */}
                 {selectedId &&
                   (() => {
@@ -1390,34 +1137,26 @@ export default function DiscoverPage() {
                       <div className="absolute bottom-12 left-4 right-20 max-w-md rounded-2xl border border-border bg-bg-surface/95 p-3 shadow-2xl shadow-black/40 backdrop-blur">
                         <div className="flex gap-3">
                           <div className="size-20 shrink-0 overflow-hidden rounded-xl">
-                            <StripePlaceholder label={r.initials} className="aspect-square" />
+                            <RestaurantCardImage restaurant={r} className="aspect-square" logoClassName="size-10" />
                           </div>
                           <div className="flex-1">
                             <p className="font-serif text-lg text-white">{r.name}</p>
-                            <div className="mt-0.5 flex items-center gap-1 text-xs text-text-secondary">
-                              <Stars rating={r.rating} />
-                              <span>{r.rating.toFixed(1)}</span>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+                              <RestaurantPriceMeter level={r.priceLevel} />
+                              {r.cuisine ? <span>{r.cuisine}</span> : null}
                             </div>
-                            <p className="mt-0.5 text-xs text-text-secondary">
-                              {r.cuisine} · <span className="text-gold">{r.price}</span>
-                            </p>
                             {r.dietaryTags.length > 0 ? (
                               <div className="mt-1 flex flex-wrap gap-1">
                                 {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
                               </div>
                             ) : null}
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {r.slots.slice(0, 3).map((s) => (
-                                <button
-                                  key={s}
-                                  type="button"
-                                  onClick={() => handleSlotClick(r, s)}
-                                  className="rounded-md bg-gold px-2.5 py-1 text-[11px] font-semibold text-black hover:opacity-90"
-                                >
-                                  {formatCompactTimeLabel(s)}
-                                </button>
-                              ))}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openRestaurantPreview(r)}
+                              className="mt-2 rounded-md bg-gold px-2.5 py-1 text-[11px] font-semibold text-black hover:opacity-90"
+                            >
+                              View preview
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -1440,6 +1179,8 @@ export default function DiscoverPage() {
         restaurant={activePreviewRestaurant}
         favorite={activePreviewRestaurant ? favorites.has(activePreviewRestaurant.id) : false}
         partySize={partySize}
+        bookingDate={dateParamFromSelection(dateId, customDate)}
+        preferredTime={time}
         onClose={() => {
           if (isDashboardPreview) {
             navigate("/dashboard");
@@ -1450,8 +1191,11 @@ export default function DiscoverPage() {
         onToggleFavorite={() => {
           if (activePreviewRestaurant) toggleFavorite(activePreviewRestaurant.id);
         }}
-        onReserve={(slot) => {
-          if (activePreviewRestaurant) handleSlotClick(activePreviewRestaurant, slot);
+        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
+          if (activePreviewRestaurant) {
+            setPartySize(selectedPartySize);
+            handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime);
+          }
         }}
       />
     </div>

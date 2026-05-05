@@ -4,19 +4,22 @@ import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export function usePublicMenuCategories(restaurantId: string | null | undefined) {
-  const [categories, setCategories] = useState<MenuCategoryRow[]>([]);
+  const [categoryState, setCategoryState] = useState<{ restaurantId: string | null; rows: MenuCategoryRow[] }>({
+    restaurantId: null,
+    rows: [],
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (!restaurantId || !isSupabaseConfigured()) {
-        setCategories([]);
+        setCategoryState({ restaurantId: restaurantId ?? null, rows: [] });
         setLoading(false);
         return;
       }
       setLoading(true);
-      setCategories([]);
+      setCategoryState({ restaurantId, rows: [] });
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("menu_categories")
@@ -25,29 +28,33 @@ export function usePublicMenuCategories(restaurantId: string | null | undefined)
         .eq("is_active", true)
         .order("sort_order");
       if (cancelled) return;
-      setCategories((data ?? []) as MenuCategoryRow[]);
+      setCategoryState({ restaurantId, rows: (data ?? []) as MenuCategoryRow[] });
       setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [restaurantId]);
 
-  return { categories, loading };
+  const categories = categoryState.restaurantId === (restaurantId ?? null) ? categoryState.rows : [];
+  return { categories, loading: loading || categoryState.restaurantId !== (restaurantId ?? null) };
 }
 
 export function usePublicMenuItems(restaurantId: string | null | undefined) {
-  const [items, setItems] = useState<MenuItemRow[]>([]);
+  const [itemState, setItemState] = useState<{ restaurantId: string | null; rows: MenuItemRow[] }>({
+    restaurantId: null,
+    rows: [],
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (!restaurantId || !isSupabaseConfigured()) {
-        setItems([]);
+        setItemState({ restaurantId: restaurantId ?? null, rows: [] });
         setLoading(false);
         return;
       }
       setLoading(true);
-      setItems([]);
+      setItemState({ restaurantId, rows: [] });
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("menu_items")
@@ -55,15 +62,17 @@ export function usePublicMenuItems(restaurantId: string | null | undefined) {
         .eq("restaurant_id", restaurantId)
         .eq("is_active", true)
         .eq("is_available", true)
+        .not("category_id", "is", null)
         .order("sort_order");
       if (cancelled) return;
-      setItems((data ?? []) as MenuItemRow[]);
+      setItemState({ restaurantId, rows: (data ?? []) as MenuItemRow[] });
       setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [restaurantId]);
 
-  return { items, loading };
+  const items = itemState.restaurantId === (restaurantId ?? null) ? itemState.rows : [];
+  return { items, loading: loading || itemState.restaurantId !== (restaurantId ?? null) };
 }
 
 export type MenuCategoryRow = {
