@@ -14,7 +14,8 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, Search, Users } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import {
   type TableRow,
 } from "@/hooks/useFloorPlan";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useUser } from "@/hooks/useUser";
 import { markReservationTablesSeated } from "@/lib/table-assignment";
@@ -330,7 +332,16 @@ type ReservationLinkRow = {
     | null;
 };
 
-type GuestLookupRow = { id: string };
+type HostQuickPanelProps = {
+  date: string;
+  partySize: number;
+  slots: AvailabilitySlot[];
+  loading: boolean;
+  onDateChange: (date: string) => void;
+  onPartySizeChange: (partySize: number) => void;
+  onCheckAvailability: () => void;
+  onOpenHostView: (slot?: AvailabilitySlot) => void;
+};
 
 function tableDisplayLabel(table: FloorTable): string {
   return table.label || table.tableNumber || table.id;
@@ -1692,12 +1703,14 @@ function IdleCard({
   query,
   onJump,
   results,
+  hostPanel,
 }: {
   summary: string;
   onSearch: (q: string) => void;
   query: string;
   onJump: (t: FloorTable) => void;
   results: FloorTable[];
+  hostPanel: HostQuickPanelProps;
 }) {
   return (
     <div className="space-y-4">
@@ -1746,6 +1759,77 @@ function IdleCard({
         )}
         {query && results.length === 0 && <p className="mt-3 text-[12px] text-text-muted">No matches.</p>}
       </div>
+      <HostQuickPanel {...hostPanel} />
+    </div>
+  );
+}
+
+function HostQuickPanel({
+  date,
+  partySize,
+  slots,
+  loading,
+  onDateChange,
+  onPartySizeChange,
+  onCheckAvailability,
+  onOpenHostView,
+}: HostQuickPanelProps) {
+  return (
+    <div className="overflow-hidden rounded-xl p-5" style={cardStyle}>
+      <div className={cn(eyebrowCls, "mb-2")}>Host booking</div>
+      <p className="mb-4 text-[12.5px] leading-relaxed text-text-muted">
+        Check open times from the floor, then finish details in Host View.
+      </p>
+      <div className="grid grid-cols-[1fr_96px] gap-2">
+        <Input
+          type="date"
+          value={date}
+          onChange={(event) => onDateChange(event.target.value)}
+          className="h-9 bg-transparent text-[13px]"
+        />
+        <Input
+          type="number"
+          min="1"
+          max="99"
+          value={partySize}
+          onChange={(event) => onPartySizeChange(Math.max(1, Number(event.target.value) || 1))}
+          className="h-9 bg-transparent text-[13px]"
+        />
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        className="mt-3 w-full"
+        onClick={onCheckAvailability}
+        disabled={loading}
+      >
+        <Search className="size-3.5" />
+        {loading ? "Checking..." : "Check times"}
+      </Button>
+      <div className="mt-4 space-y-2">
+        {slots.slice(0, 4).map((slot) => (
+          <button
+            key={`${slot.shift_id}-${slot.date_time}`}
+            type="button"
+            onClick={() => onOpenHostView(slot)}
+            className="flex w-full items-center justify-between rounded-lg border border-border/70 bg-white/[0.02] px-3 py-2 text-left text-[12.5px] text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+          >
+            <span>{slot.display_time}</span>
+            <span className="flex items-center gap-1 text-text-muted">
+              <Users className="size-3" />
+              {slot.table_ids?.length ?? 0}
+            </span>
+          </button>
+        ))}
+        {!loading && slots.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border/70 px-3 py-3 text-[12px] text-text-muted">
+            No times loaded yet.
+          </p>
+        )}
+      </div>
+      <Button type="button" variant="outline" size="sm" className="mt-3 w-full" onClick={() => onOpenHostView()}>
+        Open Host View
+      </Button>
     </div>
   );
 }
@@ -1833,6 +1917,7 @@ function EditCard({
 // ─── Main page ─────────────────────────────────────────────────────────────
 export default function FloorPlanPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const {
     tables: dbTables,
     floorPlans: dbFloorPlans,
@@ -1873,6 +1958,10 @@ export default function FloorPlanPage() {
   const [confirmDeleteFloorId, setConfirmDeleteFloorId] = useState<string | null>(null);
   const [serviceDialog, setServiceDialog] = useState<{ action: FloorServiceAction; table: FloorTable } | null>(null);
   const [savingService, setSavingService] = useState(false);
+  const [hostQuickDate, setHostQuickDate] = useState(() => dateInputValue(new Date()));
+  const [hostQuickPartySize, setHostQuickPartySize] = useState(2);
+  const [hostQuickSlots, setHostQuickSlots] = useState<AvailabilitySlot[]>([]);
+  const [hostQuickLoading, setHostQuickLoading] = useState(false);
   const turnTimeMinutes = restaurantTurnTimeMinutes(selectedRestaurant?.settings_json);
 
   // Visual scale for "100%". Keep this at true room scale so the floor
@@ -1896,6 +1985,37 @@ export default function FloorPlanPage() {
         : false,
     [rolesAtRestaurant, selectedRestaurantId],
   );
+
+  const loadHostQuickAvailability = async () => {
+    if (!selectedRestaurantId) {
+      toast.error("Select a restaurant first.");
+      return;
+    }
+    setHostQuickLoading(true);
+    try {
+      const result = await fetchAvailabilitySlots(selectedRestaurantId, hostQuickDate, hostQuickPartySize);
+      if (result.error) {
+        toast.error(result.error);
+        setHostQuickSlots([]);
+      } else {
+        setHostQuickSlots(result.slots);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not load availability.");
+      setHostQuickSlots([]);
+    } finally {
+      setHostQuickLoading(false);
+    }
+  };
+
+  const openHostView = (slot?: AvailabilitySlot) => {
+    const params = new URLSearchParams({
+      date: hostQuickDate,
+      partySize: String(hostQuickPartySize),
+    });
+    if (slot) params.set("time", slot.date_time);
+    navigate(`/dashboard/host-view?${params.toString()}`);
+  };
 
   useEffect(() => {
     if (canEditLayout || !editing) return;
@@ -2164,32 +2284,6 @@ export default function FloorPlanPage() {
     }
   };
 
-  const findGuestId = async (payload: FloorServiceFormValues): Promise<string | null> => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
-    const guestEmail = payload.guestEmail.trim();
-    const guestPhone = payload.guestPhone.trim();
-    if (!guestEmail && !guestPhone) return null;
-
-    const client = getSupabaseBrowserClient();
-    let query = client
-      .from("guests")
-      .select("id")
-      .eq("restaurant_id", selectedRestaurantId)
-      .limit(1);
-
-    if (guestEmail && guestPhone) {
-      query = query.or(`email.eq.${guestEmail},phone.eq.${guestPhone}`);
-    } else if (guestEmail) {
-      query = query.eq("email", guestEmail);
-    } else {
-      query = query.eq("phone", guestPhone);
-    }
-
-    const { data } = await query;
-    const first = (data ?? [])[0] as GuestLookupRow | undefined;
-    return first?.id ?? null;
-  };
-
   const ensureTableAvailableForReservation = async (
     tableId: string,
     reservedAt: Date,
@@ -2238,36 +2332,25 @@ export default function FloorPlanPage() {
     const guestName = values.guestName.trim() || (action === "walkin" ? "Walk-in" : "");
     if (!guestName) throw new Error("Guest name is required.");
     await ensureTableAvailableForReservation(tableId, reservedAt, values.partySize);
-
-    const guestId = await findGuestId(values);
     const client = getSupabaseBrowserClient();
-    const { data, error } = await client
-      .from("reservations")
-      .insert({
-        restaurant_id: selectedRestaurantId,
-        guest_id: guestId,
-        guest_full_name: guestName,
-        guest_email: values.guestEmail.trim() || null,
-        guest_phone: values.guestPhone.trim() || null,
-        party_size: values.partySize,
-        reserved_at: reservedAt.toISOString(),
-        duration_minutes: turnTimeMinutes,
-        table_id: tableId,
-        special_request: values.specialRequest.trim() || null,
-        status: action === "walkin" ? "seated" : "confirmed",
-        source: action === "walkin" ? "floor_walkin" : "floor_plan",
-        is_guest_checkout: true,
-        confirmed_at: new Date().toISOString(),
-        checked_in_at: action === "walkin" ? new Date().toISOString() : null,
-        seated_at: action === "walkin" ? new Date().toISOString() : null,
-        confirmation_code: crypto.randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase(),
-      })
-      .select("id")
-      .single();
+    const { data: reservationId, error } = await client.rpc("create_staff_reservation", {
+      p_restaurant_id: selectedRestaurantId,
+      p_guest_name: guestName,
+      p_guest_email: values.guestEmail.trim() || null,
+      p_guest_phone: values.guestPhone.trim() || null,
+      p_party_size: values.partySize,
+      p_reserved_at: reservedAt.toISOString(),
+      p_special_request: values.specialRequest.trim() || null,
+    });
 
     if (error) throw new Error(error.message);
+    if (!reservationId) throw new Error("Reservation could not be created.");
 
-    const reservationId = (data as { id: string }).id;
+    const { error: releaseError } = await client.rpc("release_reservation_tables", {
+      p_reservation_id: reservationId,
+    });
+    if (releaseError) throw new Error(releaseError.message);
+
     const { error: assignmentError } = await client.from("reservation_tables").insert({
       restaurant_id: selectedRestaurantId,
       reservation_id: reservationId,
@@ -2275,6 +2358,41 @@ export default function FloorPlanPage() {
       is_primary: true,
     });
     if (assignmentError) throw new Error(assignmentError.message);
+
+    const { error: reservationTableError } = await client
+      .from("reservations")
+      .update({ table_id: tableId, duration_minutes: turnTimeMinutes })
+      .eq("id", reservationId);
+    if (reservationTableError) throw new Error(reservationTableError.message);
+
+    if (action === "walkin") {
+      const { error: seatError } = await client.rpc("seat_staff_reservation", {
+        p_reservation_id: reservationId,
+        p_table_id: tableId,
+      });
+      if (seatError) throw new Error(seatError.message);
+    }
+
+    const { error: auditError } = await client.rpc("write_staff_audit_event", {
+      p_restaurant_id: selectedRestaurantId,
+      p_action: action === "walkin" ? "reservation.floor_walkin" : "reservation.floor_create",
+      p_entity_type: "reservation",
+      p_entity_id: reservationId,
+      p_before_json: {},
+      p_after_json: {
+        guest_name: guestName,
+        guest_email: values.guestEmail.trim() || null,
+        guest_phone: values.guestPhone.trim() || null,
+        party_size: values.partySize,
+        reserved_at: reservedAt.toISOString(),
+        table_ids: [tableId],
+        table_label: tableDisplayLabel(t),
+        duration_minutes: turnTimeMinutes,
+        source: action === "walkin" ? "floor_walkin" : "floor_plan",
+      },
+      p_approval_profile_id: null,
+    });
+    if (auditError) throw new Error(auditError.message);
 
     return reservationId;
   };
@@ -3378,6 +3496,16 @@ export default function FloorPlanPage() {
               onSearch={setQuery}
               onJump={jumpTo}
               results={searchResults}
+              hostPanel={{
+                date: hostQuickDate,
+                partySize: hostQuickPartySize,
+                slots: hostQuickSlots,
+                loading: hostQuickLoading,
+                onDateChange: setHostQuickDate,
+                onPartySizeChange: setHostQuickPartySize,
+                onCheckAvailability: loadHostQuickAvailability,
+                onOpenHostView: openHostView,
+              }}
             />
           )}
         </div>

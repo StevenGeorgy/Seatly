@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { format, formatDistanceToNowStrict } from "date-fns";
+import { toast } from "sonner";
 import {
   Bell,
   Calendar as CalendarIcon,
@@ -40,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useNotifications } from "@/hooks/useNotifications";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -139,10 +141,16 @@ function BookingCardView({
   b,
   variant,
   onPrimary,
+  onCancel,
+  onModify,
+  cancelling,
 }: {
   b: BookingCard;
   variant: "upcoming" | "past" | "cancelled";
   onPrimary: () => void;
+  onCancel?: () => void;
+  onModify?: () => void;
+  cancelling?: boolean;
 }) {
   return (
     <motion.div
@@ -201,7 +209,7 @@ function BookingCardView({
               Book again
             </button>
             <Link
-              to={`/${b.restaurantSlug}`}
+              to={`/bookings/${b.id}`}
               className="flex items-center justify-center gap-2 text-sm text-text-secondary hover:text-white"
             >
               Details <ChevronRight className="size-4" />
@@ -222,6 +230,27 @@ function BookingCardView({
             >
               Details <ChevronRight className="size-4" />
             </button>
+            {variant === "upcoming" && onCancel && (
+              <>
+                <button
+                  type="button"
+                  onClick={onModify}
+                  className="flex items-center justify-center gap-2 border-t border-border/60 py-3 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-white"
+                >
+                  <PencilLine className="size-4" />
+                  Modify
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  disabled={cancelling}
+                  className="flex items-center justify-center gap-2 border-t border-border/60 py-3 text-sm font-medium text-danger transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <X className="size-4" />
+                  {cancelling ? "Cancelling..." : "Cancel"}
+                </button>
+              </>
+            )}
           </>
         )}
       </div>
@@ -231,10 +260,14 @@ function BookingCardView({
 
 function NextReservationCard({
   b,
+  onModify,
   onCancel,
+  cancelling,
 }: {
   b: BookingCard;
+  onModify: () => void;
   onCancel: () => void;
+  cancelling: boolean;
 }) {
   const [now] = useState(() => Date.now());
   const days = Math.round((b.reservedAt.getTime() - now) / (1000 * 60 * 60 * 24));
@@ -304,19 +337,43 @@ function NextReservationCard({
             <Phone className="size-4" /> Call
           </Button>
         )}
-        <Button variant="outline" className="h-10 rounded-md font-medium">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10 rounded-md font-medium"
+          onClick={onModify}
+        >
           <PencilLine className="size-4" /> Modify
         </Button>
         <button
           type="button"
           onClick={onCancel}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-rose-500/50 bg-rose-500/10 text-sm font-medium text-rose-400 transition-colors hover:bg-rose-500/20"
+          disabled={cancelling}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-danger/50 bg-danger/10 text-sm font-medium text-danger transition-colors hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <X className="size-4" /> Cancel
+          <X className="size-4" /> {cancelling ? "Cancelling..." : "Cancel"}
         </button>
       </div>
     </div>
   );
+}
+
+async function cancelReservation(reservationId: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Authentication is not available. Configure Supabase first.");
+  }
+
+  const client = getSupabaseBrowserClient();
+  const { error, data } = await client.functions.invoke<{ ok?: boolean; error?: string }>(
+    "cancel-reservation",
+    {
+      body: { reservation_id: reservationId },
+    },
+  );
+
+  if (error || data?.error || data?.ok !== true) {
+    throw new Error(data?.error ?? error?.message ?? "Could not cancel reservation.");
+  }
 }
 
 function QuickActions({
@@ -411,15 +468,18 @@ export default function BookingsPage() {
     restaurantRoles,
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
-  const { upcoming, past, loading } = useMyReservations();
+  const { upcoming, past, loading, refresh } = useMyReservations();
   const { unreadCount } = useNotifications();
   const assistant = useAssistant();
 
   const [tab, setTab] = useState<Tab>("upcoming");
   const [search, setSearch] = useState("");
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const upcomingCards = useMemo(() => {
-    return upcoming.map(adapt);
+    return upcoming
+      .map(adapt)
+      .sort((a, b) => a.reservedAt.getTime() - b.reservedAt.getTime());
   }, [upcoming]);
 
   const { pastCompleted, cancelled } = useMemo(() => {
@@ -459,7 +519,26 @@ export default function BookingsPage() {
   };
 
   const handleDetails = (b: BookingCard) => {
-    navigate(`/${b.restaurantSlug}`);
+    navigate(`/bookings/${b.id}`);
+  };
+
+  const handleModify = (b: BookingCard) => {
+    navigate(`/bookings/${b.id}?modify=1`);
+  };
+
+  const handleCancel = async (b: BookingCard) => {
+    if (cancellingId) return;
+    setCancellingId(b.id);
+    try {
+      await cancelReservation(b.id);
+      await refresh();
+      setTab("cancelled");
+      toast.success("Reservation cancelled.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   const handleAddToCalendar = () => {
@@ -654,6 +733,9 @@ export default function BookingsPage() {
                         b={b}
                         variant="upcoming"
                         onPrimary={() => handleDetails(b)}
+                        onModify={() => handleModify(b)}
+                        onCancel={() => void handleCancel(b)}
+                        cancelling={cancellingId === b.id}
                       />
                     ))}
                   </div>
@@ -723,7 +805,9 @@ export default function BookingsPage() {
             {next && (
               <NextReservationCard
                 b={next}
-                onCancel={() => navigate(`/${next.restaurantSlug}`)}
+                onModify={() => handleModify(next)}
+                onCancel={() => void handleCancel(next)}
+                cancelling={cancellingId === next.id}
               />
             )}
             <QuickActions

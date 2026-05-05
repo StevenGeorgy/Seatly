@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type ViewMode = "day" | "week" | "list";
-type QuickFilter = "all" | "confirmed" | "seated";
+type QuickFilter = "all" | "confirmed" | "seated" | "cancelled" | "modified";
 
 type ReservationBoardRow = {
   id: string;
@@ -45,7 +45,7 @@ type ReservationBoardRow = {
   table: string;
   duration: string;
   notes: string;
-  status: QuickFilter | "completed";
+  status: Exclude<QuickFilter, "all" | "modified"> | "completed";
   tag?: string;
   tableCount: number;
   tableCapacity: number;
@@ -104,9 +104,14 @@ function timeToBoardMinutes(timeStr: string): number {
 }
 
 function normalizeStatus(row: ReservationRow): ReservationBoardRow["status"] {
+  if (row.status === "cancelled") return "cancelled";
   if (row.status === "seated") return "seated";
   if (row.status === "completed") return "completed";
   return "confirmed";
+}
+
+function isDinerModifiedReservation(row: ReservationRow): boolean {
+  return row.internal_notes?.includes("[Diner modified booking") ?? false;
 }
 
 function reservationTableLabel(rowData: ReservationRow, t: TranslationFn): string {
@@ -163,7 +168,9 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     duration: formatDurationMinutes(durationMinutes, t),
     notes,
     status,
-    tag: assignedTables.length > 1
+    tag: isDinerModifiedReservation(rowData)
+      ? "Modified by diner"
+      : assignedTables.length > 1
       ? t("dashboard.reservations.largePartyTag", { count: assignedTables.length })
       : rowData.source === "walk_in" ? "Walk-in" : rowData.deposit_amount ? "Deposit" : undefined,
     tableCount: assignedTables.length,
@@ -180,6 +187,7 @@ function statusBadgeStatus(status: ReservationBoardRow["status"]): string {
 
 function blockClasses(status: ReservationBoardRow["status"]): string {
   if (status === "seated") return "border-gold/35 bg-gold/20 text-gold";
+  if (status === "cancelled") return "border-danger/35 bg-danger/10 text-danger";
   return "border-success/35 bg-success/15 text-success";
 }
 
@@ -259,6 +267,7 @@ export default function ReservationsPage() {
       const matchesQuick =
         quickFilter === "all" ||
         reservation.status === quickFilter ||
+        (quickFilter === "modified" && reservation.source ? isDinerModifiedReservation(reservation.source) : false) ||
         (quickFilter === "confirmed" && reservation.status === "completed");
       const matchesSearch =
         !q ||
@@ -270,10 +279,18 @@ export default function ReservationsPage() {
   }, [quickFilter, reservations, search, t]);
 
   const allRows = useMemo(() => reservations.map((reservation) => adaptReservation(reservation, t)), [reservations, t]);
+  const activeTimelineRows = useMemo(
+    () => boardRows.filter((reservation) => reservation.status !== "cancelled"),
+    [boardRows],
+  );
   const bookedTonight = allRows.length;
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
   const seatedCount = allRows.filter((reservation) => reservation.status === "seated").length;
   const upcomingCount = allRows.filter((reservation) => reservation.status === "confirmed").length;
+  const cancelledCount = allRows.filter((reservation) => reservation.status === "cancelled").length;
+  const modifiedCount = allRows.filter(
+    (reservation) => reservation.source ? isDinerModifiedReservation(reservation.source) : false,
+  ).length;
 
   const calSelectedDay = useMemo(() => {
     if (!reservationDate) return undefined;
@@ -470,6 +487,8 @@ export default function ReservationsPage() {
                   { id: "all" as QuickFilter, label: t("dashboard.reservations.all"), count: allRows.length },
                   { id: "confirmed" as QuickFilter, label: t("dashboard.reservations.confirmed"), count: allRows.filter((item) => item.status === "confirmed").length },
                   { id: "seated" as QuickFilter, label: t("dashboard.reservations.seated"), count: seatedCount },
+                  { id: "cancelled" as QuickFilter, label: "Cancelled", count: cancelledCount },
+                  { id: "modified" as QuickFilter, label: "Modified", count: modifiedCount },
                 ]
               ).map((item) => (
                 <button
@@ -491,7 +510,7 @@ export default function ReservationsPage() {
         </div>
       </section>
 
-      <FloorTimeline rows={boardRows} loading={loading} />
+      <FloorTimeline rows={activeTimelineRows} loading={loading} />
       <ReservationsTable
         rows={boardRows}
         loading={loading}
@@ -929,10 +948,17 @@ function ReservationsTable({
                     </td>
                     <td className="px-5 py-4 text-text-secondary">{reservation.duration}</td>
                     <td className="px-5 py-4">
-                      <StatusBadge
-                        status={statusBadgeStatus(reservation.status)}
-                        label={reservation.status.replace("_", " ")}
-                      />
+                      <div className="flex flex-col items-start gap-1.5">
+                        <StatusBadge
+                          status={statusBadgeStatus(reservation.status)}
+                          label={reservation.status.replace("_", " ")}
+                        />
+                        {reservation.source && isDinerModifiedReservation(reservation.source) ? (
+                          <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+                            Modified by diner
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
                     <td className="px-5 py-4 text-right">

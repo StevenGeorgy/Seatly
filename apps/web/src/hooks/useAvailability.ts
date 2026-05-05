@@ -22,7 +22,31 @@ interface AvailabilityResult {
   error: string | null;
 }
 
-export async function fetchAvailabilitySlots(
+const AVAILABILITY_CACHE_TTL_MS = 45_000;
+
+type CachedAvailability = {
+  expiresAt: number;
+  result: AvailabilityResult;
+};
+
+const availabilityCache = new Map<string, CachedAvailability>();
+const availabilityRequests = new Map<string, Promise<AvailabilityResult>>();
+
+function availabilityCacheKey(restaurantId: string, date: string, partySize: number): string {
+  return `${restaurantId}|${date}|${Math.max(1, Math.floor(partySize))}`;
+}
+
+function cloneAvailabilityResult(result: AvailabilityResult): AvailabilityResult {
+  return {
+    slots: result.slots
+      .filter((slot) => new Date(slot.date_time).getTime() >= Date.now())
+      .map((slot) => ({ ...slot, table_ids: slot.table_ids ? [...slot.table_ids] : undefined })),
+    floorCapacity: result.floorCapacity,
+    error: result.error,
+  };
+}
+
+async function fetchAvailabilityFromNetwork(
   restaurantId: string,
   date: string,
   partySize: number,
@@ -54,6 +78,38 @@ export async function fetchAvailabilitySlots(
   }
 
   return { slots: json.slots ?? [], floorCapacity: nextFloorCapacity, error: null };
+}
+
+export async function fetchAvailabilitySlots(
+  restaurantId: string,
+  date: string,
+  partySize: number,
+): Promise<AvailabilityResult> {
+  const key = availabilityCacheKey(restaurantId, date, partySize);
+  const cached = availabilityCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cloneAvailabilityResult(cached.result);
+  }
+
+  const activeRequest = availabilityRequests.get(key);
+  if (activeRequest) {
+    return cloneAvailabilityResult(await activeRequest);
+  }
+
+  const request = fetchAvailabilityFromNetwork(restaurantId, date, Math.max(1, Math.floor(partySize)))
+    .then((result) => {
+      availabilityCache.set(key, {
+        expiresAt: Date.now() + AVAILABILITY_CACHE_TTL_MS,
+        result: cloneAvailabilityResult(result),
+      });
+      return result;
+    })
+    .finally(() => {
+      availabilityRequests.delete(key);
+    });
+
+  availabilityRequests.set(key, request);
+  return cloneAvailabilityResult(await request);
 }
 
 export function useAvailability() {

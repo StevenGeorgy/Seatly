@@ -6,11 +6,14 @@ import { useUser } from "@/hooks/useUser";
 export type MyReservationRow = {
   id: string;
   created_at: string | null;
+  updated_at: string | null;
   reserved_at: string;
   party_size: number;
   status: string;
   confirmation_code: string | null;
   cancellation_reason: string | null;
+  special_request: string | null;
+  internal_notes: string | null;
   restaurant: {
     id: string;
     name: string;
@@ -67,7 +70,7 @@ export function useMyReservations() {
     const { data, error: rErr } = await client
       .from("reservations")
       .select(
-        "id, created_at, reserved_at, party_size, status, confirmation_code, cancellation_reason, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url), table:tables(label)",
+        "id, created_at, updated_at, reserved_at, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url), table:tables(label)",
       )
       .in("guest_id", guestIds)
       .order("reserved_at", { ascending: false });

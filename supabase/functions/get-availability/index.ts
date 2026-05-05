@@ -87,6 +87,7 @@ Deno.serve(async (req: Request) => {
     );
 
     const dateOnly = dateStr.slice(0, 10);
+    const now = new Date();
 
     const { data: restaurantRow } = await supabase
       .from("restaurants")
@@ -177,6 +178,10 @@ Deno.serve(async (req: Request) => {
       while (slotMin + slotMins <= endMin) {
         const slotTime = `${String(Math.floor(slotMin / 60)).padStart(2, "0")}:${String(slotMin % 60).padStart(2, "0")}`;
         const slotStart = new Date(localToUTC(dateOnly, slotTime, timezone));
+        if (slotStart.getTime() < now.getTime()) {
+          slotMin += slotMins;
+          continue;
+        }
         const slotEnd = new Date(slotStart.getTime() + turnMins * 60 * 1000);
 
         const shiftResvs = (reservations || []).filter((r) => r.shift_id === shift.id);

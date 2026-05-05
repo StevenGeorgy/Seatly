@@ -16,6 +16,7 @@ const LoyaltyPage = lazy(() => import("@/pages/marketing/LoyaltyPage"));
 const RestaurantsPage = lazy(() => import("@/pages/marketing/RestaurantsPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
+const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
 const DiscoverPage = lazy(() => import("@/pages/customer/DiscoverPage"));
 const DealsPage = lazy(() => import("@/pages/customer/DealsPage"));
@@ -30,6 +31,7 @@ const NotFoundPage = lazy(() => import("@/pages/NotFoundPage"));
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
 const ReservationsPage = lazy(() => import("@/pages/dashboard/ReservationsPage"));
+const HostViewPage = lazy(() => import("@/pages/dashboard/HostViewPage"));
 const OrdersPage = lazy(() => import("@/pages/dashboard/OrdersPage"));
 const MenuPage = lazy(() => import("@/pages/dashboard/MenuPage"));
 const CrmPage = lazy(() => import("@/pages/dashboard/CrmPage"));
@@ -117,6 +119,16 @@ export function AppRoutes() {
           }
         />
         <Route
+          path="/bookings/:reservationId"
+          element={
+            <RequireAuth>
+              <RequireCustomer>
+                <BookingDetailsPage />
+              </RequireCustomer>
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/deals"
           element={
             <RequireAuth>
@@ -144,6 +156,7 @@ export function AppRoutes() {
           <Route index element={<OverviewPage />} />
           <Route path="reservations" element={<ReservationsPage />} />
           <Route path="floor-plan" element={<FloorPlanPage />} />
+          <Route path="host-view" element={<HostViewPage />} />
           <Route path="staff-invites" element={<HostPage />} />
           <Route path="host" element={<Navigate to="/dashboard/staff-invites" replace />} />
           <Route path="orders" element={<OrdersPage />} />

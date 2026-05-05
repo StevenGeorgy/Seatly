@@ -26,6 +26,7 @@ export type DashboardPermissionKey =
   | "overview"
   | "reservations"
   | "floorPlan"
+  | "hostView"
   | "staffInvites"
   | "orders"
   | "menu"

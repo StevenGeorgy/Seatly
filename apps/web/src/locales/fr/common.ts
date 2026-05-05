@@ -135,6 +135,7 @@ const common = {
       staffAccessUpdateFailed: "Impossible de mettre \u00e0 jour l\u2019acc\u00e8s du personnel.",
       staffAccessRemoved: "Acc\u00e8s du personnel retir\u00e9.",
       staffAccessRemoveFailed: "Impossible de retirer l\u2019acc\u00e8s du personnel.",
+      permissionHostView: "Vue h\u00f4te",
     },
     floorPlan: {
       title: "Plan de salle",
@@ -785,6 +786,7 @@ const common = {
       overview: { title: "Aper\u00e7u" },
       reservations: { title: "R\u00e9servations" },
       floorPlan: { title: "Plan de salle" },
+      hostView: { title: "Vue h\u00f4te" },
       waitlist: { title: "Liste d\u2019attente" },
       orders: { title: "Commandes" },
       menu: { title: "Menu" },

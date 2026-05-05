@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import type { AvailabilitySlot } from "@/hooks/useAvailability";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -38,6 +39,7 @@ export type ReservationRow = {
   completed_at: string | null;
   cancelled_at: string | null;
   created_at: string | null;
+  updated_at?: string | null;
   guests?: { full_name: string | null; email: string | null; phone: string | null } | null;
   reservation_tables?: Array<{
     table_id: string;
@@ -94,8 +96,8 @@ export function useReservations(filters?: ReservationFilters) {
     if (filterStatus && filterStatus !== "all") {
       query = query.eq("status", filterStatus);
     } else {
-      // "All" tab hides completed/cancelled — only show them on their own tabs
-      query = query.not("status", "in", '("completed","cancelled")');
+      // Keep cancellations visible to staff for the selected service day.
+      query = query.not("status", "in", '("completed","no_show")');
     }
 
     if (filterDate) {
@@ -201,11 +203,12 @@ export function useReservations(filters?: ReservationFilters) {
     party_size: number;
     reserved_at: string;
     table_id?: string | null;
+    availability_slot?: AvailabilitySlot | null;
     special_request?: string;
-  }) => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) return;
+  }): Promise<string | null> => {
+    if (!selectedRestaurantId || !isSupabaseConfigured()) return null;
     const client = getSupabaseBrowserClient();
-    const { error: reservationError } = await client.rpc("create_staff_reservation", {
+    const { data, error: reservationError } = await client.rpc("create_staff_reservation", {
       p_restaurant_id: selectedRestaurantId,
       p_guest_name: payload.guest_name,
       p_guest_email: payload.guest_email || null,
@@ -219,7 +222,57 @@ export function useReservations(filters?: ReservationFilters) {
       throw new Error(reservationError.message);
     }
 
+    const reservationId = typeof data === "string" ? data : null;
+    if (reservationId && payload.availability_slot) {
+      const slotTableIds = (payload.availability_slot.table_ids ?? []).filter(Boolean);
+      const { error: shiftUpdateError } = await client
+        .from("reservations")
+        .update({ shift_id: payload.availability_slot.shift_id })
+        .eq("id", reservationId);
+      if (shiftUpdateError) throw new Error(shiftUpdateError.message);
+
+      if (slotTableIds.length > 0) {
+        const { data: activeAssignments, error: assignmentCheckError } = await client
+          .from("reservation_tables")
+          .select("table_id")
+          .eq("reservation_id", reservationId)
+          .is("released_at", null);
+        if (assignmentCheckError) throw new Error(assignmentCheckError.message);
+        const assignedTableIds = (activeAssignments ?? [])
+          .map((row) => row.table_id)
+          .filter((id): id is string => Boolean(id));
+        const expected = [...slotTableIds].sort().join(",");
+        const actual = [...assignedTableIds].sort().join(",");
+        if (expected !== actual) {
+          throw new Error("Reservation table assignment changed before booking completed. Refresh availability and try again.");
+        }
+      }
+
+      const { error: auditError } = await client.rpc("write_staff_audit_event", {
+        p_restaurant_id: selectedRestaurantId,
+        p_action: "reservation.host_create",
+        p_entity_type: "reservation",
+        p_entity_id: reservationId,
+        p_before_json: {},
+        p_after_json: {
+          guest_name: payload.guest_name,
+          guest_email: payload.guest_email || null,
+          guest_phone: payload.guest_phone || null,
+          party_size: payload.party_size,
+          reserved_at: payload.reserved_at,
+          shift_id: payload.availability_slot.shift_id,
+          shift_name: payload.availability_slot.shift_name,
+          table_ids: slotTableIds,
+          duration_minutes: payload.availability_slot.duration_minutes ?? null,
+          source: "host_view",
+        },
+        p_approval_profile_id: null,
+      });
+      if (auditError) throw new Error(auditError.message);
+    }
+
     void fetchReservations();
+    return reservationId;
   };
 
   const requestManagerApproval = async (payload: {
