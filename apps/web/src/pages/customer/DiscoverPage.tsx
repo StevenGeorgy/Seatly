@@ -672,14 +672,15 @@ export default function DiscoverPage() {
       </header>
 
       <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
-        {/* Greeting */}
-        <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
-        <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
-          Good evening, <span className="capitalize">{greetingName}</span>.
-        </h1>
-        <p className="mt-3 text-base text-text-secondary">
-          {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
-        </p>
+        <div className="text-center">
+          <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
+          <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+            Good evening, <span className="capitalize">{greetingName}</span>.
+          </h1>
+          <p className="mt-3 text-base text-text-secondary">
+            {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
+          </p>
+        </div>
 
         {/* Search bar + view toggle */}
         <div className="mt-10 flex flex-col gap-3 sm:flex-row">

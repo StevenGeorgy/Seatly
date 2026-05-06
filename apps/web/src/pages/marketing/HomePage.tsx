@@ -346,8 +346,8 @@ export default function HomePage() {
       {/* ── HERO ───────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_10%,rgba(201,168,76,0.10)_0%,transparent_55%)]" />
-        <div className="relative grid w-full items-center gap-12 px-12 py-20 sm:px-16 md:px-20 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-16 lg:px-24 lg:py-24 xl:grid-cols-[minmax(0,640px)_420px] xl:px-32 2xl:px-40">
-          <div className="flex flex-col">
+        <div className="relative grid w-full items-center gap-14 px-12 py-24 sm:px-16 sm:py-28 md:px-20 lg:grid-cols-[auto_1fr] lg:gap-20 lg:py-32 xl:gap-24 xl:px-32 2xl:px-40">
+          <div className="flex min-w-0 max-w-[640px] flex-col">
             <motion.span
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -504,7 +504,7 @@ export default function HomePage() {
               ))}
             </div>
 
-            <div className="mt-14 grid max-w-xl grid-cols-3 gap-8 border-t border-border/50 pt-8">
+            <div className="mt-16 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-10 sm:gap-10 lg:gap-14">
               <div>
                 <p className="font-serif text-3xl text-white">12,400+</p>
                 <p className="mt-1 text-xs text-text-muted">restaurants nationwide</p>
@@ -520,13 +520,13 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Phone mock */}
-          <div className="relative hidden lg:block">
+          {/* Phone mock — centered in space between copy and viewport edge */}
+          <div className="relative hidden min-w-0 lg:flex lg:w-full lg:justify-center">
             <motion.div
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.15, ease }}
-              className="relative mx-auto w-full max-w-[360px]"
+              className="relative w-full max-w-[360px]"
             >
               <div className="absolute -left-12 top-12 z-10 hidden w-64 rounded-2xl border border-border bg-bg-surface/90 p-4 shadow-2xl shadow-black/40 backdrop-blur lg:block">
                 <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">— Listening</p>
@@ -622,7 +622,7 @@ export default function HomePage() {
       </section>
 
       {/* ── Available tonight ─────────────────────────────────── */}
-      <section className="border-t border-border/40 py-20">
+      <section className="border-t border-border/40 py-24 lg:py-28">
         <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="flex items-end justify-between gap-6">
             <div>
@@ -707,7 +707,7 @@ export default function HomePage() {
         id="for-restaurants"
         className="scroll-mt-24 border-t border-border/40 bg-bg-surface/30 py-20"
       >
-        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
+        <div className="mx-auto grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>For restaurants</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
@@ -862,7 +862,7 @@ export default function HomePage() {
         id="hey-cenaiva"
         className="scroll-mt-24 border-t border-border/40 py-20"
       >
-        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
+        <div className="mx-auto grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>Hey Cenaiva</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">

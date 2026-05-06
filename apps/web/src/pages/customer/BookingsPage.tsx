@@ -433,32 +433,6 @@ function QuickActions({
   );
 }
 
-function StatTile({
-  value,
-  label,
-  highlight,
-}: {
-  value: number;
-  label: string;
-  highlight?: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        "min-w-[110px] rounded-2xl border bg-bg-surface/40 p-4 text-center",
-        highlight ? "border-gold/40 bg-gold/5" : "border-border",
-      )}
-    >
-      <p className={cn("font-serif text-3xl", highlight ? "text-gold" : "text-white")}>
-        {value}
-      </p>
-      <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-        {label}
-      </p>
-    </div>
-  );
-}
-
 export default function BookingsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -624,23 +598,18 @@ export default function BookingsPage() {
 
       <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         {/* Header row */}
-        <div className="flex flex-col gap-8 border-b border-border/40 pb-10 lg:flex-row lg:items-end lg:justify-between">
-          <div>
+        <div className="border-b border-border/40 pb-10">
+          <div className="text-center">
             <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
               <span className="inline-block h-px w-3 bg-gold/60" /> Your reservations
             </span>
             <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
               Bookings
             </h1>
-            <p className="mt-3 max-w-xl text-base text-text-secondary">
+            <p className="mx-auto mt-3 max-w-xl text-base text-text-secondary">
               Manage upcoming reservations, revisit past meals, and book again with one
               tap.
             </p>
-          </div>
-          <div className="flex gap-3">
-            <StatTile value={upcomingCards.length} label="Upcoming" highlight />
-            <StatTile value={pastCards.length} label="Past" />
-            <StatTile value={cancelled.length} label="Cancelled" />
           </div>
         </div>
 

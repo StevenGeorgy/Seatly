@@ -801,16 +801,18 @@ export default function DealsPage() {
       </header>
 
       <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
-        <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
-          <span className="inline-block h-px w-3 bg-gold/60" /> LIMITED · THIS WEEK IN TORONTO
-        </span>
-        <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
-          Promotions <span className="italic text-gold">&amp;</span> Events
-        </h1>
-        <p className="mt-3 max-w-2xl text-base text-text-secondary">
-          Tasting menus, happy hours, and chef's table experiences from restaurants
-          you follow.
-        </p>
+        <div className="text-center">
+          <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
+            <span className="inline-block h-px w-3 bg-gold/60" /> LIMITED · THIS WEEK IN TORONTO
+          </span>
+          <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+            Promotions <span className="italic text-gold">&amp;</span> Events
+          </h1>
+          <p className="mx-auto mt-3 max-w-2xl text-base text-text-secondary">
+            Tasting menus, happy hours, and chef's table experiences from restaurants
+            you follow.
+          </p>
+        </div>
 
         {/* Search + Filters + view toggle */}
         <div className="mt-10 flex flex-col gap-3 sm:flex-row">

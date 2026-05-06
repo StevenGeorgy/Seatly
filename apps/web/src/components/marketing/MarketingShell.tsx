@@ -135,7 +135,7 @@ export function MarketingShell({ children }: MarketingShellProps) {
               transition={{ duration: 0.2, ease: "easeInOut" }}
               className="overflow-hidden border-t border-border/50 md:hidden"
             >
-              <div className="flex flex-col gap-1 px-5 py-3">
+              <div className="flex flex-col gap-1 px-12 py-3 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
                 <MarketingNavLinks onClick={() => setMobileOpen(false)} />
                 <Link
                   to="/discover"
@@ -227,7 +227,7 @@ function MarketingFooter() {
 
   return (
     <footer className="border-t border-border/40 bg-background py-16">
-      <div className="grid w-full gap-10 px-12 sm:px-16 md:grid-cols-[1.4fr_repeat(4,1fr)] md:px-20 lg:px-24 xl:px-32 2xl:px-40">
+      <div className="mx-auto grid w-full gap-10 px-12 sm:px-16 md:grid-cols-[1.4fr_repeat(4,1fr)] md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <div className="max-w-xs">
           <Link to="/" className="flex items-center" aria-label="Cenaiva home">
             <CenaivaWordmark className="ml-0 h-12 max-w-[min(100%,320px)] md:h-14 md:max-w-[min(100%,360px)]" />
@@ -271,7 +271,7 @@ function MarketingFooter() {
           </div>
         ))}
       </div>
-      <div className="mt-12 flex w-full flex-col items-start justify-between gap-2 border-t border-border/40 px-12 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
+      <div className="mx-auto mt-12 flex w-full flex-col items-start justify-between gap-2 border-t border-border/40 px-12 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
         <span className="font-mono">v2.4.1</span>
       </div>
