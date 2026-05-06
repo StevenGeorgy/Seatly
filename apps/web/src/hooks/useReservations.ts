@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import type { AvailabilitySlot } from "@/hooks/useAvailability";
-import { reservationDisplayStatus } from "@/lib/reservations/displayStatus";
+import { useUser } from "@/hooks/useUser";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -73,6 +73,8 @@ export type ReservationFilters = {
 
 export function useReservations(filters?: ReservationFilters) {
   const { selectedRestaurantId } = useRestaurantScope();
+  const { loading: authLoading, session } = useUser();
+  const sessionAccessToken = session?.access_token ?? null;
   const filterStatus = filters?.status;
   const filterDate = filters?.date;
   const filterDateFrom = filters?.dateFrom;
@@ -81,9 +83,18 @@ export function useReservations(filters?: ReservationFilters) {
   const [reservations, setReservations] = useState<ReservationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const requestSeqRef = useRef(0);
 
   const fetchReservations = useCallback(async () => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) {
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
+
+    if (authLoading) {
+      setLoading(true);
+      return;
+    }
+
+    if (!sessionAccessToken || !selectedRestaurantId || !isSupabaseConfigured()) {
       setReservations([]);
       setLoading(false);
       return;
@@ -119,6 +130,10 @@ export function useReservations(filters?: ReservationFilters) {
 
     const { data, error: qErr } = await query;
 
+    if (requestSeqRef.current !== requestSeq) {
+      return;
+    }
+
     if (qErr) {
       setError(new Error(qErr.message));
       setReservations([]);
@@ -126,16 +141,8 @@ export function useReservations(filters?: ReservationFilters) {
       let rows = ((data ?? []) as ReservationRow[]).map((reservation) => {
         const assignments = reservation.reservation_tables ?? [];
         const activeAssignments = assignments.filter((assignment) => assignment.tables && assignment.released_at === null);
-        const hasReleasedOnlyAssignments = assignments.length > 0 && activeAssignments.length === 0;
-        const shouldKeepPrimaryTableFallback =
-          hasReleasedOnlyAssignments &&
-          !["cancelled", "completed", "no_show"].includes(reservation.status) &&
-          reservationDisplayStatus(reservation) !== "past";
-        const shouldClearStaleTable = hasReleasedOnlyAssignments && !shouldKeepPrimaryTableFallback;
         return {
           ...reservation,
-          table_id: shouldClearStaleTable ? null : reservation.table_id,
-          tables: shouldClearStaleTable ? null : reservation.tables,
           reservation_tables: activeAssignments,
         };
       });
@@ -159,7 +166,16 @@ export function useReservations(filters?: ReservationFilters) {
       setReservations(rows);
     }
     setLoading(false);
-  }, [selectedRestaurantId, filterStatus, filterDate, filterDateFrom, filterDateTo, filterSearch]);
+  }, [
+    authLoading,
+    sessionAccessToken,
+    selectedRestaurantId,
+    filterStatus,
+    filterDate,
+    filterDateFrom,
+    filterDateTo,
+    filterSearch,
+  ]);
 
   useEffect(() => {
     void Promise.resolve().then(() => fetchReservations());

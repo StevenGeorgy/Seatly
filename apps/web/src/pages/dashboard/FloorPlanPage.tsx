@@ -14,7 +14,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { CalendarDays, Search, Users } from "lucide-react";
+import { CalendarDays, Plus, Search, Users } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -236,6 +236,7 @@ type HostQuickPanelProps = {
   onGuestPhoneChange: (value: string) => void;
   onSpecialRequestChange: (value: string) => void;
   onCreateReservation: () => void;
+  onCancel: () => void;
 };
 
 type TableDayReservation = {
@@ -247,6 +248,39 @@ type TableDayReservation = {
   status: ReservationDisplayStatus;
   tableCount: number;
 };
+
+type FloorTimelineMode = "day" | "week";
+type FloorReservationFilter = "all" | "current" | "upcoming" | "cancelled";
+
+type TimelineReservation = {
+  id: string;
+  row: ReservationRow;
+  guestName: string;
+  partySize: number;
+  reservedAt: string;
+  dateKey: string;
+  dateLabel: string;
+  timeLabel: string;
+  durationMinutes: number;
+  startsAt: number;
+  status: ReservationDisplayStatus;
+  tableIds: string[];
+  primaryTableId: string;
+  tableLabel: string;
+  searchText: string;
+};
+
+type TimelineSelection = {
+  reservationId?: string;
+  tableId?: string;
+  dateKey?: string;
+} | null;
+
+const UNASSIGNED_TIMELINE_TABLE_ID = "__unassigned__";
+const FLOOR_TIMELINE_TIMES = ["5:30pm", "6pm", "6:30pm", "7pm", "7:30pm", "8pm", "8:30pm", "9pm", "10pm", "11pm", "12am", "1am", "2am"];
+const FLOOR_TIMELINE_START_MINUTES = 17 * 60 + 30;
+const FLOOR_TIMELINE_END_MINUTES = 26 * 60;
+const FLOOR_TIMELINE_RANGE_MINUTES = FLOOR_TIMELINE_END_MINUTES - FLOOR_TIMELINE_START_MINUTES;
 
 function tableDisplayLabel(table: FloorTable): string {
   return table.label || table.tableNumber || table.id;
@@ -384,6 +418,123 @@ function reservationTableGroupDetails(row: ReservationRow): { size: number; capa
     };
   }
   return row.tables ? { size: 1, capacity: row.tables.capacity } : { size: 0, capacity: 0 };
+}
+
+function addDaysToDateValue(value: string, days: number): string {
+  const date = parseDateInputValue(value) ?? new Date();
+  date.setDate(date.getDate() + days);
+  return dateInputValue(date);
+}
+
+function startOfWeekValue(value: string): string {
+  const date = parseDateInputValue(value) ?? new Date();
+  const day = date.getDay();
+  const diff = (day + 6) % 7;
+  date.setDate(date.getDate() - diff);
+  return dateInputValue(date);
+}
+
+function weekDateValues(value: string): string[] {
+  const start = parseDateInputValue(startOfWeekValue(value)) ?? new Date();
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return dateInputValue(date);
+  });
+}
+
+function formatShortDate(value: string): string {
+  const parsed = parseDateInputValue(value);
+  if (!parsed) return value;
+  return parsed.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function formatTopDateNavigatorLabel(value: string, todayValue: string, todayLabel: string): string {
+  const parsed = parseDateInputValue(value);
+  if (!parsed) return value;
+  const dateLabel = parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (value === todayValue) return `${todayLabel} · ${dateLabel}`;
+  return parsed.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function formatWeekRange(value: string): string {
+  const dates = weekDateValues(value);
+  return `${formatShortDate(dates[0])} - ${formatShortDate(dates[6])}`;
+}
+
+function reservationBoardMinutes(date: Date): number {
+  const hours = date.getHours();
+  const normalizedHour = hours < 5 ? hours + 24 : hours;
+  return normalizedHour * 60 + date.getMinutes();
+}
+
+function timelineReservationTableLabel(
+  row: ReservationRow,
+  tableLabelsById: Record<string, string>,
+  unassignedLabel: string,
+): string {
+  const tableIds = reservationTableIds(row);
+  if (tableIds.length === 0) return unassignedLabel;
+  return tableIds
+    .map((tableId) => {
+      if (tableLabelsById[tableId]) return tableLabelsById[tableId];
+      if (row.table_id === tableId && row.tables) {
+        return row.tables.label || row.tables.table_number || tableId.slice(0, 8);
+      }
+      const matchingAssignment = row.reservation_tables?.find((assignment) => assignment.table_id === tableId);
+      return matchingAssignment?.tables?.label || matchingAssignment?.tables?.table_number || tableId.slice(0, 8);
+    })
+    .join(", ");
+}
+
+function toTimelineReservation(
+  row: ReservationRow,
+  tableLabelsById: Record<string, string>,
+  unassignedLabel: string,
+  fallbackTurnMinutes: number,
+): TimelineReservation | null {
+  const reservedAt = new Date(row.reserved_at);
+  if (Number.isNaN(reservedAt.getTime())) return null;
+  const tableIds = reservationTableIds(row);
+  const tableLabel = timelineReservationTableLabel(row, tableLabelsById, unassignedLabel);
+  const guestName = reservationGuestName(row);
+  const dateKey = dateInputValue(reservedAt);
+  const timeLabel = serviceTimeLabel(reservedAt);
+  const durationMinutes = row.duration_minutes ?? fallbackTurnMinutes;
+  const contact = [row.guest_phone, row.guest_email, row.guests?.phone, row.guests?.email, row.confirmation_code]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    id: row.id,
+    row,
+    guestName,
+    partySize: row.party_size,
+    reservedAt: row.reserved_at,
+    dateKey,
+    dateLabel: formatShortDate(dateKey),
+    timeLabel,
+    durationMinutes,
+    startsAt: reservationBoardMinutes(reservedAt),
+    status: reservationDisplayStatus(row, new Date(), fallbackTurnMinutes),
+    tableIds,
+    primaryTableId: tableIds[0] ?? UNASSIGNED_TIMELINE_TABLE_ID,
+    tableLabel,
+    searchText: `${guestName} ${contact} ${tableLabel}`.toLowerCase(),
+  };
+}
+
+function timelineBlockClasses(status: ReservationDisplayStatus): string {
+  if (status === "current") return "border-gold/35 bg-gold/20 text-gold";
+  if (status === "past") return "border-border/70 bg-bg-elevated/80 text-text-muted";
+  if (status === "cancelled") return "border-danger/35 bg-danger/10 text-danger";
+  return "border-success/35 bg-success/15 text-success";
+}
+
+function matchesFloorReservationFilter(status: ReservationDisplayStatus, filter: FloorReservationFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "upcoming") return status === "upcoming";
+  if (filter === "current") return status === "current";
+  return status === "cancelled";
 }
 
 function isReservationInFloorWindow(row: ReservationRow, now: Date, fallbackTurnMinutes: number): boolean {
@@ -1620,73 +1771,6 @@ function EntranceCard({
   );
 }
 
-function IdleCard({
-  summary,
-  onSearch,
-  query,
-  onJump,
-  results,
-  hostPanel,
-}: {
-  summary: string;
-  onSearch: (q: string) => void;
-  query: string;
-  onJump: (t: FloorTable) => void;
-  results: FloorTable[];
-  hostPanel: HostQuickPanelProps;
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="overflow-hidden rounded-xl p-6" style={cardStyle}>
-        <div className={cn(eyebrowCls, "mb-3")}>This evening</div>
-        <p className="font-serif text-[19px] leading-snug text-white" style={{ letterSpacing: "-0.015em" }}>
-          {summary}
-        </p>
-        <p className="mt-3 text-[12.5px] leading-relaxed text-text-muted">
-          Select any table to see who's there or take an action.
-        </p>
-      </div>
-      <div className="overflow-hidden rounded-xl p-5" style={cardStyle}>
-        <div className={cn(eyebrowCls, "mb-2")}>Find a table</div>
-        <input
-          value={query}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Table number or guest name"
-          className="w-full rounded-md bg-transparent px-3 py-2.5 text-[13px] outline-none transition-colors focus:bg-white/[0.03]"
-          style={{ border: `1px solid ${BORDER_SOFT}`, color: "var(--text-primary)" }}
-        />
-        {query && results.length > 0 && (
-          <div className="mt-3 max-h-48 space-y-1 overflow-y-auto">
-            {results.slice(0, 8).map((t) => {
-              const s = TBL_STATUS[t.status];
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => onJump(t)}
-                  className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-white/5"
-                >
-                  <span className="size-1.5 shrink-0 rounded-full" style={{ background: s.color }} />
-                  <span
-                    className="w-8 font-serif text-[15px] tabular-nums"
-                    style={{ letterSpacing: "-0.02em" }}
-                  >
-                    {tableDisplayLabel(t)}
-                  </span>
-                  <span className="flex-1 truncate text-[12px] text-text-secondary">
-                    {t.guest || s.label} {t.time ? `· ${t.time}` : ""}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {query && results.length === 0 && <p className="mt-3 text-[12px] text-text-muted">No matches.</p>}
-      </div>
-      <HostQuickPanel {...hostPanel} />
-    </div>
-  );
-}
-
 function HostQuickPanel({
   date,
   partySize,
@@ -1709,7 +1793,9 @@ function HostQuickPanel({
   onGuestPhoneChange,
   onSpecialRequestChange,
   onCreateReservation,
+  onCancel,
 }: HostQuickPanelProps) {
+  const { t } = useTranslation();
   const today = useMemo(() => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
@@ -1814,15 +1900,440 @@ function HostQuickPanel({
           placeholder="Notes, seating preference, allergies..."
           className="min-h-20"
         />
-        <Button
-          type="button"
-          size="sm"
-          className="w-full"
-          onClick={onCreateReservation}
-          disabled={saving || !selectedSlot || !guestName.trim() || overCapacity}
-        >
-          {saving ? "Booking..." : "Book selected turn"}
-        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={saving}>
+            {t("dashboard.floorPlan.hostBookingCancel")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onCreateReservation}
+            disabled={saving || !selectedSlot || !guestName.trim() || overCapacity}
+          >
+            {saving ? t("dashboard.floorPlan.hostBookingSaving") : t("dashboard.floorPlan.hostBookingDone")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FloorTimelinePanel({
+  mode,
+  date,
+  reservations,
+  search,
+  filter,
+  selected,
+  onModeChange,
+  onDateChange,
+  onSearch,
+  onFilterChange,
+  onSelect,
+  onOpenHostBooking,
+}: {
+  mode: FloorTimelineMode;
+  date: string;
+  reservations: TimelineReservation[];
+  search: string;
+  filter: FloorReservationFilter;
+  selected: TimelineSelection;
+  onModeChange: (mode: FloorTimelineMode) => void;
+  onDateChange: (date: string) => void;
+  onSearch: (value: string) => void;
+  onFilterChange: (filter: FloorReservationFilter) => void;
+  onSelect: (selection: NonNullable<TimelineSelection>) => void;
+  onOpenHostBooking: () => void;
+}) {
+  const { t } = useTranslation();
+  const visibleDateKeys = mode === "day" ? [date] : weekDateValues(date);
+  const searchValue = search.trim().toLowerCase();
+  const filterItems = ([
+    { id: "all", label: t("dashboard.floorPlan.filterAll") },
+    { id: "current", label: t("dashboard.floorPlan.filterCurrent") },
+    { id: "upcoming", label: t("dashboard.floorPlan.filterUpcoming") },
+    { id: "cancelled", label: t("dashboard.floorPlan.filterCancelled") },
+  ] satisfies Array<{ id: FloorReservationFilter; label: string }>).map((item) => ({
+    ...item,
+    count: reservations.filter((reservation) =>
+      visibleDateKeys.includes(reservation.dateKey) && matchesFloorReservationFilter(reservation.status, item.id),
+    ).length,
+  }));
+  const visibleReservations = reservations
+    .filter((reservation) => visibleDateKeys.includes(reservation.dateKey))
+    .filter((reservation) => matchesFloorReservationFilter(reservation.status, filter))
+    .filter((reservation) => !searchValue || reservation.searchText.includes(searchValue))
+    .sort((a, b) => a.startsAt - b.startsAt || a.tableLabel.localeCompare(b.tableLabel, undefined, { numeric: true }));
+  const groupedByTable = visibleReservations.reduce<Map<string, { tableId: string; tableLabel: string; reservations: TimelineReservation[] }>>(
+    (map, reservation) => {
+      const tableId = reservation.primaryTableId;
+      const existing = map.get(tableId);
+      if (existing) {
+        existing.reservations.push(reservation);
+      } else {
+        map.set(tableId, {
+          tableId,
+          tableLabel: reservation.tableLabel,
+          reservations: [reservation],
+        });
+      }
+      return map;
+    },
+    new Map(),
+  );
+  const tableRows = Array.from(groupedByTable.values()).sort((a, b) =>
+    a.tableLabel.localeCompare(b.tableLabel, undefined, { numeric: true }),
+  );
+
+  return (
+    <section className="mx-10 mb-10 overflow-hidden rounded-2xl border border-border bg-bg-surface">
+      <div className="border-b border-border px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className={cn(eyebrowCls, "mb-1")}>{t("dashboard.floorPlan.timelineEyebrow")}</div>
+            <h2 className="font-serif text-xl text-white">{t("dashboard.floorPlan.timelineTitle")}</h2>
+            <p className="mt-1 text-xs text-text-muted">
+              {mode === "day" ? formatShortDate(date) : formatWeekRange(date)} · {t("dashboard.floorPlan.timelineReservationCount", { count: visibleReservations.length })}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-lg border border-border bg-bg-elevated p-1">
+              {(["day", "week"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onModeChange(option)}
+                  className={cn(
+                    "h-8 rounded-md px-3 text-xs font-medium transition-colors",
+                    mode === option ? "bg-gold text-black" : "text-text-secondary hover:bg-white/5 hover:text-white",
+                  )}
+                >
+                  {t(`dashboard.floorPlan.timeline${option === "day" ? "Day" : "Week"}`)}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center rounded-lg border border-border bg-bg-elevated p-1">
+              <button
+                type="button"
+                onClick={() => onDateChange(addDaysToDateValue(date, mode === "day" ? -1 : -7))}
+                className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                aria-label={t("dashboard.floorPlan.timelinePrevious")}
+              >
+                ‹
+              </button>
+              <FloorDatePickerButton
+                value={date}
+                onChange={onDateChange}
+                placeholder={t("dashboard.floorPlan.timelineChooseDate")}
+              />
+              <button
+                type="button"
+                onClick={() => onDateChange(addDaysToDateValue(date, mode === "day" ? 1 : 7))}
+                className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                aria-label={t("dashboard.floorPlan.timelineNext")}
+              >
+                ›
+              </button>
+            </div>
+            <Button type="button" variant="outline" size="sm" className="h-9 rounded-lg px-4 text-xs" onClick={() => onDateChange(dateInputValue(new Date()))}>
+              {t("dashboard.floorPlan.timelineToday")}
+            </Button>
+            <Button type="button" size="sm" className="h-9 rounded-lg gap-1.5 px-4 text-xs" onClick={onOpenHostBooking}>
+              <Plus className="size-3.5" />
+              {t("dashboard.floorPlan.hostBookingButton")}
+            </Button>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(280px,1fr)_auto] xl:items-center">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+            <Input
+              value={search}
+              onChange={(event) => onSearch(event.target.value)}
+              placeholder={t("dashboard.floorPlan.timelineSearchPlaceholder")}
+              className="h-9 rounded-lg border-border bg-bg-elevated pl-9 text-xs"
+            />
+          </div>
+        </div>
+        <div className="mt-4 border-t border-border/60 pt-3">
+          <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
+            {t("dashboard.floorPlan.filterStatus")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {filterItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onFilterChange(item.id)}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                  filter === item.id
+                    ? "border-gold bg-gold text-black"
+                    : "border-border bg-bg-surface text-text-secondary hover:text-white",
+                )}
+              >
+                {item.label} · {item.count}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {visibleReservations.length === 0 ? (
+        <div className="px-5 py-10 text-center">
+          <p className="font-serif text-lg text-white">{t("dashboard.floorPlan.timelineEmptyTitle")}</p>
+          <p className="mt-2 text-sm text-text-muted">{t("dashboard.floorPlan.timelineEmptyDesc")}</p>
+        </div>
+      ) : mode === "day" ? (
+        <div className="overflow-x-auto">
+          <div className="min-w-[1120px]">
+            <div className="grid grid-cols-[120px_1fr] border-b border-border/60">
+              <div className="px-4 py-3 font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                {t("dashboard.floorPlan.timelineTable")}
+              </div>
+              <div className="grid" style={{ gridTemplateColumns: `repeat(${FLOOR_TIMELINE_TIMES.length}, minmax(72px, 1fr))` }}>
+                {FLOOR_TIMELINE_TIMES.map((time) => (
+                  <div key={time} className="border-l border-border/50 px-2 py-3 font-mono text-[10px] text-text-muted">
+                    {time}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {tableRows.map((table) => (
+              <div key={table.tableId} className="grid min-h-[76px] grid-cols-[120px_1fr] border-b border-border/50 last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => onSelect({ tableId: table.tableId, dateKey: date })}
+                  className={cn(
+                    "border-r border-border/50 px-4 py-4 text-left transition-colors hover:bg-white/[0.03]",
+                    selected?.tableId === table.tableId && selected?.dateKey === date ? "bg-gold/10" : "",
+                  )}
+                >
+                  <p className="truncate font-mono text-sm font-semibold text-white">{table.tableLabel}</p>
+                  <p className="mt-0.5 text-[11px] text-text-muted">
+                    {t("dashboard.floorPlan.timelineBookingCount", { count: table.reservations.length })}
+                  </p>
+                </button>
+                <div
+                  className="relative grid"
+                  style={{ gridTemplateColumns: `repeat(${FLOOR_TIMELINE_TIMES.length}, minmax(72px, 1fr))` }}
+                >
+                  {FLOOR_TIMELINE_TIMES.map((time) => (
+                    <div key={time} className="border-l border-border/30" />
+                  ))}
+                  {table.reservations.map((reservation) => {
+                    const left = Math.max(0, ((reservation.startsAt - FLOOR_TIMELINE_START_MINUTES) / FLOOR_TIMELINE_RANGE_MINUTES) * 100);
+                    const width = Math.max(7, (reservation.durationMinutes / FLOOR_TIMELINE_RANGE_MINUTES) * 100);
+                    const isSelected = selected?.reservationId === reservation.id;
+                    return (
+                      <button
+                        key={reservation.id}
+                        type="button"
+                        onClick={() => onSelect({ reservationId: reservation.id, tableId: table.tableId, dateKey: reservation.dateKey })}
+                        className={cn(
+                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20",
+                          timelineBlockClasses(reservation.status),
+                          isSelected ? "ring-2 ring-gold/60" : "",
+                        )}
+                        style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
+                      >
+                        <span className="truncate">{reservation.guestName} · {reservation.timeLabel}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <div className="min-w-[1120px]">
+            <div className="grid grid-cols-[120px_repeat(7,minmax(132px,1fr))] border-b border-border/60">
+              <div className="px-4 py-3 font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                {t("dashboard.floorPlan.timelineTable")}
+              </div>
+              {visibleDateKeys.map((dateKey) => (
+                <button
+                  key={dateKey}
+                  type="button"
+                  onClick={() => onSelect({ dateKey })}
+                  className="border-l border-border/50 px-2 py-3 text-left font-mono text-[10px] text-text-muted transition-colors hover:text-white"
+                >
+                  {formatShortDate(dateKey)}
+                </button>
+              ))}
+            </div>
+            {tableRows.map((table) => (
+              <div key={table.tableId} className="grid min-h-[92px] grid-cols-[120px_repeat(7,minmax(132px,1fr))] border-b border-border/50 last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => onSelect({ tableId: table.tableId })}
+                  className={cn(
+                    "border-r border-border/50 px-4 py-4 text-left transition-colors hover:bg-white/[0.03]",
+                    selected?.tableId === table.tableId && !selected?.dateKey ? "bg-gold/10" : "",
+                  )}
+                >
+                  <p className="truncate font-mono text-sm font-semibold text-white">{table.tableLabel}</p>
+                  <p className="mt-0.5 text-[11px] text-text-muted">
+                    {t("dashboard.floorPlan.timelineBookingCount", { count: table.reservations.length })}
+                  </p>
+                </button>
+                {visibleDateKeys.map((dateKey) => {
+                  const dayReservations = table.reservations.filter((reservation) => reservation.dateKey === dateKey);
+                  return (
+                    <div key={`${table.tableId}-${dateKey}`} className="min-h-[92px] space-y-1 border-l border-border/30 p-2">
+                      {dayReservations.map((reservation) => (
+                        <button
+                          key={reservation.id}
+                          type="button"
+                          onClick={() => onSelect({ reservationId: reservation.id, tableId: table.tableId, dateKey })}
+                          className={cn(
+                            "block w-full rounded-md border px-2 py-1.5 text-left text-[11px] font-medium",
+                            timelineBlockClasses(reservation.status),
+                            selected?.reservationId === reservation.id ? "ring-2 ring-gold/60" : "",
+                          )}
+                        >
+                          <span className="block truncate">{reservation.timeLabel} · {reservation.guestName}</span>
+                          <span className="mt-0.5 block truncate text-[10px] opacity-80">
+                            {t("dashboard.floorPlan.timelineParty", { count: reservation.partySize })}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReservationRailCard({
+  rows,
+  allVisibleCount,
+  search,
+  filter,
+  selected,
+  onSearch,
+  onFilterChange,
+  onSelect,
+  onClearSelection,
+}: {
+  rows: TimelineReservation[];
+  allVisibleCount: number;
+  search: string;
+  filter: FloorReservationFilter;
+  selected: TimelineSelection;
+  onSearch: (value: string) => void;
+  onFilterChange: (filter: FloorReservationFilter) => void;
+  onSelect: (selection: NonNullable<TimelineSelection>) => void;
+  onClearSelection: () => void;
+}) {
+  const { t } = useTranslation();
+  const filterItems = [
+    { id: "all" as const, label: t("dashboard.floorPlan.filterAll") },
+    { id: "current" as const, label: t("dashboard.floorPlan.filterCurrent") },
+    { id: "upcoming" as const, label: t("dashboard.floorPlan.filterUpcoming") },
+    { id: "cancelled" as const, label: t("dashboard.floorPlan.filterCancelled") },
+  ];
+  const selectedReservation = selected?.reservationId
+    ? rows.find((reservation) => reservation.id === selected.reservationId)
+    : null;
+  const contextLabel = selectedReservation
+    ? `${selectedReservation.tableLabel} · ${selectedReservation.dateLabel}`
+    : selected?.tableId && rows[0]
+    ? `${rows[0].tableLabel}${selected.dateKey ? ` · ${formatShortDate(selected.dateKey)}` : ""}`
+    : selected?.dateKey
+    ? formatShortDate(selected.dateKey)
+    : t("dashboard.floorPlan.timelineVisibleRange");
+
+  return (
+    <div className="overflow-hidden rounded-xl p-5" style={cardStyle}>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className={cn(eyebrowCls, "mb-1")}>{t("dashboard.floorPlan.reservationPanelEyebrow")}</div>
+          <h3 className="font-serif text-[20px] leading-tight text-white">{t("dashboard.floorPlan.reservationPanelTitle")}</h3>
+          <p className="mt-1 text-[11px] text-text-muted">
+            {contextLabel} · {t("dashboard.floorPlan.timelineReservationCount", { count: allVisibleCount })}
+          </p>
+        </div>
+        {selected ? (
+          <button
+            type="button"
+            onClick={onClearSelection}
+            className="rounded-full border border-border px-2 py-1 text-[11px] text-text-muted transition-colors hover:text-white"
+          >
+            {t("dashboard.floorPlan.timelineClear")}
+          </button>
+        ) : null}
+      </div>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+        <Input
+          value={search}
+          onChange={(event) => onSearch(event.target.value)}
+          placeholder={t("dashboard.floorPlan.reservationSearchPlaceholder")}
+          className="h-10 bg-bg-elevated pl-9 text-[13px]"
+        />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {filterItems.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onFilterChange(item.id)}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+              filter === item.id
+                ? "border-gold bg-gold text-black"
+                : "border-border bg-bg-surface text-text-secondary hover:text-white",
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-4 max-h-80 space-y-2 overflow-y-auto pr-1">
+        {rows.length > 0 ? (
+          rows.map((reservation) => {
+            const isSelected = selected?.reservationId === reservation.id;
+            return (
+              <button
+                key={reservation.id}
+                type="button"
+                onClick={() => onSelect({ reservationId: reservation.id, tableId: reservation.primaryTableId, dateKey: reservation.dateKey })}
+                className={cn(
+                  "w-full rounded-lg border px-3 py-2 text-left transition-colors",
+                  isSelected ? "border-gold/40 bg-gold/10" : "border-border/70 bg-white/[0.02] hover:border-gold/30",
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-medium text-white">{reservation.guestName}</p>
+                    <p className="mt-0.5 text-[11px] text-text-muted">
+                      {reservation.tableLabel} · {t("dashboard.floorPlan.timelineParty", { count: reservation.partySize })}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="font-mono text-[11px] text-gold">{reservation.timeLabel}</p>
+                    <p className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                      {t(reservationDisplayStatusKey(reservation.status))}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-2 text-[11px] text-text-muted">{reservation.dateLabel}</p>
+              </button>
+            );
+          })
+        ) : (
+          <p className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-[12.5px] leading-relaxed text-text-muted">
+            {search ? t("dashboard.floorPlan.reservationSearchEmpty") : t("dashboard.floorPlan.reservationPanelEmpty")}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1942,7 +2453,6 @@ export default function FloorPlanPage() {
   const [sel, setSel] = useState<Selection>(null);
   const [editing, setEditing] = useState(false);
   const [savingLayout, setSavingLayout] = useState(false);
-  const [query, setQuery] = useState("");
   const [focusId, setFocusId] = useState<string | null>(null);
   const [deletedTableIds, setDeletedTableIds] = useState<string[]>([]);
   const [deletedFloorIds, setDeletedFloorIds] = useState<string[]>([]);
@@ -1957,10 +2467,16 @@ export default function FloorPlanPage() {
   const [hostQuickSelectedSlot, setHostQuickSelectedSlot] = useState<AvailabilitySlot | null>(null);
   const [hostQuickLoading, setHostQuickLoading] = useState(false);
   const [hostQuickSaving, setHostQuickSaving] = useState(false);
+  const [hostQuickOpen, setHostQuickOpen] = useState(false);
   const [hostQuickGuestName, setHostQuickGuestName] = useState("");
   const [hostQuickGuestEmail, setHostQuickGuestEmail] = useState("");
   const [hostQuickGuestPhone, setHostQuickGuestPhone] = useState("");
   const [hostQuickSpecialRequest, setHostQuickSpecialRequest] = useState("");
+  const [timelineMode, setTimelineMode] = useState<FloorTimelineMode>("day");
+  const [timelineDate, setTimelineDate] = useState(() => dateInputValue(new Date()));
+  const [timelineFilter, setTimelineFilter] = useState<FloorReservationFilter>("all");
+  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection>(null);
+  const [reservationSearch, setReservationSearch] = useState("");
   const turnTimeMinutes = restaurantTurnTimeMinutes(selectedRestaurant?.settings_json);
 
   // Visual scale for "100%". Keep this at true room scale so the floor
@@ -2000,12 +2516,49 @@ export default function FloorPlanPage() {
     });
     return labels;
   }, [dbTables]);
-  const reservationsByTableForHostDate = useMemo(() => {
+  const timelineReservations = useMemo(() => {
+    const unassignedLabel = t("dashboard.reservations.unassigned");
+    return reservations
+      .map((reservation) => toTimelineReservation(reservation, tableLabelsById, unassignedLabel, turnTimeMinutes))
+      .filter((reservation): reservation is TimelineReservation => Boolean(reservation))
+      .filter((reservation) => reservation.row.status !== "no_show");
+  }, [reservations, t, tableLabelsById, turnTimeMinutes]);
+
+  const timelineDateKeys = useMemo(
+    () => timelineMode === "day" ? [timelineDate] : weekDateValues(timelineDate),
+    [timelineDate, timelineMode],
+  );
+
+  const visibleTimelineReservations = useMemo(
+    () =>
+      timelineReservations
+        .filter((reservation) => timelineDateKeys.includes(reservation.dateKey))
+        .filter((reservation) => matchesFloorReservationFilter(reservation.status, timelineFilter)),
+    [timelineDateKeys, timelineFilter, timelineReservations],
+  );
+
+  const selectedTimelineRows = useMemo(() => {
+    const searchValue = reservationSearch.trim().toLowerCase();
+    return visibleTimelineReservations
+      .filter((reservation) => {
+        const matchesContext =
+          (!timelineSelection?.dateKey || reservation.dateKey === timelineSelection.dateKey) &&
+          (!timelineSelection?.tableId || reservation.primaryTableId === timelineSelection.tableId) &&
+          (!timelineSelection?.reservationId || reservation.id === timelineSelection.reservationId);
+        const matchesSearch = !searchValue || reservation.searchText.includes(searchValue);
+        return matchesContext && matchesSearch;
+      })
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey) || a.startsAt - b.startsAt || a.tableLabel.localeCompare(b.tableLabel, undefined, { numeric: true }));
+  }, [reservationSearch, timelineSelection, visibleTimelineReservations]);
+
+  const reservationsByTableForTimelineDate = useMemo(() => {
     const byTable: Record<string, TableDayReservation[]> = {};
     reservations
       .filter((reservation) => !["completed", "no_show"].includes(reservation.status))
-      .filter((reservation) => reservationDateValue(reservation) === hostQuickDate)
+      .filter((reservation) => reservationDateValue(reservation) === timelineDate)
       .forEach((reservation) => {
+        const displayStatus = reservationDisplayStatus(reservation, new Date(), turnTimeMinutes);
+        if (!matchesFloorReservationFilter(displayStatus, timelineFilter)) return;
         const tableIds = reservationTableIds(reservation);
         if (tableIds.length === 0) return;
         const details: TableDayReservation = {
@@ -2014,7 +2567,7 @@ export default function FloorPlanPage() {
           partySize: reservation.party_size,
           reservedAt: reservation.reserved_at,
           durationMinutes: reservation.duration_minutes,
-          status: reservationDisplayStatus(reservation, new Date(), turnTimeMinutes),
+          status: displayStatus,
           tableCount: tableIds.length,
         };
         tableIds.forEach((tableId) => {
@@ -2026,7 +2579,17 @@ export default function FloorPlanPage() {
       rows.sort((a, b) => new Date(a.reservedAt).getTime() - new Date(b.reservedAt).getTime());
     });
     return byTable;
-  }, [hostQuickDate, reservations, turnTimeMinutes]);
+  }, [reservations, timelineDate, timelineFilter, turnTimeMinutes]);
+
+  const resetHostQuickPanel = () => {
+    setHostQuickGuestName("");
+    setHostQuickGuestEmail("");
+    setHostQuickGuestPhone("");
+    setHostQuickSpecialRequest("");
+    setHostQuickSelectedSlot(null);
+    setHostQuickSlots([]);
+    setHostQuickLoading(false);
+  };
 
   const loadHostQuickAvailability = async () => {
     if (!selectedRestaurantId) {
@@ -2148,6 +2711,7 @@ export default function FloorPlanPage() {
       setHostQuickGuestPhone("");
       setHostQuickSpecialRequest("");
       setHostQuickSelectedSlot(null);
+      setHostQuickOpen(false);
       await Promise.all([refreshHostQuickAvailability(), refetchReservations(), refetchFloorPlan({ silent: true })]);
       toast.success("Reservation added from the floor plan.");
     } catch (error) {
@@ -2500,7 +3064,7 @@ export default function FloorPlanPage() {
     if (error) throw new Error(error.message);
     if (!reservationId) throw new Error("Reservation could not be created.");
 
-    const { error: releaseError } = await client.rpc("release_reservation_tables", {
+    const { error: releaseError } = await client.rpc("force_release_reservation_tables", {
       p_reservation_id: reservationId,
     });
     if (releaseError) throw new Error(releaseError.message);
@@ -3033,18 +3597,9 @@ export default function FloorPlanPage() {
     setIsPanning(false);
   };
 
-  const searchResults = useMemo(() => {
-    if (!query) return [];
-    const q = query.toLowerCase().trim();
-    return tables.filter(
-      (t) => t.id.toLowerCase().includes(q) || (t.guest && t.guest.toLowerCase().includes(q)),
-    );
-  }, [query, tables]);
-
   const jumpTo = (t: FloorTable) => {
     setSel({ kind: "table", id: t.id });
     setFocusId(t.id);
-    setQuery("");
     const w = t.size;
     const h = t.shape === "round" ? t.size : t.long ? 70 : 80;
     const cx = t.x + w / 2;
@@ -3055,6 +3610,29 @@ export default function FloorPlanPage() {
       setPan({ x: rect.width / 2 - cx * 1.5, y: rect.height / 2 - cy * 1.5 });
     }
     setTimeout(() => setFocusId(null), 1800);
+  };
+
+  const jumpToTableId = (tableId: string) => {
+    if (tableId === UNASSIGNED_TIMELINE_TABLE_ID) {
+      setSel(null);
+      return;
+    }
+    const match = Object.entries(tablesByFloor).flatMap(([floorId, floorTables]) =>
+      floorTables.map((table) => ({ floorId, table })),
+    ).find(({ table }) => table.id === tableId || table.dbId === tableId);
+    if (!match) return;
+    if (match.floorId !== activeFloor) setActiveFloor(match.floorId);
+    jumpTo(match.table);
+  };
+
+  const handleTimelineSelect = (selection: NonNullable<TimelineSelection>) => {
+    setTimelineSelection(selection);
+    setReservationSearch("");
+    if (selection.tableId) {
+      jumpToTableId(selection.tableId);
+    } else {
+      setSel(null);
+    }
   };
 
   const totals = useMemo(() => {
@@ -3079,8 +3657,25 @@ export default function FloorPlanPage() {
   })();
 
   const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-  const serviceDateLabel = dateStr.toUpperCase();
+  const todayValue = dateInputValue(today);
+  const serviceDate = parseDateInputValue(timelineDate) ?? today;
+  const serviceDateLabel = serviceDate
+    .toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+    .toUpperCase();
+  const topDateNavigatorLabel = formatTopDateNavigatorLabel(
+    timelineDate,
+    todayValue,
+    t("dashboard.floorPlan.timelineToday"),
+  );
+  const handleTopDateChange = (date: string) => {
+    setTimelineDate(date);
+    setTimelineSelection((current) => current?.tableId ? { tableId: current.tableId, dateKey: date } : null);
+    setHostQuickDate(date);
+    if (hostQuickOpen) {
+      setHostQuickSlots([]);
+      setHostQuickSelectedSlot(null);
+    }
+  };
 
   const viewportRect = (() => {
     if (!canvasSize) return null;
@@ -3111,6 +3706,31 @@ export default function FloorPlanPage() {
             >
               Floor Plan
             </h1>
+            <div className="mt-5 inline-flex items-center rounded-2xl border border-border bg-bg-elevated/80 p-1 shadow-lg shadow-black/20">
+              <button
+                type="button"
+                onClick={() => handleTopDateChange(addDaysToDateValue(timelineDate, -1))}
+                className="flex size-10 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                aria-label={t("dashboard.floorPlan.timelinePrevious")}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTopDateChange(todayValue)}
+                className="h-10 min-w-40 rounded-xl px-5 text-sm font-semibold text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+              >
+                {topDateNavigatorLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTopDateChange(addDaysToDateValue(timelineDate, 1))}
+                className="flex size-10 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
+                aria-label={t("dashboard.floorPlan.timelineNext")}
+              >
+                ›
+              </button>
+            </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {editing && canEditLayout && (
@@ -3145,18 +3765,28 @@ export default function FloorPlanPage() {
               </>
             )}
             {!editing ? (
-              canEditLayout && (
+              <>
                 <button
-                  onClick={() => {
-                    setEditing(true);
-                    setSel(null);
-                  }}
+                  type="button"
+                  onClick={fitToRoom}
                   className="rounded-md px-3.5 py-2 text-[13px] text-text-secondary transition-colors hover:text-white"
                   style={{ border: `1px solid ${BORDER_SOFT}` }}
                 >
-                  Edit layout
+                  {t("dashboard.floorPlan.recenter")}
                 </button>
-              )
+                {canEditLayout && (
+                  <button
+                    onClick={() => {
+                      setEditing(true);
+                      setSel(null);
+                    }}
+                    className="rounded-md px-3.5 py-2 text-[13px] text-text-secondary transition-colors hover:text-white"
+                    style={{ border: `1px solid ${BORDER_SOFT}` }}
+                  >
+                    Edit layout
+                  </button>
+                )}
+              </>
             ) : (
               <>
                 <button
@@ -3509,7 +4139,10 @@ export default function FloorPlanPage() {
                   focused={focusId === t.id}
                   editing={editing && canEditLayout}
                   density={density}
-                  onClick={(tt) => setSel({ kind: "table", id: tt.id })}
+                  onClick={(tt) => {
+                    setSel({ kind: "table", id: tt.id });
+                    setTimelineSelection({ tableId: tt.dbId ?? tt.id, dateKey: timelineDate });
+                  }}
                   onDragStart={onTableDragStart}
                 />
               ))}
@@ -3538,13 +4171,62 @@ export default function FloorPlanPage() {
         </div>
 
         <div className="space-y-4">
+          {!editing && hostQuickOpen ? (
+            <HostQuickPanel
+              date={hostQuickDate}
+              partySize={hostQuickPartySize}
+              slots={hostQuickSlots}
+              selectedSlot={hostQuickSelectedSlot}
+              loading={hostQuickLoading}
+              saving={hostQuickSaving}
+              maxSeats={maxBookableSeats}
+              guestName={hostQuickGuestName}
+              guestEmail={hostQuickGuestEmail}
+              guestPhone={hostQuickGuestPhone}
+              specialRequest={hostQuickSpecialRequest}
+              tableLabelsById={tableLabelsById}
+              onDateChange={(date) => {
+                setHostQuickDate(date);
+                setHostQuickSlots([]);
+                setHostQuickSelectedSlot(null);
+              }}
+              onPartySizeChange={(partySize) => {
+                setHostQuickPartySize(Math.min(Math.max(1, Math.floor(partySize) || 1), maxBookableSeats));
+                setHostQuickSlots([]);
+                setHostQuickSelectedSlot(null);
+              }}
+              onCheckAvailability={loadHostQuickAvailability}
+              onSelectSlot={(slot) => setHostQuickSelectedSlot(slot)}
+              onGuestNameChange={setHostQuickGuestName}
+              onGuestEmailChange={setHostQuickGuestEmail}
+              onGuestPhoneChange={setHostQuickGuestPhone}
+              onSpecialRequestChange={setHostQuickSpecialRequest}
+              onCreateReservation={createHostQuickReservation}
+              onCancel={() => {
+                resetHostQuickPanel();
+                setHostQuickOpen(false);
+              }}
+            />
+          ) : !editing ? (
+            <ReservationRailCard
+              rows={selectedTimelineRows}
+              allVisibleCount={visibleTimelineReservations.length}
+              search={reservationSearch}
+              filter={timelineFilter}
+              selected={timelineSelection}
+              onSearch={setReservationSearch}
+              onFilterChange={setTimelineFilter}
+              onSelect={handleTimelineSelect}
+              onClearSelection={() => setTimelineSelection(null)}
+            />
+          ) : null}
           {selTable ? (
             <TableCard
               t={selTable}
               editing={editing && canEditLayout}
               canAdjustSeats={canEditLayout}
-              dayReservations={reservationsByTableForHostDate[selTable.dbId ?? selTable.id] ?? []}
-              reservationDayLabel={formatPickerDate(hostQuickDate)}
+              dayReservations={reservationsByTableForTimelineDate[selTable.dbId ?? selTable.id] ?? []}
+              reservationDayLabel={formatPickerDate(timelineDate)}
               onAction={handleAction}
               onSeatChange={setSeats}
               onDelete={(t) => deleteTable(t.id)}
@@ -3570,48 +4252,28 @@ export default function FloorPlanPage() {
               onAddWall={addWall}
               onAddFloor={addFloor}
             />
-          ) : (
-            <IdleCard
-              summary={summary}
-              query={query}
-              onSearch={setQuery}
-              onJump={jumpTo}
-              results={searchResults}
-              hostPanel={{
-                date: hostQuickDate,
-                partySize: hostQuickPartySize,
-                slots: hostQuickSlots,
-                selectedSlot: hostQuickSelectedSlot,
-                loading: hostQuickLoading,
-                saving: hostQuickSaving,
-                maxSeats: maxBookableSeats,
-                guestName: hostQuickGuestName,
-                guestEmail: hostQuickGuestEmail,
-                guestPhone: hostQuickGuestPhone,
-                specialRequest: hostQuickSpecialRequest,
-                tableLabelsById,
-                onDateChange: (date) => {
-                  setHostQuickDate(date);
-                  setHostQuickSlots([]);
-                  setHostQuickSelectedSlot(null);
-                },
-                onPartySizeChange: (partySize) => {
-                  setHostQuickPartySize(Math.min(Math.max(1, Math.floor(partySize) || 1), maxBookableSeats));
-                  setHostQuickSlots([]);
-                  setHostQuickSelectedSlot(null);
-                },
-                onCheckAvailability: loadHostQuickAvailability,
-                onSelectSlot: (slot) => setHostQuickSelectedSlot(slot),
-                onGuestNameChange: setHostQuickGuestName,
-                onGuestEmailChange: setHostQuickGuestEmail,
-                onGuestPhoneChange: setHostQuickGuestPhone,
-                onSpecialRequestChange: setHostQuickSpecialRequest,
-                onCreateReservation: createHostQuickReservation,
-              }}
-            />
-          )}
+          ) : null}
         </div>
       </div>
+      <FloorTimelinePanel
+        mode={timelineMode}
+        date={timelineDate}
+        reservations={timelineReservations}
+        search={reservationSearch}
+        filter={timelineFilter}
+        selected={timelineSelection}
+        onModeChange={setTimelineMode}
+        onDateChange={handleTopDateChange}
+        onSearch={setReservationSearch}
+        onFilterChange={setTimelineFilter}
+        onSelect={handleTimelineSelect}
+        onOpenHostBooking={() => {
+          resetHostQuickPanel();
+          setHostQuickDate(timelineDate);
+          setHostQuickOpen(true);
+          setSel(null);
+        }}
+      />
       <FloorReservationDialog
         open={serviceDialog !== null}
         table={serviceDialog?.table ?? null}

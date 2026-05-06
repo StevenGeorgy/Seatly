@@ -27,6 +27,11 @@ import {
   type ReservationRow,
 } from "@/hooks/useReservations";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import {
+  defaultRestaurantHours,
+  parseRestaurantHoursJson,
+  parseRestaurantTimeToMinutes,
+} from "@/lib/restaurant-hours";
 import { useUser } from "@/hooks/useUser";
 import { hostActionNeedsManagerApproval } from "@/lib/auth/host-action-permissions";
 import {
@@ -76,11 +81,45 @@ for (let h = 0; h < 24; h += 1) {
   }
 }
 
-const BOARD_TIMES = ["5:30pm", "6pm", "6:30pm", "7pm", "7:30pm", "8pm", "8:30pm", "9pm", "10pm", "11pm", "12am", "1am", "2am"];
-const BOARD_START_MINUTES = 17 * 60 + 30;
-const BOARD_END_MINUTES = 26 * 60;
-const BOARD_RANGE_MINUTES = BOARD_END_MINUTES - BOARD_START_MINUTES;
 const DEFAULT_DURATION_MINUTES = 90;
+const BOARD_SLOT_MINUTES = 30;
+const BOARD_FALLBACK_OPEN_MINUTES = 11 * 60;
+const BOARD_FALLBACK_CLOSE_MINUTES = 22 * 60;
+
+type BoardWindow = {
+  startMin: number;
+  endMin: number;
+  rangeMin: number;
+  times: string[];
+};
+
+function buildBoardWindow(openMin: number, closeMin: number): BoardWindow {
+  const startMin = openMin;
+  const endMin = closeMin <= openMin ? closeMin + 1440 : closeMin;
+  const times: string[] = [];
+  for (let m = startMin; m <= endMin; m += BOARD_SLOT_MINUTES) {
+    const normalized = ((m % 1440) + 1440) % 1440;
+    const hours = Math.floor(normalized / 60);
+    const minutes = normalized % 60;
+    times.push(formatCompactTimeLabel(`${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`));
+  }
+  return { startMin, endMin, rangeMin: Math.max(endMin - startMin, BOARD_SLOT_MINUTES), times };
+}
+
+function boardWindowForDate(
+  hoursJson: Record<string, unknown> | null | undefined,
+  date: Date,
+): BoardWindow {
+  const { regular } = parseRestaurantHoursJson(hoursJson ?? null);
+  const fallback = defaultRestaurantHours();
+  const dayIndex = (date.getDay() + 6) % 7; // Monday-first
+  const day = regular[dayIndex];
+  const fallbackDay = fallback[dayIndex];
+  const source = day?.open ? day : fallbackDay;
+  const openMin = parseRestaurantTimeToMinutes(source.from) ?? BOARD_FALLBACK_OPEN_MINUTES;
+  const closeMin = parseRestaurantTimeToMinutes(source.to) ?? BOARD_FALLBACK_CLOSE_MINUTES;
+  return buildBoardWindow(openMin, closeMin);
+}
 
 type TranslationFn = ReturnType<typeof useTranslation>["t"];
 
@@ -101,12 +140,6 @@ function parseTime(timeStr: string): { hours: number; minutes: number } {
   if (period === "PM" && h !== 12) h += 12;
   if (period === "AM" && h === 12) h = 0;
   return { hours: h, minutes: min };
-}
-
-function timeToBoardMinutes(timeStr: string): number {
-  const { hours, minutes } = parseTime(timeStr);
-  const normalizedHour = hours < 5 ? hours + 24 : hours;
-  return normalizedHour * 60 + minutes;
 }
 
 function isDinerModifiedReservation(row: ReservationRow): boolean {
@@ -177,7 +210,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     tableCount: assignedTables.length,
     tableCapacity: assignedTables.reduce((total, table) => total + table.capacity, 0),
     source: rowData,
-    startsAt: timeToBoardMinutes(format(date, "h:mm a")),
+    startsAt: date.getHours() * 60 + date.getMinutes(),
     durationMinutes,
   };
 }
@@ -226,7 +259,7 @@ export default function ReservationsPage() {
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const { selectedRestaurantId } = useRestaurantScope();
+  const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
   const { rolesAtRestaurant } = useUser();
   const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
   const rangeEndObject = viewMode === "week" ? addDays(selectedDateObject, 6) : selectedDateObject;
@@ -284,6 +317,10 @@ export default function ReservationsPage() {
   const activeTimelineRows = useMemo(
     () => boardRows.filter((reservation) => reservation.status !== "cancelled"),
     [boardRows],
+  );
+  const boardWindow = useMemo(
+    () => boardWindowForDate(selectedRestaurant?.hours_json ?? null, selectedDateObject),
+    [selectedRestaurant?.hours_json, selectedDate],
   );
   const bookedTonight = allRows.length;
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
@@ -522,7 +559,7 @@ export default function ReservationsPage() {
         </div>
       </section>
 
-      {viewMode === "day" ? <FloorTimeline rows={activeTimelineRows} loading={loading} /> : null}
+      {viewMode === "day" ? <FloorTimeline rows={activeTimelineRows} loading={loading} window={boardWindow} /> : null}
       <ReservationsTable
         rows={boardRows}
         loading={loading}
@@ -750,8 +787,18 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
   );
 }
 
-function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading: boolean }) {
+function FloorTimeline({
+  rows,
+  loading,
+  window: boardWindow,
+}: {
+  rows: ReservationBoardRow[];
+  loading: boolean;
+  window: BoardWindow;
+}) {
   const byTable = buildTimelineRows(rows);
+  const { startMin, rangeMin, times } = boardWindow;
+  const minWidthPx = 110 + times.length * 72;
 
   return (
     <section className="overflow-hidden rounded-2xl border border-border bg-bg-surface">
@@ -776,14 +823,14 @@ function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading
         <EmptyReservationsState />
       ) : (
         <div className="overflow-x-auto">
-          <div className="min-w-[1120px]">
+          <div style={{ minWidth: `${minWidthPx}px` }}>
             <div className="grid grid-cols-[110px_1fr] border-b border-border/60">
               <div className="px-4 py-3 font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
                 Table
               </div>
-              <div className="grid" style={{ gridTemplateColumns: `repeat(${BOARD_TIMES.length}, minmax(72px, 1fr))` }}>
-                {BOARD_TIMES.map((time) => (
-                  <div key={time} className="border-l border-border/50 px-2 py-3 font-mono text-[10px] text-text-muted">
+              <div className="grid" style={{ gridTemplateColumns: `repeat(${times.length}, minmax(72px, 1fr))` }}>
+                {times.map((time, idx) => (
+                  <div key={`${time}-${idx}`} className="border-l border-border/50 px-2 py-3 font-mono text-[10px] text-text-muted">
                     {time}
                   </div>
                 ))}
@@ -799,14 +846,15 @@ function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading
                 </div>
                 <div
                   className="relative grid"
-                  style={{ gridTemplateColumns: `repeat(${BOARD_TIMES.length}, minmax(72px, 1fr))` }}
+                  style={{ gridTemplateColumns: `repeat(${times.length}, minmax(72px, 1fr))` }}
                 >
-                  {BOARD_TIMES.map((time) => (
-                    <div key={time} className="border-l border-border/30" />
+                  {times.map((time, idx) => (
+                    <div key={`${time}-${idx}`} className="border-l border-border/30" />
                   ))}
                   {table.bookings.map((booking) => {
-                    const left = Math.max(0, ((booking.startsAt - BOARD_START_MINUTES) / BOARD_RANGE_MINUTES) * 100);
-                    const width = Math.max(7, (booking.durationMinutes / BOARD_RANGE_MINUTES) * 100);
+                    const effectiveStart = booking.startsAt < startMin ? booking.startsAt + 1440 : booking.startsAt;
+                    const left = Math.max(0, Math.min(100, ((effectiveStart - startMin) / rangeMin) * 100));
+                    const width = Math.max(3, (booking.durationMinutes / rangeMin) * 100);
                     return (
                       <button
                         key={booking.id}
