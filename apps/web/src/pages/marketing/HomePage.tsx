@@ -346,7 +346,7 @@ export default function HomePage() {
       {/* ── HERO ───────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_10%,rgba(201,168,76,0.10)_0%,transparent_55%)]" />
-        <div className="relative mx-auto grid w-full max-w-[1320px] items-center gap-12 px-6 py-20 sm:px-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-16 lg:px-10 lg:py-24 xl:grid-cols-[minmax(0,640px)_420px] xl:px-12">
+        <div className="relative grid w-full items-center gap-12 px-12 py-20 sm:px-16 md:px-20 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-16 lg:px-24 lg:py-24 xl:grid-cols-[minmax(0,640px)_420px] xl:px-32 2xl:px-40">
           <div className="flex flex-col">
             <motion.span
               initial={{ opacity: 0, y: 12 }}
@@ -623,7 +623,7 @@ export default function HomePage() {
 
       {/* ── Available tonight ─────────────────────────────────── */}
       <section className="border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="flex items-end justify-between gap-6">
             <div>
               <SectionEyebrow>Available tonight near you</SectionEyebrow>
@@ -707,7 +707,7 @@ export default function HomePage() {
         id="for-restaurants"
         className="scroll-mt-24 border-t border-border/40 bg-bg-surface/30 py-20"
       >
-        <div className="mx-auto grid w-full max-w-[1320px] gap-12 px-6 sm:px-8 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-10 xl:px-12">
+        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>For restaurants</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
@@ -862,7 +862,7 @@ export default function HomePage() {
         id="hey-cenaiva"
         className="scroll-mt-24 border-t border-border/40 py-20"
       >
-        <div className="mx-auto grid w-full max-w-[1320px] gap-12 px-6 sm:px-8 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-10 xl:px-12">
+        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>Hey Cenaiva</SectionEyebrow>
             <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
@@ -1023,7 +1023,7 @@ export default function HomePage() {
 
       {/* ── For Diners ─────────────────────────────────── */}
       <section id="loyalty" className="scroll-mt-24 border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.4fr]">
             <div>
               <SectionEyebrow>For diners</SectionEyebrow>
@@ -1080,7 +1080,7 @@ export default function HomePage() {
 
       {/* ── FAQ ─────────────────────────────────────────── */}
       <section className="border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-3xl px-5 text-center lg:px-8">
+        <div className="mx-auto w-full max-w-3xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <SectionEyebrow>Questions</SectionEyebrow>
           <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
             The small print, made plain.
@@ -1107,7 +1107,7 @@ export default function HomePage() {
 
       {/* ── Pricing ─────────────────────────────────────── */}
       <section id="pricing" className="scroll-mt-24 border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 text-center sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <SectionEyebrow>Pricing</SectionEyebrow>
           <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
             Free for diners. Honest for restaurants.

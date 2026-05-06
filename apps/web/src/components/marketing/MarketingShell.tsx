@@ -4,6 +4,7 @@ import { Link, NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X, Search } from "lucide-react";
 
+import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -77,14 +78,9 @@ export function MarketingShell({ children }: MarketingShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-[1320px] items-center px-6 sm:px-8 lg:px-10 xl:px-12">
-          <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
-            <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
-              <span className="block size-2.5 rounded-sm bg-gold" />
-            </span>
-            <span className="font-serif text-xl font-semibold tracking-tight text-white">
-              Cenaiva
-            </span>
+        <div className="flex h-16 w-full items-center px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
+          <Link to="/" className="flex shrink-0 items-center" aria-label="Cenaiva home">
+            <CenaivaWordmark />
           </Link>
 
           <nav
@@ -231,13 +227,10 @@ function MarketingFooter() {
 
   return (
     <footer className="border-t border-border/40 bg-background py-16">
-      <div className="mx-auto grid w-full max-w-[1320px] gap-10 px-6 sm:px-8 md:grid-cols-[1.4fr_repeat(4,1fr)] lg:px-10 xl:px-12">
+      <div className="grid w-full gap-10 px-12 sm:px-16 md:grid-cols-[1.4fr_repeat(4,1fr)] md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <div className="max-w-xs">
-          <Link to="/" className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-md bg-gold/15 text-gold">
-              <span className="block size-2.5 rounded-sm bg-gold" />
-            </span>
-            <span className="font-serif text-xl font-semibold text-white">Cenaiva</span>
+          <Link to="/" className="flex items-center" aria-label="Cenaiva home">
+            <CenaivaWordmark className="ml-0 h-12 max-w-[min(100%,320px)] md:h-14 md:max-w-[min(100%,360px)]" />
           </Link>
           <p className="mt-4 text-sm leading-relaxed text-text-muted">
             The operating system for the modern dining room. Made in Toronto, on purpose.
@@ -278,7 +271,7 @@ function MarketingFooter() {
           </div>
         ))}
       </div>
-      <div className="mx-auto mt-12 flex w-full max-w-[1320px] flex-col items-start justify-between gap-2 border-t border-border/40 px-6 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-8 lg:px-10 xl:px-12">
+      <div className="mt-12 flex w-full flex-col items-start justify-between gap-2 border-t border-border/40 px-12 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
         <span className="font-mono">v2.4.1</span>
       </div>

@@ -130,7 +130,7 @@ export default function HeyCenaivaPage() {
       <section className="relative overflow-hidden border-b border-border/40">
         <div className="pointer-events-none absolute inset-0 opacity-25 [background-image:radial-gradient(ellipse_at_18%_0%,var(--gold)_0%,transparent_52%)]" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.08] [background-image:linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] [background-size:64px_64px]" />
-        <div className="relative mx-auto w-full max-w-[1320px] px-6 py-24 sm:px-8 lg:px-10 lg:py-32 xl:px-12">
+        <div className="relative w-full px-12 py-24 sm:px-16 md:px-20 lg:px-24 lg:py-32 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -164,7 +164,7 @@ export default function HeyCenaivaPage() {
       </section>
 
       <section id="conversation" className="scroll-mt-24 py-24">
-        <div className="mx-auto grid w-full max-w-[1320px] gap-12 px-6 sm:px-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-10 xl:px-12">
+        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, x: -16 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -298,7 +298,7 @@ export default function HeyCenaivaPage() {
       </section>
 
       <section className="border-b border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:items-start">
             <div>
               <SectionEyebrow>Everywhere you are</SectionEyebrow>
@@ -342,7 +342,7 @@ export default function HeyCenaivaPage() {
       </section>
 
       <section className="border-b border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr]">
             <div>
               <SectionEyebrow>What you can say</SectionEyebrow>
@@ -395,7 +395,7 @@ export default function HeyCenaivaPage() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: "-80px" }}
           transition={{ duration: 0.55, ease }}
-          className="relative mx-auto flex w-full max-w-[1320px] flex-col items-center px-6 text-center sm:px-8 lg:px-10 xl:px-12"
+          className="relative flex w-full flex-col items-center px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40"
         >
           <SectionEyebrow>Get it</SectionEyebrow>
           <h2 className="mt-6 max-w-5xl font-serif text-5xl leading-[1.02] text-white sm:text-6xl lg:text-7xl">

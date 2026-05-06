@@ -37,6 +37,7 @@ import {
 } from "@/hooks/usePromotions";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { EventPromotionDetailDialog } from "@/components/customer/EventPromotionDetailCard";
+import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import {
@@ -739,26 +740,21 @@ export default function DealsPage() {
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-border/40 bg-background/85 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-[1320px] items-center px-5 lg:px-8">
-          <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
-            <span className="flex size-7 items-center justify-center rounded-md bg-gold/15">
-              <span className="block size-2.5 rounded-sm bg-gold" />
-            </span>
-            <span className="font-serif text-xl font-semibold tracking-tight text-white">
-              Cenaiva
-            </span>
+        <div className="flex h-[5.5rem] w-full items-center px-4 sm:px-5">
+          <Link to="/" className="flex shrink-0 items-center" aria-label="Cenaiva home">
+            <CenaivaWordmark />
           </Link>
 
           <CustomerNav />
 
-          <div className="ml-auto flex shrink-0 items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-4">
             <button
               type="button"
-              className="relative inline-flex size-9 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+              className="relative inline-flex size-11 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
               aria-label="Notifications"
             >
-              <Bell className="size-4" />
-              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-gold font-mono text-[10px] font-bold text-black">
+              <Bell className="size-5" />
+              <span className="absolute -right-0.5 -top-0.5 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 font-mono text-[11px] font-bold text-black">
                 3
               </span>
             </button>
@@ -770,9 +766,9 @@ export default function DealsPage() {
                   className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
                   aria-label={t("routes.account.title")}
                 >
-                  <Avatar>
+                  <Avatar className="size-11">
                     <AvatarImage src={profile?.avatar_url ?? undefined} />
-                    <AvatarFallback className="bg-gold/10 text-gold">{initials}</AvatarFallback>
+                    <AvatarFallback className="bg-gold/10 text-sm text-gold">{initials}</AvatarFallback>
                   </Avatar>
                 </button>
               </DropdownMenuTrigger>
@@ -804,7 +800,7 @@ export default function DealsPage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1320px] px-5 py-10 lg:px-8 lg:py-12">
+      <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
           <span className="inline-block h-px w-3 bg-gold/60" /> LIMITED · THIS WEEK IN TORONTO
         </span>

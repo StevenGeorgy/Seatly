@@ -77,7 +77,7 @@ export function CustomerNav() {
     );
 
   return (
-    <nav className="hidden flex-1 items-center justify-center gap-1 md:flex" aria-label="Primary">
+    <nav className="hidden flex-1 items-center justify-center gap-2 md:flex" aria-label="Primary">
       {links.map((link) => {
         const active = isActive(link);
         return (
@@ -91,7 +91,7 @@ export function CustomerNav() {
               }
             }}
             className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "rounded-md px-4 py-2.5 text-base font-medium transition-colors md:px-5 md:py-3",
               active
                 ? "border-b-2 border-gold text-white"
                 : "text-text-secondary hover:text-white",
@@ -105,7 +105,7 @@ export function CustomerNav() {
       <button
         type="button"
         onClick={() => assistant?.open(undefined, undefined, { autoListen: false })}
-        className="rounded-md px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors hover:text-white"
+        className="rounded-md px-4 py-2.5 text-base font-medium text-text-secondary transition-colors hover:text-white md:px-5 md:py-3"
       >
         Concierge
       </button>

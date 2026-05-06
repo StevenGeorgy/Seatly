@@ -22,7 +22,7 @@ export default function AboutPage() {
       {/* ── Hero ──────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(201,168,76,0.05)_0%,_transparent_60%)]" />
-        <div className="relative mx-auto max-w-3xl px-6 py-20 sm:py-28">
+        <div className="relative mx-auto max-w-3xl px-12 py-20 sm:px-16 sm:py-28 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -53,7 +53,7 @@ export default function AboutPage() {
 
       {/* ── Mission ───────────────────────────────────────── */}
       <section className="border-t border-border bg-bg-surface/40 py-16">
-        <div className="mx-auto max-w-3xl px-6 text-center">
+        <div className="mx-auto max-w-3xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -74,7 +74,7 @@ export default function AboutPage() {
 
       {/* ── Why Cenaiva (3 pillars) ────────────────────────── */}
       <section className="border-t border-border py-20">
-        <div className="mx-auto max-w-4xl px-6">
+        <div className="mx-auto max-w-4xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -125,7 +125,7 @@ export default function AboutPage() {
 
       {/* ── Two audiences ─────────────────────────────────── */}
       <section className="border-t border-border bg-bg-surface/30 py-20">
-        <div className="mx-auto max-w-5xl px-6">
+        <div className="mx-auto max-w-5xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -195,7 +195,7 @@ export default function AboutPage() {
 
       {/* ── Values ────────────────────────────────────────── */}
       <section className="border-t border-border py-20">
-        <div className="mx-auto max-w-3xl px-6">
+        <div className="mx-auto max-w-3xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -258,7 +258,7 @@ export default function AboutPage() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="mx-auto max-w-2xl px-6 text-center"
+          className="mx-auto max-w-2xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40"
         >
           <h2 className="text-2xl font-bold tracking-tight text-text-primary sm:text-3xl">
             Be part of what we&apos;re building.

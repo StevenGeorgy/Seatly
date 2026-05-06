@@ -145,7 +145,7 @@ export default function FeaturesPage() {
       <section className="relative overflow-hidden border-b border-border">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_rgba(201,168,76,0.05)_0%,_transparent_60%)]" />
 
-        <div className="relative mx-auto flex max-w-6xl flex-col items-center gap-12 px-6 py-20 sm:py-28 lg:flex-row lg:gap-16">
+        <div className="relative mx-auto flex max-w-6xl flex-col items-center gap-12 px-12 py-20 sm:px-16 sm:py-28 md:px-20 lg:flex-row lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           {/* Left text */}
           <div className="flex-1 text-center lg:text-left">
             <motion.span
@@ -216,7 +216,7 @@ export default function FeaturesPage() {
 
       {/* ── Cenaiva AI highlight card ─────────────────────────── */}
       <section className="border-b border-border bg-bg-surface/40 py-14">
-        <div className="mx-auto max-w-5xl px-6">
+        <div className="mx-auto max-w-5xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -264,7 +264,7 @@ export default function FeaturesPage() {
       </section>
 
       {/* ── For Restaurants ───────────────────────────────── */}
-      <section className="mx-auto max-w-5xl px-6 py-20">
+      <section className="mx-auto max-w-5xl px-12 py-20 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <motion.div
           initial={{ opacity: 0, y: 15 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -305,7 +305,7 @@ export default function FeaturesPage() {
 
       {/* ── For Diners ────────────────────────────────────── */}
       <section className="border-t border-border bg-bg-surface/30 py-20">
-        <div className="mx-auto max-w-5xl px-6">
+        <div className="mx-auto max-w-5xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -348,7 +348,7 @@ export default function FeaturesPage() {
 
       {/* ── Platform-wide strip ───────────────────────────── */}
       <section className="border-t border-border py-14">
-        <div className="mx-auto max-w-5xl px-6">
+        <div className="mx-auto max-w-5xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <motion.p
             initial={{ opacity: 0, y: 10 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -383,7 +383,7 @@ export default function FeaturesPage() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="mx-auto max-w-2xl px-6 text-center"
+          className="mx-auto max-w-2xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40"
         >
           <h2 className="text-2xl font-bold tracking-tight text-text-primary sm:text-3xl">
             Ready to see it in action?

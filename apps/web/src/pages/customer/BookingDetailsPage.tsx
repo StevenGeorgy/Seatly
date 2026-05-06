@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -224,14 +225,9 @@ export default function BookingDetailsPage() {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-40 border-b border-border/40 bg-background/85 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-[1320px] items-center px-5 lg:px-8">
-          <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="Cenaiva home">
-            <span className="flex size-7 items-center justify-center rounded-md bg-gold/15">
-              <span className="block size-2.5 rounded-sm bg-gold" />
-            </span>
-            <span className="font-serif text-xl font-semibold tracking-tight text-white">
-              Cenaiva
-            </span>
+        <div className="flex h-[5.5rem] w-full items-center px-4 sm:px-5">
+          <Link to="/" className="flex shrink-0 items-center" aria-label="Cenaiva home">
+            <CenaivaWordmark />
           </Link>
           <CustomerNav />
         </div>

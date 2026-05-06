@@ -105,7 +105,7 @@ export default function LoyaltyPage() {
       <section className="relative overflow-hidden border-b border-border/40">
         <div className="pointer-events-none absolute inset-0 opacity-25 [background-image:radial-gradient(ellipse_at_35%_0%,var(--gold)_0%,transparent_52%)]" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.07] [background-image:linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] [background-size:64px_64px]" />
-        <div className="relative mx-auto w-full max-w-[1320px] px-6 py-24 sm:px-8 lg:px-10 lg:py-32 xl:px-12">
+        <div className="relative w-full px-12 py-24 sm:px-16 md:px-20 lg:px-24 lg:py-32 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -135,7 +135,7 @@ export default function LoyaltyPage() {
       </section>
 
       <section id="tiers" className="scroll-mt-24 border-b border-border/40 py-20">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[1fr_320px] lg:items-start">
             <div>
               <SectionEyebrow>Loyalty</SectionEyebrow>
@@ -256,7 +256,7 @@ export default function LoyaltyPage() {
       </section>
 
       <section className="py-24">
-        <div className="mx-auto w-full max-w-[1320px] px-6 sm:px-8 lg:px-10 xl:px-12">
+        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr]">
             <div>
               <SectionEyebrow>How you earn</SectionEyebrow>
@@ -304,7 +304,7 @@ export default function LoyaltyPage() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: "-80px" }}
           transition={{ duration: 0.55, ease }}
-          className="relative mx-auto max-w-3xl px-6"
+          className="relative mx-auto max-w-3xl px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40"
         >
           <SectionEyebrow>Start earning</SectionEyebrow>
           <h2 className="mt-6 font-serif text-4xl leading-[1.05] text-white sm:text-5xl">
