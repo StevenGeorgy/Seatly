@@ -289,8 +289,8 @@ function StripePlaceholder({ label }: { label: string }) {
 
 function SectionEyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
-      <span className="inline-block h-px w-3 bg-gold/60" /> {children}
+    <span className="inline-flex items-center gap-2 font-mono text-xs uppercase tracking-[0.2em] text-gold sm:text-[13px]">
+      <span className="inline-block h-px w-4 bg-gold/60 sm:w-5" /> {children}
     </span>
   );
 }
@@ -346,15 +346,15 @@ export default function HomePage() {
       {/* ── HERO ───────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_10%,rgba(201,168,76,0.10)_0%,transparent_55%)]" />
-        <div className="relative grid w-full items-center gap-14 px-12 py-24 sm:px-16 sm:py-28 md:px-20 lg:grid-cols-[auto_1fr] lg:gap-20 lg:py-32 xl:gap-24 xl:px-32 2xl:px-40">
-          <div className="flex min-w-0 max-w-[640px] flex-col">
+        <div className="relative grid w-full items-center gap-16 px-12 py-24 sm:px-16 sm:py-28 md:px-20 lg:grid-cols-[auto_1fr] lg:gap-24 lg:py-32 xl:gap-28 xl:px-32 2xl:px-40">
+          <div className="flex min-w-0 max-w-[720px] flex-col">
             <motion.span
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, ease }}
-              className="inline-flex w-fit items-center gap-2 rounded-full border border-gold/30 bg-gold/5 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-gold"
+              className="inline-flex w-fit items-center gap-2.5 rounded-full border border-gold/30 bg-gold/5 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.2em] text-gold sm:text-[13px]"
             >
-              <span className="size-1.5 rounded-full bg-gold" />
+              <span className="size-2 rounded-full bg-gold" />
               800+ restaurants · Toronto · Montréal · Vancouver
             </motion.span>
 
@@ -362,7 +362,7 @@ export default function HomePage() {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.05, ease }}
-              className="mt-8 font-serif text-5xl font-medium leading-[1.05] tracking-tight text-white sm:text-6xl lg:text-7xl"
+              className="mt-10 font-serif text-6xl font-medium leading-[1.05] tracking-tight text-white sm:text-7xl lg:text-8xl"
             >
               Dinner, planned
               <br />
@@ -373,7 +373,7 @@ export default function HomePage() {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.12, ease }}
-              className="mt-7 max-w-xl text-base leading-relaxed text-text-secondary sm:text-lg"
+              className="mt-8 max-w-2xl text-lg leading-relaxed text-text-secondary sm:text-xl"
             >
               Find tonight's table. Plan an anniversary. Pre-order before you arrive. Just say{" "}
               <span className="italic text-gold">"Hey Cenaiva"</span> — or book the
@@ -385,19 +385,19 @@ export default function HomePage() {
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.2, ease }}
-              className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]"
+              className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]"
             >
               <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
                 <PopoverTrigger asChild>
                   <button
                     type="button"
-                    className="flex h-12 items-center justify-between rounded-xl border border-border bg-bg-surface/70 px-4 text-left text-sm text-white transition-colors hover:border-gold/40"
+                    className="flex h-14 items-center justify-between rounded-xl border border-border bg-bg-surface/70 px-5 text-left text-base text-white transition-colors hover:border-gold/40"
                   >
-                    <span className="flex items-center gap-2">
-                      <CalendarIcon className="size-4 text-text-muted" />
+                    <span className="flex items-center gap-2.5">
+                      <CalendarIcon className="size-5 text-text-muted" />
                       {dateLabel}
                     </span>
-                    <ChevronDown className="size-4 text-text-muted" />
+                    <ChevronDown className="size-5 text-text-muted" />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-auto p-0">
@@ -414,9 +414,9 @@ export default function HomePage() {
               </Popover>
 
               <Select value={time} onValueChange={setTime}>
-                <SelectTrigger className="!h-12 rounded-xl border-border bg-bg-surface/70 px-4 text-sm">
-                  <span className="flex items-center gap-2">
-                    <Clock className="size-4 text-text-muted" />
+                <SelectTrigger className="!h-14 rounded-xl border-border bg-bg-surface/70 px-5 text-base">
+                  <span className="flex items-center gap-2.5">
+                    <Clock className="size-5 text-text-muted" />
                     <SelectValue />
                   </span>
                 </SelectTrigger>
@@ -430,9 +430,9 @@ export default function HomePage() {
               </Select>
 
               <Select value={people} onValueChange={setPeople}>
-                <SelectTrigger className="!h-12 rounded-xl border-border bg-bg-surface/70 px-4 text-sm">
-                  <span className="flex items-center gap-2">
-                    <Users className="size-4 text-text-muted" />
+                <SelectTrigger className="!h-14 rounded-xl border-border bg-bg-surface/70 px-5 text-base">
+                  <span className="flex items-center gap-2.5">
+                    <Users className="size-5 text-text-muted" />
                     <SelectValue />
                   </span>
                 </SelectTrigger>
@@ -447,10 +447,10 @@ export default function HomePage() {
 
               <Button
                 onClick={() => goToDiscover()}
-                className="h-12 rounded-xl px-6 font-semibold"
+                className="h-14 rounded-xl px-8 text-base font-semibold"
               >
                 Let's go
-                <ArrowRight className="ml-1 size-4" />
+                <ArrowRight className="ml-1.5 size-5" />
               </Button>
             </motion.div>
 
@@ -462,31 +462,31 @@ export default function HomePage() {
                 e.preventDefault();
                 goToDiscover();
               }}
-              className="mt-3 flex h-12 items-center gap-2 rounded-xl border border-border bg-bg-surface/70 px-4"
+              className="mt-4 flex h-14 items-center gap-3 rounded-xl border border-border bg-bg-surface/70 px-5"
             >
-              <Search className="size-4 text-text-muted" />
+              <Search className="size-5 text-text-muted" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Location, Restaurant, or Cuisine"
-                className="flex-1 bg-transparent text-sm text-white placeholder:text-text-muted focus:outline-none"
+                className="flex-1 bg-transparent text-base text-white placeholder:text-text-muted focus:outline-none"
               />
             </motion.form>
 
-            <div className="mt-3 flex items-center gap-2 text-xs text-text-muted">
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-text-muted">
               <span>It looks like you're in Toronto. Not correct?</span>
               <button
                 type="button"
                 onClick={detectLocation}
-                className="inline-flex items-center gap-1 text-gold hover:underline"
+                className="inline-flex items-center gap-1.5 text-gold hover:underline"
               >
-                <MapPin className="size-3" />
+                <MapPin className="size-4" />
                 Get current location
               </button>
             </div>
 
-            <div className="mt-7 flex flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted">
+            <div className="mt-8 flex flex-nowrap items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <span className="shrink-0 font-mono text-xs uppercase tracking-[0.18em] text-text-muted sm:text-[13px]">
                 Try Hey Cenaiva:
               </span>
               {QUICK_PROMPTS.map((p) => (
@@ -497,25 +497,25 @@ export default function HomePage() {
                     setQuery(p.replace(/^"|"$/g, ""));
                     goToDiscover({ q: p.replace(/^"|"$/g, "") });
                   }}
-                  className="shrink-0 rounded-full border border-border bg-bg-surface/70 px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+                  className="shrink-0 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
                 >
                   {p}
                 </button>
               ))}
             </div>
 
-            <div className="mt-16 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-10 sm:gap-10 lg:gap-14">
+            <div className="mt-20 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-12 sm:gap-10 lg:gap-14">
               <div>
-                <p className="font-serif text-3xl text-white">12,400+</p>
-                <p className="mt-1 text-xs text-text-muted">restaurants nationwide</p>
+                <p className="font-serif text-4xl text-white lg:text-5xl">12,400+</p>
+                <p className="mt-2 text-sm text-text-muted">restaurants nationwide</p>
               </div>
               <div>
-                <p className="font-serif text-3xl text-white">Free</p>
-                <p className="mt-1 text-xs text-text-muted">forever for diners</p>
+                <p className="font-serif text-4xl text-white lg:text-5xl">Free</p>
+                <p className="mt-2 text-sm text-text-muted">forever for diners</p>
               </div>
               <div>
-                <p className="font-serif text-3xl text-white">1.5x</p>
-                <p className="mt-1 text-xs text-text-muted">points on Tuesdays</p>
+                <p className="font-serif text-4xl text-white lg:text-5xl">1.5x</p>
+                <p className="mt-2 text-sm text-text-muted">points on Tuesdays</p>
               </div>
             </div>
           </div>
@@ -627,16 +627,16 @@ export default function HomePage() {
           <div className="flex items-end justify-between gap-6">
             <div>
               <SectionEyebrow>Available tonight near you</SectionEyebrow>
-              <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
+              <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
                 Toronto · {formatCompactTimeLabel(time)} · {people} {people === "1" ? "guest" : "guests"}
               </h2>
             </div>
             <Link
               to="/discover"
-              className="hidden items-center gap-1 text-sm text-gold hover:underline sm:inline-flex"
+              className="hidden items-center gap-1.5 text-base text-gold hover:underline sm:inline-flex"
             >
               See all 142
-              <ArrowRight className="size-4" />
+              <ArrowRight className="size-5" />
             </Link>
           </div>
 
@@ -656,29 +656,29 @@ export default function HomePage() {
                     type="button"
                     onClick={() => toggleFavorite(r.id)}
                     aria-label="Save restaurant"
-                    className="absolute right-3 top-3 rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
+                    className="absolute right-3 top-3 rounded-full border border-border bg-black/60 p-2 backdrop-blur transition-colors hover:border-gold/50"
                   >
                     <Heart
                       className={cn(
-                        "size-4",
+                        "size-5",
                         favorites.has(r.id) ? "fill-gold text-gold" : "text-white",
                       )}
                     />
                   </button>
                 </div>
-                <div className="flex flex-1 flex-col gap-3 p-5">
+                <div className="flex flex-1 flex-col gap-4 p-6">
                   <div>
-                    <p className="font-serif text-xl text-white">{r.name}</p>
-                    <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+                    <p className="font-serif text-2xl text-white">{r.name}</p>
+                    <div className="mt-1.5 flex items-center gap-2 text-sm text-text-secondary">
                       <span className="text-gold">★★★★☆</span>
                       <span>{r.reviews.toLocaleString()} reviews</span>
                     </div>
                   </div>
-                  <p className="text-xs text-text-secondary">
+                  <p className="text-sm text-text-secondary">
                     {r.cuisine} · {r.price} · {r.area}
                   </p>
-                  <p className="flex items-center gap-1.5 text-xs text-text-muted">
-                    <ArrowUpRight className="size-3 text-gold" />
+                  <p className="flex items-center gap-2 text-sm text-text-muted">
+                    <ArrowUpRight className="size-4 text-gold" />
                     Booked {r.bookedToday} times today
                   </p>
                   <div className="mt-auto grid grid-cols-3 gap-2 pt-2">
@@ -689,7 +689,7 @@ export default function HomePage() {
                         onClick={() =>
                           goToDiscover({ restaurant: r.id, slot: s })
                         }
-                        className="rounded-md bg-gold py-2 text-xs font-semibold text-black transition-opacity hover:opacity-90"
+                        className="rounded-md bg-gold py-2.5 text-sm font-semibold text-black transition-opacity hover:opacity-90"
                       >
                         {formatCompactTimeLabel(s)}
                       </button>
@@ -710,19 +710,19 @@ export default function HomePage() {
         <div className="mx-auto grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>For restaurants</SectionEyebrow>
-            <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
+            <h2 className="mt-4 font-serif text-6xl leading-[1.05] text-white lg:text-7xl">
               Run a restaurant?
               <br />
               <span className="italic text-gold">We replaced the stack.</span>
             </h2>
-            <p className="mt-6 max-w-md text-base leading-relaxed text-text-secondary">
+            <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
               Reservations, floor plan, kitchen display, staff scheduling, CRM,
               analytics, payments — on one ledger, in one login.{" "}
               <span className="text-gold">$1.00 per confirmed booking.</span> Zero
               commission on orders, ever.
             </p>
 
-            <ul className="mt-10 space-y-6">
+            <ul className="mt-12 space-y-8">
               {[
                 {
                   icon: CalendarDays,
@@ -745,13 +745,13 @@ export default function HomePage() {
                   desc: "Demand forecasts, menu performance, no-show flags, receipt scanning, accountant exports.",
                 },
               ].map((item) => (
-                <li key={item.title} className="flex gap-4">
-                  <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
-                    <item.icon className="size-5 text-gold" />
+                <li key={item.title} className="flex gap-5">
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                    <item.icon className="size-6 text-gold" />
                   </span>
                   <div>
-                    <p className="text-sm font-semibold text-white">{item.title}</p>
-                    <p className="mt-1 text-sm leading-relaxed text-text-muted">
+                    <p className="text-base font-semibold text-white">{item.title}</p>
+                    <p className="mt-1.5 text-base leading-relaxed text-text-muted">
                       {item.desc}
                     </p>
                   </div>
@@ -759,13 +759,13 @@ export default function HomePage() {
               ))}
             </ul>
 
-            <div className="mt-10 flex items-center gap-3">
-              <Button asChild className="h-11 rounded-md px-5 font-semibold">
+            <div className="mt-12 flex flex-wrap items-center gap-4">
+              <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
                 <Link to="/restaurants">
-                  Book a demo <ArrowRight className="ml-1 size-4" />
+                  Book a demo <ArrowRight className="ml-1.5 size-5" />
                 </Link>
               </Button>
-              <Button asChild variant="outline" className="h-11 rounded-md px-5">
+              <Button asChild variant="outline" className="h-12 rounded-md px-6 text-base">
                 <Link to="/restaurants#pricing">See pricing</Link>
               </Button>
             </div>
@@ -779,12 +779,12 @@ export default function HomePage() {
             transition={{ duration: 0.6, ease }}
             className="rounded-2xl border border-border bg-bg-surface p-6 shadow-2xl shadow-black/30"
           >
-            <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
+            <div className="flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
               <span>Live · Maison Verre · Saturday Service</span>
               <span>7:42pm</span>
             </div>
 
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
                 { label: "Tonight", value: "142", trend: "+18%" },
                 { label: "Revenue", value: "$24.8k", trend: "+13%" },
@@ -793,36 +793,36 @@ export default function HomePage() {
               ].map((s) => (
                 <div
                   key={s.label}
-                  className="rounded-xl border border-border bg-bg-elevated/50 p-4"
+                  className="rounded-xl border border-border bg-bg-elevated/50 p-4 sm:p-5"
                 >
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted">
                     {s.label}
                   </p>
-                  <p className="mt-2 font-serif text-2xl text-white">{s.value}</p>
-                  <p className="mt-1 text-[11px] text-gold">{s.trend}</p>
+                  <p className="mt-2 font-serif text-3xl text-white sm:text-4xl">{s.value}</p>
+                  <p className="mt-1 text-xs text-gold">{s.trend}</p>
                 </div>
               ))}
             </div>
 
             <div className="mt-6">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-gold sm:text-xs">
                 — Tonight's timeline
               </p>
-              <ul className="mt-3 divide-y divide-border/50">
+              <ul className="mt-4 divide-y divide-border/50">
                 {TIMELINE.map((row) => (
                   <li
                     key={row.time + row.who}
-                    className="flex items-center justify-between py-3 text-sm"
+                    className="flex items-center justify-between py-3.5 text-base"
                   >
                     <span className="flex items-center gap-4">
-                      <span className="w-12 font-mono text-xs text-text-muted">
+                      <span className="w-14 font-mono text-sm text-text-muted">
                         {row.time}
                       </span>
                       <span className="text-text-secondary">{row.who}</span>
                     </span>
                     <span
                       className={cn(
-                        "rounded-full px-2.5 py-0.5 text-[11px] font-medium",
+                        "rounded-full px-3 py-1 text-xs font-medium sm:text-sm",
                         STATUS_STYLES[row.status],
                       )}
                     >
@@ -833,7 +833,7 @@ export default function HomePage() {
               </ul>
             </div>
 
-            <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border/50 pt-5 text-xs">
+            <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border/50 pt-6 text-sm sm:text-base">
               <div>
                 <p className="font-mono uppercase tracking-[0.18em] text-text-muted">
                   Floor plan
@@ -865,18 +865,18 @@ export default function HomePage() {
         <div className="mx-auto grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.15fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <div>
             <SectionEyebrow>Hey Cenaiva</SectionEyebrow>
-            <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
+            <h2 className="mt-4 font-serif text-6xl leading-[1.05] text-white lg:text-7xl">
               Just <span className="italic text-gold">say it.</span>
               <br />
               We'll book it.
             </h2>
-            <p className="mt-6 max-w-md text-base leading-relaxed text-text-secondary">
+            <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
               Hey Cenaiva is the voice concierge built into the app, your watch,
               your car, and your home speaker. Plan an outing, hold a table, pre-order
               a course, redeem points — without thumbing through a single screen.
             </p>
 
-            <ul className="mt-10 space-y-6">
+            <ul className="mt-12 space-y-8">
               {[
                 {
                   icon: Sparkles,
@@ -899,13 +899,13 @@ export default function HomePage() {
                   desc: '"Use my points for the wine pairing tonight" — done at checkout, automatically.',
                 },
               ].map((item) => (
-                <li key={item.title} className="flex gap-4">
-                  <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
-                    <item.icon className="size-5 text-gold" />
+                <li key={item.title} className="flex gap-5">
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                    <item.icon className="size-6 text-gold" />
                   </span>
                   <div>
-                    <p className="text-sm font-semibold text-white">{item.title}</p>
-                    <p className="mt-1 text-sm leading-relaxed text-text-muted">
+                    <p className="text-base font-semibold text-white">{item.title}</p>
+                    <p className="mt-1.5 text-base leading-relaxed text-text-muted">
                       {item.desc}
                     </p>
                   </div>
@@ -913,15 +913,15 @@ export default function HomePage() {
               ))}
             </ul>
 
-            <div className="mt-10 flex items-center gap-3">
-              <Button asChild className="h-11 rounded-md px-5 font-semibold">
+            <div className="mt-12 flex flex-wrap items-center gap-4">
+              <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
                 <Link to="/hey-cenaiva">
-                  Try Hey Cenaiva <ArrowRight className="ml-1 size-4" />
+                  Try Hey Cenaiva <ArrowRight className="ml-1.5 size-5" />
                 </Link>
               </Button>
               <Button
                 variant="outline"
-                className="h-11 rounded-md px-5"
+                className="h-12 rounded-md px-6 text-base"
                 onClick={() => toast("Voice demo coming soon.", { icon: "🎙️" })}
               >
                 <span className="mr-1.5 size-1.5 rounded-full bg-gold" />
@@ -938,12 +938,12 @@ export default function HomePage() {
             transition={{ duration: 0.6, ease }}
             className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-b from-bg-surface to-black/60 p-6"
           >
-            <div className="flex items-center justify-end gap-1 font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
+            <div className="flex items-center justify-end gap-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
               {(["phone", "watch", "car", "homepod"] as const).map((d, i) => (
                 <span
                   key={d}
                   className={cn(
-                    "rounded-full px-2.5 py-0.5",
+                    "rounded-full px-3 py-1",
                     i === 0
                       ? "border border-gold/40 bg-gold/15 text-gold"
                       : "text-text-muted",
@@ -954,22 +954,22 @@ export default function HomePage() {
               ))}
             </div>
 
-            <div className="mt-6 space-y-4">
+            <div className="mt-6 space-y-5">
               <div className="flex items-start gap-3">
-                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
+                <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
                   You
                 </span>
-                <div className="flex-1 rounded-2xl border border-border bg-bg-surface px-4 py-3 text-sm text-text-secondary">
+                <div className="flex-1 rounded-2xl border border-border bg-bg-surface px-4 py-3.5 text-base leading-relaxed text-text-secondary">
                   Hey Cenaiva, I have a hundred bucks for a date night Friday.
                   Somewhere quiet, walkable from the Annex.
                 </div>
               </div>
 
               <div className="flex items-start gap-3">
-                <span className="ml-auto order-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+                <span className="ml-auto order-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold sm:text-xs">
                   Cenaiva
                 </span>
-                <div className="order-1 ml-auto max-w-[80%] rounded-2xl border border-gold/30 bg-gold/5 px-4 py-3 text-sm text-white">
+                <div className="order-1 ml-auto max-w-[80%] rounded-2xl border border-gold/30 bg-gold/5 px-4 py-3.5 text-base leading-relaxed text-white">
                   I found three tables under $50/person within a 12-minute walk.{" "}
                   <span className="text-gold">Bistro Lumière</span> at 7:30 has your
                   favourite Côtes du Rhône on the list. Want me to hold it?
@@ -987,32 +987,32 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-4 pt-2">
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => toast.success("Bistro Lumière held for 6 minutes.")}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-elevated px-3 py-1.5 text-xs text-white hover:border-gold/40"
+                  className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated px-4 py-2 text-sm text-white hover:border-gold/40"
                 >
-                  <Check className="size-3.5 text-gold" /> Hold the table
+                  <Check className="size-4 text-gold" /> Hold the table
                 </button>
                 <button
                   type="button"
                   onClick={() => navigate("/discover")}
-                  className="rounded-full border border-border bg-bg-elevated px-3 py-1.5 text-xs text-white hover:border-gold/40"
+                  className="rounded-full border border-border bg-bg-elevated px-4 py-2 text-sm text-white hover:border-gold/40"
                 >
                   Show all 3
                 </button>
               </div>
-              <div className="flex items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-xs">
-                <span className="flex size-9 items-center justify-center rounded-md bg-gold/15 font-mono text-[10px] text-gold">
+              <div className="flex items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3.5 text-sm">
+                <span className="flex size-10 items-center justify-center rounded-md bg-gold/15 font-mono text-xs text-gold">
                   BL
                 </span>
                 <div>
-                  <p className="text-sm text-white">Bistro Lumière · Friday 7:30pm</p>
-                  <p className="text-text-muted">Held for 6 min · MTL-3F2A8K</p>
+                  <p className="text-base text-white">Bistro Lumière · Friday 7:30pm</p>
+                  <p className="text-sm text-text-muted">Held for 6 min · MTL-3F2A8K</p>
                 </div>
-                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-emerald-400">
+                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-emerald-400">
                   Held
                 </span>
               </div>
@@ -1027,26 +1027,26 @@ export default function HomePage() {
           <div className="grid gap-10 lg:grid-cols-[1fr_1.4fr]">
             <div>
               <SectionEyebrow>For diners</SectionEyebrow>
-              <h2 className="mt-3 font-serif text-5xl leading-[1.05] text-white">
+              <h2 className="mt-4 font-serif text-6xl leading-[1.05] text-white lg:text-7xl">
                 A personal dining
                 <br />
                 planner.
               </h2>
             </div>
-            <p className="max-w-2xl self-end text-base leading-relaxed text-text-secondary">
+            <p className="max-w-2xl self-end text-lg leading-relaxed text-text-secondary lg:text-xl">
               Free for life. Use it once a year, or twice a week — Cenaiva learns
               your taste, banks your loyalty across every restaurant on the
               platform, and quietly handles the boring parts of going out.
             </p>
           </div>
 
-          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-            <Button asChild className="h-11 rounded-md px-5 font-semibold">
+          <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+            <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
               <Link to="/loyalty">
-                Explore loyalty <ArrowRight className="ml-1 size-4" />
+                Explore loyalty <ArrowRight className="ml-1.5 size-5" />
               </Link>
             </Button>
-            <Button asChild variant="outline" className="h-11 rounded-md px-5">
+            <Button asChild variant="outline" className="h-12 rounded-md px-6 text-base">
               <Link to="/register">Join free</Link>
             </Button>
           </div>
@@ -1060,18 +1060,18 @@ export default function HomePage() {
                 viewport={{ once: true, margin: "-60px" }}
                 transition={{ duration: 0.4, delay: i * 0.05 }}
                 className={cn(
-                  "border-border/60 bg-bg-surface/40 p-7 transition-colors hover:bg-bg-surface/80",
+                  "border-border/60 bg-bg-surface/40 p-8 transition-colors hover:bg-bg-surface/80",
                   i % 3 !== 2 && "lg:border-r",
                   i % 2 !== 1 && "sm:[&:not(:nth-child(3n))]:border-r",
                   i < 3 && "lg:border-b",
                   i < 4 && "border-b sm:[&:nth-child(-n+4)]:border-b",
                 )}
               >
-                <span className="flex size-10 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
-                  <f.icon className="size-5 text-gold" />
+                <span className="flex size-12 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                  <f.icon className="size-6 text-gold" />
                 </span>
-                <p className="mt-6 font-serif text-2xl text-white">{f.title}</p>
-                <p className="mt-3 text-sm leading-relaxed text-text-muted">{f.desc}</p>
+                <p className="mt-8 font-serif text-3xl text-white">{f.title}</p>
+                <p className="mt-4 text-base leading-relaxed text-text-muted">{f.desc}</p>
               </motion.div>
             ))}
           </div>
@@ -1082,21 +1082,21 @@ export default function HomePage() {
       <section className="border-t border-border/40 py-20">
         <div className="mx-auto w-full max-w-3xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <SectionEyebrow>Questions</SectionEyebrow>
-          <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
+          <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
             The small print, made plain.
           </h2>
 
-          <Accordion type="single" collapsible className="mt-12 space-y-3 text-left">
+          <Accordion type="single" collapsible className="mt-14 space-y-3 text-left">
             {FAQ.map((item) => (
               <AccordionItem
                 key={item.q}
                 value={item.q}
-                className="overflow-hidden rounded-xl border border-border bg-bg-surface/60 px-5"
+                className="overflow-hidden rounded-xl border border-border bg-bg-surface/60 px-6"
               >
-                <AccordionTrigger className="py-5 text-base font-medium text-white hover:no-underline">
+                <AccordionTrigger className="py-6 text-lg font-medium text-white hover:no-underline">
                   {item.q}
                 </AccordionTrigger>
-                <AccordionContent className="pb-5 text-sm leading-relaxed text-text-secondary">
+                <AccordionContent className="pb-6 text-base leading-relaxed text-text-secondary">
                   {item.a}
                 </AccordionContent>
               </AccordionItem>
@@ -1109,10 +1109,10 @@ export default function HomePage() {
       <section id="pricing" className="scroll-mt-24 border-t border-border/40 py-20">
         <div className="w-full px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <SectionEyebrow>Pricing</SectionEyebrow>
-          <h2 className="mt-3 font-serif text-4xl text-white sm:text-5xl">
+          <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
             Free for diners. Honest for restaurants.
           </h2>
-          <p className="mt-3 text-sm text-text-muted">
+          <p className="mt-4 text-base text-text-muted">
             All prices CAD. No commissions, ever.
           </p>
 
@@ -1125,7 +1125,7 @@ export default function HomePage() {
                 viewport={{ once: true, margin: "-60px" }}
                 transition={{ duration: 0.45, delay: i * 0.06 }}
                 className={cn(
-                  "relative flex flex-col rounded-2xl border bg-bg-surface/40 p-6",
+                  "relative flex flex-col rounded-2xl border bg-bg-surface/40 p-7",
                   tier.highlighted
                     ? "border-gold/60 shadow-2xl shadow-gold/10 ring-1 ring-gold/40"
                     : "border-border",
@@ -1133,7 +1133,7 @@ export default function HomePage() {
               >
                 <span
                   className={cn(
-                    "inline-flex w-fit items-center rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider",
+                    "inline-flex w-fit items-center rounded-full border px-3 py-1 font-mono text-[11px] uppercase tracking-wider sm:text-xs",
                     tier.highlighted
                       ? "border-gold bg-gold/15 text-gold"
                       : "border-border bg-bg-elevated text-text-muted",
@@ -1141,13 +1141,13 @@ export default function HomePage() {
                 >
                   {tier.badge}
                 </span>
-                <p className="mt-6 font-serif text-3xl text-white">{tier.name}</p>
-                <p className="mt-1 text-xs text-text-muted">{tier.tagline}</p>
+                <p className="mt-8 font-serif text-4xl text-white">{tier.name}</p>
+                <p className="mt-2 text-sm text-text-muted">{tier.tagline}</p>
 
-                <p className="mt-8 flex items-baseline gap-2 font-serif text-5xl text-white">
+                <p className="mt-10 flex items-baseline gap-2 font-serif text-5xl text-white sm:text-6xl">
                   <span className={cn(tier.highlighted && "text-gold")}>{tier.price}</span>
                   {tier.suffix && (
-                    <span className="text-sm font-normal text-text-muted">
+                    <span className="text-base font-normal text-text-muted">
                       {tier.suffix}
                     </span>
                   )}
@@ -1156,15 +1156,15 @@ export default function HomePage() {
                 <Button
                   asChild
                   variant={tier.highlighted || tier.name === "Cenaiva" ? "default" : "outline"}
-                  className="mt-6 h-11 w-full rounded-md font-semibold"
+                  className="mt-8 h-12 w-full rounded-md text-base font-semibold"
                 >
                   <Link to={tier.href}>{tier.cta}</Link>
                 </Button>
 
-                <ul className="mt-6 space-y-3 text-sm text-text-secondary">
+                <ul className="mt-8 space-y-3.5 text-base text-text-secondary">
                   {tier.features.map((f) => (
-                    <li key={f} className="flex items-start gap-2">
-                      <Check className="mt-0.5 size-4 shrink-0 text-gold" />
+                    <li key={f} className="flex items-start gap-2.5">
+                      <Check className="mt-0.5 size-5 shrink-0 text-gold" />
                       {f}
                     </li>
                   ))}

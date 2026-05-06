@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { format, isValid, parse } from "date-fns";
-import { CalendarDays, Coins, Download, Pencil, Plus, Trash2, WalletCards } from "lucide-react";
+import { CalendarDays, Coins, Download, ListChecks, Pencil, Plus, Receipt, Trash2, WalletCards } from "lucide-react";
 import { motion } from "framer-motion";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { ReceiptsLibrary } from "@/components/dashboard/ReceiptsLibrary";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -354,6 +355,7 @@ function ExpenseDateField({
 }
 
 export default function ExpensesPage() {
+  const [view, setView] = useState<"entries" | "receipts">("entries");
   const [range, setRange] = useState<RangeKey>("Month");
   const [customDateFrom, setCustomDateFrom] = useState(() => rangeStart("Month", new Date()));
   const [customDateTo, setCustomDateTo] = useState(() => rangeEnd("Month", new Date()));
@@ -682,6 +684,30 @@ export default function ExpensesPage() {
               </div>
             </div>
           )}
+          <div className="flex items-center rounded-lg border border-border bg-bg-elevated/40 p-1">
+            <button
+              type="button"
+              onClick={() => setView("entries")}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                view === "entries" ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
+              )}
+            >
+              <ListChecks className="size-3.5" />
+              Entries
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("receipts")}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                view === "receipts" ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
+              )}
+            >
+              <Receipt className="size-3.5" />
+              Receipts
+            </button>
+          </div>
           <Button size="default" className="gap-2" onClick={openCreateForm}>
             <Plus className="size-4" />
             Log entry
@@ -689,6 +715,7 @@ export default function ExpensesPage() {
         </div>
       </motion.header>
 
+      {view === "entries" && (
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((stat) => (
           <article key={stat.label} className="rounded-2xl border border-border bg-bg-surface p-5">
@@ -698,7 +725,9 @@ export default function ExpensesPage() {
           </article>
         ))}
       </section>
+      )}
 
+      {view === "entries" && (
       <section className="grid gap-5 lg:grid-cols-[minmax(280px,0.82fr)_minmax(0,1.82fr)]">
         <article className="min-h-[520px] rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
           <h2 className="font-serif text-2xl text-white">By category</h2>
@@ -827,6 +856,11 @@ export default function ExpensesPage() {
           </div>
         </article>
       </section>
+      )}
+
+      {view === "receipts" && (
+        <ReceiptsLibrary currency={currency} rangeCaption={selectedRangeCaption} />
+      )}
 
       <Dialog open={formOpen} onOpenChange={(open) => {
         if (open) setFormOpen(true);
