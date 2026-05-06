@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
+import { reservationDisplayStatus } from "@/lib/reservations/displayStatus";
 
 export type MyReservationRow = {
   id: string;
   created_at: string | null;
   updated_at: string | null;
   reserved_at: string;
+  duration_minutes: number | null;
   party_size: number;
   status: string;
   confirmation_code: string | null;
@@ -70,7 +72,7 @@ export function useMyReservations() {
     const { data, error: rErr } = await client
       .from("reservations")
       .select(
-        "id, created_at, updated_at, reserved_at, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url), table:tables(label)",
+        "id, created_at, updated_at, reserved_at, duration_minutes, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url), table:tables(label)",
       )
       .in("guest_id", guestIds)
       .order("reserved_at", { ascending: false });
@@ -119,9 +121,15 @@ export function useMyReservations() {
         return acc;
       }, new Map()).values(),
     );
-    const now = new Date().toISOString();
-    setUpcoming(dedupedRows.filter((r) => r.reserved_at >= now && r.status !== "cancelled"));
-    setPast(dedupedRows.filter((r) => r.reserved_at < now || r.status === "cancelled"));
+    const now = new Date();
+    setUpcoming(dedupedRows.filter((r) => {
+      const status = reservationDisplayStatus(r, now);
+      return status === "upcoming" || status === "current";
+    }));
+    setPast(dedupedRows.filter((r) => {
+      const status = reservationDisplayStatus(r, now);
+      return status === "past" || status === "cancelled";
+    }));
     setLoading(false);
   }, [profileId]);
 

@@ -40,8 +40,12 @@ import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useUser } from "@/hooks/useUser";
-import { markReservationTablesSeated } from "@/lib/table-assignment";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -122,134 +126,14 @@ type DragState =
     }
   | { kind: "entrance"; sx: number; sy: number; opos: number };
 
-// ─── Seed data ─────────────────────────────────────────────────────────────
-const FLOORS: Floor[] = [
-  { id: "main", name: "Main Dining" },
-  { id: "patio", name: "Patio" },
-  { id: "private", name: "Private Room" },
-  { id: "banquet", name: "Banquet Hall" },
-];
-
-const ROOMS: Record<string, Room> = {
-  main: { w: 720, h: 560 },
-  patio: { w: 480, h: 380 },
-  private: { w: 520, h: 440 },
-  banquet: { w: 1400, h: 900 },
-};
-
-const BANQUET_TABLES: FloorTable[] = (() => {
-  const out: FloorTable[] = [];
-  let n = 1;
-  const cols = 8,
-    rows = 7;
-  const startX = 90,
-    startY = 90,
-    gapX = 150,
-    gapY = 110;
-  const statuses: Status[] = [
-    "free",
-    "reserved",
-    "occupied",
-    "free",
-    "free",
-    "reserved",
-    "occupied",
-    "cleaning",
-  ];
-  const guests = [
-    "Patel",
-    "Nakamura",
-    "Brown",
-    "Singh",
-    "Rivera",
-    "Cohen",
-    "Martin",
-    "Park",
-    "Lee",
-    "Adams",
-    "Khan",
-    "Webb",
-    "Diaz",
-    "Hall",
-    "Yang",
-    "Roy",
-  ];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const status = statuses[(r * cols + c) % statuses.length];
-      const cap = (r + c) % 3 === 0 ? 2 : 4;
-      const guest =
-        status === "occupied" || status === "reserved"
-          ? guests[(r * cols + c) % guests.length]
-          : null;
-      out.push({
-        id: `B${n}`,
-        shape: "round",
-        x: startX + c * gapX,
-        y: startY + r * gapY,
-        size: cap === 2 ? 70 : 85,
-        cap,
-        status,
-        guest,
-        party: guest ? cap : 0,
-        time: guest
-          ? `${5 + ((r * cols + c) % 4)}:${(c % 4) * 15 || "00"}`
-              .replace(":0", "0:00")
-              .replace("00:", "7:")
-          : null,
-      });
-      n++;
-    }
-  }
-  return out;
-})();
-
-const TABLES: Record<string, FloorTable[]> = {
-  main: [
-    { id: "1", shape: "round", x: 80, y: 80, size: 80, cap: 2, status: "occupied", guest: "M. Chen", party: 2, time: "6:00" },
-    { id: "2", shape: "round", x: 200, y: 80, size: 80, cap: 2, status: "free", guest: null, party: 0, time: null },
-    { id: "3", shape: "rect", x: 320, y: 80, size: 90, cap: 4, status: "reserved", guest: "Tremblay", party: 4, time: "7:00" },
-    { id: "4", shape: "rect", x: 450, y: 80, size: 90, cap: 4, status: "occupied", guest: "Anand", party: 3, time: "5:30" },
-    { id: "5", shape: "rect", x: 580, y: 80, size: 90, cap: 4, status: "free", guest: null, party: 0, time: null },
-    { id: "6", shape: "round", x: 80, y: 230, size: 90, cap: 4, status: "reserved", guest: "Khoury", party: 4, time: "7:15" },
-    { id: "7", shape: "round", x: 210, y: 230, size: 90, cap: 4, status: "cleaning", guest: null, party: 0, time: null },
-    { id: "8", shape: "rect", x: 340, y: 230, size: 120, cap: 6, status: "occupied", guest: "Wong", party: 5, time: "6:30" },
-    { id: "9", shape: "rect", x: 490, y: 230, size: 120, cap: 6, status: "reserved", guest: "Foster", party: 6, time: "7:30" },
-    { id: "10", shape: "rect", x: 80, y: 380, size: 220, cap: 6, status: "occupied", guest: "Schaefer", party: 6, time: "5:45", long: true },
-    { id: "11", shape: "rect", x: 330, y: 380, size: 220, cap: 6, status: "free", guest: null, party: 0, time: null, long: true },
-  ],
-  patio: [
-    { id: "P1", shape: "round", x: 90, y: 90, size: 75, cap: 2, status: "reserved", guest: "Reyes", party: 2, time: "7:00" },
-    { id: "P2", shape: "round", x: 220, y: 90, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
-    { id: "P3", shape: "round", x: 350, y: 90, size: 75, cap: 2, status: "occupied", guest: "O’Hara", party: 2, time: "6:45" },
-    { id: "P4", shape: "round", x: 90, y: 230, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
-    { id: "P5", shape: "round", x: 220, y: 230, size: 75, cap: 2, status: "free", guest: null, party: 0, time: null },
-    { id: "P6", shape: "round", x: 350, y: 230, size: 75, cap: 2, status: "reserved", guest: "Bauer", party: 2, time: "8:00" },
-  ],
-  private: [
-    { id: "PR1", shape: "rect", x: 120, y: 120, size: 280, cap: 12, status: "reserved", guest: "Foster", party: 12, time: "7:30", long: true },
-    { id: "PR2", shape: "rect", x: 120, y: 280, size: 280, cap: 12, status: "free", guest: null, party: 0, time: null, long: true },
-  ],
-  banquet: BANQUET_TABLES,
-};
-
-const WALLS: Record<string, Wall[]> = {
-  main: [
-    { id: "w1", x1: 30, y1: 340, x2: 300, y2: 340 },
-    { id: "w2", x1: 430, y1: 340, x2: 690, y2: 340 },
-    { id: "w3", x1: 625, y1: 60, x2: 625, y2: 200 },
-  ],
-  patio: [],
-  private: [],
-  banquet: [],
-};
-
-const ENTRANCES: Record<string, Entrance> = {
-  main: { side: "top", pos: 360, width: 50 },
-  patio: { side: "left", pos: 190, width: 50 },
-  private: { side: "top", pos: 260, width: 50 },
-  banquet: { side: "top", pos: 700, width: 80 },
-};
+// Start blank so the UI never flashes demo tables before the backend floor plan loads.
+const EMPTY_FLOOR_ID = "main";
+const EMPTY_FLOOR: Floor = { id: EMPTY_FLOOR_ID, name: "Main Dining" };
+const EMPTY_FLOORS: Floor[] = [];
+const EMPTY_ROOMS: Record<string, Room> = {};
+const EMPTY_TABLES: Record<string, FloorTable[]> = {};
+const EMPTY_WALLS: Record<string, Wall[]> = {};
+const EMPTY_ENTRANCES: Record<string, Entrance> = {};
 
 const TBL_STATUS: Record<
   Status,
@@ -273,8 +157,8 @@ const TBL_STATUS: Record<
     color: "#C97A6F",
     soft: "rgba(201,122,111,0.10)",
     edge: "rgba(201,122,111,0.40)",
-    label: "Seated",
-    hint: "Guests dining",
+    label: "Current",
+    hint: "Current table booking",
   },
   cleaning: {
     color: "#6b6b66",
@@ -302,7 +186,6 @@ const HOURS = Array.from({ length: 12 }, (_, index) => String(index + 1));
 const MINUTES = ["00", "15", "30", "45"];
 const PERIODS = ["AM", "PM"] as const;
 
-type FloorServiceAction = "walkin" | "reserve";
 type FloorServiceFormValues = {
   guestName: string;
   guestEmail: string;
@@ -361,7 +244,7 @@ type TableDayReservation = {
   partySize: number;
   reservedAt: string;
   durationMinutes: number | null;
-  status: string;
+  status: ReservationDisplayStatus;
   tableCount: number;
 };
 
@@ -516,14 +399,6 @@ function reservationPriority(row: ReservationRow): number {
   if (row.status === "seated") return 3;
   if (row.status === "confirmed") return 2;
   return 0;
-}
-
-function statusLabel(status: string): string {
-  return status
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function toLocalStatus(status: string | null | undefined): Status {
@@ -1057,14 +932,9 @@ const softBtnCls =
 const goldBtnCls = "rounded-md font-medium text-[13.5px] hover:opacity-90 transition-opacity";
 
 type ActionKind =
-  | "walkin"
   | "reserve"
-  | "seat"
   | "text"
   | "cancel"
-  | "paid"
-  | "check"
-  | "move"
   | "ready";
 
 function WheelColumn({
@@ -1282,7 +1152,6 @@ function FloorTimePickerButton({
 
 function FloorReservationDialog({
   open,
-  action,
   table,
   turnTimeMinutes,
   saving,
@@ -1290,7 +1159,6 @@ function FloorReservationDialog({
   onSubmit,
 }: {
   open: boolean;
-  action: FloorServiceAction | null;
   table: FloorTable | null;
   turnTimeMinutes: number;
   saving: boolean;
@@ -1299,21 +1167,19 @@ function FloorReservationDialog({
 }) {
   const now = useMemo(() => new Date(), []);
   const reserveDefault = useMemo(() => roundToNextHalfHour(now), [now]);
-  const [guestName, setGuestName] = useState(action === "walkin" ? "Walk-in" : "");
+  const [guestName, setGuestName] = useState("");
   const [guestEmail, setGuestEmail] = useState("");
   const [guestPhone, setGuestPhone] = useState("");
   const [partySize, setPartySize] = useState(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
-  const [reservationDate, setReservationDate] = useState(dateInputValue(action === "walkin" ? now : reserveDefault));
-  const [reservationTime, setReservationTime] = useState(normalizeTimeValue(timeInputValue(action === "walkin" ? now : reserveDefault)));
+  const [reservationDate, setReservationDate] = useState(dateInputValue(reserveDefault));
+  const [reservationTime, setReservationTime] = useState(normalizeTimeValue(timeInputValue(reserveDefault)));
   const [specialRequest, setSpecialRequest] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    const nextNow = new Date();
-    const nextReserveDefault = roundToNextHalfHour(nextNow);
-    const defaultDate = action === "walkin" ? nextNow : nextReserveDefault;
+    const defaultDate = roundToNextHalfHour(new Date());
     void Promise.resolve().then(() => {
-      setGuestName(action === "walkin" ? "Walk-in" : "");
+      setGuestName("");
       setGuestEmail("");
       setGuestPhone("");
       setPartySize(String(Math.max(1, Math.min(table?.cap ?? 2, 2))));
@@ -1321,9 +1187,9 @@ function FloorReservationDialog({
       setReservationTime(normalizeTimeValue(timeInputValue(defaultDate)));
       setSpecialRequest("");
     });
-  }, [action, open, table?.cap]);
+  }, [open, table?.cap]);
 
-  const title = action === "walkin" ? "Seat a walk-in" : "Add a reservation";
+  const title = "Add a reservation";
 
   const handleSubmit = async () => {
     await onSubmit({
@@ -1350,7 +1216,7 @@ function FloorReservationDialog({
         <div className="grid gap-4 py-2">
           <div className="grid gap-2">
             <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Guest name</label>
-            <Input value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Walk-in" />
+            <Input value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Guest name" />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
@@ -1404,7 +1270,7 @@ function FloorReservationDialog({
               rows={3}
               value={specialRequest}
               onChange={(event) => setSpecialRequest(event.target.value)}
-              placeholder={action === "walkin" ? "Walk-in from floor plan" : "Optional reservation notes"}
+              placeholder="Optional reservation notes"
             />
           </div>
         </div>
@@ -1414,7 +1280,7 @@ function FloorReservationDialog({
             Cancel
           </Button>
           <Button type="button" onClick={() => void handleSubmit()} disabled={saving}>
-            {saving ? "Saving..." : action === "walkin" ? "Seat now" : "Add reservation"}
+            {saving ? "Saving..." : "Add reservation"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1443,6 +1309,7 @@ function TableCard({
   onSeatChange: (t: FloorTable, n: number) => void;
   onDelete: (t: FloorTable) => void;
 }) {
+  const { t: translate } = useTranslation();
   const s = TBL_STATUS[t.status];
   return (
     <div className="overflow-hidden rounded-xl" style={cardStyle}>
@@ -1563,7 +1430,7 @@ function TableCard({
                             {Number.isNaN(reservedAt.getTime()) ? "Time TBD" : serviceTimeLabel(reservedAt)}
                           </p>
                           <p className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-text-muted">
-                            {statusLabel(reservation.status)}
+                            {translate(reservationDisplayStatusKey(reservation.status))}
                           </p>
                         </div>
                       </div>
@@ -1584,53 +1451,19 @@ function TableCard({
 
         <div className="space-y-2">
           {!editing && t.status === "free" && (
-            <>
-              <button
-                onClick={() => onAction("walkin", t)}
-                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
-              >
-                Seat a walk-in
-              </button>
-              <button onClick={() => onAction("reserve", t)} className={cn(softBtnCls, "w-full py-2.5")}>
-                Add a reservation
-              </button>
-            </>
+            <button onClick={() => onAction("reserve", t)} className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}>
+              Add a reservation
+            </button>
           )}
           {!editing && t.status === "reserved" && (
-            <>
-              <button
-                onClick={() => onAction("seat", t)}
-                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
-              >
-                Seat them now
+            <div className="grid grid-cols-2 gap-1">
+              <button onClick={() => onAction("text", t)} className={cn(softBtnCls, "py-2.5")}>
+                Text guest
               </button>
-              <div className="grid grid-cols-2 gap-1">
-                <button onClick={() => onAction("text", t)} className={cn(softBtnCls, "py-2.5")}>
-                  Text guest
-                </button>
-                <button onClick={() => onAction("cancel", t)} className={cn(softBtnCls, "py-2.5")}>
-                  No-show
-                </button>
-              </div>
-            </>
-          )}
-          {!editing && t.status === "occupied" && (
-            <>
-              <button
-                onClick={() => onAction("paid", t)}
-                className={cn(goldBtnCls, "w-full bg-gold py-2.5 text-black")}
-              >
-                Mark paid &amp; close
+              <button onClick={() => onAction("cancel", t)} className={cn(softBtnCls, "py-2.5")}>
+                No-show
               </button>
-              <div className="grid grid-cols-2 gap-1">
-                <button onClick={() => onAction("check", t)} className={cn(softBtnCls, "py-2.5")}>
-                  Drop check
-                </button>
-                <button onClick={() => onAction("move", t)} className={cn(softBtnCls, "py-2.5")}>
-                  Move table
-                </button>
-              </div>
-            </>
+            </div>
           )}
           {!editing && t.status === "cleaning" && (
             <button
@@ -2100,12 +1933,12 @@ export default function FloorPlanPage() {
   } = useReservations();
   const { rolesAtRestaurant } = useUser();
   const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
-  const [floors, setFloors] = useState<Floor[]>(FLOORS);
-  const [activeFloor, setActiveFloor] = useState("main");
-  const [rooms, setRooms] = useState<Record<string, Room>>(ROOMS);
-  const [tablesByFloor, setTables] = useState<Record<string, FloorTable[]>>(TABLES);
-  const [wallsByFloor, setWalls] = useState<Record<string, Wall[]>>(WALLS);
-  const [entranceByFloor, setEntrance] = useState<Record<string, Entrance>>(ENTRANCES);
+  const [floors, setFloors] = useState<Floor[]>(EMPTY_FLOORS);
+  const [activeFloor, setActiveFloor] = useState(EMPTY_FLOOR_ID);
+  const [rooms, setRooms] = useState<Record<string, Room>>(EMPTY_ROOMS);
+  const [tablesByFloor, setTables] = useState<Record<string, FloorTable[]>>(EMPTY_TABLES);
+  const [wallsByFloor, setWalls] = useState<Record<string, Wall[]>>(EMPTY_WALLS);
+  const [entranceByFloor, setEntrance] = useState<Record<string, Entrance>>(EMPTY_ENTRANCES);
   const [sel, setSel] = useState<Selection>(null);
   const [editing, setEditing] = useState(false);
   const [savingLayout, setSavingLayout] = useState(false);
@@ -2116,7 +1949,7 @@ export default function FloorPlanPage() {
   const [renamingFloorId, setRenamingFloorId] = useState<string | null>(null);
   const [renameFloorValue, setRenameFloorValue] = useState("");
   const [confirmDeleteFloorId, setConfirmDeleteFloorId] = useState<string | null>(null);
-  const [serviceDialog, setServiceDialog] = useState<{ action: FloorServiceAction; table: FloorTable } | null>(null);
+  const [serviceDialog, setServiceDialog] = useState<{ table: FloorTable } | null>(null);
   const [savingService, setSavingService] = useState(false);
   const [hostQuickDate, setHostQuickDate] = useState(() => dateInputValue(new Date()));
   const [hostQuickPartySize, setHostQuickPartySize] = useState(2);
@@ -2170,7 +2003,7 @@ export default function FloorPlanPage() {
   const reservationsByTableForHostDate = useMemo(() => {
     const byTable: Record<string, TableDayReservation[]> = {};
     reservations
-      .filter((reservation) => ["pending", "confirmed", "seated"].includes(reservation.status))
+      .filter((reservation) => !["completed", "no_show"].includes(reservation.status))
       .filter((reservation) => reservationDateValue(reservation) === hostQuickDate)
       .forEach((reservation) => {
         const tableIds = reservationTableIds(reservation);
@@ -2181,7 +2014,7 @@ export default function FloorPlanPage() {
           partySize: reservation.party_size,
           reservedAt: reservation.reserved_at,
           durationMinutes: reservation.duration_minutes,
-          status: reservation.status,
+          status: reservationDisplayStatus(reservation, new Date(), turnTimeMinutes),
           tableCount: tableIds.length,
         };
         tableIds.forEach((tableId) => {
@@ -2193,7 +2026,7 @@ export default function FloorPlanPage() {
       rows.sort((a, b) => new Date(a.reservedAt).getTime() - new Date(b.reservedAt).getTime());
     });
     return byTable;
-  }, [hostQuickDate, reservations]);
+  }, [hostQuickDate, reservations, turnTimeMinutes]);
 
   const loadHostQuickAvailability = async () => {
     if (!selectedRestaurantId) {
@@ -2345,7 +2178,9 @@ export default function FloorPlanPage() {
   }, [canEditLayout, editing]);
 
   useEffect(() => {
-    setHostQuickPartySize((current) => Math.min(Math.max(1, current), maxBookableSeats));
+    void Promise.resolve().then(() => {
+      setHostQuickPartySize((current) => Math.min(Math.max(1, current), maxBookableSeats));
+    });
   }, [maxBookableSeats]);
 
   useEffect(() => {
@@ -2359,7 +2194,7 @@ export default function FloorPlanPage() {
       const sourceFloors: Floor[] = dbSections.length > 0
         ? dbSections.map((section) => ({ id: section.id, name: section.name }))
         : dbFloorPlans.map((plan) => ({ id: plan.section_id ?? plan.id, name: plan.name }));
-      const nextFloors = sourceFloors.length > 0 ? sourceFloors : [{ id: "main", name: "Main Dining" }];
+      const nextFloors = sourceFloors.length > 0 ? sourceFloors : [EMPTY_FLOOR];
       const floorIds = new Set(nextFloors.map((floor) => floor.id));
 
       const nextRooms: Record<string, Room> = {};
@@ -2387,6 +2222,7 @@ export default function FloorPlanPage() {
       const now = new Date();
       const serviceReservations = reservations
         .filter((reservation) => ["pending", "confirmed", "seated"].includes(reservation.status))
+        .filter((reservation) => reservationDisplayStatus(reservation, now, turnTimeMinutes) === "current")
         .filter((reservation) => isReservationInFloorWindow(reservation, now, turnTimeMinutes))
         .sort((a, b) => {
           const priorityDiff = reservationPriority(b) - reservationPriority(a);
@@ -2442,8 +2278,8 @@ export default function FloorPlanPage() {
 
   const tables = useMemo(() => tablesByFloor[activeFloor] ?? [], [activeFloor, tablesByFloor]);
   const walls = useMemo(() => wallsByFloor[activeFloor] ?? [], [activeFloor, wallsByFloor]);
-  const entrance = entranceByFloor[activeFloor];
-  const baseRoom = rooms[activeFloor] || { w: 720, h: 560 };
+  const baseRoom = rooms[activeFloor] || DEFAULT_ROOM;
+  const entrance = entranceByFloor[activeFloor] ?? { side: "top", pos: baseRoom.w / 2, width: 50 };
 
   const room = useMemo(() => {
     const PAD = 90;
@@ -2629,6 +2465,7 @@ export default function FloorPlanPage() {
       const reservation = Array.isArray(link.reservations) ? link.reservations[0] : link.reservations;
       if (!reservation || !["pending", "confirmed", "seated"].includes(reservation.status ?? "")) continue;
       if (!reservation.reserved_at) continue;
+      if (reservationDisplayStatus(reservation, new Date(), turnTimeMinutes) === "past") continue;
       const existingStart = new Date(reservation.reserved_at).getTime();
       if (Number.isNaN(existingStart)) continue;
       const existingDuration = reservation.duration_minutes ?? turnTimeMinutes;
@@ -2639,18 +2476,14 @@ export default function FloorPlanPage() {
     }
   };
 
-  const createFloorReservation = async (
-    action: FloorServiceAction,
-    t: FloorTable,
-    values: FloorServiceFormValues,
-  ): Promise<string> => {
+  const createFloorReservation = async (t: FloorTable, values: FloorServiceFormValues): Promise<string> => {
     if (!selectedRestaurantId) throw new Error("No restaurant selected.");
     const tableId = t.dbId ?? t.id;
     if (!isDatabaseUuid(tableId)) throw new Error("Save this table before assigning reservations.");
 
     const reservedAt = combineDateAndTime(values.reservationDate, values.reservationTime);
     if (!reservedAt || Number.isNaN(reservedAt.getTime())) throw new Error("Choose a valid reservation time.");
-    const guestName = values.guestName.trim() || (action === "walkin" ? "Walk-in" : "");
+    const guestName = values.guestName.trim();
     if (!guestName) throw new Error("Guest name is required.");
     await ensureTableAvailableForReservation(tableId, reservedAt, values.partySize);
     const client = getSupabaseBrowserClient();
@@ -2686,17 +2519,9 @@ export default function FloorPlanPage() {
       .eq("id", reservationId);
     if (reservationTableError) throw new Error(reservationTableError.message);
 
-    if (action === "walkin") {
-      const { error: seatError } = await client.rpc("seat_staff_reservation", {
-        p_reservation_id: reservationId,
-        p_table_id: tableId,
-      });
-      if (seatError) throw new Error(seatError.message);
-    }
-
     const { error: auditError } = await client.rpc("write_staff_audit_event", {
       p_restaurant_id: selectedRestaurantId,
-      p_action: action === "walkin" ? "reservation.floor_walkin" : "reservation.floor_create",
+      p_action: "reservation.floor_create",
       p_entity_type: "reservation",
       p_entity_id: reservationId,
       p_before_json: {},
@@ -2709,7 +2534,7 @@ export default function FloorPlanPage() {
         table_ids: [tableId],
         table_label: tableDisplayLabel(t),
         duration_minutes: turnTimeMinutes,
-        source: action === "walkin" ? "floor_walkin" : "floor_plan",
+        source: "floor_plan",
       },
       p_approval_profile_id: null,
     });
@@ -2725,28 +2550,23 @@ export default function FloorPlanPage() {
       return;
     }
 
-    const { action, table } = serviceDialog;
+    const { table } = serviceDialog;
     setSavingService(true);
     try {
-      await createFloorReservation(action, table, values);
+      await createFloorReservation(table, values);
       const reservedAt = combineDateAndTime(values.reservationDate, values.reservationTime) ?? new Date();
-      const status: Status = action === "walkin" ? "occupied" : "reserved";
       const nextParty = Math.max(1, values.partySize);
       updateTable(table.id, {
-        status,
-        guest: values.guestName.trim() || (action === "walkin" ? "Walk-in" : "Guest"),
+        status: "reserved",
+        guest: values.guestName.trim() || "Guest",
         party: nextParty,
         time: serviceTimeLabel(reservedAt),
         durationMinutes: turnTimeMinutes,
       }, true);
-      if (action === "walkin") {
-        void persistServiceStatus(table, "occupied", nextParty);
-      } else {
-        void persistServiceStatus(table, "reserved", 0);
-      }
+      void persistServiceStatus(table, "reserved", 0);
       await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
       setServiceDialog(null);
-      toast.success(action === "walkin" ? "Walk-in seated." : "Reservation added.");
+      toast.success("Reservation added.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save reservation.");
     } finally {
@@ -2754,72 +2574,10 @@ export default function FloorPlanPage() {
     }
   };
 
-  const seatReservedTable = async (t: FloorTable, partySize: number) => {
-    if (!t.reservationId) return;
-    const tableId = t.dbId ?? t.id;
-    if (!isDatabaseUuid(tableId)) {
-      toast.error("Save this table before seating reservations.");
-      return;
-    }
-
-    try {
-      const client = getSupabaseBrowserClient();
-      const seatedAt = new Date().toISOString();
-      const { error } = await client
-        .from("reservations")
-        .update({
-          status: "seated",
-          table_id: tableId,
-          checked_in_at: seatedAt,
-          seated_at: seatedAt,
-        })
-        .eq("id", t.reservationId);
-      if (error) throw new Error(error.message);
-
-      const seated = await markReservationTablesSeated(t.reservationId, partySize);
-      if (seated.error) throw new Error(seated.error);
-
-      await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
-      toast.success("Reservation seated.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not seat reservation.");
-      await refetchFloorPlan({ silent: true });
-    }
-  };
-
   const handleAction = (action: ActionKind, t: FloorTable) => {
-    if (action === "walkin" || action === "reserve") {
-      setServiceDialog({ action, table: t });
+    if (action === "reserve") {
+      setServiceDialog({ table: t });
       return;
-    }
-    if (action === "seat") {
-      const nextParty = t.party || 2;
-      updateTable(
-        t.id,
-        { status: "occupied", guest: t.guest || "Walk-in", party: nextParty, time: t.time || "now" },
-        true,
-      );
-      if (action === "seat" && t.reservationId) {
-        void seatReservedTable(t, nextParty);
-      } else {
-        void persistServiceStatus(t, "occupied", nextParty);
-      }
-    }
-    if (action === "paid") {
-      updateTable(t.id, { status: "cleaning", guest: null, party: 0, time: null }, true);
-      if (t.reservationId) {
-        void (async () => {
-          try {
-            await updateReservationStatus(t.reservationId ?? "", "completed");
-            await persistServiceStatus(t, "cleaning", 0);
-            await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
-          } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Could not close reservation.");
-          }
-        })();
-      } else {
-        void persistServiceStatus(t, "cleaning", 0);
-      }
     }
     if (action === "ready") {
       updateTable(t.id, { status: "free", guest: null, party: 0, time: null }, true);
@@ -3301,20 +3059,20 @@ export default function FloorPlanPage() {
 
   const totals = useMemo(() => {
     const all = Object.values(tablesByFloor).flat();
-    const seated = all.filter((t) => t.status === "occupied");
+    const current = all.filter((t) => t.status === "occupied");
     return {
       total: all.length,
-      seated: seated.length,
+      current: current.length,
       reserved: all.filter((t) => t.status === "reserved").length,
-      guests: seated.reduce((a, t) => a + (t.party || 0), 0),
+      guests: current.reduce((a, t) => a + (t.party || 0), 0),
     };
   }, [tablesByFloor]);
 
   const summary = (() => {
-    if (totals.seated === 0 && totals.reserved === 0) return "A quiet evening so far.";
+    if (totals.current === 0 && totals.reserved === 0) return "A quiet evening so far.";
     const parts: string[] = [];
-    parts.push(`${totals.seated} of ${totals.total} tables seated`);
-    if (totals.guests) parts.push(`${totals.guests} guests dining`);
+    parts.push(`${totals.current} of ${totals.total} tables currently booked`);
+    if (totals.guests) parts.push(`${totals.guests} guests assigned`);
     if (totals.reserved)
       parts.push(`${totals.reserved} reservation${totals.reserved === 1 ? "" : "s"} ahead`);
     return parts.join(" · ") + ".";
@@ -3558,7 +3316,7 @@ export default function FloorPlanPage() {
             [
               ["free", "Open"],
               ["reserved", "Reserved"],
-              ["occupied", "Seated"],
+              ["occupied", "Current"],
               ["cleaning", "Resetting"],
               ["blocked", "Blocked"],
             ] as const
@@ -3856,7 +3614,6 @@ export default function FloorPlanPage() {
       </div>
       <FloorReservationDialog
         open={serviceDialog !== null}
-        action={serviceDialog?.action ?? null}
         table={serviceDialog?.table ?? null}
         turnTimeMinutes={turnTimeMinutes}
         saving={savingService}

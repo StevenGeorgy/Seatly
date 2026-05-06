@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Clock, Plus, Bell, Armchair, X } from "lucide-react";
+import { Clock, Plus, Bell, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 
@@ -17,7 +17,7 @@ import { useWaitlist } from "@/hooks/useWaitlist";
 
 export default function WaitlistPage() {
   const { t } = useTranslation();
-  const { entries, loading, addEntry, notifyEntry, seatEntry, removeEntry } = useWaitlist();
+  const { entries, loading, addEntry, notifyEntry, removeEntry } = useWaitlist();
 
   const [addOpen, setAddOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -140,14 +140,6 @@ export default function WaitlistPage() {
                       onClick={() => void notifyEntry(entry.id).then(() => toast.success("Guest notified."))}
                     >
                       <Bell className="size-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title={t("dashboard.waitlist.seatNow")}
-                      onClick={() => void seatEntry(entry.id).then(() => toast.success("Guest seated."))}
-                    >
-                      <Armchair className="size-4" />
                     </Button>
                     <Button
                       variant="ghost"

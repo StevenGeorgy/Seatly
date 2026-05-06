@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
   CalendarDays,
@@ -26,6 +27,11 @@ import { useMyOrders, type MyOrderRow } from "@/hooks/useMyOrders";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
 import { useUpdateProfile } from "@/hooks/useUpdateProfile";
 import { useUser } from "@/hooks/useUser";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -37,7 +43,7 @@ type BookingPreview = {
   restaurantName: string;
   reservedAt: Date;
   partySize: number;
-  status: "confirmed" | "pending" | "completed" | "cancelled";
+  status: ReservationDisplayStatus;
   confirmationCode: string;
   tag: string;
   slug: string;
@@ -63,15 +69,7 @@ const ACCOUNT_NAV: { id: Section; label: string; icon: typeof CalendarDays }[] =
 
 function adaptReservation(row: MyReservationRow): BookingPreview {
   const reservedAt = new Date(row.reserved_at);
-  const isPast = reservedAt.getTime() < Date.now();
-  const status =
-    row.status === "cancelled"
-      ? "cancelled"
-      : row.status === "pending"
-        ? "pending"
-        : isPast
-          ? "completed"
-          : "confirmed";
+  const status = reservationDisplayStatus(row);
 
   return {
     id: row.id,
@@ -108,22 +106,17 @@ function BookingThumb({ booking }: { booking: BookingPreview }) {
 }
 
 function BookingStatus({ status }: { status: BookingPreview["status"] }) {
+  const { t } = useTranslation();
   const styles: Record<BookingPreview["status"], string> = {
-    confirmed: "border-success/30 bg-success/10 text-success",
-    pending: "border-warning/30 bg-warning/10 text-warning",
-    completed: "border-border bg-bg-elevated text-text-secondary",
+    upcoming: "border-success/30 bg-success/10 text-success",
+    current: "border-gold/30 bg-gold/10 text-gold",
+    past: "border-border bg-bg-elevated text-text-secondary",
     cancelled: "border-danger/30 bg-danger/10 text-danger",
-  };
-  const labels: Record<BookingPreview["status"], string> = {
-    confirmed: "Confirmed",
-    pending: "Awaiting confirmation",
-    completed: "Completed",
-    cancelled: "Cancelled",
   };
 
   return (
     <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", styles[status])}>
-      {labels[status]}
+      {t(reservationDisplayStatusKey(status))}
     </span>
   );
 }
@@ -145,7 +138,7 @@ function BookingRow({ booking }: { booking: BookingPreview }) {
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <BookingStatus status={booking.status} />
-          {booking.status === "confirmed" && (
+          {booking.status === "upcoming" && (
             <span className="rounded-full border border-gold/25 bg-gold/10 px-2 py-0.5 text-[11px] text-gold">
               Pre-ordered
             </span>
@@ -255,11 +248,11 @@ export default function AccountPage() {
     const upcomingRows = upcoming.map(adaptReservation);
     const pastRows = past.map(adaptReservation);
     const cancelledRows = pastRows.filter((row) => row.status === "cancelled");
-    const completedRows = pastRows.filter((row) => row.status !== "cancelled");
+    const pastBookingRows = pastRows.filter((row) => row.status !== "cancelled");
 
     return {
       upcoming: upcomingRows,
-      past: completedRows,
+      past: pastBookingRows,
       cancelled: cancelledRows,
     };
   }, [past, upcoming]);

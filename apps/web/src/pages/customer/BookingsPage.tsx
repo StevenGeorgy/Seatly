@@ -42,6 +42,11 @@ import {
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { useNotifications } from "@/hooks/useNotifications";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -56,7 +61,7 @@ type BookingCard = {
   reservedAt: Date;
   partySize: number;
   occasion?: string;
-  status: "confirmed" | "pending" | "completed" | "cancelled";
+  status: ReservationDisplayStatus;
   confirmationCode?: string;
   address?: string;
   phone?: string;
@@ -68,14 +73,7 @@ function adapt(r: MyReservationRow): BookingCard {
   const reservedAt = new Date(r.reserved_at);
   const name = r.restaurant?.name ?? "Restaurant";
   const initials = name.split(/\s+/).slice(0, 1).join(" ").toUpperCase();
-  const status: BookingCard["status"] =
-    r.status === "cancelled"
-      ? "cancelled"
-      : reservedAt.getTime() < Date.now()
-        ? "completed"
-        : r.status === "pending"
-          ? "pending"
-          : "confirmed";
+  const status = reservationDisplayStatus(r);
   return {
     id: r.id,
     initials,
@@ -118,14 +116,15 @@ function BookingRestaurantImage({ booking }: { booking: BookingCard }) {
 }
 
 function StatusChip({ status }: { status: BookingCard["status"] }) {
-  const map: Record<BookingCard["status"], { label: string; cls: string }> = {
-    confirmed: { label: "Confirmed", cls: "text-white" },
-    pending: { label: "Pending", cls: "text-amber-400" },
-    completed: { label: "Completed", cls: "text-text-secondary" },
-    cancelled: { label: "Cancelled", cls: "text-text-muted line-through" },
+  const { t } = useTranslation();
+  const map: Record<BookingCard["status"], { cls: string }> = {
+    upcoming: { cls: "text-white" },
+    current: { cls: "text-gold" },
+    past: { cls: "text-text-secondary" },
+    cancelled: { cls: "text-text-muted line-through" },
   };
   const item = map[status];
-  return <span className={cn("text-sm font-medium", item.cls)}>{item.label}</span>;
+  return <span className={cn("text-sm font-medium", item.cls)}>{t(reservationDisplayStatusKey(status))}</span>;
 }
 
 function relativeLabel(d: Date): string {
@@ -482,10 +481,10 @@ export default function BookingsPage() {
       .sort((a, b) => a.reservedAt.getTime() - b.reservedAt.getTime());
   }, [upcoming]);
 
-  const { pastCompleted, cancelled } = useMemo(() => {
+  const { pastCards, cancelled } = useMemo(() => {
     const adapted = past.map(adapt);
     return {
-      pastCompleted: adapted.filter((b) => b.status !== "cancelled"),
+      pastCards: adapted.filter((b) => b.status !== "cancelled"),
       cancelled: adapted.filter((b) => b.status === "cancelled"),
     };
   }, [past]);
@@ -502,7 +501,7 @@ export default function BookingsPage() {
   };
 
   const upcomingFiltered = filterBySearch(upcomingCards);
-  const pastFiltered = filterBySearch(pastCompleted);
+  const pastFiltered = filterBySearch(pastCards);
   const cancelledFiltered = filterBySearch(cancelled);
 
   const next = upcomingCards[0];
@@ -644,7 +643,7 @@ export default function BookingsPage() {
           </div>
           <div className="flex gap-3">
             <StatTile value={upcomingCards.length} label="Upcoming" highlight />
-            <StatTile value={pastCompleted.length} label="Past" />
+            <StatTile value={pastCards.length} label="Past" />
             <StatTile value={cancelled.length} label="Cancelled" />
           </div>
         </div>
@@ -664,7 +663,7 @@ export default function BookingsPage() {
             {(
               [
                 { id: "upcoming" as Tab, label: "Upcoming", count: upcomingCards.length },
-                { id: "past" as Tab, label: "Past", count: pastCompleted.length },
+                { id: "past" as Tab, label: "Past", count: pastCards.length },
                 { id: "cancelled" as Tab, label: "Cancelled", count: cancelled.length },
               ]
             ).map((t) => (

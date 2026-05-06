@@ -12,7 +12,7 @@ export type OverviewOrderStats = {
   orderCount: number;
   preorderCount: number;
   activePreorderCount: number;
-  paidOrderCount: number;
+  paidPreorderCount: number;
   paidIncome: number;
 };
 
@@ -30,7 +30,7 @@ const EMPTY_STATS: OverviewOrderStats = {
   orderCount: 0,
   preorderCount: 0,
   activePreorderCount: 0,
-  paidOrderCount: 0,
+  paidPreorderCount: 0,
   paidIncome: 0,
 };
 
@@ -88,13 +88,14 @@ export function useOverviewStats(range: OverviewStatsRange) {
     const createdRows = (createdOrders ?? []) as OverviewOrderSource[];
     const paidRows = (paidOrders ?? []) as OverviewOrderSource[];
     const preorders = createdRows.filter(isPreorder);
+    const paidPreorders = paidRows.filter(isPreorder);
 
     setStats({
       orderCount: createdRows.length,
       preorderCount: preorders.length,
       activePreorderCount: preorders.filter((order) => ACTIVE_ORDER_STATUSES.has(order.status ?? "")).length,
-      paidOrderCount: paidRows.length,
-      paidIncome: sumPaidIncome(paidRows),
+      paidPreorderCount: paidPreorders.length,
+      paidIncome: sumPaidIncome(paidPreorders),
     });
     setLoading(false);
   }, [range.from, range.to, selectedRestaurantId]);

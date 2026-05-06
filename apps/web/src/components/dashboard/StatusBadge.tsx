@@ -1,8 +1,11 @@
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLES: Record<string, string> = {
+  upcoming: "bg-success/15 text-success border-success/25",
   confirmed: "bg-success/15 text-success border-success/25",
+  current: "bg-gold/15 text-gold border-gold/25",
   seated: "bg-gold/15 text-gold border-gold/25",
+  past: "bg-text-muted/15 text-text-secondary border-text-muted/25",
   completed: "bg-text-muted/15 text-text-secondary border-text-muted/25",
   cancelled: "bg-danger/15 text-danger border-danger/25",
   no_show: "bg-danger/15 text-danger border-danger/25",

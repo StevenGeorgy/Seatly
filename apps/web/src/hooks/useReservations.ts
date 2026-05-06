@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import type { AvailabilitySlot } from "@/hooks/useAvailability";
+import { reservationDisplayStatus } from "@/lib/reservations/displayStatus";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -44,6 +45,7 @@ export type ReservationRow = {
   reservation_tables?: Array<{
     table_id: string;
     is_primary: boolean;
+    released_at: string | null;
     tables: {
       id: string;
       table_number: string | null;
@@ -64,6 +66,8 @@ export type ReservationRow = {
 export type ReservationFilters = {
   status?: string;
   date?: string;
+  dateFrom?: string;
+  dateTo?: string;
   search?: string;
 };
 
@@ -71,6 +75,8 @@ export function useReservations(filters?: ReservationFilters) {
   const { selectedRestaurantId } = useRestaurantScope();
   const filterStatus = filters?.status;
   const filterDate = filters?.date;
+  const filterDateFrom = filters?.dateFrom;
+  const filterDateTo = filters?.dateTo;
   const filterSearch = filters?.search;
   const [reservations, setReservations] = useState<ReservationRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,18 +95,23 @@ export function useReservations(filters?: ReservationFilters) {
 
     let query = client
       .from("reservations")
-      .select("*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, tables(id, table_number, label, section, capacity))")
+      .select("*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity))")
       .eq("restaurant_id", selectedRestaurantId)
       .order("reserved_at", { ascending: true });
 
     if (filterStatus && filterStatus !== "all") {
       query = query.eq("status", filterStatus);
     } else {
-      // Keep cancellations visible to staff for the selected service day.
-      query = query.not("status", "in", '("completed","no_show")');
+      // Keep cancellations and completed bookings visible so staff can distinguish Cancelled and Past.
+      query = query.not("status", "eq", "no_show");
     }
 
-    if (filterDate) {
+    if (filterDateFrom || filterDateTo) {
+      const rangeStart = filterDateFrom ? `${filterDateFrom}T00:00:00` : undefined;
+      const rangeEnd = filterDateTo ? `${filterDateTo}T23:59:59` : undefined;
+      if (rangeStart) query = query.gte("reserved_at", rangeStart);
+      if (rangeEnd) query = query.lte("reserved_at", rangeEnd);
+    } else if (filterDate) {
       const dayStart = `${filterDate}T00:00:00`;
       const dayEnd = `${filterDate}T23:59:59`;
       query = query.gte("reserved_at", dayStart).lte("reserved_at", dayEnd);
@@ -112,10 +123,22 @@ export function useReservations(filters?: ReservationFilters) {
       setError(new Error(qErr.message));
       setReservations([]);
     } else {
-      let rows = ((data ?? []) as ReservationRow[]).map((reservation) => ({
-        ...reservation,
-        reservation_tables: reservation.reservation_tables?.filter((assignment) => assignment.tables) ?? [],
-      }));
+      let rows = ((data ?? []) as ReservationRow[]).map((reservation) => {
+        const assignments = reservation.reservation_tables ?? [];
+        const activeAssignments = assignments.filter((assignment) => assignment.tables && assignment.released_at === null);
+        const hasReleasedOnlyAssignments = assignments.length > 0 && activeAssignments.length === 0;
+        const shouldKeepPrimaryTableFallback =
+          hasReleasedOnlyAssignments &&
+          !["cancelled", "completed", "no_show"].includes(reservation.status) &&
+          reservationDisplayStatus(reservation) !== "past";
+        const shouldClearStaleTable = hasReleasedOnlyAssignments && !shouldKeepPrimaryTableFallback;
+        return {
+          ...reservation,
+          table_id: shouldClearStaleTable ? null : reservation.table_id,
+          tables: shouldClearStaleTable ? null : reservation.tables,
+          reservation_tables: activeAssignments,
+        };
+      });
       if (filterSearch) {
         const s = filterSearch.toLowerCase();
         rows = rows.filter(
@@ -136,7 +159,7 @@ export function useReservations(filters?: ReservationFilters) {
       setReservations(rows);
     }
     setLoading(false);
-  }, [selectedRestaurantId, filterStatus, filterDate, filterSearch]);
+  }, [selectedRestaurantId, filterStatus, filterDate, filterDateFrom, filterDateTo, filterSearch]);
 
   useEffect(() => {
     void Promise.resolve().then(() => fetchReservations());

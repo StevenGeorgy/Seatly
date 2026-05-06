@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import {
@@ -23,32 +24,23 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
-type ReservationStatus = "confirmed" | "pending" | "completed" | "cancelled";
-
-function statusFor(row: MyReservationRow): ReservationStatus {
-  if (row.status === "cancelled") return "cancelled";
-  if (row.status === "pending") return "pending";
-  return new Date(row.reserved_at).getTime() < Date.now() ? "completed" : "confirmed";
+function statusFor(row: MyReservationRow): ReservationDisplayStatus {
+  return reservationDisplayStatus(row);
 }
 
-function statusLabel(status: ReservationStatus): string {
-  const labels: Record<ReservationStatus, string> = {
-    confirmed: "Confirmed",
-    pending: "Pending",
-    completed: "Completed",
-    cancelled: "Cancelled",
-  };
-  return labels[status];
-}
-
-function statusClass(status: ReservationStatus): string {
-  const classes: Record<ReservationStatus, string> = {
-    confirmed: "border-success/30 bg-success/10 text-success",
-    pending: "border-warning/30 bg-warning/10 text-warning",
-    completed: "border-border bg-bg-elevated text-text-secondary",
+function statusClass(status: ReservationDisplayStatus): string {
+  const classes: Record<ReservationDisplayStatus, string> = {
+    upcoming: "border-success/30 bg-success/10 text-success",
+    current: "border-gold/30 bg-gold/10 text-gold",
+    past: "border-border bg-bg-elevated text-text-secondary",
     cancelled: "border-danger/30 bg-danger/10 text-danger",
   };
   return classes[status];
@@ -129,6 +121,7 @@ async function modifyReservation(
 }
 
 export default function BookingDetailsPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { reservationId } = useParams<{ reservationId: string }>();
   const [searchParams] = useSearchParams();
@@ -150,7 +143,7 @@ export default function BookingDetailsPage() {
     () => reservation ? new Date(reservation.reserved_at) : null,
     [reservation],
   );
-  const canCancel = Boolean(reservation && status !== "cancelled" && status !== "completed");
+  const canCancel = Boolean(reservation && (status === "upcoming" || status === "current"));
   const canModify = canCancel;
   const restaurantName = reservation?.restaurant?.name ?? "Restaurant";
   const cuisineLine = [reservation?.restaurant?.cuisine_type, reservation?.restaurant?.city]
@@ -284,7 +277,7 @@ export default function BookingDetailsPage() {
                       statusClass(status),
                     )}
                   >
-                    {statusLabel(status)}
+                    {t(reservationDisplayStatusKey(status))}
                   </span>
                   <p className="mt-4 font-serif text-5xl leading-tight text-white">
                     {restaurantName}
@@ -325,7 +318,7 @@ export default function BookingDetailsPage() {
                   <DetailRow
                     icon={Tag}
                     label="Confirmation"
-                    value={reservation.confirmation_code ?? "Pending"}
+                    value={reservation.confirmation_code ?? "Not issued yet"}
                   />
                   {reservation.special_request && (
                     <DetailRow

@@ -8,6 +8,7 @@ import {
   Users,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
@@ -15,6 +16,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useOverviewStats, type OverviewOrderStats } from "@/hooks/useOverviewStats";
 import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -34,7 +40,7 @@ type ServiceReservation = {
   party: number;
   table: string;
   notes: string;
-  status: string;
+  status: ReservationDisplayStatus;
 };
 
 type TimelineBucket = {
@@ -43,12 +49,12 @@ type TimelineBucket = {
 };
 
 type ReservationStatusCounts = {
-  pending: number;
-  confirmed: number;
-  seated: number;
+  upcoming: number;
+  current: number;
+  past: number;
 };
 
-const INACTIVE_RESERVATION_STATUSES = new Set(["cancelled", "completed", "no_show"]);
+const HIDDEN_RESERVATION_STATUSES = new Set(["cancelled", "no_show"]);
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 function compactTime(date: Date): string {
@@ -98,7 +104,7 @@ function reservationToServiceRow(row: ReservationRow): ServiceReservation | null
     party: row.party_size,
     table: reservationTableLabel(row),
     notes,
-    status: row.status,
+    status: reservationDisplayStatus(row),
   };
 }
 
@@ -108,7 +114,7 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 
 function activeReservationRows(rows: ReservationRow[]): ServiceReservation[] {
   return rows
-    .filter((row) => !INACTIVE_RESERVATION_STATUSES.has(row.status))
+    .filter((row) => !HIDDEN_RESERVATION_STATUSES.has(row.status))
     .map(reservationToServiceRow)
     .filter((row): row is ServiceReservation => Boolean(row));
 }
@@ -116,12 +122,11 @@ function activeReservationRows(rows: ReservationRow[]): ServiceReservation[] {
 function reservationStatusCounts(rows: ServiceReservation[]): ReservationStatusCounts {
   return rows.reduce(
     (counts, row) => {
-      if (row.status === "pending") counts.pending += 1;
-      if (row.status === "confirmed") counts.confirmed += 1;
-      if (row.status === "seated") counts.seated += 1;
+      if (row.status === "cancelled") return counts;
+      counts[row.status] += 1;
       return counts;
     },
-    { pending: 0, confirmed: 0, seated: 0 },
+    { upcoming: 0, current: 0, past: 0 },
   );
 }
 
@@ -208,14 +213,14 @@ function TimelineChart({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 text-[11px] text-success">
-            Seated · {counts.seated}
-          </span>
           <span className="rounded-full border border-gold/30 bg-gold/10 px-3 py-1 text-[11px] text-gold">
-            Confirmed · {counts.confirmed}
+            Current · {counts.current}
           </span>
-          <span className="rounded-full border border-info/30 bg-info/10 px-3 py-1 text-[11px] text-info">
-            Pending · {counts.pending}
+          <span className="rounded-full border border-success/30 bg-success/10 px-3 py-1 text-[11px] text-success">
+            Upcoming · {counts.upcoming}
+          </span>
+          <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 text-[11px] text-text-secondary">
+            Past · {counts.past}
           </span>
         </div>
       </div>
@@ -253,6 +258,7 @@ function TimelineChart({
 }
 
 function ReservationsTable({ rows, title }: { rows: ServiceReservation[]; title: string }) {
+  const { t } = useTranslation();
   return (
     <section className="rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
       <div className="flex items-center justify-between gap-4">
@@ -288,7 +294,7 @@ function ReservationsTable({ rows, title }: { rows: ServiceReservation[]; title:
                   <td className="py-4 text-text-secondary">{row.table}</td>
                   <td className="py-4 text-text-muted">{row.notes}</td>
                   <td className="py-4 text-right">
-                    <StatusBadge status={row.status} label={row.status.replace("_", " ")} />
+                    <StatusBadge status={row.status} label={t(reservationDisplayStatusKey(row.status))} />
                   </td>
                 </tr>
               ))}
@@ -341,7 +347,7 @@ function ServiceSummary({
         </p>
         <p>
           {formatCurrency(orderStats.paidIncome, currency)} paid income from{" "}
-          {pluralize(orderStats.paidOrderCount, "paid order")} today.
+          {pluralize(orderStats.paidPreorderCount, "paid pre-order")} today.
         </p>
       </div>
     </section>
@@ -351,9 +357,9 @@ function ServiceSummary({
 export default function OverviewPage() {
   const { selectedRestaurant } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
-  const now = new Date();
+  const now = useMemo(() => new Date(), []);
   const today = isoDate(now);
-  const statsRange = useMemo(() => dayRange(now), [today]);
+  const statsRange = useMemo(() => dayRange(now), [now]);
   const { stats: orderStats, loading: statsLoading, error: statsError } = useOverviewStats(statsRange);
   const { reservations, loading: reservationsLoading } = useReservations({ date: today });
 
@@ -375,9 +381,9 @@ export default function OverviewPage() {
       tone: "gold",
     },
     {
-      label: "Paid income",
+      label: "Paid pre-order income",
       value: formatCurrency(orderStats.paidIncome, currency),
-      delta: `${orderStats.paidOrderCount.toLocaleString()} paid today`,
+      delta: `${orderStats.paidPreorderCount.toLocaleString()} paid pre-orders today`,
       icon: DollarSign,
       tone: "green",
     },

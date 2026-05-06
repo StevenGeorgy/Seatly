@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { format, parse, startOfToday } from "date-fns";
+import { addDays, format, parse, startOfToday } from "date-fns";
 import {
   CalendarDays,
   ChevronLeft,
@@ -13,7 +13,6 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
-import { SeatReservationDialog } from "@/components/dashboard/SeatReservationDialog";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -30,22 +29,29 @@ import {
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { useUser } from "@/hooks/useUser";
 import { hostActionNeedsManagerApproval } from "@/lib/auth/host-action-permissions";
+import {
+  reservationDisplayStatus,
+  reservationDisplayStatusKey,
+  type ReservationDisplayStatus,
+} from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
 type ViewMode = "day" | "week" | "list";
-type QuickFilter = "all" | "confirmed" | "seated" | "cancelled" | "modified";
+type QuickFilter = "all" | ReservationDisplayStatus | "modified";
 
 type ReservationBoardRow = {
   id: string;
   time: string;
+  dateKey: string;
+  dateLabel: string;
   guest: string;
   phone: string;
   party: number;
   table: string;
   duration: string;
   notes: string;
-  status: Exclude<QuickFilter, "all" | "modified"> | "completed";
+  status: ReservationDisplayStatus;
   tag?: string;
   tableCount: number;
   tableCapacity: number;
@@ -103,13 +109,6 @@ function timeToBoardMinutes(timeStr: string): number {
   return normalizedHour * 60 + minutes;
 }
 
-function normalizeStatus(row: ReservationRow): ReservationBoardRow["status"] {
-  if (row.status === "cancelled") return "cancelled";
-  if (row.status === "seated") return "seated";
-  if (row.status === "completed") return "completed";
-  return "confirmed";
-}
-
 function isDinerModifiedReservation(row: ReservationRow): boolean {
   return row.internal_notes?.includes("[Diner modified booking") ?? false;
 }
@@ -148,7 +147,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
   const date = new Date(rowData.reserved_at);
   const guest = rowData.guests?.full_name ?? rowData.guest_full_name ?? t("dashboard.reservations.notApplicable");
   const phone = rowData.guest_phone ?? rowData.guests?.phone ?? rowData.guest_email ?? rowData.guests?.email ?? "-";
-  const status = normalizeStatus(rowData);
+  const status = reservationDisplayStatus(rowData);
   const durationMinutes = rowData.duration_minutes ?? DEFAULT_DURATION_MINUTES;
   const notes =
     rowData.special_request ||
@@ -161,6 +160,8 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
   return {
     id: rowData.id,
     time: formatCompactTimeLabel(date),
+    dateKey: format(date, "yyyy-MM-dd"),
+    dateLabel: format(date, "EEE, MMM d"),
     guest,
     phone,
     party: rowData.party_size,
@@ -181,12 +182,13 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
   };
 }
 
-function statusBadgeStatus(status: ReservationBoardRow["status"]): string {
-  return status;
+function statusBadgeLabel(status: ReservationBoardRow["status"], t: TranslationFn): string {
+  return t(reservationDisplayStatusKey(status));
 }
 
 function blockClasses(status: ReservationBoardRow["status"]): string {
-  if (status === "seated") return "border-gold/35 bg-gold/20 text-gold";
+  if (status === "current") return "border-gold/35 bg-gold/20 text-gold";
+  if (status === "past") return "border-border/70 bg-bg-elevated/70 text-text-muted";
   if (status === "cancelled") return "border-danger/35 bg-danger/10 text-danger";
   return "border-success/35 bg-success/15 text-success";
 }
@@ -221,25 +223,26 @@ export default function ReservationsPage() {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [seatTarget, setSeatTarget] = useState<ReservationRow | null>(null);
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const { selectedRestaurantId } = useRestaurantScope();
   const { rolesAtRestaurant } = useUser();
+  const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
+  const rangeEndObject = viewMode === "week" ? addDays(selectedDateObject, 6) : selectedDateObject;
+  const rangeStart = format(selectedDateObject, "yyyy-MM-dd");
+  const rangeEnd = format(rangeEndObject, "yyyy-MM-dd");
+  const dateStepDays = viewMode === "week" ? 7 : 1;
 
-  const filters = useMemo(
-    (): ReservationFilters => ({
-      date: selectedDate,
-      search: search || undefined,
-    }),
-    [search, selectedDate],
-  );
+  const filters: ReservationFilters = {
+    dateFrom: rangeStart,
+    dateTo: rangeEnd,
+    search: search || undefined,
+  };
 
   const {
     reservations,
     loading,
-    seatReservation,
     createReservation,
     updateStatus,
     requestManagerApproval,
@@ -267,8 +270,7 @@ export default function ReservationsPage() {
       const matchesQuick =
         quickFilter === "all" ||
         reservation.status === quickFilter ||
-        (quickFilter === "modified" && reservation.source ? isDinerModifiedReservation(reservation.source) : false) ||
-        (quickFilter === "confirmed" && reservation.status === "completed");
+        (quickFilter === "modified" && reservation.source ? isDinerModifiedReservation(reservation.source) : false);
       const matchesSearch =
         !q ||
         reservation.guest.toLowerCase().includes(q) ||
@@ -285,8 +287,9 @@ export default function ReservationsPage() {
   );
   const bookedTonight = allRows.length;
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
-  const seatedCount = allRows.filter((reservation) => reservation.status === "seated").length;
-  const upcomingCount = allRows.filter((reservation) => reservation.status === "confirmed").length;
+  const currentCount = allRows.filter((reservation) => reservation.status === "current").length;
+  const upcomingCount = allRows.filter((reservation) => reservation.status === "upcoming").length;
+  const pastCount = allRows.filter((reservation) => reservation.status === "past").length;
   const cancelledCount = allRows.filter((reservation) => reservation.status === "cancelled").length;
   const modifiedCount = allRows.filter(
     (reservation) => reservation.source ? isDinerModifiedReservation(reservation.source) : false,
@@ -348,18 +351,26 @@ export default function ReservationsPage() {
     }
   };
 
-  const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
   const selectedDateLabel =
-    selectedDate === format(new Date(), "yyyy-MM-dd")
+    viewMode === "week"
+      ? `${format(selectedDateObject, "MMM d")} - ${format(rangeEndObject, "MMM d")}`
+      : selectedDate === format(new Date(), "yyyy-MM-dd")
       ? `${t("dashboard.reservations.today")} · ${format(selectedDateObject, "MMM d")}`
       : format(selectedDateObject, "EEE · MMM d");
+  const serviceLabel =
+    viewMode === "week"
+      ? `${format(selectedDateObject, "MMMM d")} - ${format(rangeEndObject, "MMMM d")} · Dinner service`
+      : `${format(selectedDateObject, "EEEE, MMMM d")} · Dinner service`;
+  const bookedLabel = viewMode === "week" ? "Booked this week" : "Booked tonight";
+  const coversLabel = viewMode === "week" ? `${coversExpected} covers expected this week` : `${coversExpected} covers expected`;
+  const listTitle = viewMode === "week" ? "Week reservations" : viewMode === "list" ? "Reservation list" : "All reservations";
 
   return (
     <AnimatedPage className="space-y-6">
       <header className="flex flex-col gap-5 border-b border-border/50 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
-            {format(selectedDateObject, "EEEE, MMMM d")} · Dinner service
+            {serviceLabel}
           </p>
           <h1 className="mt-2 font-serif text-5xl leading-none text-white">Reservations</h1>
         </div>
@@ -375,9 +386,9 @@ export default function ReservationsPage() {
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <MetricCard label="Booked tonight" value={String(bookedTonight)} detail={`${coversExpected} covers expected`} />
-        <MetricCard label="Currently seated" value={String(seatedCount)} detail={`${seatedCount} finishing entrees`} />
-        <MetricCard label="Upcoming" value={String(upcomingCount)} detail="Next: 7pm · Tremblay" />
+        <MetricCard label={bookedLabel} value={String(bookedTonight)} detail={coversLabel} />
+        <MetricCard label="Current bookings" value={String(currentCount)} detail={`${currentCount} active now`} />
+        <MetricCard label="Upcoming" value={String(upcomingCount)} detail={`${pastCount} past for this view`} />
       </div>
 
       <section className="rounded-2xl border border-border bg-bg-surface/80 p-4 shadow-lg shadow-black/10">
@@ -404,7 +415,7 @@ export default function ReservationsPage() {
                   type="button"
                   onClick={() => {
                     const previous = new Date(`${selectedDate}T12:00:00`);
-                    previous.setDate(previous.getDate() - 1);
+                    previous.setDate(previous.getDate() - dateStepDays);
                     setSelectedDate(format(previous, "yyyy-MM-dd"));
                   }}
                   className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
@@ -448,7 +459,7 @@ export default function ReservationsPage() {
                   type="button"
                   onClick={() => {
                     const next = new Date(`${selectedDate}T12:00:00`);
-                    next.setDate(next.getDate() + 1);
+                    next.setDate(next.getDate() + dateStepDays);
                     setSelectedDate(format(next, "yyyy-MM-dd"));
                   }}
                   className="flex size-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-white/5 hover:text-white"
@@ -485,10 +496,11 @@ export default function ReservationsPage() {
               {(
                 [
                   { id: "all" as QuickFilter, label: t("dashboard.reservations.all"), count: allRows.length },
-                  { id: "confirmed" as QuickFilter, label: t("dashboard.reservations.confirmed"), count: allRows.filter((item) => item.status === "confirmed").length },
-                  { id: "seated" as QuickFilter, label: t("dashboard.reservations.seated"), count: seatedCount },
-                  { id: "cancelled" as QuickFilter, label: "Cancelled", count: cancelledCount },
-                  { id: "modified" as QuickFilter, label: "Modified", count: modifiedCount },
+                  { id: "upcoming" as QuickFilter, label: t("dashboard.reservations.upcoming"), count: upcomingCount },
+                  { id: "current" as QuickFilter, label: t("dashboard.reservations.current"), count: currentCount },
+                  { id: "past" as QuickFilter, label: t("dashboard.reservations.past"), count: pastCount },
+                  { id: "cancelled" as QuickFilter, label: t("dashboard.reservations.cancelled"), count: cancelledCount },
+                  { id: "modified" as QuickFilter, label: t("dashboard.reservations.modified"), count: modifiedCount },
                 ]
               ).map((item) => (
                 <button
@@ -510,33 +522,18 @@ export default function ReservationsPage() {
         </div>
       </section>
 
-      <FloorTimeline rows={activeTimelineRows} loading={loading} />
+      {viewMode === "day" ? <FloorTimeline rows={activeTimelineRows} loading={loading} /> : null}
       <ReservationsTable
         rows={boardRows}
         loading={loading}
-        onSeat={(rowData) => {
-          if (rowData.source) setSeatTarget(rowData.source);
-        }}
+        title={listTitle}
+        groupByDate={viewMode === "week"}
         onCancel={(rowData) => {
           if (!rowData.source) return;
           if (!canCancelDirectly) {
             toast.info("Manager approval required to cancel this reservation.");
           }
           setCancelTarget(rowData.source);
-        }}
-      />
-
-      <SeatReservationDialog
-        open={seatTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setSeatTarget(null);
-        }}
-        reservation={seatTarget}
-        onSeat={async (tableId) => {
-          if (!seatTarget) return;
-          await seatReservation(seatTarget.id, tableId, seatTarget.party_size);
-          toast.success("Guest seated.");
-          setSeatTarget(null);
         }}
       />
 
@@ -764,8 +761,9 @@ function FloorTimeline({ rows, loading }: { rows: ReservationBoardRow[]; loading
           <p className="mt-1 text-xs text-text-muted">Drag a booking to reassign - click to open guest</p>
         </div>
         <div className="flex flex-wrap gap-3 text-[11px] text-text-muted">
-          <Legend color="bg-success" label="Confirmed" />
-          <Legend color="bg-gold" label="Seated" />
+          <Legend color="bg-success" label="Upcoming" />
+          <Legend color="bg-gold" label="Current" />
+          <Legend color="bg-bg-elevated" label="Past" />
           <Legend color="bg-bg-elevated" label="Available" />
         </div>
       </div>
@@ -869,20 +867,33 @@ function EmptyReservationsState() {
 function ReservationsTable({
   rows,
   loading,
-  onSeat,
+  title,
+  groupByDate = false,
   onCancel,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
-  onSeat: (row: ReservationBoardRow) => void;
+  title: string;
+  groupByDate?: boolean;
   onCancel: (row: ReservationBoardRow) => void;
 }) {
   const { t } = useTranslation();
+  const groupedRows = useMemo(() => {
+    if (!groupByDate) return [{ key: "all", label: null as string | null, rows }];
+    const groups = new Map<string, { label: string; rows: ReservationBoardRow[] }>();
+    rows.forEach((row) => {
+      const group = groups.get(row.dateKey) ?? { label: row.dateLabel, rows: [] };
+      group.rows.push(row);
+      groups.set(row.dateKey, group);
+    });
+    return Array.from(groups.entries()).map(([key, group]) => ({ key, label: group.label, rows: group.rows }));
+  }, [groupByDate, rows]);
+
   return (
     <section className="overflow-hidden rounded-2xl border border-border bg-bg-surface">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
-          <h2 className="font-serif text-xl text-white">All reservations · {rows.length}</h2>
+          <h2 className="font-serif text-xl text-white">{title} · {rows.length}</h2>
           <p className="mt-1 text-xs text-text-muted">Sorted by reservation time</p>
         </div>
         <p className="text-xs text-text-muted">Sort: <span className="text-gold">Time</span> · Party size · Status</p>
@@ -912,78 +923,86 @@ function ReservationsTable({
             </thead>
             <tbody className="divide-y divide-border/60">
               <AnimatePresence initial={false}>
-                {rows.map((reservation, index) => (
-                  <motion.tr
-                    key={reservation.id}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.18, delay: index * 0.01 }}
-                    className="text-sm"
-                  >
-                    <td className="px-5 py-4 font-mono text-white">{reservation.time}</td>
-                    <td className="px-5 py-4">
-                      <p className="font-medium text-white">{reservation.guest}</p>
-                      <p className="mt-0.5 text-xs text-text-muted">{reservation.phone}</p>
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary">
-                      <div className="flex flex-col gap-1">
-                        <span>{reservation.party}</span>
-                        {reservation.tableCount > 1 ? (
-                          <span className="w-fit rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
-                            {t("dashboard.reservations.largePartyTag", { count: reservation.tableCount })}
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary">
-                      <div className="flex flex-col gap-1">
-                        <span>{reservation.table}</span>
-                        {reservation.tableCapacity > 0 ? (
-                          <span className="text-[11px] text-text-muted">
-                            {t("dashboard.reservations.tableCapacity", { count: reservation.tableCapacity })}
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary">{reservation.duration}</td>
-                    <td className="px-5 py-4">
-                      <div className="flex flex-col items-start gap-1.5">
-                        <StatusBadge
-                          status={statusBadgeStatus(reservation.status)}
-                          label={reservation.status.replace("_", " ")}
-                        />
-                        {reservation.source && isDinerModifiedReservation(reservation.source) ? (
-                          <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
-                            Modified by diner
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
-                    <td className="px-5 py-4 text-right">
-                      {reservation.status === "confirmed" ? (
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" className="h-8 px-3 text-xs" onClick={() => onSeat(reservation)}>
-                            Seat
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 px-3 text-xs"
-                            onClick={() => onCancel(reservation)}
-                          >
-                            Cancel
-                          </Button>
+                {groupedRows.flatMap((group, groupIndex) => [
+                  ...(group.label
+                    ? [
+                        <tr key={`${group.key}-label`} className="bg-bg-elevated/40">
+                          <td colSpan={8} className="px-5 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-gold">
+                            {group.label} · {group.rows.length}
+                          </td>
+                        </tr>,
+                      ]
+                    : []),
+                  ...group.rows.map((reservation, index) => (
+                    <motion.tr
+                      key={reservation.id}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.18, delay: (groupIndex + index) * 0.01 }}
+                      className="text-sm"
+                    >
+                      <td className="px-5 py-4 font-mono text-white">{reservation.time}</td>
+                      <td className="px-5 py-4">
+                        <p className="font-medium text-white">{reservation.guest}</p>
+                        <p className="mt-0.5 text-xs text-text-muted">{reservation.phone}</p>
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">
+                        <div className="flex flex-col gap-1">
+                          <span>{reservation.party}</span>
+                          {reservation.tableCount > 1 ? (
+                            <span className="w-fit rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+                              {t("dashboard.reservations.largePartyTag", { count: reservation.tableCount })}
+                            </span>
+                          ) : null}
                         </div>
-                      ) : (
-                        <Button size="icon-sm" variant="ghost" aria-label="Open reservation">
-                          <ChevronRight className="size-4" />
-                        </Button>
-                      )}
-                    </td>
-                  </motion.tr>
-                ))}
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">
+                        <div className="flex flex-col gap-1">
+                          <span>{reservation.table}</span>
+                          {reservation.tableCapacity > 0 ? (
+                            <span className="text-[11px] text-text-muted">
+                              {t("dashboard.reservations.tableCapacity", { count: reservation.tableCapacity })}
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">{reservation.duration}</td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-col items-start gap-1.5">
+                          <StatusBadge
+                            status={reservation.status}
+                            label={statusBadgeLabel(reservation.status, t)}
+                          />
+                          {reservation.source && isDinerModifiedReservation(reservation.source) ? (
+                            <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+                              Modified by diner
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
+                      <td className="px-5 py-4 text-right">
+                        {reservation.status === "upcoming" || reservation.status === "current" ? (
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-3 text-xs"
+                              onClick={() => onCancel(reservation)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button size="icon-sm" variant="ghost" aria-label="Open reservation">
+                            <ChevronRight className="size-4" />
+                          </Button>
+                        )}
+                      </td>
+                    </motion.tr>
+                  )),
+                ])}
               </AnimatePresence>
             </tbody>
           </table>
