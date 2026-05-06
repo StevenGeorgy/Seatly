@@ -39,6 +39,7 @@ import {
   reservationDisplayStatusKey,
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
+import { matchesReservationSearch } from "@/lib/reservations/search";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -55,6 +56,7 @@ type ReservationBoardRow = {
   party: number;
   table: string;
   duration: string;
+  confirmationCode: string | null;
   notes: string;
   status: ReservationDisplayStatus;
   tag?: string;
@@ -63,6 +65,7 @@ type ReservationBoardRow = {
   source?: ReservationRow;
   startsAt: number;
   durationMinutes: number;
+  searchValues: string[];
 };
 
 type TimelineTableRow = {
@@ -189,6 +192,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     "-";
   const table = reservationTableLabel(rowData, t);
   const assignedTables = reservationAssignedTables(rowData);
+  const confirmationCode = rowData.confirmation_code?.trim() || null;
 
   return {
     id: rowData.id,
@@ -200,6 +204,7 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     party: rowData.party_size,
     table,
     duration: formatDurationMinutes(durationMinutes, t),
+    confirmationCode,
     notes,
     status,
     tag: isDinerModifiedReservation(rowData)
@@ -212,6 +217,17 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
     source: rowData,
     startsAt: date.getHours() * 60 + date.getMinutes(),
     durationMinutes,
+    searchValues: [
+      guest,
+      phone,
+      table,
+      notes,
+      confirmationCode,
+      rowData.guest_phone,
+      rowData.guest_email,
+      rowData.guests?.phone,
+      rowData.guests?.email,
+    ].filter((value): value is string => Boolean(value)),
   };
 }
 
@@ -257,11 +273,12 @@ export default function ReservationsPage() {
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
+  const [detailsTarget, setDetailsTarget] = useState<ReservationBoardRow | null>(null);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const { selectedRestaurantId, selectedRestaurant } = useRestaurantScope();
   const { rolesAtRestaurant } = useUser();
-  const selectedDateObject = new Date(`${selectedDate}T12:00:00`);
+  const selectedDateObject = useMemo(() => new Date(`${selectedDate}T12:00:00`), [selectedDate]);
   const rangeEndObject = viewMode === "week" ? addDays(selectedDateObject, 6) : selectedDateObject;
   const rangeStart = format(selectedDateObject, "yyyy-MM-dd");
   const rangeEnd = format(rangeEndObject, "yyyy-MM-dd");
@@ -298,17 +315,12 @@ export default function ReservationsPage() {
 
   const boardRows = useMemo(() => {
     const base = reservations.map((reservation) => adaptReservation(reservation, t));
-    const q = search.trim().toLowerCase();
     return base.filter((reservation) => {
       const matchesQuick =
         quickFilter === "all" ||
         reservation.status === quickFilter ||
         (quickFilter === "modified" && reservation.source ? isDinerModifiedReservation(reservation.source) : false);
-      const matchesSearch =
-        !q ||
-        reservation.guest.toLowerCase().includes(q) ||
-        reservation.phone.toLowerCase().includes(q) ||
-        reservation.table.toLowerCase().includes(q);
+      const matchesSearch = matchesReservationSearch(search, reservation.searchValues);
       return matchesQuick && matchesSearch;
     });
   }, [quickFilter, reservations, search, t]);
@@ -320,7 +332,7 @@ export default function ReservationsPage() {
   );
   const boardWindow = useMemo(
     () => boardWindowForDate(selectedRestaurant?.hours_json ?? null, selectedDateObject),
-    [selectedRestaurant?.hours_json, selectedDate],
+    [selectedRestaurant?.hours_json, selectedDateObject],
   );
   const bookedTonight = allRows.length;
   const coversExpected = allRows.reduce((total, reservation) => total + reservation.party, 0);
@@ -559,18 +571,33 @@ export default function ReservationsPage() {
         </div>
       </section>
 
-      {viewMode === "day" ? <FloorTimeline rows={activeTimelineRows} loading={loading} window={boardWindow} /> : null}
+      {viewMode === "day" ? (
+        <FloorTimeline
+          rows={activeTimelineRows}
+          loading={loading}
+          window={boardWindow}
+          onOpen={setDetailsTarget}
+        />
+      ) : null}
       <ReservationsTable
         rows={boardRows}
         loading={loading}
         title={listTitle}
         groupByDate={viewMode === "week"}
+        onOpen={setDetailsTarget}
         onCancel={(rowData) => {
           if (!rowData.source) return;
           if (!canCancelDirectly) {
             toast.info("Manager approval required to cancel this reservation.");
           }
           setCancelTarget(rowData.source);
+        }}
+      />
+
+      <ReservationDetailsDialog
+        reservation={detailsTarget}
+        onOpenChange={(open) => {
+          if (!open) setDetailsTarget(null);
         }}
       />
 
@@ -787,14 +814,76 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
   );
 }
 
+function ReservationDetailsDialog({
+  reservation,
+  onOpenChange,
+}: {
+  reservation: ReservationBoardRow | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const source = reservation?.source;
+  const contact = [
+    source?.guest_phone,
+    source?.guests?.phone,
+    source?.guest_email,
+    source?.guests?.email,
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <Dialog open={reservation !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{reservation?.guest ?? t("dashboard.reservations.guest")}</DialogTitle>
+        </DialogHeader>
+        {reservation ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-gold/25 bg-gold/10 p-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold/80">
+                {t("dashboard.reservations.confirmationCode")}
+              </p>
+              <p className="mt-2 font-mono text-2xl font-semibold uppercase tracking-[0.08em] text-gold">
+                {reservation.confirmationCode ?? t("dashboard.reservations.confirmationCodeMissing")}
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DetailItem label={t("dashboard.reservations.time")} value={`${reservation.dateLabel} · ${reservation.time}`} />
+              <DetailItem label={t("dashboard.reservations.party")} value={String(reservation.party)} />
+              <DetailItem label={t("dashboard.reservations.tableLabel")} value={reservation.table} />
+              <DetailItem label={t("dashboard.reservations.duration")} value={reservation.duration} />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-surface px-3 py-2">
+              <span className="text-xs text-text-muted">{t("dashboard.reservations.status")}</span>
+              <StatusBadge status={reservation.status} label={statusBadgeLabel(reservation.status, t)} />
+            </div>
+            <DetailItem label={t("dashboard.reservations.guest")} value={contact || reservation.phone} />
+            <DetailItem label={t("dashboard.reservations.specialRequest")} value={reservation.notes} />
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-bg-surface px-3 py-2">
+      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">{label}</p>
+      <p className="mt-1 break-words text-sm text-text-primary">{value || "-"}</p>
+    </div>
+  );
+}
+
 function FloorTimeline({
   rows,
   loading,
   window: boardWindow,
+  onOpen,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
   window: BoardWindow;
+  onOpen: (row: ReservationBoardRow) => void;
 }) {
   const byTable = buildTimelineRows(rows);
   const { startMin, rangeMin, times } = boardWindow;
@@ -859,18 +948,19 @@ function FloorTimeline({
                       <button
                         key={booking.id}
                         type="button"
+                        onClick={() => onOpen(booking)}
                         className={cn(
-                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20",
+                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20 transition-all duration-150 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-gold/10 focus-visible:-translate-y-0.5 focus-visible:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/45",
                           blockClasses(booking.status),
                         )}
                         style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
                       >
-                        <span className="truncate">
+                        <span className="block truncate">
                           {booking.guest.split(",")[0]} · {booking.time}
                         </span>
-                        {booking.tag ? (
-                          <span className="float-right ml-2 font-mono text-[9px] uppercase opacity-80">
-                            {booking.tag}
+                        {booking.confirmationCode ? (
+                          <span className="block truncate font-mono text-[9px] uppercase opacity-80">
+                            {booking.confirmationCode}
                           </span>
                         ) : null}
                       </button>
@@ -917,12 +1007,14 @@ function ReservationsTable({
   loading,
   title,
   groupByDate = false,
+  onOpen,
   onCancel,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
   title: string;
   groupByDate?: boolean;
+  onOpen: (row: ReservationBoardRow) => void;
   onCancel: (row: ReservationBoardRow) => void;
 }) {
   const { t } = useTranslation();
@@ -992,8 +1084,19 @@ function ReservationsTable({
                     >
                       <td className="px-5 py-4 font-mono text-white">{reservation.time}</td>
                       <td className="px-5 py-4">
-                        <p className="font-medium text-white">{reservation.guest}</p>
+                        <button
+                          type="button"
+                          onClick={() => onOpen(reservation)}
+                          className="block max-w-56 truncate text-left font-medium text-white transition-colors hover:text-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                        >
+                          {reservation.guest}
+                        </button>
                         <p className="mt-0.5 text-xs text-text-muted">{reservation.phone}</p>
+                        {reservation.confirmationCode ? (
+                          <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-gold/80">
+                            {reservation.confirmationCode}
+                          </p>
+                        ) : null}
                       </td>
                       <td className="px-5 py-4 text-text-secondary">
                         <div className="flex flex-col gap-1">
@@ -1043,7 +1146,12 @@ function ReservationsTable({
                             </Button>
                           </div>
                         ) : (
-                          <Button size="icon-sm" variant="ghost" aria-label="Open reservation">
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Open reservation"
+                            onClick={() => onOpen(reservation)}
+                          >
                             <ChevronRight className="size-4" />
                           </Button>
                         )}

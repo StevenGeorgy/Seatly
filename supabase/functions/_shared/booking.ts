@@ -1,5 +1,10 @@
 import { supabaseAdmin } from "./supabase.ts";
 import { assignReservationTables } from "./table-assignment.ts";
+import {
+  closureUnavailableMessage,
+  findClosedSpecialDayForDate,
+  localDateForDateTime,
+} from "./closures.ts";
 
 export interface BookingItem {
   menu_item_id: string;
@@ -108,6 +113,49 @@ export async function completeBooking(
 
   const resolvedEmail = normalizeEmail(guest_email ?? userProfile?.email ?? null);
   const resolvedPhone = guest_phone ?? userProfile?.phone ?? "";
+  const reservedAt = new Date(date_time);
+  if (Number.isNaN(reservedAt.getTime())) {
+    return {
+      success: false,
+      confirmation_code: "",
+      order_type,
+      reservation_id: null,
+      order_id: null,
+      guest_id: null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: "CAD",
+      checkout_url: null,
+      error: "date_time must be a valid ISO timestamp.",
+    };
+  }
+
+  const { data: restaurantCalendar } = await supabaseAdmin
+    .from("restaurants")
+    .select("timezone, hours_json")
+    .eq("id", restaurant_id)
+    .maybeSingle();
+  const localBookingDate = localDateForDateTime(reservedAt, restaurantCalendar?.timezone || "UTC");
+  const closure = localBookingDate
+    ? findClosedSpecialDayForDate(restaurantCalendar?.hours_json, localBookingDate)
+    : null;
+  if (closure) {
+    return {
+      success: false,
+      confirmation_code: "",
+      order_type,
+      reservation_id: null,
+      order_id: null,
+      guest_id: null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: "CAD",
+      checkout_url: null,
+      error: closureUnavailableMessage(closure),
+    };
+  }
 
   const { data: canonicalGuestId, error: canonicalGuestErr } = await supabaseAdmin.rpc("canonical_guest_id", {
     p_restaurant_id: restaurant_id,

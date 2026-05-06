@@ -291,8 +291,30 @@ export function RestaurantPreviewModal({
     fetchSlots,
     clearSlots,
     floorCapacity,
+    unavailableReason,
+    unavailableMessage,
   } = useAvailability();
   const maxPreviewPartySize = Math.max(1, floorCapacity ?? 50);
+  const unavailableHeadline = (() => {
+    if (availabilityLoading) return "Checking availability...";
+    switch (unavailableReason) {
+      case "party_size_out_of_range":
+        return floorCapacity
+          ? `This restaurant seats up to ${floorCapacity} guests. Try a smaller party or contact the restaurant directly for larger groups.`
+          : "That party size is outside this restaurant's bookable range.";
+      case "fully_booked":
+        return "Fully booked for this date — try another day.";
+      case "closed":
+        return "Closed on this date.";
+      case "no_shifts":
+        return "No service hours configured for this date.";
+      case "no_future_slots":
+        return "No more times available later today — try another date.";
+      case "no_slots":
+      default:
+        return unavailableMessage ?? "Unavailable for this date and party size.";
+    }
+  })();
   const unavailableDate = (date: Date) => {
     if (date < startOfToday()) return true;
     if (dateAvailabilityLoading) return false;
@@ -984,7 +1006,7 @@ export function RestaurantPreviewModal({
                       </div>
                     ) : (
                       <div className="mt-3 rounded-xl bg-bg-elevated p-3 text-xs text-text-muted">
-                        {availabilityLoading ? "Checking availability..." : "Unavailable for this date and party size."}
+                        {unavailableHeadline}
                       </div>
                     )}
 

@@ -850,7 +850,21 @@ function RestaurantStaffPreview({
               </div>
             ) : (
               <div className="mt-3 rounded-2xl bg-bg-elevated p-4 text-xs text-text-muted">
-                {availability.loading ? "Checking availability..." : "Unavailable for this date and party size."}
+                {availability.loading
+                  ? "Checking availability..."
+                  : availability.unavailableReason === "party_size_out_of_range"
+                    ? availability.floorCapacity
+                      ? `This restaurant seats up to ${availability.floorCapacity} guests. Try a smaller party or contact the restaurant directly for larger groups.`
+                      : "That party size is outside this restaurant's bookable range."
+                    : availability.unavailableReason === "fully_booked"
+                      ? "Fully booked for this date — try another day."
+                      : availability.unavailableReason === "closed"
+                        ? "Closed on this date."
+                        : availability.unavailableReason === "no_shifts"
+                          ? "No service hours configured for this date."
+                          : availability.unavailableReason === "no_future_slots"
+                            ? "No more times available later today — try another date."
+                            : (availability.unavailableMessage ?? "Unavailable for this date and party size.")}
               </div>
             )}
             <Button

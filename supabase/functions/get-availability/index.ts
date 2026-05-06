@@ -1,246 +1,142 @@
+// @ts-nocheck
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "npm:@supabase/supabase-js@2";
-import { localDayOfWeek, localToUTC } from "../_shared/time.ts";
+import { corsHeaders } from "../_shared/cors.ts";
+import { jsonRes } from "../_shared/json-response.ts";
+import { getAvailability } from "../_shared/availability.ts";
+import { localBookingParts } from "../_shared/hours.ts";
+import { supabaseAdmin } from "../_shared/supabase.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+type PublicAvailabilitySlot = {
+  shift_id: string;
+  shift_name: string;
+  date_time: string;
+  display_time: string;
+  table_ids?: string[];
+  duration_minutes?: number;
+  floor_capacity?: number;
 };
 
-const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+function numberParam(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
-function parseTimeToMinutes(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  const meridiem = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
-  if (meridiem) {
-    let hours = Number(meridiem[1]);
-    const minutes = Number(meridiem[2] ?? 0);
-    const period = meridiem[3].toLowerCase();
-    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-    if (period === "pm" && hours !== 12) hours += 12;
-    if (period === "am" && hours === 12) hours = 0;
-    return hours * 60 + minutes;
+async function getRestaurantTimezone(restaurantId: string): Promise<string> {
+  const { data } = await supabaseAdmin
+    .from("restaurants")
+    .select("timezone")
+    .eq("id", restaurantId)
+    .single();
+  return data?.timezone || "UTC";
+}
+
+async function getFloorCapacity(restaurantId: string): Promise<number | null> {
+  const { data, error } = await supabaseAdmin
+    .from("tables")
+    .select("capacity")
+    .eq("restaurant_id", restaurantId)
+    .eq("is_active", true);
+  if (error || !data?.length) return null;
+  return data.reduce((sum, row) => sum + (Number(row.capacity) || 0), 0);
+}
+
+// Resolve a table assignment for a slot. Uses the `find_available_table_group`
+// RPC so large parties can combine multiple tables — a single-table lookup
+// would falsely report "fully booked" any time the largest table is smaller
+// than the requested party.
+async function findAvailableTableGroup(params: {
+  restaurantId: string;
+  partySize: number;
+  dateTime: string;
+  durationMinutes: number;
+}): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.rpc("find_available_table_group", {
+    p_restaurant_id: params.restaurantId,
+    p_reserved_at: params.dateTime,
+    p_party_size: params.partySize,
+    p_turn_minutes: params.durationMinutes,
+  });
+  if (error || !Array.isArray(data)) return [];
+  return data.filter((id): id is string => typeof id === "string");
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
-
-  const [hourPart, minutePart] = trimmed.split(":");
-  const hours = Number(hourPart);
-  const minutes = Number(minutePart ?? 0);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-function readHoursPair(value: unknown): { open: number; close: number } | "closed" | null {
-  if (!value || typeof value !== "object") return "closed";
-  const row = value as Record<string, unknown>;
-  if (row.closed === true || row.is_closed === true || row.open === false) return "closed";
-  const openValue = row.open ?? row.from ?? row.open_time ?? row.openTime ?? row.opens ?? row.start;
-  const closeValue = row.close ?? row.to ?? row.close_time ?? row.closeTime ?? row.closes ?? row.end;
-  if (typeof openValue !== "string" || typeof closeValue !== "string") return "closed";
-  const open = parseTimeToMinutes(openValue);
-  const close = parseTimeToMinutes(closeValue);
-  if (open == null || close == null || close <= open) return "closed";
-  return { open, close };
-}
-
-function configuredHoursForDate(
-  hoursJson: Record<string, unknown> | null,
-  dateOnly: string,
-  dayOfWeek: number,
-): { open: number; close: number } | "closed" | null {
-  if (!hoursJson) return null;
-  const specialEntries = Array.isArray(hoursJson.special)
-    ? (hoursJson.special as Array<Record<string, unknown>>)
-    : [];
-  const special = specialEntries.find((entry) => String(entry.date ?? "") === dateOnly);
-  if (special) {
-    if (special.closed === true) return "closed";
-    return readHoursPair({
-      open: special.from,
-      close: special.to,
-      closed: false,
-    });
+  if (req.method !== "GET") {
+    return jsonRes({ error: "Method not allowed" }, 405);
   }
-  return readHoursPair(hoursJson[DAY_NAMES[dayOfWeek] ?? "monday"]);
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const url = new URL(req.url);
-    const restaurantId = url.searchParams.get("restaurant_id");
-    const dateStr = url.searchParams.get("date");
-    const partySize = parseInt(url.searchParams.get("party_size") || "2", 10);
+    const restaurantId = url.searchParams.get("restaurant_id")?.trim();
+    const date = url.searchParams.get("date")?.trim();
+    const partySize = Math.max(1, Math.floor(numberParam(url.searchParams.get("party_size"), 2)));
 
-    if (!restaurantId || !dateStr) {
-      return new Response(
-        JSON.stringify({ error: "restaurant_id and date required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (!restaurantId || !date) {
+      return jsonRes({ error: "restaurant_id and date required" }, 400);
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    const [availability, timezone, floorCapacity] = await Promise.all([
+      getAvailability(restaurantId, date, partySize),
+      getRestaurantTimezone(restaurantId),
+      getFloorCapacity(restaurantId),
+    ]);
+
+    const shiftIds = Array.from(new Set((availability.slots ?? []).map((slot) => slot.shift_id)));
+    const { data: shifts } = shiftIds.length
+      ? await supabaseAdmin
+        .from("shifts")
+        .select("id,turn_time_minutes")
+        .in("id", shiftIds)
+      : { data: [] };
+    const turnMinutesByShift = new Map(
+      (shifts ?? []).map((shift) => [shift.id, Number(shift.turn_time_minutes) || 90]),
     );
 
-    const dateOnly = dateStr.slice(0, 10);
-    const now = new Date();
-
-    const { data: restaurantRow } = await supabase
-      .from("restaurants")
-      .select("settings_json, hours_json, timezone")
-      .eq("id", restaurantId)
-      .single();
-    const timezone =
-      typeof restaurantRow?.timezone === "string" && restaurantRow.timezone.trim()
-        ? restaurantRow.timezone
-        : "America/Toronto";
-    const dayOfWeek = localDayOfWeek(dateOnly, timezone);
-    const { data: floorCapacityData } = await supabase.rpc("restaurant_floor_capacity", {
-      p_restaurant_id: restaurantId,
-    });
-    const floorCapacity = Number.isFinite(Number(floorCapacityData)) ? Number(floorCapacityData) : 0;
-    if (partySize < 1 || partySize > floorCapacity) {
-      return new Response(
-        JSON.stringify({ slots: [], floor_capacity: floorCapacity }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-    const configuredTurnMinutes =
-      typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
-        ? restaurantRow.settings_json.turnTimeMinutes
-        : null;
-    const hoursJson =
-      restaurantRow?.hours_json && typeof restaurantRow.hours_json === "object"
-        ? restaurantRow.hours_json as Record<string, unknown>
-        : null;
-    const configuredHours = configuredHoursForDate(hoursJson, dateOnly, dayOfWeek);
-    if (configuredHours === "closed") {
-      return new Response(
-        JSON.stringify({ slots: [] }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const { data: shifts } = await supabase
-      .from("shifts")
-      .select("id, name, start_time, end_time, slot_duration_minutes, turn_time_minutes, min_party_size, max_party_size, max_covers")
-      .eq("restaurant_id", restaurantId)
-      .eq("is_active", true)
-      .contains("days_of_week", [dayOfWeek]);
-
-    if (!shifts?.length) {
-      return new Response(
-        JSON.stringify({ slots: [] }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const start = localToUTC(dateOnly, "00:00", timezone);
-    const end = localToUTC(dateOnly, "23:59", timezone);
-    const { data: reservations } = await supabase
-      .from("reservations")
-      .select("shift_id, reserved_at, party_size, duration_minutes")
-      .eq("restaurant_id", restaurantId)
-      .in("status", ["pending", "confirmed", "seated"])
-      .gte("reserved_at", start)
-      .lte("reserved_at", end);
-
-    const slots: {
-      shift_id: string;
-      shift_name: string;
-      time: string;
-      date_time: string;
-      display_time: string;
-      table_ids: string[];
-      duration_minutes: number;
-      floor_capacity: number;
-    }[] = [];
-
-    for (const shift of shifts) {
-      const [sH, sM] = (shift.start_time || "17:00").split(":").map(Number);
-      const [eH, eM] = (shift.end_time || "23:00").split(":").map(Number);
-      const slotMins = shift.slot_duration_minutes || 30;
-      const turnMins = configuredTurnMinutes || shift.turn_time_minutes || 90;
-      const maxCovers = shift.max_covers || 100;
-
-      let slotMin = sH * 60 + sM;
-      let endMin = eH * 60 + eM;
-      if (configuredHours) {
-        slotMin = Math.max(slotMin, configuredHours.open);
-        endMin = Math.min(endMin, configuredHours.close);
+    const slots: PublicAvailabilitySlot[] = [];
+    let tableBlockedCount = 0;
+    for (const slot of availability.slots ?? []) {
+      const durationMinutes = turnMinutesByShift.get(slot.shift_id) ?? 90;
+      const localParts = localBookingParts(slot.date_time, timezone);
+      if (!localParts) continue;
+      const tableIds = await findAvailableTableGroup({
+        restaurantId,
+        partySize,
+        dateTime: slot.date_time,
+        durationMinutes,
+      });
+      if (tableIds.length === 0) {
+        tableBlockedCount += 1;
+        continue;
       }
-      if (endMin <= slotMin) continue;
-
-      while (slotMin + slotMins <= endMin) {
-        const slotTime = `${String(Math.floor(slotMin / 60)).padStart(2, "0")}:${String(slotMin % 60).padStart(2, "0")}`;
-        const slotStart = new Date(localToUTC(dateOnly, slotTime, timezone));
-        if (slotStart.getTime() < now.getTime()) {
-          slotMin += slotMins;
-          continue;
-        }
-        const slotEnd = new Date(slotStart.getTime() + turnMins * 60 * 1000);
-
-        const shiftResvs = (reservations || []).filter((r) => r.shift_id === shift.id);
-        let totalCovers = partySize;
-        let available = true;
-        for (const r of shiftResvs) {
-          const resvStart = new Date(r.reserved_at);
-          const resvDuration = r.duration_minutes || turnMins;
-          const resvEnd = new Date(resvStart.getTime() + resvDuration * 60 * 1000);
-          if (slotStart < resvEnd && slotEnd > resvStart) {
-            totalCovers += r.party_size || 0;
-            if (totalCovers > maxCovers) {
-              available = false;
-              break;
-            }
-          }
-        }
-        if (available && totalCovers <= maxCovers) {
-          const { data: tableIds, error: assignmentErr } = await supabase.rpc("find_available_table_group", {
-            p_restaurant_id: restaurantId,
-            p_reserved_at: slotStart.toISOString(),
-            p_party_size: partySize,
-            p_turn_minutes: turnMins,
-          });
-          const assignedTableIds = Array.isArray(tableIds)
-            ? tableIds.filter((id): id is string => typeof id === "string")
-            : [];
-          if (assignmentErr || assignedTableIds.length === 0) {
-            slotMin += slotMins;
-            continue;
-          }
-
-          slots.push({
-            shift_id: shift.id,
-            shift_name: shift.name || "Shift",
-            time: slotStart.toISOString().slice(0, 19).replace("T", " "),
-            date_time: slotStart.toISOString(),
-            display_time: slotStart.toLocaleTimeString("en-US", {
-              timeZone: timezone,
-              hour: "numeric",
-              minute: "2-digit",
-              hour12: true,
-            }),
-            table_ids: assignedTableIds,
-            duration_minutes: turnMins,
-            floor_capacity: floorCapacity,
-          });
-        }
-        slotMin += slotMins;
-      }
+      slots.push({
+        ...slot,
+        table_ids: tableIds,
+        duration_minutes: durationMinutes,
+        floor_capacity: floorCapacity ?? undefined,
+      });
     }
 
-    return new Response(JSON.stringify({ slots, floor_capacity: floorCapacity }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const tableCapacityBlocked =
+      slots.length === 0 &&
+      (availability.slots ?? []).length > 0 &&
+      tableBlockedCount >= (availability.slots ?? []).length;
+
+    return jsonRes({
+      slots,
+      floor_capacity: floorCapacity,
+      hours_window: availability.hours_window ?? null,
+      unavailable_reason: tableCapacityBlocked ? "fully_booked" : availability.unavailable_reason ?? null,
+      message: tableCapacityBlocked
+        ? "The restaurant is fully booked for that date."
+        : availability.message ?? null,
     });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("get-availability error:", message);
+    return jsonRes({ error: message || "availability_failed" }, 500);
   }
 });

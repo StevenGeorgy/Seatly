@@ -1,5 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  formatReservationDate,
+  sendReservationNotification,
+} from "../_shared/reservation-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -14,14 +18,32 @@ type RequestBody = {
 
 type ReservationRow = {
   id: string;
+  restaurant_id: string;
   guest_id: string;
   reserved_at: string;
+  party_size: number;
   status: string | null;
   table_id: string | null;
+  confirmation_code: string | null;
+  guest_full_name: string | null;
+  guest_email: string | null;
+  guest_phone: string | null;
 };
 
 type ReservationTableRow = {
   table_id: string;
+};
+
+type GuestRow = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+};
+
+type RestaurantRow = {
+  name: string | null;
+  timezone: string | null;
 };
 
 function json(body: unknown, status = 200): Response {
@@ -70,7 +92,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
-      .select("id, guest_id, reserved_at, status, table_id")
+      .select("id, restaurant_id, guest_id, reserved_at, party_size, status, table_id, confirmation_code, guest_full_name, guest_email, guest_phone")
       .eq("id", reservationId)
       .maybeSingle<ReservationRow>();
     if (reservationError) return json({ error: reservationError.message }, 400);
@@ -78,10 +100,10 @@ Deno.serve(async (req: Request) => {
 
     const { data: guest, error: guestError } = await adminClient
       .from("guests")
-      .select("id")
+      .select("id, full_name, email, phone")
       .eq("id", reservation.guest_id)
       .eq("user_profile_id", profile.id)
-      .maybeSingle();
+      .maybeSingle<GuestRow>();
     if (guestError) return json({ error: guestError.message }, 400);
     if (!guest) return json({ error: "You can only cancel your own reservations" }, 403);
 
@@ -97,6 +119,46 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Past reservations cannot be cancelled" }, 400);
     }
 
+    const { data: restaurant } = await adminClient
+      .from("restaurants")
+      .select("name, timezone")
+      .eq("id", reservation.restaurant_id)
+      .maybeSingle<RestaurantRow>();
+    const restaurantName =
+      typeof restaurant?.name === "string" && restaurant.name.trim()
+        ? restaurant.name.trim()
+        : "the restaurant";
+    const guestName =
+      reservation.guest_full_name?.trim() ||
+      guest.full_name?.trim() ||
+      "there";
+    const guestEmail = reservation.guest_email?.trim() || guest.email?.trim() || null;
+    const guestPhone = reservation.guest_phone?.trim() || guest.phone?.trim() || null;
+    const dateLabel = formatReservationDate(
+      reservedAt,
+      restaurant?.timezone?.trim() || "America/Toronto",
+    );
+    const codeLine = reservation.confirmation_code?.trim()
+      ? ` Confirmation code: ${reservation.confirmation_code.trim()}.`
+      : "";
+
+    const sendCancellationNotice = async () => {
+      return await sendReservationNotification({
+        supabase: adminClient,
+        guestId: guest.id,
+        restaurantId: reservation.restaurant_id,
+        reservationId,
+        type: "reservation_cancellation",
+        email: guestEmail,
+        phone: guestPhone,
+        subject: `Your reservation at ${restaurantName} was cancelled`,
+        body:
+          `Hi ${guestName}, your reservation at ${restaurantName} for ${reservation.party_size} ` +
+          `${reservation.party_size === 1 ? "guest" : "guests"} on ${dateLabel} has been cancelled.` +
+          codeLine,
+      });
+    };
+
     const { error: updateError } = await adminClient
       .from("reservations")
       .update({
@@ -111,7 +173,14 @@ Deno.serve(async (req: Request) => {
       p_reservation_id: reservationId,
     });
     if (!rpcReleaseError) {
-      return json({ ok: true, reservation_id: reservationId, status: "cancelled" });
+      const notification = await sendCancellationNotice();
+      return json({
+        ok: true,
+        reservation_id: reservationId,
+        status: "cancelled",
+        notification_delivery: notification.status,
+        notification_delivery_channel: notification.channel,
+      });
     }
 
     const { data: assignedTables, error: assignedTablesError } = await adminClient
@@ -154,7 +223,14 @@ Deno.serve(async (req: Request) => {
       if (tableUpdateError) return json({ error: tableUpdateError.message }, 400);
     }
 
-    return json({ ok: true, reservation_id: reservationId, status: "cancelled" });
+    const notification = await sendCancellationNotice();
+    return json({
+      ok: true,
+      reservation_id: reservationId,
+      status: "cancelled",
+      notification_delivery: notification.status,
+      notification_delivery_channel: notification.channel,
+    });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);
   }

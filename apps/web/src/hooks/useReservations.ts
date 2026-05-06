@@ -9,6 +9,7 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import { matchesReservationSearch } from "@/lib/reservations/search";
 
 export type ReservationRow = {
   id: string;
@@ -147,20 +148,23 @@ export function useReservations(filters?: ReservationFilters) {
         };
       });
       if (filterSearch) {
-        const s = filterSearch.toLowerCase();
         rows = rows.filter(
           (r) =>
-            r.guests?.full_name?.toLowerCase().includes(s) ||
-            r.guest_full_name?.toLowerCase().includes(s) ||
-            r.guest_phone?.toLowerCase().includes(s) ||
-            r.guest_email?.toLowerCase().includes(s) ||
-            r.reservation_tables?.some((assignment) =>
-              assignment.tables?.label?.toLowerCase().includes(s) ||
-              assignment.tables?.table_number?.toLowerCase().includes(s),
-            ) ||
-            r.tables?.label?.toLowerCase().includes(s) ||
-            r.tables?.table_number?.toLowerCase().includes(s) ||
-            r.confirmation_code?.toLowerCase().includes(s),
+            matchesReservationSearch(filterSearch, [
+              r.guests?.full_name,
+              r.guest_full_name,
+              r.guest_phone,
+              r.guest_email,
+              r.guests?.phone,
+              r.guests?.email,
+              r.tables?.label,
+              r.tables?.table_number,
+              r.confirmation_code,
+              ...(r.reservation_tables?.flatMap((assignment) => [
+                assignment.tables?.label,
+                assignment.tables?.table_number,
+              ]) ?? []),
+            ]),
         );
       }
       setReservations(rows);

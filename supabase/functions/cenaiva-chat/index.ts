@@ -1,6 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import OpenAI from "npm:openai@4";
+import {
+  closureUnavailableMessage,
+  findClosedSpecialDayForDate,
+  localDateForDateTime,
+} from "../_shared/closures.ts";
 
 // Stripe is conditionally loaded — only if STRIPE_SECRET_KEY is configured.
 // Without it, payment tools run in test mode (mock responses, DB-only).
@@ -541,7 +546,7 @@ async function executeTool(
       // Fetch restaurant timezone so all slot times are in the correct local time
       const { data: restaurantRow } = await supabaseAdmin
         .from("restaurants")
-        .select("timezone, settings_json")
+        .select("timezone, settings_json, hours_json")
         .eq("id", restaurant_id)
         .single();
       const timezone = restaurantRow?.timezone || "UTC";
@@ -549,6 +554,14 @@ async function executeTool(
         typeof restaurantRow?.settings_json?.turnTimeMinutes === "number"
           ? restaurantRow.settings_json.turnTimeMinutes
           : null;
+      const closure = findClosedSpecialDayForDate(restaurantRow?.hours_json, dateOnly);
+      if (closure) {
+        return JSON.stringify({
+          slots: [],
+          unavailable_reason: "closed",
+          message: closureUnavailableMessage(closure),
+        });
+      }
 
       // Use a UTC noon anchor to get the correct day-of-week in the restaurant tz
       const anchorUTC = new Date(`${dateOnly}T12:00:00Z`);
@@ -690,6 +703,25 @@ async function executeTool(
       if (!date_time || !shift_id || !party_size) {
         return JSON.stringify({
           error: "date_time, shift_id, and party_size are required. Call check_availability first.",
+        });
+      }
+      const reservedAt = new Date(date_time);
+      if (Number.isNaN(reservedAt.getTime())) {
+        return JSON.stringify({ error: "date_time must be a valid ISO timestamp." });
+      }
+      const { data: restaurantCalendar } = await supabaseAdmin
+        .from("restaurants")
+        .select("timezone, hours_json")
+        .eq("id", restaurant_id)
+        .maybeSingle();
+      const localBookingDate = localDateForDateTime(reservedAt, restaurantCalendar?.timezone || "UTC");
+      const closure = localBookingDate
+        ? findClosedSpecialDayForDate(restaurantCalendar?.hours_json, localBookingDate)
+        : null;
+      if (closure) {
+        return JSON.stringify({
+          error: closureUnavailableMessage(closure),
+          unavailable_reason: "closed",
         });
       }
 

@@ -2,6 +2,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
+import {
+  closureUnavailableMessage,
+  findClosedSpecialDayForDate,
+  localDateForDateTime,
+} from "../_shared/closures.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -189,12 +194,22 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant } = await supabase
       .from("restaurants")
-      .select("id, name")
+      .select("id, name, timezone, hours_json")
       .eq("id", restaurantId)
       .maybeSingle();
     const restaurantName = typeof restaurant?.name === "string" && restaurant.name.trim()
       ? restaurant.name.trim()
       : "the restaurant";
+    const localBookingDate = localDateForDateTime(reservedAt, restaurant?.timezone || "UTC");
+    const closure = localBookingDate
+      ? findClosedSpecialDayForDate(restaurant?.hours_json, localBookingDate)
+      : null;
+    if (closure) {
+      return jsonResponse(
+        { error: closureUnavailableMessage(closure), unavailable_reason: "closed" },
+        409,
+      );
+    }
 
     const { data: floorCapacityData, error: floorCapacityError } = await supabase.rpc("restaurant_floor_capacity", {
       p_restaurant_id: restaurantId,
@@ -493,7 +508,24 @@ Deno.serve(async (req: Request) => {
     let confirmationChannel: "email" | "sms" | null = null;
     let confirmationStatus: "sent" | "skipped" | "failed" = "skipped";
 
-    if (guestEmail && resend) {
+    const smsToPhone = normalizeNorthAmericanPhone(guestPhone);
+    if (smsToPhone && twilioClient && twilioFromPhone) {
+      try {
+        await twilioClient.messages.create({
+          body: confirmationBody,
+          from: twilioFromPhone,
+          to: smsToPhone,
+        });
+        confirmationChannel = "sms";
+        confirmationStatus = "sent";
+      } catch (err) {
+        console.error("Reservation confirmation SMS failed", err);
+        confirmationChannel = "sms";
+        confirmationStatus = "failed";
+      }
+    }
+
+    if (confirmationStatus !== "sent" && guestEmail && resend) {
       try {
         await resend.emails.send({
           from: Deno.env.get("RESEND_FROM_EMAIL") ?? "Cenaiva <noreply@cenaiva.com>",
@@ -506,23 +538,6 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         console.error("Reservation confirmation email failed", err);
         confirmationChannel = "email";
-        confirmationStatus = "failed";
-      }
-    }
-
-    const smsToPhone = normalizeNorthAmericanPhone(guestPhone);
-    if (confirmationStatus !== "sent" && smsToPhone && twilioClient && twilioFromPhone) {
-      try {
-        await twilioClient.messages.create({
-          body: confirmationBody,
-          from: twilioFromPhone,
-          to: smsToPhone,
-        });
-        confirmationChannel = "sms";
-        confirmationStatus = "sent";
-      } catch (err) {
-        console.error("Reservation confirmation SMS failed", err);
-        confirmationChannel = "sms";
         confirmationStatus = "failed";
       }
     }

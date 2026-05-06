@@ -5,8 +5,10 @@ import { toast } from "sonner";
 import { format, parse, isValid } from "date-fns";
 import {
   Bell,
+  CalendarDays,
   CheckCircle2,
   CreditCard,
+  Pencil,
   Plus,
   Settings as SettingsIcon,
   Upload,
@@ -24,6 +26,7 @@ import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -179,6 +182,61 @@ function FieldRow({ label, hint, children }: { label: string; hint?: ReactNode; 
       <div>{children}</div>
     </div>
   );
+}
+
+type SpecialDayDateField = "start" | "end";
+
+function createSpecialDay(): RestaurantSpecialDay {
+  return {
+    id: crypto.randomUUID(),
+    date: "",
+    dateMode: "single",
+    startDate: "",
+    endDate: "",
+    label: "",
+    description: "",
+    closed: true,
+    from: "12:00 PM",
+    to: "10:00 PM",
+  };
+}
+
+function parseSpecialDate(value: string): Date | undefined {
+  if (!value) return undefined;
+  const parsed = parse(value, "yyyy-MM-dd", new Date());
+  return isValid(parsed) ? parsed : undefined;
+}
+
+function formatSpecialDateLabel(value: string): string {
+  const parsed = parseSpecialDate(value);
+  if (!parsed) return "";
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function specialDayStart(sd: RestaurantSpecialDay): string {
+  return sd.startDate || sd.date;
+}
+
+function specialDayEnd(sd: RestaurantSpecialDay): string {
+  return sd.endDate || specialDayStart(sd);
+}
+
+function specialDayUsesRange(sd: RestaurantSpecialDay): boolean {
+  const start = specialDayStart(sd);
+  const end = specialDayEnd(sd);
+  return sd.dateMode === "range" || Boolean(start && end && end !== start);
+}
+
+function formatSpecialDayRange(sd: RestaurantSpecialDay): string {
+  const start = specialDayStart(sd);
+  const end = specialDayEnd(sd);
+  if (!start) return "No date selected";
+  if (!end || end === start) return formatSpecialDateLabel(start);
+  return `${formatSpecialDateLabel(start)} to ${formatSpecialDateLabel(end)}`;
 }
 
 function normalizeTurnTime(value: string): number | null {
@@ -354,7 +412,12 @@ export default function SettingsPage() {
   // Hours
   const [hours, setHours] = useState<RestaurantDayHours[]>(defaultRestaurantHours);
   const [specialDays, setSpecialDays] = useState<RestaurantSpecialDay[]>([]);
-  const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
+  const [persistedSpecialDayIds, setPersistedSpecialDayIds] = useState<Set<string>>(() => new Set());
+  const [openSpecialDatePicker, setOpenSpecialDatePicker] = useState<{
+    id: string;
+    field: SpecialDayDateField;
+  } | null>(null);
+  const [specialDetailsId, setSpecialDetailsId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
   // Billing
@@ -474,6 +537,7 @@ export default function SettingsPage() {
         const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
         setSpecialDays(parsed.special);
+        setPersistedSpecialDayIds(new Set(parsed.special.map((s) => s.id)));
         setCurrentPlan(data.plan ?? null);
       });
   }, [
@@ -821,9 +885,103 @@ export default function SettingsPage() {
     setDraggingMediaKind(null);
   };
 
+  const [draftSpecialDay, setDraftSpecialDay] = useState<RestaurantSpecialDay | null>(null);
+
+  const activeSpecialDay = draftSpecialDay
+    ?? (specialDetailsId
+      ? specialDays.find((day) => day.id === specialDetailsId) ?? null
+      : null);
+
+  const addSpecialDay = () => {
+    setDraftSpecialDay(createSpecialDay());
+    setSpecialDetailsId(null);
+  };
+
+  const applyDateModeChange = (day: RestaurantSpecialDay, dateMode: RestaurantSpecialDay["dateMode"]) => {
+    const start = specialDayStart(day);
+    if (dateMode === "single") {
+      return { ...day, dateMode, endDate: start };
+    }
+    return { ...day, dateMode, endDate: specialDayEnd(day) || start };
+  };
+
+  const applyDateChange = (day: RestaurantSpecialDay, field: SpecialDayDateField, value: Date | undefined) => {
+    const nextDate = value ? format(value, "yyyy-MM-dd") : "";
+    if (field === "start") {
+      let nextEndDate = "";
+      if (nextDate) {
+        const currentEnd = specialDayEnd(day);
+        nextEndDate = day.dateMode === "range" && currentEnd >= nextDate ? currentEnd : nextDate;
+      }
+      return { ...day, date: nextDate, startDate: nextDate, endDate: nextEndDate };
+    }
+    const currentStart = specialDayStart(day) || nextDate;
+    const nextEndDate = nextDate && currentStart && nextDate < currentStart ? currentStart : nextDate;
+    return {
+      ...day,
+      date: currentStart,
+      startDate: currentStart,
+      endDate: nextEndDate || currentStart,
+    };
+  };
+
+  const updateSpecialDay = (id: string, patch: Partial<RestaurantSpecialDay>) => {
+    if (draftSpecialDay?.id === id) {
+      setDraftSpecialDay({ ...draftSpecialDay, ...patch });
+      return;
+    }
+    setSpecialDays((days) => days.map((day) => (day.id === id ? { ...day, ...patch } : day)));
+  };
+
+  const setSpecialDayDateMode = (id: string, dateMode: RestaurantSpecialDay["dateMode"]) => {
+    if (draftSpecialDay?.id === id) {
+      setDraftSpecialDay(applyDateModeChange(draftSpecialDay, dateMode));
+      return;
+    }
+    setSpecialDays((days) => days.map((day) => (day.id === id ? applyDateModeChange(day, dateMode) : day)));
+  };
+
+  const setSpecialDayDate = (id: string, field: SpecialDayDateField, value: Date | undefined) => {
+    if (draftSpecialDay?.id === id) {
+      setDraftSpecialDay(applyDateChange(draftSpecialDay, field, value));
+    } else {
+      setSpecialDays((days) => days.map((day) => (day.id === id ? applyDateChange(day, field, value) : day)));
+    }
+    if (value) setOpenSpecialDatePicker(null);
+  };
+
+  const closeSpecialDayDialog = () => {
+    setDraftSpecialDay(null);
+    setSpecialDetailsId(null);
+    setOpenSpecialDatePicker(null);
+  };
+
+  const commitSpecialDayDialog = () => {
+    if (draftSpecialDay) {
+      const start = specialDayStart(draftSpecialDay);
+      const end = specialDayEnd(draftSpecialDay);
+      if (!start || !end || end < start) {
+        toast.error("Choose a valid start and end date for this closure or holiday.");
+        return;
+      }
+      setSpecialDays((days) => [...days, draftSpecialDay]);
+    }
+    closeSpecialDayDialog();
+  };
+
   const saveHours = async () => {
     if (!selectedRestaurant) return;
     if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
+    const invalidSpecialDay = specialDays.find((day) => {
+      const start = specialDayStart(day);
+      const end = specialDayEnd(day);
+      return !start || !end || end < start;
+    });
+    if (invalidSpecialDay) {
+      setSpecialDetailsId(invalidSpecialDay.id);
+      toast.error("Choose a valid start and end date for each closure or holiday.");
+      return;
+    }
     setSavingHours(true);
     const client = getSupabaseBrowserClient();
     const hoursJson = restaurantHoursToJson(hours, specialDays);
@@ -895,6 +1053,7 @@ export default function SettingsPage() {
     }
 
     refreshRestaurants();
+    setPersistedSpecialDayIds(new Set(specialDays.map((s) => s.id)));
     setSavingHours(false);
     toast.success(t("dashboard.settings.saved"));
   };
@@ -1457,12 +1616,7 @@ export default function SettingsPage() {
                     variant="outline"
                     size="sm"
                     className="gap-1.5"
-                    onClick={() =>
-                      setSpecialDays((days) => [
-                        ...days,
-                        { id: crypto.randomUUID(), date: "", label: "", closed: true, from: "12:00 PM", to: "10:00 PM" },
-                      ])
-                    }
+                    onClick={addSpecialDay}
                   >
                     <Plus className="size-3.5" /> Add
                   </Button>
@@ -1473,62 +1627,319 @@ export default function SettingsPage() {
                       No exceptions yet.
                     </p>
                   )}
-                  {specialDays.map((sd) => (
-                    <div
-                      key={sd.id}
-                      className="relative flex items-start gap-3 rounded-lg bg-bg-elevated/40 px-4 py-3"
-                    >
-                      <span className={cn("absolute inset-y-2 left-0 w-[3px] rounded-r", sd.closed ? "bg-danger" : "bg-warning")} />
-                      <div className="flex-1 pl-3">
-                        <Popover open={openPopoverId === sd.id} onOpenChange={(o) => setOpenPopoverId(o ? sd.id : null)}>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="text-sm font-medium text-text-primary transition-colors hover:text-gold"
-                            >
-                              {sd.date
-                                ? new Date(`${sd.date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" })
-                                : "Pick a date"}
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0">
-                            <Calendar
-                              mode="single"
-                              required={false}
-                              selected={(() => {
-                                if (!sd.date) return undefined;
-                                const d = parse(sd.date, "yyyy-MM-dd", new Date());
-                                return isValid(d) ? d : undefined;
-                              })()}
-                              onSelect={(d) => {
-                                setSpecialDays((days) =>
-                                  days.map((s) => s.id === sd.id ? { ...s, date: d ? format(d, "yyyy-MM-dd") : "" } : s),
-                                );
-                                if (d) setOpenPopoverId(null);
-                              }}
-                              className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                            />
-                          </PopoverContent>
-                        </Popover>
-                        <input
-                          type="text"
-                          value={sd.label}
-                          onChange={(e) => setSpecialDays((days) => days.map((d) => d.id === sd.id ? { ...d, label: e.target.value } : d))}
-                          placeholder="Closed for private buyout · Westin Group"
-                          className="mt-0.5 block w-full bg-transparent text-xs text-text-muted outline-none placeholder:text-text-muted"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSpecialDays((days) => days.filter((d) => d.id !== sd.id))}
-                        className="text-text-muted transition-colors hover:text-danger"
+                  {specialDays.map((sd) => {
+                    const startDate = specialDayStart(sd);
+                    const endDate = specialDayEnd(sd);
+                    const usesRange = specialDayUsesRange(sd);
+                    const lockDateMode = persistedSpecialDayIds.has(sd.id);
+                    return (
+                      <div
+                        key={sd.id}
+                        className="relative flex flex-col gap-3 rounded-lg bg-bg-elevated/40 px-4 py-3 sm:flex-row sm:items-start"
                       >
-                        <X className="size-4" />
-                      </button>
-                    </div>
-                  ))}
+                        <span className={cn("absolute inset-y-2 left-0 w-[3px] rounded-r", sd.closed ? "bg-danger" : "bg-warning")} />
+                        <div className="min-w-0 flex-1 pl-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="inline-flex rounded-lg border border-border bg-bg-surface p-0.5">
+                              {(["single", "range"] as const).map((mode) => {
+                                const active = mode === "range" ? usesRange : !usesRange;
+                                const disabled = lockDateMode && !active;
+                                return (
+                                  <button
+                                    key={mode}
+                                    type="button"
+                                    disabled={disabled}
+                                    aria-disabled={disabled}
+                                    title={disabled ? "Date type is locked once saved" : undefined}
+                                    className={cn(
+                                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                                      active ? "bg-gold text-bg-base" : "text-text-muted hover:text-white",
+                                      disabled && "cursor-not-allowed opacity-40 hover:text-text-muted",
+                                    )}
+                                    onClick={() => {
+                                      if (disabled) return;
+                                      setSpecialDayDateMode(sd.id, mode);
+                                    }}
+                                  >
+                                    {mode === "range" ? "Date range" : "Single day"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <Popover
+                              open={openSpecialDatePicker?.id === sd.id && openSpecialDatePicker.field === "start"}
+                              onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: sd.id, field: "start" } : null)}
+                            >
+                              <PopoverTrigger asChild>
+                                <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+                                  <CalendarDays className="size-3.5" />
+                                  {startDate ? formatSpecialDateLabel(startDate) : "Start date"}
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0">
+                                <Calendar
+                                  mode="single"
+                                  required={false}
+                                  selected={parseSpecialDate(startDate)}
+                                  onSelect={(date) => setSpecialDayDate(sd.id, "start", date)}
+                                  className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                                />
+                              </PopoverContent>
+                            </Popover>
+                            {usesRange && (
+                              <Popover
+                                open={openSpecialDatePicker?.id === sd.id && openSpecialDatePicker.field === "end"}
+                                onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: sd.id, field: "end" } : null)}
+                              >
+                                <PopoverTrigger asChild>
+                                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+                                    <CalendarDays className="size-3.5" />
+                                    {endDate ? formatSpecialDateLabel(endDate) : "End date"}
+                                  </Button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0">
+                                  <Calendar
+                                    mode="single"
+                                    required={false}
+                                    selected={parseSpecialDate(endDate)}
+                                    disabled={(date) => Boolean(startDate) && format(date, "yyyy-MM-dd") < startDate}
+                                    onSelect={(date) => setSpecialDayDate(sd.id, "end", date)}
+                                    className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                                  />
+                                </PopoverContent>
+                              </Popover>
+                            )}
+                            <span className={cn(
+                              "rounded-full px-2 py-1 text-[11px] font-medium",
+                              sd.closed ? "bg-danger/10 text-danger" : "bg-warning/10 text-warning",
+                            )}>
+                              {sd.closed ? "Closed" : "Custom hours"}
+                            </span>
+                          </div>
+                          <div className="mt-2 min-w-0">
+                            <p className="truncate text-sm font-medium text-text-primary">
+                              {sd.label.trim() || (sd.closed ? "Closure or holiday" : "Hours exception")}
+                            </p>
+                            <p className="mt-0.5 text-xs text-text-muted">{formatSpecialDayRange(sd)}</p>
+                            {sd.description.trim() && (
+                              <p className="mt-1 line-clamp-2 text-xs text-text-muted">{sd.description.trim()}</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 sm:pl-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 gap-1.5 text-xs"
+                            onClick={() => setSpecialDetailsId(sd.id)}
+                          >
+                            <Pencil className="size-3.5" />
+                            Details
+                          </Button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSpecialDays((days) => days.filter((day) => day.id !== sd.id));
+                              if (specialDetailsId === sd.id) setSpecialDetailsId(null);
+                            }}
+                            className="text-text-muted transition-colors hover:text-danger"
+                            aria-label="Remove closure"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </Card>
+
+              <Dialog open={Boolean(activeSpecialDay)} onOpenChange={(open) => { if (!open) closeSpecialDayDialog(); }}>
+                <DialogContent
+                  className="max-w-xl border-gold/30 bg-bg-surface p-0 text-text-primary"
+                  showCloseButton={false}
+                  onPointerDownOutside={(event) => {
+                    const target = event.target as Element | null;
+                    if (target?.closest('[data-slot="popover-content"], [data-radix-popper-content-wrapper]')) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onInteractOutside={(event) => {
+                    const target = event.target as Element | null;
+                    if (target?.closest('[data-slot="popover-content"], [data-radix-popper-content-wrapper]')) {
+                      event.preventDefault();
+                    }
+                  }}
+                >
+                  <DialogHeader className="border-b border-border px-6 py-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">Calendar exception</p>
+                        <DialogTitle className="mt-2 font-serif text-2xl font-normal text-white">
+                          Name and description
+                        </DialogTitle>
+                      </div>
+                      <button type="button" className="text-text-muted hover:text-white" onClick={closeSpecialDayDialog}>
+                        <X className="size-5" />
+                      </button>
+                    </div>
+                  </DialogHeader>
+                  {activeSpecialDay && (() => {
+                    const startDate = specialDayStart(activeSpecialDay);
+                    const endDate = specialDayEnd(activeSpecialDay);
+                    const usesRange = specialDayUsesRange(activeSpecialDay);
+                    const lockDateMode = persistedSpecialDayIds.has(activeSpecialDay.id);
+                    return (
+                      <div className="space-y-5 px-6 py-5">
+                        <div>
+                          <p className="text-xs font-medium text-text-secondary">Dates</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <div className="inline-flex rounded-lg border border-border bg-bg-surface p-0.5">
+                              {(["single", "range"] as const).map((mode) => {
+                                const active = mode === "range" ? usesRange : !usesRange;
+                                const disabled = lockDateMode && !active;
+                                return (
+                                  <button
+                                    key={mode}
+                                    type="button"
+                                    disabled={disabled}
+                                    aria-disabled={disabled}
+                                    title={disabled ? "Date type is locked once saved" : undefined}
+                                    className={cn(
+                                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                                      active ? "bg-gold text-bg-base" : "text-text-muted hover:text-white",
+                                      disabled && "cursor-not-allowed opacity-40 hover:text-text-muted",
+                                    )}
+                                    onClick={() => {
+                                      if (disabled) return;
+                                      setSpecialDayDateMode(activeSpecialDay.id, mode);
+                                    }}
+                                  >
+                                    {mode === "range" ? "Date range" : "Single day"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <Popover
+                              modal
+                              open={openSpecialDatePicker?.id === activeSpecialDay.id && openSpecialDatePicker.field === "start"}
+                              onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: activeSpecialDay.id, field: "start" } : null)}
+                            >
+                              <PopoverTrigger asChild>
+                                <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+                                  <CalendarDays className="size-3.5" />
+                                  {startDate ? formatSpecialDateLabel(startDate) : "Start date"}
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent
+                                align="start"
+                                className="z-[60] w-auto border-border bg-bg-elevated p-0"
+                                onOpenAutoFocus={(event) => event.preventDefault()}
+                              >
+                                <Calendar
+                                  mode="single"
+                                  required={false}
+                                  selected={parseSpecialDate(startDate)}
+                                  onSelect={(date) => setSpecialDayDate(activeSpecialDay.id, "start", date)}
+                                  className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                                />
+                              </PopoverContent>
+                            </Popover>
+                            {usesRange && (
+                              <Popover
+                                modal
+                                open={openSpecialDatePicker?.id === activeSpecialDay.id && openSpecialDatePicker.field === "end"}
+                                onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: activeSpecialDay.id, field: "end" } : null)}
+                              >
+                                <PopoverTrigger asChild>
+                                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+                                    <CalendarDays className="size-3.5" />
+                                    {endDate ? formatSpecialDateLabel(endDate) : "End date"}
+                                  </Button>
+                                </PopoverTrigger>
+                                <PopoverContent
+                                  align="start"
+                                  className="z-[60] w-auto border-border bg-bg-elevated p-0"
+                                  onOpenAutoFocus={(event) => event.preventDefault()}
+                                >
+                                  <Calendar
+                                    mode="single"
+                                    required={false}
+                                    selected={parseSpecialDate(endDate)}
+                                    disabled={(date) => Boolean(startDate) && format(date, "yyyy-MM-dd") < startDate}
+                                    onSelect={(date) => setSpecialDayDate(activeSpecialDay.id, "end", date)}
+                                    className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
+                                  />
+                                </PopoverContent>
+                              </Popover>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-text-secondary" htmlFor="special-day-name">
+                            Name
+                          </label>
+                          <Input
+                            id="special-day-name"
+                            value={activeSpecialDay.label}
+                            onChange={(event) => updateSpecialDay(activeSpecialDay.id, { label: event.target.value })}
+                            placeholder="Renovations, Christmas, private buyout"
+                            className="mt-2"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-text-secondary" htmlFor="special-day-description">
+                            Description
+                          </label>
+                          <Textarea
+                            id="special-day-description"
+                            value={activeSpecialDay.description}
+                            onChange={(event) => updateSpecialDay(activeSpecialDay.id, { description: event.target.value })}
+                            placeholder="Optional internal note"
+                            className="mt-2 min-h-24"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
+                          <div>
+                            <p className="text-sm font-medium text-text-primary">Closed all day</p>
+                            <p className="mt-0.5 text-xs text-text-muted">{formatSpecialDayRange(activeSpecialDay)}</p>
+                          </div>
+                          <Switch
+                            checked={activeSpecialDay.closed}
+                            onCheckedChange={(closed) => updateSpecialDay(activeSpecialDay.id, { closed })}
+                          />
+                        </div>
+                        {!activeSpecialDay.closed && (
+                          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
+                            <span className="text-xs font-medium text-text-secondary">Custom hours</span>
+                            <DashboardTimeWheelPicker
+                              value={activeSpecialDay.from}
+                              onChange={(from) => updateSpecialDay(activeSpecialDay.id, { from })}
+                              valueFormat="12h"
+                              ariaLabel="Exception opening time"
+                              helperLabel="Opening time"
+                              doneLabel="Done"
+                            />
+                            <span className="text-xs text-text-muted">to</span>
+                            <DashboardTimeWheelPicker
+                              value={activeSpecialDay.to}
+                              onChange={(to) => updateSpecialDay(activeSpecialDay.id, { to })}
+                              valueFormat="12h"
+                              ariaLabel="Exception closing time"
+                              helperLabel="Closing time"
+                              doneLabel="Done"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  <DialogFooter className="border-t border-border bg-bg-surface px-6 py-4">
+                    <Button type="button" onClick={commitSpecialDayDialog}>Done</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
 
               <div className="flex justify-end">
                 <Button disabled={savingHours || !selectedRestaurant} onClick={() => void saveHours()}>

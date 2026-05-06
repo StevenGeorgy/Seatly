@@ -46,6 +46,7 @@ import {
   reservationDisplayStatusKey,
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
+import { matchesReservationSearch } from "@/lib/reservations/search";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -242,6 +243,7 @@ type HostQuickPanelProps = {
 type TableDayReservation = {
   id: string;
   guestName: string;
+  confirmationCode: string | null;
   partySize: number;
   reservedAt: string;
   durationMinutes: number | null;
@@ -264,10 +266,11 @@ type TimelineReservation = {
   durationMinutes: number;
   startsAt: number;
   status: ReservationDisplayStatus;
+  confirmationCode: string | null;
   tableIds: string[];
   primaryTableId: string;
   tableLabel: string;
-  searchText: string;
+  searchValues: string[];
 };
 
 type TimelineSelection = {
@@ -501,9 +504,7 @@ function toTimelineReservation(
   const dateKey = dateInputValue(reservedAt);
   const timeLabel = serviceTimeLabel(reservedAt);
   const durationMinutes = row.duration_minutes ?? fallbackTurnMinutes;
-  const contact = [row.guest_phone, row.guest_email, row.guests?.phone, row.guests?.email, row.confirmation_code]
-    .filter(Boolean)
-    .join(" ");
+  const confirmationCode = row.confirmation_code?.trim() || null;
   return {
     id: row.id,
     row,
@@ -516,10 +517,19 @@ function toTimelineReservation(
     durationMinutes,
     startsAt: reservationBoardMinutes(reservedAt),
     status: reservationDisplayStatus(row, new Date(), fallbackTurnMinutes),
+    confirmationCode,
     tableIds,
     primaryTableId: tableIds[0] ?? UNASSIGNED_TIMELINE_TABLE_ID,
     tableLabel,
-    searchText: `${guestName} ${contact} ${tableLabel}`.toLowerCase(),
+    searchValues: [
+      guestName,
+      row.guest_phone,
+      row.guest_email,
+      row.guests?.phone,
+      row.guests?.email,
+      confirmationCode,
+      tableLabel,
+    ].filter((value): value is string => Boolean(value)),
   };
 }
 
@@ -1575,6 +1585,11 @@ function TableCard({
                             Party of {reservation.partySize}
                             {reservation.tableCount > 1 ? ` · ${reservation.tableCount} tables` : ""}
                           </p>
+                          {reservation.confirmationCode ? (
+                            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-gold/80">
+                              {reservation.confirmationCode}
+                            </p>
+                          ) : null}
                         </div>
                         <div className="shrink-0 text-right">
                           <p className="font-mono text-[11px] text-gold">
@@ -1947,7 +1962,6 @@ function FloorTimelinePanel({
 }) {
   const { t } = useTranslation();
   const visibleDateKeys = mode === "day" ? [date] : weekDateValues(date);
-  const searchValue = search.trim().toLowerCase();
   const filterItems = ([
     { id: "all", label: t("dashboard.floorPlan.filterAll") },
     { id: "current", label: t("dashboard.floorPlan.filterCurrent") },
@@ -1962,7 +1976,7 @@ function FloorTimelinePanel({
   const visibleReservations = reservations
     .filter((reservation) => visibleDateKeys.includes(reservation.dateKey))
     .filter((reservation) => matchesFloorReservationFilter(reservation.status, filter))
-    .filter((reservation) => !searchValue || reservation.searchText.includes(searchValue))
+    .filter((reservation) => matchesReservationSearch(search, reservation.searchValues))
     .sort((a, b) => a.startsAt - b.startsAt || a.tableLabel.localeCompare(b.tableLabel, undefined, { numeric: true }));
   const groupedByTable = visibleReservations.reduce<Map<string, { tableId: string; tableLabel: string; reservations: TimelineReservation[] }>>(
     (map, reservation) => {
@@ -2131,13 +2145,18 @@ function FloorTimelinePanel({
                         type="button"
                         onClick={() => onSelect({ reservationId: reservation.id, tableId: table.tableId, dateKey: reservation.dateKey })}
                         className={cn(
-                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20",
+                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20 transition-all duration-150 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-gold/10 focus-visible:-translate-y-0.5 focus-visible:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/45",
                           timelineBlockClasses(reservation.status),
                           isSelected ? "ring-2 ring-gold/60" : "",
                         )}
                         style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
                       >
-                        <span className="truncate">{reservation.guestName} · {reservation.timeLabel}</span>
+                        <span className="block truncate">{reservation.guestName} · {reservation.timeLabel}</span>
+                        {reservation.confirmationCode ? (
+                          <span className="block truncate font-mono text-[9px] uppercase opacity-80">
+                            {reservation.confirmationCode}
+                          </span>
+                        ) : null}
                       </button>
                     );
                   })}
@@ -2189,14 +2208,14 @@ function FloorTimelinePanel({
                           type="button"
                           onClick={() => onSelect({ reservationId: reservation.id, tableId: table.tableId, dateKey })}
                           className={cn(
-                            "block w-full rounded-md border px-2 py-1.5 text-left text-[11px] font-medium",
+                            "block w-full rounded-md border px-2 py-1.5 text-left text-[11px] font-medium transition-all duration-150 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-sm hover:shadow-gold/10 focus-visible:-translate-y-0.5 focus-visible:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/45",
                             timelineBlockClasses(reservation.status),
                             selected?.reservationId === reservation.id ? "ring-2 ring-gold/60" : "",
                           )}
                         >
                           <span className="block truncate">{reservation.timeLabel} · {reservation.guestName}</span>
                           <span className="mt-0.5 block truncate text-[10px] opacity-80">
-                            {t("dashboard.floorPlan.timelineParty", { count: reservation.partySize })}
+                            {reservation.confirmationCode ?? t("dashboard.floorPlan.timelineParty", { count: reservation.partySize })}
                           </span>
                         </button>
                       ))}
@@ -2326,6 +2345,11 @@ function ReservationRailCard({
                   </div>
                 </div>
                 <p className="mt-2 text-[11px] text-text-muted">{reservation.dateLabel}</p>
+                {reservation.confirmationCode ? (
+                  <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-gold/80">
+                    {reservation.confirmationCode}
+                  </p>
+                ) : null}
               </button>
             );
           })
@@ -2538,14 +2562,13 @@ export default function FloorPlanPage() {
   );
 
   const selectedTimelineRows = useMemo(() => {
-    const searchValue = reservationSearch.trim().toLowerCase();
     return visibleTimelineReservations
       .filter((reservation) => {
         const matchesContext =
           (!timelineSelection?.dateKey || reservation.dateKey === timelineSelection.dateKey) &&
           (!timelineSelection?.tableId || reservation.primaryTableId === timelineSelection.tableId) &&
           (!timelineSelection?.reservationId || reservation.id === timelineSelection.reservationId);
-        const matchesSearch = !searchValue || reservation.searchText.includes(searchValue);
+        const matchesSearch = matchesReservationSearch(reservationSearch, reservation.searchValues);
         return matchesContext && matchesSearch;
       })
       .sort((a, b) => a.dateKey.localeCompare(b.dateKey) || a.startsAt - b.startsAt || a.tableLabel.localeCompare(b.tableLabel, undefined, { numeric: true }));
@@ -2564,6 +2587,7 @@ export default function FloorPlanPage() {
         const details: TableDayReservation = {
           id: reservation.id,
           guestName: reservationGuestName(reservation),
+          confirmationCode: reservation.confirmation_code?.trim() || null,
           partySize: reservation.party_size,
           reservedAt: reservation.reserved_at,
           durationMinutes: reservation.duration_minutes,

@@ -16,10 +16,20 @@ export interface AvailabilitySlot {
   floor_capacity?: number;
 }
 
+export type AvailabilityUnavailableReason =
+  | "closed"
+  | "no_shifts"
+  | "party_size_out_of_range"
+  | "fully_booked"
+  | "no_future_slots"
+  | "no_slots";
+
 interface AvailabilityResult {
   slots: AvailabilitySlot[];
   floorCapacity: number | null;
   error: string | null;
+  unavailableReason: AvailabilityUnavailableReason | null;
+  message: string | null;
 }
 
 const AVAILABILITY_CACHE_TTL_MS = 45_000;
@@ -43,6 +53,8 @@ function cloneAvailabilityResult(result: AvailabilityResult): AvailabilityResult
       .map((slot) => ({ ...slot, table_ids: slot.table_ids ? [...slot.table_ids] : undefined })),
     floorCapacity: result.floorCapacity,
     error: result.error,
+    unavailableReason: result.unavailableReason,
+    message: result.message,
   };
 }
 
@@ -67,17 +79,25 @@ async function fetchAvailabilityFromNetwork(
     },
   });
 
-  const json = await res.json() as { slots?: AvailabilitySlot[]; floor_capacity?: number; error?: string };
+  const json = await res.json() as {
+    slots?: AvailabilitySlot[];
+    floor_capacity?: number;
+    error?: string;
+    unavailable_reason?: AvailabilityUnavailableReason | null;
+    message?: string | null;
+  };
   const nextFloorCapacity =
     typeof json.floor_capacity === "number"
       ? json.floor_capacity
       : json.slots?.find((slot) => typeof slot.floor_capacity === "number")?.floor_capacity ?? null;
+  const unavailableReason = json.unavailable_reason ?? null;
+  const message = typeof json.message === "string" ? json.message : null;
 
   if (json.error) {
-    return { slots: [], floorCapacity: nextFloorCapacity, error: json.error };
+    return { slots: [], floorCapacity: nextFloorCapacity, error: json.error, unavailableReason, message };
   }
 
-  return { slots: json.slots ?? [], floorCapacity: nextFloorCapacity, error: null };
+  return { slots: json.slots ?? [], floorCapacity: nextFloorCapacity, error: null, unavailableReason, message };
 }
 
 export async function fetchAvailabilitySlots(
@@ -117,33 +137,36 @@ export function useAvailability() {
   const [floorCapacity, setFloorCapacity] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unavailableReason, setUnavailableReason] = useState<AvailabilityUnavailableReason | null>(null);
+  const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
 
   const fetchSlots = useCallback(
     async (restaurantId: string, date: string, partySize: number): Promise<AvailabilityResult> => {
       setLoading(true);
       setError(null);
       setSlots([]);
+      setUnavailableReason(null);
+      setUnavailableMessage(null);
 
       try {
         const result = await fetchAvailabilitySlots(restaurantId, date, partySize);
         setFloorCapacity(result.floorCapacity);
+        setUnavailableReason(result.unavailableReason);
+        setUnavailableMessage(result.message);
         if (result.error) {
           setError(result.error);
           return result;
-        } else {
-          setSlots(result.slots);
-          return result;
         }
+        setSlots(result.slots);
+        return result;
       } catch (err) {
         const message = String(err);
         setError(message);
         setFloorCapacity(null);
-        return { slots: [], floorCapacity: null, error: message };
+        return { slots: [], floorCapacity: null, error: message, unavailableReason: null, message: null };
       } finally {
         setLoading(false);
       }
-
-      return { slots: [], floorCapacity: null, error: null };
     },
     [],
   );
@@ -152,7 +175,18 @@ export function useAvailability() {
     setSlots([]);
     setFloorCapacity(null);
     setError(null);
+    setUnavailableReason(null);
+    setUnavailableMessage(null);
   }, []);
 
-  return { slots, floorCapacity, loading, error, fetchSlots, clearSlots };
+  return {
+    slots,
+    floorCapacity,
+    loading,
+    error,
+    unavailableReason,
+    unavailableMessage,
+    fetchSlots,
+    clearSlots,
+  };
 }

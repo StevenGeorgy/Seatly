@@ -1,6 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { closureUnavailableMessage, findClosedSpecialDayForDate } from "../_shared/closures.ts";
 import { localDayOfWeek, localToUTC } from "../_shared/time.ts";
+import {
+  formatReservationDate,
+  sendReservationNotification,
+} from "../_shared/reservation-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -28,6 +33,28 @@ type ReservationRow = {
   status: string | null;
   special_request: string | null;
   internal_notes: string | null;
+  confirmation_code: string | null;
+  guest_full_name: string | null;
+  guest_email: string | null;
+  guest_phone: string | null;
+};
+
+type GuestRow = {
+  id: string;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+};
+
+type RestaurantSettings = {
+  turnTimeMinutes?: number | null;
+};
+
+type RestaurantRow = {
+  name: string | null;
+  timezone: string | null;
+  hours_json: unknown;
+  settings_json: RestaurantSettings | null;
 };
 
 type ShiftRow = {
@@ -128,7 +155,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
-      .select("id, restaurant_id, guest_id, reserved_at, party_size, status, special_request, internal_notes")
+      .select("id, restaurant_id, guest_id, reserved_at, party_size, status, special_request, internal_notes, confirmation_code, guest_full_name, guest_email, guest_phone")
       .eq("id", reservationId)
       .maybeSingle<ReservationRow>();
     if (reservationError) return json({ error: reservationError.message }, 400);
@@ -136,10 +163,10 @@ Deno.serve(async (req: Request) => {
 
     const { data: guest, error: guestError } = await adminClient
       .from("guests")
-      .select("id")
+      .select("id, full_name, email, phone")
       .eq("id", reservation.guest_id)
       .eq("user_profile_id", profile.id)
-      .maybeSingle();
+      .maybeSingle<GuestRow>();
     if (guestError) return json({ error: guestError.message }, 400);
     if (!guest) return json({ error: "You can only modify your own reservations" }, 403);
 
@@ -152,19 +179,28 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")
-      .select("timezone, settings_json")
+      .select("name, timezone, hours_json, settings_json")
       .eq("id", reservation.restaurant_id)
-      .maybeSingle();
+      .maybeSingle<RestaurantRow>();
     if (restaurantError) return json({ error: restaurantError.message }, 400);
 
     const timezone =
       typeof restaurant?.timezone === "string" && restaurant.timezone.trim()
         ? restaurant.timezone
         : "America/Toronto";
+    const restaurantName =
+      typeof restaurant?.name === "string" && restaurant.name.trim()
+        ? restaurant.name.trim()
+        : "the restaurant";
+    const previousDateLabel = formatReservationDate(new Date(reservation.reserved_at), timezone);
     const reservedAtIso = localToUTC(date, time, timezone);
     const reservedAt = new Date(reservedAtIso);
     if (Number.isNaN(reservedAt.getTime()) || reservedAt.getTime() < Date.now()) {
       return json({ error: "Reservation time must be in the future" }, 400);
+    }
+    const closure = findClosedSpecialDayForDate(restaurant?.hours_json, date);
+    if (closure) {
+      return json({ error: closureUnavailableMessage(closure), unavailable_reason: "closed" }, 409);
     }
 
     const { data: floorCapacityData } = await adminClient.rpc("restaurant_floor_capacity", {
@@ -270,6 +306,31 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Reservation updated, but tables could not be reassigned" }, 409);
     }
 
+    const guestName =
+      reservation.guest_full_name?.trim() ||
+      guest.full_name?.trim() ||
+      "there";
+    const guestEmail = reservation.guest_email?.trim() || guest.email?.trim() || null;
+    const guestPhone = reservation.guest_phone?.trim() || guest.phone?.trim() || null;
+    const nextDateLabel = formatReservationDate(reservedAt, timezone);
+    const codeLine = reservation.confirmation_code?.trim()
+      ? ` Confirmation code: ${reservation.confirmation_code.trim()}.`
+      : "";
+    const notification = await sendReservationNotification({
+      supabase: adminClient,
+      guestId: guest.id,
+      restaurantId: reservation.restaurant_id,
+      reservationId,
+      type: "reservation_modification",
+      email: guestEmail,
+      phone: guestPhone,
+      subject: `Your reservation at ${restaurantName} was updated`,
+      body:
+        `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
+        `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
+        codeLine,
+    });
+
     return json({
       ok: true,
       reservation_id: reservationId,
@@ -277,6 +338,8 @@ Deno.serve(async (req: Request) => {
       party_size: partySize,
       special_request: specialRequest || null,
       table_ids: nextTableIds,
+      notification_delivery: notification.status,
+      notification_delivery_channel: notification.channel,
     });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);

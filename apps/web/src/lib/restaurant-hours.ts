@@ -31,7 +31,11 @@ export type RestaurantDayHours = {
 export type RestaurantSpecialDay = {
   id: string;
   date: string;
+  dateMode: "single" | "range";
+  startDate: string;
+  endDate: string;
   label: string;
+  description: string;
   closed: boolean;
   from: string;
   to: string;
@@ -88,14 +92,25 @@ export function parseRestaurantHoursJson(
   const rawSpecial = Array.isArray(json.special) ? json.special : [];
   const special: RestaurantSpecialDay[] = rawSpecial
     .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-    .map((entry) => ({
-      id: String(entry.id ?? crypto.randomUUID()),
-      date: String(entry.date ?? ""),
-      label: String(entry.label ?? ""),
-      closed: Boolean(entry.closed),
-      from: String(entry.from ?? "12:00 PM"),
-      to: String(entry.to ?? "10:00 PM"),
-    }));
+    .map((entry) => {
+      const startDate = String(entry.startDate ?? entry.start_date ?? entry.date ?? "");
+      const endDate = String(entry.endDate ?? entry.end_date ?? entry.date ?? startDate);
+      const dateMode = entry.dateMode === "range" || entry.date_mode === "range" || (startDate && endDate && endDate !== startDate)
+        ? "range"
+        : "single";
+      return {
+        id: String(entry.id ?? crypto.randomUUID()),
+        date: String(entry.date ?? startDate),
+        dateMode,
+        startDate,
+        endDate: endDate || startDate,
+        label: String(entry.label ?? entry.name ?? ""),
+        description: String(entry.description ?? ""),
+        closed: Boolean(entry.closed),
+        from: String(entry.from ?? "12:00 PM"),
+        to: String(entry.to ?? "10:00 PM"),
+      };
+    });
 
   return { regular, special };
 }
@@ -111,14 +126,23 @@ export function restaurantHoursToJson(
     ]),
   );
   if (special.length > 0) {
-    result.special = special.map(({ id, date, label, closed, from, to }) => ({
-      id,
-      date,
-      label,
-      closed,
-      from,
-      to,
-    }));
+    result.special = special.flatMap(({ id, date, dateMode, startDate, endDate, label, description, closed, from, to }) => {
+      const normalizedStart = startDate || date;
+      if (!normalizedStart) return [];
+      const normalizedEnd = dateMode === "range" ? endDate || normalizedStart : normalizedStart;
+      return [{
+        id,
+        date: normalizedStart,
+        dateMode,
+        startDate: normalizedStart,
+        endDate: normalizedEnd,
+        label,
+        description,
+        closed,
+        from,
+        to,
+      }];
+    });
   }
   return result;
 }

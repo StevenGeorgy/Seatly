@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { format } from "date-fns";
@@ -124,10 +124,11 @@ export default function BookingDetailsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { reservationId } = useParams<{ reservationId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { upcoming, past, loading, refresh } = useMyReservations();
   const [cancelling, setCancelling] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
+  const autoOpenedFromUrl = useRef(false);
   const [modifying, setModifying] = useState(false);
   const [modifyDate, setModifyDate] = useState("");
   const [modifyTime, setModifyTime] = useState("");
@@ -160,17 +161,25 @@ export default function BookingDetailsPage() {
   };
 
   useEffect(() => {
-    if (searchParams.get("modify") !== "1" || modifyOpen || !reservation || !reservedAt || !canModify) {
+    if (autoOpenedFromUrl.current) return;
+    if (searchParams.get("modify") !== "1" || !reservation || !reservedAt || !canModify) {
       return;
     }
-    void Promise.resolve().then(() => {
-      setModifyDate(format(reservedAt, "yyyy-MM-dd"));
-      setModifyTime(format(reservedAt, "HH:mm"));
-      setModifyPartySize(String(reservation.party_size));
-      setModifyNotes(reservation.special_request ?? "");
-      setModifyOpen(true);
-    });
-  }, [canModify, modifyOpen, reservation, reservedAt, searchParams]);
+    autoOpenedFromUrl.current = true;
+    setModifyDate(format(reservedAt, "yyyy-MM-dd"));
+    setModifyTime(format(reservedAt, "HH:mm"));
+    setModifyPartySize(String(reservation.party_size));
+    setModifyNotes(reservation.special_request ?? "");
+    setModifyOpen(true);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("modify");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [canModify, reservation, reservedAt, searchParams, setSearchParams]);
 
   const handleCancel = async () => {
     if (!reservation || !canCancel || cancelling) return;

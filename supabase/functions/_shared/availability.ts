@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "./supabase.ts";
 import { localToUTC, localDayOfWeek } from "./time.ts";
+import { closureUnavailableMessage, findSpecialDayForDate } from "./closures.ts";
 
 export interface AvailabilitySlot {
   shift_id: string;
@@ -14,6 +15,7 @@ export interface AvailabilitySlot {
 export interface AvailabilityResult {
   slots: AvailabilitySlot[];
   floor_capacity?: number;
+  unavailable_reason?: "closed";
   /** Human-readable opening window ("5:00 PM to 10:00 PM") the assistant
    *  should speak INSTEAD of enumerating individual slots. Computed from
    *  the earliest and latest bookable slot across all matching shifts. */
@@ -111,10 +113,7 @@ export async function getAvailability(
       ? (restaurantRow.hours_json as Record<string, unknown>)
       : null;
   if (hoursJson) {
-    const specialEntries = Array.isArray(hoursJson.special)
-      ? (hoursJson.special as Array<Record<string, unknown>>)
-      : [];
-    const special = specialEntries.find((s) => String(s.date ?? "") === dateOnly);
+    const special = findSpecialDayForDate(hoursJson, dateOnly);
     if (special) {
       if (special.closed === true) {
         configuredHours = "closed";
@@ -139,7 +138,14 @@ export async function getAvailability(
   }
 
   if (configuredHours === "closed") {
-    return { slots: [], floor_capacity: floorCapacity, hours_window: null, message: "No availability on that date." };
+    const special = hoursJson ? findSpecialDayForDate(hoursJson, dateOnly) : null;
+    return {
+      slots: [],
+      floor_capacity: floorCapacity,
+      hours_window: null,
+      unavailable_reason: "closed",
+      message: special?.closed ? closureUnavailableMessage(special) : "No availability on that date.",
+    };
   }
 
   // Fetch matching shifts — also select blackout_dates and advance_booking_days
