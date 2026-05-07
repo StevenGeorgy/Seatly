@@ -1,10 +1,12 @@
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+
+export type ConflictWindow = { start: Date; end: Date };
 
 export interface AvailabilitySlot {
   shift_id: string;
@@ -24,13 +26,17 @@ export type AvailabilityUnavailableReason =
   | "no_future_slots"
   | "no_slots";
 
-interface AvailabilityResult {
+export interface AvailabilityResult {
   slots: AvailabilitySlot[];
   floorCapacity: number | null;
   error: string | null;
   unavailableReason: AvailabilityUnavailableReason | null;
   message: string | null;
 }
+
+export type AvailabilityFetchOptions = {
+  forceRefresh?: boolean;
+};
 
 const AVAILABILITY_CACHE_TTL_MS = 45_000;
 
@@ -104,15 +110,16 @@ export async function fetchAvailabilitySlots(
   restaurantId: string,
   date: string,
   partySize: number,
+  options: AvailabilityFetchOptions = {},
 ): Promise<AvailabilityResult> {
   const key = availabilityCacheKey(restaurantId, date, partySize);
   const cached = availabilityCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cloneAvailabilityResult(cached.result);
   }
 
   const activeRequest = availabilityRequests.get(key);
-  if (activeRequest) {
+  if (!options.forceRefresh && activeRequest) {
     return cloneAvailabilityResult(await activeRequest);
   }
 
@@ -141,7 +148,12 @@ export function useAvailability() {
   const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
 
   const fetchSlots = useCallback(
-    async (restaurantId: string, date: string, partySize: number): Promise<AvailabilityResult> => {
+    async (
+      restaurantId: string,
+      date: string,
+      partySize: number,
+      options: AvailabilityFetchOptions = {},
+    ): Promise<AvailabilityResult> => {
       setLoading(true);
       setError(null);
       setSlots([]);
@@ -149,7 +161,7 @@ export function useAvailability() {
       setUnavailableMessage(null);
 
       try {
-        const result = await fetchAvailabilitySlots(restaurantId, date, partySize);
+        const result = await fetchAvailabilitySlots(restaurantId, date, partySize, options);
         setFloorCapacity(result.floorCapacity);
         setUnavailableReason(result.unavailableReason);
         setUnavailableMessage(result.message);
@@ -189,4 +201,112 @@ export function useAvailability() {
     fetchSlots,
     clearSlots,
   };
+}
+
+/**
+ * Fetches a logged-in diner's existing reservations on the given local date so
+ * the booking UI can hide conflicting time slots. Covers both the same
+ * restaurant and any other restaurant — the diner shouldn't double-book
+ * themselves anywhere. Returns conflict windows in UTC; safe to call even when
+ * no diner is logged in (returns []).
+ */
+export async function fetchDinerConflictWindows(args: {
+  userProfileId: string | null;
+  currentRestaurantId: string | null;
+  dayStartUtcIso: string;
+  dayEndUtcIso: string;
+  excludeReservationId?: string | null;
+}): Promise<ConflictWindow[]> {
+  if (!args.userProfileId || !args.currentRestaurantId) return [];
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseBrowserClient();
+  let query = client
+    .from("reservations")
+    .select("id, reserved_at, duration_minutes")
+    .eq("user_profile_id", args.userProfileId)
+    .in("status", ["pending", "confirmed", "seated"])
+    .gte("reserved_at", args.dayStartUtcIso)
+    .lte("reserved_at", args.dayEndUtcIso);
+  if (args.excludeReservationId) {
+    query = query.neq("id", args.excludeReservationId);
+  }
+  const { data, error } = await query;
+  if (error || !data) return [];
+  return data.map((row) => {
+    const start = new Date(row.reserved_at);
+    const minutes = typeof row.duration_minutes === "number" && row.duration_minutes > 0
+      ? row.duration_minutes
+      : 90;
+    return { start, end: new Date(start.getTime() + minutes * 60_000) };
+  });
+}
+
+/**
+ * Hides slots whose [start, start+duration] overlaps any conflict window.
+ * No-ops when the conflict list is empty.
+ */
+export function filterSlotsByConflicts(
+  slots: AvailabilitySlot[],
+  conflicts: ConflictWindow[],
+): AvailabilitySlot[] {
+  if (!conflicts.length) return slots;
+  return slots.filter((slot) => {
+    const start = new Date(slot.date_time);
+    const minutes = typeof slot.duration_minutes === "number" && slot.duration_minutes > 0
+      ? slot.duration_minutes
+      : 90;
+    const end = new Date(start.getTime() + minutes * 60_000);
+    return !conflicts.some((c) => start < c.end && c.start < end);
+  });
+}
+
+/**
+ * Convenience hook: fetches conflict windows for a logged-in diner whenever
+ * the inputs change. Returns the windows; the caller filters slots themselves.
+ *
+ * Pass `excludeReservationId` when this hook drives an "edit existing
+ * reservation" UI so the booking being modified doesn't block its own slot.
+ */
+export function useDinerConflictWindows(args: {
+  userProfileId: string | null;
+  currentRestaurantId: string | null;
+  date: string | null; // YYYY-MM-DD in restaurant local time
+  timezone: string | null;
+  excludeReservationId?: string | null;
+}): ConflictWindow[] {
+  const [windows, setWindows] = useState<ConflictWindow[]>([]);
+  const { userProfileId, currentRestaurantId, date, timezone, excludeReservationId } = args;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!userProfileId || !currentRestaurantId || !date) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) setWindows([]);
+      });
+      return;
+    }
+    // Build local 00:00 → 23:59 in the restaurant's tz, then convert via Date()
+    // by computing the offset for that day.
+    const dayStartLocal = new Date(`${date}T00:00:00`);
+    const dayEndLocal = new Date(`${date}T23:59:59`);
+    // Best-effort UTC bounds: pad +/- 1 day to cover any tz edge cases. The
+    // server returns whatever falls in the actual restaurant-local day; we err
+    // on the side of fetching slightly more.
+    const dayStartUtcIso = new Date(dayStartLocal.getTime() - 24 * 60 * 60_000).toISOString();
+    const dayEndUtcIso = new Date(dayEndLocal.getTime() + 24 * 60 * 60_000).toISOString();
+    void fetchDinerConflictWindows({
+      userProfileId,
+      currentRestaurantId,
+      dayStartUtcIso,
+      dayEndUtcIso,
+      excludeReservationId: excludeReservationId ?? null,
+    }).then((result) => {
+      if (!cancelled) setWindows(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userProfileId, currentRestaurantId, date, timezone, excludeReservationId]);
+
+  return windows;
 }

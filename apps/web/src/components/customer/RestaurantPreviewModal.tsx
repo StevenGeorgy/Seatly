@@ -12,6 +12,7 @@ import {
   MapPin,
   MessageCircle,
   Sparkles,
+  Star,
   Utensils,
   Users,
   X,
@@ -23,10 +24,17 @@ import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter
 import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
-import { fetchAvailabilitySlots, useAvailability } from "@/hooks/useAvailability";
+import {
+  fetchAvailabilitySlots,
+  filterSlotsByConflicts,
+  useAvailability,
+  useDinerConflictWindows,
+} from "@/hooks/useAvailability";
+import { useUser } from "@/hooks/useUser";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useRestaurant } from "@/hooks/useRestaurant";
+import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -54,6 +62,8 @@ export type RestaurantPreviewSummary = {
   dietaryTags?: RestaurantDietaryTag[];
   logoUrl?: string | null;
   coverPhotoUrl?: string | null;
+  avgRating?: number | null;
+  totalReviews?: number | null;
 };
 
 type PreviewTab = "menu" | "photos" | "reviews" | "about" | "events";
@@ -65,6 +75,7 @@ type RestaurantPreviewModalProps = {
   bookingDate?: string;
   preferredTime?: string;
   currencyCode?: string;
+  availabilityNotice?: string | null;
   onClose: () => void;
   onToggleFavorite: () => void;
   onReserve: (slot: string, partySize: string, shiftId?: string, displayTime?: string) => void;
@@ -110,6 +121,79 @@ function shortTime(time: string): string {
 
 function dateKey(date: Date): string {
   return format(date, "yyyy-MM-dd");
+}
+
+function TimeWheel({
+  times,
+  value,
+  onCommit,
+}: {
+  times: string[];
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(value || times[0] || "");
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setDraftValue(value || times[0] || ""));
+  }, [value, times]);
+
+  const indexOfDraft = Math.max(0, times.indexOf(draftValue));
+  const moveDraft = (delta: number) => {
+    if (!times.length) return;
+    const next = Math.min(times.length - 1, Math.max(0, indexOfDraft + delta));
+    setDraftValue(times[next]);
+  };
+
+  const draftLabel = draftValue ? shortTime(draftValue) : "";
+
+  return (
+    <div>
+      <div
+        role="listbox"
+        aria-label="Time"
+        tabIndex={0}
+        onWheel={(event) => {
+          event.preventDefault();
+          if (Math.abs(event.deltaY) < 4) return;
+          moveDraft(event.deltaY > 0 ? 1 : -1);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") moveDraft(1);
+          if (event.key === "ArrowUp") moveDraft(-1);
+          if (event.key === "Enter" && draftValue) onCommit(draftValue);
+        }}
+        className="max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-base p-2 outline-none [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-gold/40"
+      >
+        {times.map((time) => {
+          const active = time === draftValue;
+          return (
+            <button
+              key={time}
+              type="button"
+              role="option"
+              aria-selected={active}
+              onClick={() => onCommit(time)}
+              className={cn(
+                "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",
+                active ? "bg-gold text-bg-base" : "text-text-secondary hover:bg-bg-elevated hover:text-white",
+              )}
+            >
+              {shortTime(time)}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={() => draftValue && onCommit(draftValue)}
+        disabled={!draftValue}
+        className="mt-2 h-10 w-full rounded-xl bg-gold text-sm font-semibold text-bg-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {draftLabel ? `Select ${draftLabel}` : "Select a time"}
+      </button>
+    </div>
+  );
 }
 
 function SeatWheel({
@@ -216,6 +300,7 @@ export function RestaurantPreviewModal({
   bookingDate,
   preferredTime,
   currencyCode = "cad",
+  availabilityNotice,
   onClose,
   onToggleFavorite,
   onReserve,
@@ -241,6 +326,10 @@ export function RestaurantPreviewModal({
   const bookingDateTriggerId = useId();
   const [bookingDatePopoverOpen, setBookingDatePopoverOpen] = useState(false);
   const [partyPopoverOpen, setPartyPopoverOpen] = useState(false);
+  const [timePopoverOpen, setTimePopoverOpen] = useState(false);
+  const [staleAvailabilityNotice, setStaleAvailabilityNotice] = useState<string | null>(null);
+  const [dismissedExternalAvailabilityNotice, setDismissedExternalAvailabilityNotice] = useState(false);
+  const [reserving, setReserving] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const parsedDate = parse(bookingDate ?? todayDateValue(), "yyyy-MM-dd", new Date());
     return isValid(parsedDate) ? parsedDate : new Date();
@@ -284,6 +373,7 @@ export function RestaurantPreviewModal({
   }, [previewDate]);
   const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId);
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId);
+  const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(resolvedRestaurantId);
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
   const {
     slots: availabilitySlots,
@@ -294,6 +384,13 @@ export function RestaurantPreviewModal({
     unavailableReason,
     unavailableMessage,
   } = useAvailability();
+  const { profile } = useUser();
+  const dinerConflictWindows = useDinerConflictWindows({
+    userProfileId: profile?.id ?? null,
+    currentRestaurantId: restaurant?.id ?? null,
+    date: previewDate || null,
+    timezone: matchedRestaurantDetails?.timezone ?? null,
+  });
   const maxPreviewPartySize = Math.max(1, floorCapacity ?? 50);
   const unavailableHeadline = (() => {
     if (availabilityLoading) return "Checking availability...";
@@ -323,18 +420,21 @@ export function RestaurantPreviewModal({
 
   const availableSlots = useMemo(() => {
     const seen = new Set<string>();
-    return availabilitySlots.filter((slot) => {
+    return filterSlotsByConflicts(availabilitySlots, dinerConflictWindows).filter((slot) => {
       if (seen.has(slot.display_time)) return false;
       seen.add(slot.display_time);
       return true;
     });
-  }, [availabilitySlots]);
+  }, [availabilitySlots, dinerConflictWindows]);
   const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
 
   const selectedTime =
     restaurant && timeState.restaurantId === restaurant.id
       ? timeState.time
       : availableTimes[0] ?? "";
+  const visibleAvailabilityNotice = staleAvailabilityNotice ?? (
+    dismissedExternalAvailabilityNotice ? null : availabilityNotice ?? null
+  );
 
   const restaurantEvents = useMemo(
     () => activeEvents.filter((event) => event.restaurant_id === resolvedRestaurantId),
@@ -371,11 +471,11 @@ export function RestaurantPreviewModal({
     name: matchedRestaurantDetails?.name ?? restaurant?.name ?? "",
     slug: matchedRestaurantDetails?.slug ?? null,
     cuisine_type: matchedRestaurantDetails?.cuisine_type ?? restaurant?.cuisine ?? null,
-    avg_rating: null,
+    avg_rating: reviewSummary.avgRating,
     cover_photo_url: matchedRestaurantDetails?.cover_photo_url ?? null,
     city: matchedRestaurantDetails?.city ?? restaurant?.city ?? null,
     price_range: eventPriceLevel,
-  }), [eventPriceLevel, restaurant, matchedRestaurantDetails]);
+  }), [eventPriceLevel, restaurant, matchedRestaurantDetails, reviewSummary.avgRating]);
 
   const hasSavedMenu = previewMenuItems.length > 0;
 
@@ -445,10 +545,14 @@ export function RestaurantPreviewModal({
   };
 
   const setRestaurantTime = (time: string) => {
+    setStaleAvailabilityNotice(null);
+    setDismissedExternalAvailabilityNotice(true);
     setTimeState({ restaurantId: restaurant?.id ?? null, time });
   };
 
   const setRestaurantDate = (date: string) => {
+    setStaleAvailabilityNotice(null);
+    setDismissedExternalAvailabilityNotice(true);
     setBookingState({
       restaurantId: restaurant?.id ?? null,
       date,
@@ -457,6 +561,8 @@ export function RestaurantPreviewModal({
   };
 
   const setRestaurantPartySize = (party: number) => {
+    setStaleAvailabilityNotice(null);
+    setDismissedExternalAvailabilityNotice(true);
     const clamped = Math.min(Math.max(1, party), maxPreviewPartySize);
     setBookingState({
       restaurantId: restaurant?.id ?? null,
@@ -465,10 +571,35 @@ export function RestaurantPreviewModal({
     });
   };
 
-  const reserveSelectedSlot = () => {
+  const reserveSelectedSlot = async () => {
+    if (!restaurant || reserving) return;
     const slot = availableSlots.find((availableSlot) => availableSlot.display_time === selectedTime);
     if (!slot) return;
-    onReserve(slot.date_time, String(selectedPartySize), slot.shift_id, formatCompactTimeLabel(slot.display_time));
+    setReserving(true);
+    setStaleAvailabilityNotice(null);
+    try {
+      const result = await fetchSlots(restaurant.id, previewDate, selectedPartySize, { forceRefresh: true });
+      const refreshedSlot = result.slots.find((availableSlot) =>
+        availableSlot.date_time === slot.date_time && availableSlot.shift_id === slot.shift_id,
+      );
+      if (!refreshedSlot) {
+        setStaleAvailabilityNotice(
+          result.slots.length > 0
+            ? "That time is no longer available. Pick another time."
+            : (result.message ?? "That time is no longer available. Try another date or party size."),
+        );
+        setTimeState({ restaurantId: restaurant.id, time: "" });
+        return;
+      }
+      onReserve(
+        refreshedSlot.date_time,
+        String(selectedPartySize),
+        refreshedSlot.shift_id,
+        formatCompactTimeLabel(refreshedSlot.display_time),
+      );
+    } finally {
+      setReserving(false);
+    }
   };
 
   useEffect(() => {
@@ -483,6 +614,18 @@ export function RestaurantPreviewModal({
       selectedPartySize,
     );
   }, [clearSlots, fetchSlots, previewDate, restaurant, selectedPartySize]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setStaleAvailabilityNotice(null));
+  }, [restaurant?.id, previewDate, selectedPartySize]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setDismissedExternalAvailabilityNotice(false));
+  }, [availabilityNotice]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setDismissedExternalAvailabilityNotice(false));
+  }, [restaurant?.id]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -531,6 +674,7 @@ export function RestaurantPreviewModal({
       return;
     }
     if (!restaurant || availableTimes.length === 0) return;
+    if (staleAvailabilityNotice) return;
     if (timeState.restaurantId === restaurant.id && availableTimes.includes(timeState.time)) return;
     void Promise.resolve().then(() => {
       setTimeState({
@@ -538,7 +682,7 @@ export function RestaurantPreviewModal({
         time: preferredTime && availableTimes.includes(preferredTime) ? preferredTime : availableTimes[0],
       });
     });
-  }, [availabilityLoading, availableTimes, preferredTime, restaurant, timeState.restaurantId, timeState.time]);
+  }, [availabilityLoading, availableTimes, preferredTime, restaurant, staleAvailabilityNotice, timeState.restaurantId, timeState.time]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -571,7 +715,7 @@ export function RestaurantPreviewModal({
             role="dialog"
             aria-modal="true"
             aria-label={`${restaurant.name} details`}
-            className="mx-auto min-h-[92vh] max-w-6xl overflow-hidden rounded-3xl border border-border bg-bg-base shadow-2xl shadow-black"
+            className="mx-auto min-h-[92vh] max-w-[84rem] overflow-hidden rounded-3xl border border-border bg-bg-base shadow-2xl shadow-black"
             initial={{ opacity: 0, y: 28, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 18, scale: 0.98 }}
@@ -595,7 +739,7 @@ export function RestaurantPreviewModal({
               </button>
             </div>
 
-            <div className="mx-auto -mt-16 max-w-5xl px-4 pb-10 sm:px-6 lg:px-8">
+            <div className="mx-auto -mt-16 w-full px-4 pb-10 sm:px-6 lg:px-8">
               <section className="relative rounded-2xl border border-border bg-bg-surface/95 p-5 shadow-2xl shadow-black/30 backdrop-blur">
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex gap-4">
@@ -635,6 +779,13 @@ export function RestaurantPreviewModal({
                     </h2>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary">
                       <RestaurantPriceMeter level={priceLevel} />
+                      {reviewSummary.totalReviews > 0 && reviewSummary.avgRating != null ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-gold">
+                          <Star className="size-3 fill-gold text-gold" />
+                          <span className="font-semibold">{reviewSummary.avgRating.toFixed(1)}</span>
+                          <span className="text-text-muted">({reviewSummary.totalReviews})</span>
+                        </span>
+                      ) : null}
                       {headerMeta.map((meta) => (
                         <span key={meta}>{meta}</span>
                       ))}
@@ -666,7 +817,7 @@ export function RestaurantPreviewModal({
                 </div>
               </section>
 
-              <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_440px]">
                 <div>
                   <div className="flex rounded-xl border border-border bg-bg-surface p-1">
                     {TABS.map((tab) => (
@@ -812,9 +963,60 @@ export function RestaurantPreviewModal({
                     {activeTab === "reviews" && (
                       <div className="space-y-4">
                         <section className="rounded-2xl border border-border bg-bg-surface p-4">
-                          <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
-                            No public reviews have been recorded for this restaurant yet.
+                          <div className="mb-4 flex items-end justify-between gap-4">
+                            <div>
+                              <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-gold">
+                                Guest sentiment
+                              </p>
+                              <h3 className="mt-1 font-serif text-2xl text-white">
+                                Reviews
+                              </h3>
+                            </div>
+                            {reviewSummary.totalReviews > 0 && reviewSummary.avgRating != null ? (
+                              <span className="inline-flex items-center gap-1.5 rounded-full border border-gold/30 bg-gold/10 px-3 py-1 text-sm text-gold">
+                                <Star className="size-4 fill-gold" />
+                                <span className="font-semibold">{reviewSummary.avgRating.toFixed(1)}</span>
+                                <span className="text-xs text-text-muted">({reviewSummary.totalReviews})</span>
+                              </span>
+                            ) : null}
                           </div>
+                          {reviewsLoading ? (
+                            <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                              Loading reviews...
+                            </div>
+                          ) : reviews.length > 0 ? (
+                            <div className="space-y-3">
+                              {reviews.map((review) => (
+                                <article key={review.id} className="rounded-xl border border-border bg-bg-elevated p-4">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="flex items-center gap-1 text-gold">
+                                      {[1, 2, 3, 4, 5].map((value) => (
+                                        <Star
+                                          key={value}
+                                          className={cn(
+                                            "size-4",
+                                            value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
+                                          )}
+                                        />
+                                      ))}
+                                    </div>
+                                    <span className="text-[11px] text-text-muted">
+                                      {format(new Date(review.created_at), "MMM d, yyyy")}
+                                    </span>
+                                  </div>
+                                  {review.review_text ? (
+                                    <p className="mt-3 text-sm leading-6 text-text-secondary">{review.review_text}</p>
+                                  ) : (
+                                    <p className="mt-3 text-sm text-text-muted">Rated {review.rating} out of 5.</p>
+                                  )}
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                              No public reviews have been recorded for this restaurant yet.
+                            </div>
+                          )}
                         </section>
                       </div>
                     )}
@@ -897,6 +1099,7 @@ export function RestaurantPreviewModal({
                                 key={event.id}
                                 item={event}
                                 onReserve={reserveSelectedSlot}
+                                onRestaurantOpen={() => setRestaurantTab("menu")}
                                 className="shadow-none"
                               />
                             ))}
@@ -914,7 +1117,7 @@ export function RestaurantPreviewModal({
                 <aside className="lg:sticky lg:top-6 lg:self-start">
                   <div className="rounded-2xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/30">
                     <h3 className="font-serif text-xl text-white">Reserve a table</h3>
-                    <div className="mt-4 grid grid-cols-2 gap-2">
+                    <div className="mt-4 grid grid-cols-3 gap-2">
                       <Popover open={bookingDatePopoverOpen} onOpenChange={setBookingDatePopoverOpen}>
                         <PopoverTrigger asChild>
                           <button
@@ -949,6 +1152,42 @@ export function RestaurantPreviewModal({
                           />
                         </PopoverContent>
                       </Popover>
+                      <Popover open={timePopoverOpen} onOpenChange={setTimePopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            disabled={availableTimes.length === 0}
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Clock className="size-4 text-gold" />
+                            <span>
+                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Time</p>
+                              <p className="mt-1 text-sm text-white">
+                                {selectedTime ? shortTime(selectedTime) : "Pick a time"}
+                              </p>
+                            </span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent
+                          align="start"
+                          className="z-[90] w-48 border-border bg-bg-elevated p-2 text-text-primary shadow-2xl"
+                        >
+                          {availableTimes.length > 0 ? (
+                            <TimeWheel
+                              times={availableTimes}
+                              value={selectedTime || availableTimes[0]}
+                              onCommit={(time) => {
+                                setRestaurantTime(time);
+                                setTimePopoverOpen(false);
+                              }}
+                            />
+                          ) : (
+                            <p className="px-2 py-3 text-center text-xs text-text-muted">
+                              {unavailableHeadline}
+                            </p>
+                          )}
+                        </PopoverContent>
+                      </Popover>
                       <Popover open={partyPopoverOpen} onOpenChange={setPartyPopoverOpen}>
                         <PopoverTrigger asChild>
                           <button
@@ -980,40 +1219,19 @@ export function RestaurantPreviewModal({
                       </Popover>
                     </div>
 
-                    <p className="mt-5 font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
-                      Available times
-                    </p>
-                    {availableTimes.length > 0 ? (
-                      <div className="mt-3 grid grid-cols-3 gap-2">
-                        {availableTimes.map((time) => (
-                          <button
-                            key={time}
-                            type="button"
-                            onClick={() => setRestaurantTime(time)}
-                            className={cn(
-                              "rounded-md px-3 py-2 text-xs transition-colors",
-                              selectedTime === time
-                                ? "bg-gold text-black shadow-lg shadow-gold/20"
-                                : "bg-bg-elevated text-text-secondary hover:text-white",
-                            )}
-                          >
-                            {shortTime(time)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-3 rounded-xl bg-bg-elevated p-3 text-xs text-text-muted">
-                        {unavailableHeadline}
-                      </div>
-                    )}
+                    {visibleAvailabilityNotice ? (
+                      <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                        {visibleAvailabilityNotice}
+                      </p>
+                    ) : null}
 
                     <button
                       type="button"
                       onClick={reserveSelectedSlot}
-                      disabled={!selectedTime}
+                      disabled={!selectedTime || availabilityLoading || reserving}
                       className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {selectedTime ? `Continue with ${shortTime(selectedTime)}` : "No times available"}
+                      {reserving ? "Checking availability..." : selectedTime ? `Continue with ${shortTime(selectedTime)}` : "No times available"}
                       <CalendarDays className="size-4" />
                     </button>
 

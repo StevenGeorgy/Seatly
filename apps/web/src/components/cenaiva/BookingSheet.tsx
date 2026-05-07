@@ -12,7 +12,7 @@ import { usePublicMenuItems, usePublicMenuCategories } from "@/hooks/useMenuItem
 import { useUser } from "@/hooks/useUser";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { formatCompactTimeLabel, formatCompactTimeLabelInTz } from "@/lib/utils/time";
 
 interface BookingSheetProps {
   onExit: () => void;
@@ -67,6 +67,29 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const [occasion, setOccasion] = useState("");
   const [customTipInput, setCustomTipInput] = useState("");
   const [showCustomTip, setShowCustomTip] = useState(false);
+  const [restaurantTimezone, setRestaurantTimezone] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restaurantId = booking.restaurant_id;
+    if (!restaurantId) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) setRestaurantTimezone(null);
+      });
+      return () => { cancelled = true; };
+    }
+    const client = getSupabaseBrowserClient();
+    void client
+      .from("restaurants")
+      .select("timezone")
+      .eq("id", restaurantId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setRestaurantTimezone(typeof data?.timezone === "string" ? data.timezone : null);
+      });
+    return () => { cancelled = true; };
+  }, [booking.restaurant_id]);
 
   // `offering_preorder` keeps the confirmation card visible while the preorder
   // Yes/No buttons are shown underneath — see the offer_preorder branch below.
@@ -449,7 +472,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                       }
                       if (booking.slot_iso) {
                         try {
-                          return formatCompactTimeLabel(new Date(booking.slot_iso));
+                          return formatCompactTimeLabelInTz(new Date(booking.slot_iso), restaurantTimezone);
                         } catch { /* fall through */ }
                       }
                       return t;
@@ -875,7 +898,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                         }
                         if (booking.slot_iso) {
                           try {
-                            return formatCompactTimeLabel(new Date(booking.slot_iso));
+                            return formatCompactTimeLabelInTz(new Date(booking.slot_iso), restaurantTimezone);
                           } catch { /* fall through */ }
                         }
                         return t;

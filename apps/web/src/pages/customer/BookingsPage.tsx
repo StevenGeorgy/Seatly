@@ -49,7 +49,7 @@ import {
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { formatCompactTimeLabelInTz } from "@/lib/utils/time";
 
 type Tab = "upcoming" | "past" | "cancelled";
 
@@ -60,6 +60,7 @@ type BookingCard = {
   restaurantName: string;
   restaurantSlug: string;
   reservedAt: Date;
+  timezone: string | null;
   partySize: number;
   occasion?: string;
   status: ReservationDisplayStatus;
@@ -81,6 +82,7 @@ function adapt(r: MyReservationRow): BookingCard {
     restaurantName: name,
     restaurantSlug: r.restaurant?.slug ?? "",
     reservedAt,
+    timezone: r.restaurant?.timezone ?? null,
     partySize: r.party_size,
     confirmationCode: r.confirmation_code ?? undefined,
     cuisineLine: [r.restaurant?.cuisine_type, r.restaurant?.city].filter(Boolean).join(" · ").toUpperCase() || name.toUpperCase(),
@@ -179,9 +181,9 @@ function BookingCardView({
       </div>
       <div className="flex flex-1 flex-col gap-3 px-5 pb-5 pt-5">
         <div className="flex items-baseline gap-2 text-base">
-          <span className="text-white">{format(b.reservedAt, "EEE, MMMM d")}</span>
+          <span className="text-white">{new Intl.DateTimeFormat("en-US", { timeZone: b.timezone ?? undefined, weekday: "short", month: "long", day: "numeric" }).format(b.reservedAt)}</span>
           <span className="text-text-muted">·</span>
-          <span className="font-semibold text-gold">{formatCompactTimeLabel(b.reservedAt)}</span>
+          <span className="font-semibold text-gold">{formatCompactTimeLabelInTz(b.reservedAt, b.timezone)}</span>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
           <span className="inline-flex items-center gap-1.5">
@@ -289,8 +291,8 @@ function NextReservationCard({
       <ul className="mt-5 space-y-3 text-sm">
         <li className="flex items-center gap-2 text-text-secondary">
           <CalendarIcon className="size-4 text-gold" />
-          {format(b.reservedAt, "EEE, MMMM d")} ·{" "}
-          <span className="text-white">{formatCompactTimeLabel(b.reservedAt)}</span>
+          {new Intl.DateTimeFormat("en-US", { timeZone: b.timezone ?? undefined, weekday: "short", month: "long", day: "numeric" }).format(b.reservedAt)} ·{" "}
+          <span className="text-white">{formatCompactTimeLabelInTz(b.reservedAt, b.timezone)}</span>
         </li>
         <li className="flex items-center gap-2 text-text-secondary">
           <Users className="size-4 text-gold" />

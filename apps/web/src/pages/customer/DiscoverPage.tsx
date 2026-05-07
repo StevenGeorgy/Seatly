@@ -9,7 +9,6 @@ import {
   LayoutGrid,
   SlidersHorizontal,
   X,
-  Check,
   Heart,
   Bookmark,
   Bell,
@@ -20,7 +19,6 @@ import {
   LogOut,
   User,
   Settings,
-  MapPin,
   CalendarDays,
   Clock,
   Users,
@@ -37,6 +35,7 @@ import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewModal";
 import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
+import { ScrollWheelPicker } from "@/components/customer/ScrollWheelPicker";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -50,7 +49,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
+import { cn, capitalizeWords } from "@/lib/utils";
 import { normalizeRestaurantPriceLevel, restaurantPriceLabelFromRange, type RestaurantPriceLevel } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -104,7 +103,16 @@ function getNearestUpcomingHalfHour(): string {
 
 const PRICE_OPTIONS = ["$", "$$", "$$$"];
 
-const FEATURE_OPTIONS = ["Vegetarian", "Vegan", "Gluten-free", "Halal", "Kosher", "Walk-ins accepted"];
+const FEATURE_OPTIONS = [
+  "Vegetarian",
+  "Vegan",
+  "Gluten-free",
+  "Dairy-free",
+  "Nut-free",
+  "Halal",
+  "Kosher",
+  "Walk-ins accepted",
+];
 
 const PARTY_SIZES = [
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, "Large group",
@@ -131,6 +139,8 @@ type RestaurantCard = {
   priceLevel: RestaurantPriceLevel | null;
   area: string;
   bookedToday: number;
+  avgRating: number | null;
+  totalReviews: number;
   slots: string[];
   availableSlots: AvailabilitySlot[];
   initials: string;
@@ -179,12 +189,18 @@ async function fetchDisplayAvailabilitySlots(
   restaurantId: string,
   date: string,
   partySize: number,
+  options: { forceRefresh?: boolean } = {},
 ): Promise<AvailabilitySlot[]> {
   const unique: AvailabilitySlot[] = [];
   const seen = new Set<string>();
 
   for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
-    const result = await fetchAvailabilitySlots(restaurantId, addDateDays(date, offset), partySize)
+    const result = await fetchAvailabilitySlots(
+      restaurantId,
+      addDateDays(date, offset),
+      partySize,
+      { forceRefresh: options.forceRefresh },
+    )
       .catch(() => ({ slots: [] as AvailabilitySlot[] }));
     for (const slot of result.slots ?? []) {
       if (new Date(slot.date_time).getTime() < Date.now()) continue;
@@ -203,7 +219,11 @@ function priceFromRange(range: number | null | undefined): string {
   return restaurantPriceLabelFromRange(range);
 }
 
-function adaptRestaurant(r: Restaurant, bookedToday: number, availableSlots: AvailabilitySlot[] = []): RestaurantCard {
+function adaptRestaurant(
+  r: Restaurant,
+  stats: { bookedToday: number; avgRating: number | null; totalReviews: number },
+  availableSlots: AvailabilitySlot[] = [],
+): RestaurantCard {
   const initials = (r.name || "?").split(/\s+/).slice(0, 2).join(" ").toUpperCase();
   const dietaryTags = normalizeRestaurantDietaryTags(r.settings_json?.dietaryTags);
   const features = [
@@ -220,7 +240,9 @@ function adaptRestaurant(r: Restaurant, bookedToday: number, availableSlots: Ava
     price: priceFromRange(r.price_range),
     priceLevel: normalizeRestaurantPriceLevel(r.price_range),
     area: r.city ?? r.address ?? "",
-    bookedToday,
+    bookedToday: stats.bookedToday,
+    avgRating: stats.avgRating,
+    totalReviews: stats.totalReviews,
     slots: [],
     availableSlots,
     initials,
@@ -318,88 +340,6 @@ function FilterPickerButton({
         {label}
       </span>
       <span className="truncate text-sm text-white">{value}</span>
-    </div>
-  );
-}
-
-function ScrollWheelPicker<T extends string | number>({
-  items,
-  value,
-  onChange,
-  formatLabel,
-  itemHeight = 40,
-}: {
-  items: readonly T[];
-  value: T;
-  onChange: (next: T) => void;
-  formatLabel?: (item: T) => string;
-  itemHeight?: number;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const scrollRafRef = useRef<number | null>(null);
-  const visibleRows = 5;
-  const padding = ((visibleRows - 1) / 2) * itemHeight;
-  const selectedIndex = items.indexOf(value);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const target = Math.max(0, selectedIndex) * itemHeight;
-    if (Math.abs(node.scrollTop - target) > 1) {
-      node.scrollTo({ top: target, behavior: "auto" });
-    }
-  }, [selectedIndex, itemHeight]);
-
-  const handleScroll = () => {
-    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
-    scrollRafRef.current = requestAnimationFrame(() => {
-      const node = containerRef.current;
-      if (!node) return;
-      const idx = Math.round(node.scrollTop / itemHeight);
-      const clamped = Math.max(0, Math.min(items.length - 1, idx));
-      const next = items[clamped];
-      if (next !== undefined && next !== value) onChange(next);
-    });
-  };
-
-  return (
-    <div
-      className="relative overflow-hidden"
-      style={{ height: visibleRows * itemHeight }}
-    >
-      <div
-        className="pointer-events-none absolute left-2 right-2 top-1/2 z-0 -translate-y-1/2 rounded-lg border border-gold/30 bg-gold/5"
-        style={{ height: itemHeight }}
-      />
-      <div
-        ref={containerRef}
-        onScroll={handleScroll}
-        className="absolute inset-0 z-10 overflow-y-auto"
-        style={{
-          paddingTop: padding,
-          paddingBottom: padding,
-          scrollSnapType: "y mandatory",
-          scrollbarWidth: "none",
-        }}
-      >
-        {items.map((item, idx) => (
-          <button
-            key={String(item)}
-            type="button"
-            onClick={() => {
-              const node = containerRef.current;
-              if (node) node.scrollTo({ top: idx * itemHeight, behavior: "smooth" });
-            }}
-            className={cn(
-              "flex w-full items-center justify-center text-sm transition-colors",
-              item === value ? "font-semibold text-gold" : "text-text-secondary",
-            )}
-            style={{ height: itemHeight, scrollSnapAlign: "center" }}
-          >
-            {formatLabel ? formatLabel(item) : String(item)}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -544,8 +484,8 @@ function GridCard({
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
-          {r.cuisine ? <span>{r.cuisine}</span> : null}
-          {r.area ? <span>{r.area}</span> : null}
+          {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
+          {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
         </div>
         <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
       </div>
@@ -613,14 +553,14 @@ function MapListCard({
         <p className="font-serif text-xl text-white">{r.name}</p>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
-          {r.cuisine ? <span>{r.cuisine}</span> : null}
-          {r.area ? <span>{r.area}</span> : null}
+          {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
+          {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
           {r.features.filter((feature) => !r.dietaryTags.some((tag) => feature === tag.replace(/_/g, "-"))).slice(0, 3).map((f) => (
             <span
               key={f}
               className="rounded-full border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-text-secondary"
             >
-              {f}
+              {capitalizeWords(f)}
             </span>
           ))}
         </div>
@@ -686,7 +626,31 @@ function pinIconSvg({
   active: boolean;
   priceLevel: number | null;
 }): { url: string; size: { width: number; height: number } } {
-  const dollarCount = Math.min(Math.max(priceLevel ?? 1, 1), 3);
+  const filterId = `s${active ? "a" : "d"}`;
+
+  if (priceLevel == null) {
+    const size = active ? 32 : 24;
+    const cx = size / 2;
+    const cy = size / 2;
+    const r = active ? 11 : 8;
+    const fill = active ? "#F5E6C8" : "#C9A84C";
+    const stroke = active ? "#0A0A0A" : "rgba(10,10,10,0.6)";
+    const strokeWidth = active ? 2 : 1.25;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'>
+      <defs>
+        <filter id='${filterId}' x='-50%' y='-50%' width='200%' height='200%'>
+          <feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000000' flood-opacity='0.55'/>
+        </filter>
+      </defs>
+      <circle cx='${cx}' cy='${cy}' r='${r}' fill='${fill}' stroke='${stroke}' stroke-width='${strokeWidth}' filter='url(#${filterId})'/>
+    </svg>`;
+    return {
+      url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+      size: { width: size, height: size },
+    };
+  }
+
+  const dollarCount = Math.min(Math.max(priceLevel, 1), 3);
   const dollars = "$".repeat(dollarCount);
   const fontSize = active ? 14 : 12;
   const padX = active ? 10 : 8;
@@ -697,7 +661,6 @@ function pinIconSvg({
   const textColor = active ? "#0A0A0A" : "#C9A84C";
   const stroke = active ? "#C9A84C" : "rgba(201,168,76,0.65)";
   const strokeWidth = active ? 2 : 1.25;
-  const filterId = `s${active ? "a" : "d"}`;
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}' viewBox='0 0 ${width} ${height}'>
     <defs>
       <filter id='${filterId}' x='-50%' y='-50%' width='200%' height='200%'>
@@ -734,12 +697,14 @@ function GoogleDiscoverMap({
   hoveredId,
   userLocation,
   onSelect,
+  onHover,
 }: {
   restaurants: RestaurantCard[];
   selectedId: string | null;
   hoveredId: string | null;
   userLocation: GeoPoint | null;
   onSelect: (id: string) => void;
+  onHover: (id: string | null) => void;
 }) {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<GoogleMapInstance | null>(null);
@@ -766,6 +731,8 @@ function GoogleDiscoverMap({
       mapRef.current = new maps.Map(mapNodeRef.current, {
         center,
         zoom: userLocation ? 13 : 11,
+        minZoom: 4,
+        maxZoom: 18,
         disableDefaultUI: true,
         zoomControl: false,
         mapTypeControl: false,
@@ -812,6 +779,8 @@ function GoogleDiscoverMap({
         zIndex: active ? 999 : 1,
       });
       marker.addListener("click", () => onSelect(restaurant.id));
+      marker.addListener("mouseover", () => onHover(restaurant.id));
+      marker.addListener("mouseout", () => onHover(null));
       return marker;
     });
 
@@ -851,7 +820,8 @@ function GoogleDiscoverMap({
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
     };
-  }, [hoveredId, mappableRestaurants, onSelect, selectedId]);
+  }, [hoveredId, mappableRestaurants, onHover, onSelect, selectedId]);
+
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1023,8 +993,8 @@ function MapRestaurantPopup({
         </p>
         <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
           <RestaurantPriceMeter level={restaurant.priceLevel} className="text-base" />
-          {restaurant.cuisine ? <span>{restaurant.cuisine}</span> : null}
-          {restaurant.area ? <span>{restaurant.area}</span> : null}
+          {restaurant.cuisine ? <span>{capitalizeWords(restaurant.cuisine)}</span> : null}
+          {restaurant.area ? <span>{capitalizeWords(restaurant.area)}</span> : null}
         </div>
         <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} size="lg" />
       </div>
@@ -1047,7 +1017,7 @@ export default function DiscoverPage() {
   const { invites: pendingStaffInvites } = useMyStaffInvites();
 
   const [view, setView] = useState<"grid" | "map">("grid");
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
@@ -1077,6 +1047,7 @@ export default function DiscoverPage() {
   const [mapEdgeMode, setMapEdgeMode] = useState(false);
   const searchSentinelRef = useRef<HTMLDivElement | null>(null);
   const [previewRestaurant, setPreviewRestaurant] = useState<RestaurantCard | null>(null);
+  const [previewAvailabilityNotice, setPreviewAvailabilityNotice] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<GeoPoint | null>(null);
   const [locationStatus, setLocationStatus] = useState<"idle" | "requesting" | "allowed" | "denied" | "unsupported">(
     () => ("geolocation" in navigator ? "idle" : "unsupported"),
@@ -1111,7 +1082,7 @@ export default function DiscoverPage() {
   const cards: RestaurantCard[] = useMemo(() => {
     return restaurants.map((restaurant) => adaptRestaurant(
       restaurant,
-      statsByRestaurantId[restaurant.id]?.bookedToday ?? 0,
+      statsByRestaurantId[restaurant.id] ?? { bookedToday: 0, avgRating: null, totalReviews: 0 },
       availabilityByRestaurantId[restaurant.id] ?? [],
     ));
   }, [availabilityByRestaurantId, restaurants, statsByRestaurantId]);
@@ -1131,7 +1102,10 @@ export default function DiscoverPage() {
       list = list.filter((r) => activePrices.has(r.price));
     }
     if (activeFeatures.size > 0) {
-      list = list.filter((r) => r.features.some((feature) => activeFeatures.has(feature)));
+      const wanted = new Set([...activeFeatures].map((f) => f.toLowerCase()));
+      list = list.filter((r) =>
+        [...wanted].every((target) => r.features.some((feature) => feature.toLowerCase() === target)),
+      );
     }
     if (userLocation) {
       if (radius !== "anywhere") {
@@ -1240,35 +1214,74 @@ export default function DiscoverPage() {
 
   useEffect(() => {
     if (filtersOpen) {
-      setPendingDateId(dateId);
-      setPendingCustomDate(customDate);
-      setPendingTime(time);
-      setPendingPartySize(partySize);
-      setPendingRadius(radius);
+      void Promise.resolve().then(() => {
+        setPendingDateId(dateId);
+        setPendingCustomDate(customDate);
+        setPendingTime(time);
+        setPendingPartySize(partySize);
+        setPendingRadius(radius);
+      });
     }
     // Only sync when panel toggles open — actual values flow into pending.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersOpen]);
 
-  const handleSlotClick = (
+  const refreshRestaurantDisplaySlots = async (
+    restaurantId: string,
+    partyCount: number,
+    options: { forceRefresh?: boolean } = {},
+  ) => {
+    const refreshedSlots = await fetchDisplayAvailabilitySlots(
+      restaurantId,
+      selectedBookingDate,
+      partyCount,
+      options,
+    );
+    setAvailabilityByRestaurantId((prev) => ({
+      ...prev,
+      [restaurantId]: refreshedSlots,
+    }));
+    return refreshedSlots;
+  };
+
+  const handleSlotClick = async (
     r: RestaurantCard,
     slot: string,
     selectedPartySize = partySize,
     shiftId?: string,
-    displayTime?: string,
+    _displayTime?: string,
   ) => {
+    void _displayTime;
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
     const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot)
       ? slot.slice(0, 10)
       : dateParamFromSelection(dateId, customDate);
-    const shiftQuery = shiftId ? `&shift_id=${encodeURIComponent(shiftId)}` : "";
-    const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
+    const partyCount = Number.parseInt(String(selectedPartySize), 10) || 2;
+    const refreshed = await fetchAvailabilitySlots(r.id, slotDate, partyCount, { forceRefresh: true })
+      .catch(() => null);
+    const refreshedSlot = refreshed?.slots.find((candidate) =>
+      candidate.date_time === slot && (!shiftId || candidate.shift_id === shiftId),
+    );
+    if (!refreshedSlot) {
+      const refreshedDisplaySlots = await refreshRestaurantDisplaySlots(r.id, partyCount, { forceRefresh: true });
+      setPreviewAvailabilityNotice(
+        refreshed?.message ?? "That time is no longer available. Pick another time.",
+      );
+      setPreviewRestaurant({
+        ...r,
+        availableSlots: refreshedDisplaySlots,
+      });
+      return;
+    }
+    const shiftQuery = refreshedSlot.shift_id ? `&shift_id=${encodeURIComponent(refreshedSlot.shift_id)}` : "";
+    const timeParam = formatCompactTimeLabel(refreshedSlot.display_time);
     navigate(
-      `/${r.slug ?? r.id}?slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(timeParam)}&people=${selectedPartySize}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
+      `/${r.slug ?? r.id}?slot=${encodeURIComponent(refreshedSlot.date_time)}&time=${encodeURIComponent(timeParam)}&people=${partyCount}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
     );
   };
 
   const openRestaurantPreview = (r: RestaurantCard) => {
+    setPreviewAvailabilityNotice(null);
     setPreviewRestaurant(r);
   };
 
@@ -1294,7 +1307,7 @@ export default function DiscoverPage() {
 
   useEffect(() => {
     if (view !== "map") {
-      setMapEdgeMode(false);
+      void Promise.resolve().then(() => setMapEdgeMode(false));
       return;
     }
     const checkScroll = () => {
@@ -1905,7 +1918,7 @@ export default function DiscoverPage() {
                           saved={savedRestaurants.has(r.id)}
                           onToggleFav={() => toggleFavorite(r.id)}
                           onToggleSave={() => toggleSavedRestaurant(r.id)}
-                          onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                          onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
                           onOpen={() => openRestaurantPreview(r)}
                         />
                       ))}
@@ -1939,9 +1952,9 @@ export default function DiscoverPage() {
                     saved={savedRestaurants.has(r.id)}
                     onToggleFav={() => toggleFavorite(r.id)}
                     onToggleSave={() => toggleSavedRestaurant(r.id)}
-                    onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                    onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
                     onHover={setHoveredId}
-                    highlighted={hoveredId === r.id || selectedId === r.id}
+                    highlighted={selectedId === r.id}
                     onSelect={() => setSelectedId(r.id)}
                   />
                 ))}
@@ -1967,6 +1980,7 @@ export default function DiscoverPage() {
                   hoveredId={hoveredId}
                   userLocation={userLocation}
                   onSelect={setSelectedId}
+                  onHover={setHoveredId}
                 />
 
                 {/* Re-center */}
@@ -1987,24 +2001,28 @@ export default function DiscoverPage() {
                   </div>
                 ) : null}
 
-                {/* Selected restaurant popup */}
-                {selectedId &&
-                  (() => {
-                    const r = filtered.find((x) => x.id === selectedId);
-                    if (!r) return null;
-                    return (
-                      <MapRestaurantPopup
-                        restaurant={r}
-                        favorite={favorites.has(r.id)}
-                        saved={savedRestaurants.has(r.id)}
-                        onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
-                        onClose={() => setSelectedId(null)}
-                        onToggleFavorite={() => toggleFavorite(r.id)}
-                        onToggleSave={() => toggleSavedRestaurant(r.id)}
-                        onOpenPreview={() => openRestaurantPreview(r)}
-                      />
-                    );
-                  })()}
+                {/* Hover/selected restaurant popup */}
+                {(() => {
+                  const previewId = selectedId ?? hoveredId;
+                  if (!previewId) return null;
+                  const r = filtered.find((x) => x.id === previewId);
+                  if (!r) return null;
+                  return (
+                    <MapRestaurantPopup
+                      restaurant={r}
+                      favorite={favorites.has(r.id)}
+                      saved={savedRestaurants.has(r.id)}
+                      onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                      onClose={() => {
+                        setSelectedId(null);
+                        setHoveredId(null);
+                      }}
+                      onToggleFavorite={() => toggleFavorite(r.id)}
+                      onToggleSave={() => toggleSavedRestaurant(r.id)}
+                      onOpenPreview={() => openRestaurantPreview(r)}
+                    />
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -2016,11 +2034,13 @@ export default function DiscoverPage() {
         partySize={partySize}
         bookingDate={dateParamFromSelection(dateId, customDate)}
         preferredTime={time}
+        availabilityNotice={previewAvailabilityNotice}
         onClose={() => {
           if (isDashboardPreview) {
             navigate("/dashboard");
             return;
           }
+          setPreviewAvailabilityNotice(null);
           setPreviewRestaurant(null);
         }}
         onToggleFavorite={() => {
@@ -2029,7 +2049,7 @@ export default function DiscoverPage() {
         onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
           if (activePreviewRestaurant) {
             setPartySize(selectedPartySize);
-            handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime);
+            void handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime);
           }
         }}
       />

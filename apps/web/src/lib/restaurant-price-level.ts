@@ -65,27 +65,39 @@ export function isMainEntreeMenuItem(item: RestaurantPriceMenuItem): boolean {
 }
 
 export function averageMainEntreePrice(items: RestaurantPriceMenuItem[]): number | null {
+  return medianMainEntreePrice(items);
+}
+
+export function medianMainEntreePrice(items: RestaurantPriceMenuItem[]): number | null {
   const mainPrices = items
     .filter(isMainEntreeMenuItem)
     .map((item) => numericPrice(item.price))
-    .filter((price): price is number => price != null);
+    .filter((price): price is number => price != null)
+    .sort((a, b) => a - b);
 
   if (mainPrices.length === 0) return null;
-  return mainPrices.reduce((sum, price) => sum + price, 0) / mainPrices.length;
+  const mid = Math.floor(mainPrices.length / 2);
+  return mainPrices.length % 2 === 0
+    ? (mainPrices[mid - 1] + mainPrices[mid]) / 2
+    : mainPrices[mid];
 }
 
 export function deriveRestaurantPriceLevel(
   items: RestaurantPriceMenuItem[],
   fallbackRange?: number | null,
 ): RestaurantPriceLevel | null {
-  const average = averageMainEntreePrice(items);
-  if (average != null) return restaurantPriceLevelFromAverage(average);
-  return normalizeRestaurantPriceLevel(fallbackRange);
+  // Owner-set value in the DB is authoritative. Only fall back to menu-derived
+  // when no value is recorded.
+  const explicit = normalizeRestaurantPriceLevel(fallbackRange);
+  if (explicit != null) return explicit;
+  const median = medianMainEntreePrice(items);
+  if (median != null) return restaurantPriceLevelFromAverage(median);
+  return null;
 }
 
 export function deriveRestaurantPriceLevelFromMenu(
   items: RestaurantPriceMenuItem[],
 ): RestaurantPriceLevel | null {
-  const average = averageMainEntreePrice(items);
-  return average != null ? restaurantPriceLevelFromAverage(average) : null;
+  const median = medianMainEntreePrice(items);
+  return median != null ? restaurantPriceLevelFromAverage(median) : null;
 }

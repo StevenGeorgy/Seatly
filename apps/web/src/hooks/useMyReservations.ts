@@ -26,6 +26,7 @@ export type MyReservationRow = {
     phone: string | null;
     logo_url: string | null;
     cover_photo_url: string | null;
+    timezone: string | null;
   } | null;
   table: { label: string | null } | null;
 };
@@ -72,7 +73,7 @@ export function useMyReservations() {
     const { data, error: rErr } = await client
       .from("reservations")
       .select(
-        "id, created_at, updated_at, reserved_at, duration_minutes, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url), table:tables(label)",
+        "id, created_at, updated_at, reserved_at, duration_minutes, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url, timezone), table:tables(label)",
       )
       .in("guest_id", guestIds)
       .order("reserved_at", { ascending: false });

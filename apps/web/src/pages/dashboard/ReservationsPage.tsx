@@ -41,7 +41,7 @@ import {
 } from "@/lib/reservations/displayStatus";
 import { matchesReservationSearch } from "@/lib/reservations/search";
 import { cn } from "@/lib/utils";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { dateInTz, formatCompactTimeLabel, formatCompactTimeLabelInTz } from "@/lib/utils/time";
 
 type ViewMode = "day" | "week" | "list";
 type QuickFilter = "all" | ReservationDisplayStatus | "modified";
@@ -179,7 +179,11 @@ function reservationAssignedTables(rowData: ReservationRow): Array<{ capacity: n
   return rowData.tables ? [{ capacity: rowData.tables.capacity }] : [];
 }
 
-function adaptReservation(rowData: ReservationRow, t: TranslationFn): ReservationBoardRow {
+function adaptReservation(
+  rowData: ReservationRow,
+  t: TranslationFn,
+  timezone: string | null,
+): ReservationBoardRow {
   const date = new Date(rowData.reserved_at);
   const guest = rowData.guests?.full_name ?? rowData.guest_full_name ?? t("dashboard.reservations.notApplicable");
   const phone = rowData.guest_phone ?? rowData.guests?.phone ?? rowData.guest_email ?? rowData.guests?.email ?? "-";
@@ -196,9 +200,14 @@ function adaptReservation(rowData: ReservationRow, t: TranslationFn): Reservatio
 
   return {
     id: rowData.id,
-    time: formatCompactTimeLabel(date),
-    dateKey: format(date, "yyyy-MM-dd"),
-    dateLabel: format(date, "EEE, MMM d"),
+    time: formatCompactTimeLabelInTz(date, timezone),
+    dateKey: dateInTz(date, timezone),
+    dateLabel: new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone ?? undefined,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    }).format(date),
     guest,
     phone,
     party: rowData.party_size,
@@ -313,8 +322,9 @@ export default function ReservationsPage() {
   const [specialRequest, setSpecialRequest] = useState("");
   const [saving, setSaving] = useState(false);
 
+  const restaurantTimezone = selectedRestaurant?.timezone ?? null;
   const boardRows = useMemo(() => {
-    const base = reservations.map((reservation) => adaptReservation(reservation, t));
+    const base = reservations.map((reservation) => adaptReservation(reservation, t, restaurantTimezone));
     return base.filter((reservation) => {
       const matchesQuick =
         quickFilter === "all" ||
@@ -323,9 +333,12 @@ export default function ReservationsPage() {
       const matchesSearch = matchesReservationSearch(search, reservation.searchValues);
       return matchesQuick && matchesSearch;
     });
-  }, [quickFilter, reservations, search, t]);
+  }, [quickFilter, reservations, restaurantTimezone, search, t]);
 
-  const allRows = useMemo(() => reservations.map((reservation) => adaptReservation(reservation, t)), [reservations, t]);
+  const allRows = useMemo(
+    () => reservations.map((reservation) => adaptReservation(reservation, t, restaurantTimezone)),
+    [reservations, restaurantTimezone, t],
+  );
   const activeTimelineRows = useMemo(
     () => boardRows.filter((reservation) => reservation.status !== "cancelled"),
     [boardRows],

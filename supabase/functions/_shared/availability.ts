@@ -190,7 +190,9 @@ export async function getAvailability(
 
     const [sH, sM] = (shift.start_time ?? "17:00").split(":").map(Number);
     const [eH, eM] = (shift.end_time ?? "23:00").split(":").map(Number);
-    const slotMins = shift.slot_duration_minutes ?? 30;
+    // Default to 15-minute increments. Restaurants can override per-shift via
+    // shifts.slot_duration_minutes if they prefer 30-min spacing.
+    const slotMins = shift.slot_duration_minutes ?? 15;
     const turnMins = configuredTurnMinutes ?? shift.turn_time_minutes ?? 90;
     const maxCovers = shift.max_covers ?? 100;
 
@@ -263,7 +265,10 @@ export async function getAvailability(
     }
   }
 
-  const limited = slots.slice(0, 15);
+  // Cap at 48 (covers any reasonable shift in 30-min increments — e.g. an
+  // 11-hour service like 11am-10pm = 22 slots). 15 was too low and truncated
+  // dinner times on full-day shifts.
+  const limited = slots.slice(0, 48);
   // Prefer the owner-configured hours. Fall back to the slot-derived window
   // only when hours_json is missing or the day is marked closed (otherwise
   // the assistant would read a misleading narrow range like "12 PM to 8:30

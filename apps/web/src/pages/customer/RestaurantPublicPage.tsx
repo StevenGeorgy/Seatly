@@ -1,4 +1,4 @@
-import { useState, useMemo, useId, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useId, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
@@ -35,14 +35,21 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
+import { ManageBookingView } from "@/components/customer/ManageBookingView";
 import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
 import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
-import { fetchAvailabilitySlots, useAvailability } from "@/hooks/useAvailability";
+import {
+  fetchAvailabilitySlots,
+  filterSlotsByConflicts,
+  useAvailability,
+  useDinerConflictWindows,
+} from "@/hooks/useAvailability";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
 import { useRestaurantPreviewStats } from "@/hooks/useRestaurantPreviewStats";
+import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -55,7 +62,7 @@ import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { computePromoDiscount } from "@/lib/computePromoDiscount";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
-import { cn } from "@/lib/utils";
+import { cn, capitalizeWords } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 import {
@@ -167,7 +174,7 @@ function StepBar({
   const idx = STEPS.findIndex((s) => s.key === current);
   if (current === "confirmed") return null;
   return (
-    <div className="flex items-center gap-0">
+    <div className="flex items-center">
       {STEPS.map((s, i) => {
         const done = i < idx;
         const active = i === idx;
@@ -196,7 +203,7 @@ function StepBar({
           </span>
         );
         return (
-          <div key={s.key} className="flex flex-1 items-center">
+          <Fragment key={s.key}>
             <div className="flex flex-col items-center gap-1">
               {clickable ? (
                 <button
@@ -217,10 +224,10 @@ function StepBar({
             </div>
             {i < STEPS.length - 1 && (
               <div
-                className={`mb-4 h-px flex-1 mx-1 transition-colors ${i < idx ? "bg-gold" : "bg-border"}`}
+                className={`mb-4 h-px flex-1 mx-2 transition-colors ${i < idx ? "bg-gold" : "bg-border"}`}
               />
             )}
-          </div>
+          </Fragment>
         );
       })}
     </div>
@@ -412,6 +419,8 @@ function RestaurantStaffPreview({
   const [previewCalendarMonth, setPreviewCalendarMonth] = useState(() => new Date());
   const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
   const [dateAvailabilityLoading, setDateAvailabilityLoading] = useState(false);
+  const [previewAvailabilityNotice, setPreviewAvailabilityNotice] = useState<string | null>(null);
+  const [previewReserving, setPreviewReserving] = useState(false);
   const previewCalendarDay = useMemo(() => {
     const parsedDate = parse(previewDate, "yyyy-MM-dd", new Date());
     return isValid(parsedDate) ? parsedDate : undefined;
@@ -423,8 +432,15 @@ function RestaurantStaffPreview({
   });
   const availability = useAvailability();
   const fetchPreviewSlots = availability.fetchSlots;
+  const conflictWindows = useDinerConflictWindows({
+    userProfileId: null,
+    currentRestaurantId: restaurant?.id ?? null,
+    date: previewDate,
+    timezone: restaurant?.timezone ?? null,
+  });
   const { events: allEvents, loading: eventsLoading } = useAllActiveEvents();
   const { stats } = useRestaurantPreviewStats(restaurant.id);
+  const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(restaurant.id);
   const savedMenuItems = useMemo(() => (hasSavedMenu ? menuItems : []), [hasSavedMenu, menuItems]);
   const menuHighlights = savedMenuItems.slice(0, 4);
   const menuSections = useMemo(() => {
@@ -442,11 +458,11 @@ function RestaurantStaffPreview({
     name: restaurant.name,
     slug: restaurant.slug,
     cuisine_type: restaurant.cuisine_type,
-    avg_rating: null,
+    avg_rating: reviewSummary.avgRating,
     cover_photo_url: restaurant.cover_photo_url,
     city: restaurant.city,
     price_range: deriveRestaurantPriceLevel(savedMenuItems, restaurant.price_range),
-  }), [restaurant, savedMenuItems]);
+  }), [restaurant, reviewSummary.avgRating, savedMenuItems]);
   const eventCards = useMemo(
     () => restaurantEvents.map((event) => eventToDisplay(event, restaurantDisplay)),
     [restaurantDisplay, restaurantEvents],
@@ -460,7 +476,10 @@ function RestaurantStaffPreview({
     ]),
     [restaurant.cover_photo_url, restaurant.logo_url, restaurantEvents, savedMenuItems],
   );
-  const availableSlots = useMemo(() => availability.slots, [availability.slots]);
+  const availableSlots = useMemo(
+    () => filterSlotsByConflicts(availability.slots, conflictWindows),
+    [availability.slots, conflictWindows],
+  );
   const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
   const hoursRows = useMemo(() => formatRestaurantHoursRows(restaurant.hours_json), [restaurant.hours_json]);
   const priceLevel = deriveRestaurantPriceLevelFromMenu(savedMenuItems);
@@ -468,6 +487,34 @@ function RestaurantStaffPreview({
   const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
   const selectedAvailabilitySlot = availableSlots.find((slot) => slot.display_time === selectedTime);
   const maxPreviewPartySize = Math.max(1, availability.floorCapacity ?? 50);
+  const reserveSelectedPreviewSlot = async () => {
+    if (!selectedAvailabilitySlot || previewReserving) return;
+    setPreviewReserving(true);
+    setPreviewAvailabilityNotice(null);
+    try {
+      const result = await fetchPreviewSlots(restaurant.id, previewDate, previewPartySize, { forceRefresh: true });
+      const refreshedSlots = filterSlotsByConflicts(result.slots, conflictWindows);
+      const refreshedSlot = refreshedSlots.find((slot) =>
+        slot.date_time === selectedAvailabilitySlot.date_time &&
+        slot.shift_id === selectedAvailabilitySlot.shift_id,
+      );
+      if (!refreshedSlot) {
+        setPreviewAvailabilityNotice(
+          result.message ?? "That time is no longer available. Pick another time.",
+        );
+        setSelectedTime("");
+        return;
+      }
+      onStartBooking(
+        refreshedSlot.date_time,
+        previewPartySize,
+        refreshedSlot.shift_id,
+        formatCompactTimeLabel(refreshedSlot.display_time),
+      );
+    } finally {
+      setPreviewReserving(false);
+    }
+  };
   const unavailableDate = (date: Date) => {
     if (date < startOfToday()) return true;
     if (dateAvailabilityLoading) return false;
@@ -478,6 +525,10 @@ function RestaurantStaffPreview({
   useEffect(() => {
     void fetchPreviewSlots(restaurant.id, previewDate, previewPartySize);
   }, [fetchPreviewSlots, previewDate, previewPartySize, restaurant.id]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setPreviewAvailabilityNotice(null));
+  }, [previewDate, previewPartySize, restaurant.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -522,10 +573,11 @@ function RestaurantStaffPreview({
       }
       return;
     }
+    if (previewAvailabilityNotice) return;
     if (!availableTimes.includes(selectedTime)) {
       void Promise.resolve().then(() => setSelectedTime(availableTimes[0]));
     }
-  }, [availability.loading, availableTimes, selectedTime]);
+  }, [availability.loading, availableTimes, previewAvailabilityNotice, selectedTime]);
 
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
@@ -580,7 +632,7 @@ function RestaurantStaffPreview({
                   </div>
                   <h1 className="mt-4 font-serif text-5xl leading-none text-white">{restaurant.name}</h1>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
-                    {restaurant.cuisine_type ? <span>{restaurant.cuisine_type}</span> : null}
+                    {restaurant.cuisine_type ? <span>{capitalizeWords(restaurant.cuisine_type)}</span> : null}
                     <RestaurantPriceMeter level={priceLevel} />
                     {restaurant.city ? (
                       <span className="inline-flex items-center gap-1">
@@ -700,12 +752,53 @@ function RestaurantStaffPreview({
               {activeTab === "Reviews" && (
                 <>
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Guest sentiment</p>
-                  <h2 className="mt-2 font-serif text-2xl text-white">No reviews yet</h2>
-                  <div className="mt-5 space-y-3 text-sm text-text-secondary">
-                    <p className="rounded-2xl bg-bg-elevated p-4">
-                      Public guest reviews will appear here once they are recorded.
-                    </p>
+                  <div className="mt-2 flex items-center justify-between gap-4">
+                    <h2 className="font-serif text-2xl text-white">Reviews</h2>
+                    {reviewSummary.totalReviews > 0 && reviewSummary.avgRating != null ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-gold/30 bg-gold/10 px-3 py-1 text-sm text-gold">
+                        <Star className="size-4 fill-gold" />
+                        <span className="font-semibold">{reviewSummary.avgRating.toFixed(1)}</span>
+                        <span className="text-xs text-text-muted">({reviewSummary.totalReviews})</span>
+                      </span>
+                    ) : null}
                   </div>
+                  {reviewsLoading ? (
+                    <div className="mt-5 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      Loading reviews...
+                    </div>
+                  ) : reviews.length > 0 ? (
+                    <div className="mt-5 space-y-3">
+                      {reviews.map((review) => (
+                        <article key={review.id} className="rounded-2xl bg-bg-elevated p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-1 text-gold">
+                              {[1, 2, 3, 4, 5].map((value) => (
+                                <Star
+                                  key={value}
+                                  className={cn(
+                                    "size-4",
+                                    value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
+                                  )}
+                                />
+                              ))}
+                            </div>
+                            <span className="text-[11px] text-text-muted">
+                              {format(new Date(review.created_at), "MMM d, yyyy")}
+                            </span>
+                          </div>
+                          {review.review_text ? (
+                            <p className="mt-3 text-sm leading-6 text-text-secondary">{review.review_text}</p>
+                          ) : (
+                            <p className="mt-3 text-sm text-text-muted">Rated {review.rating} out of 5.</p>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      No public reviews have been recorded for this restaurant yet.
+                    </div>
+                  )}
                 </>
               )}
               {activeTab === "About" && (
@@ -742,7 +835,8 @@ function RestaurantStaffPreview({
                         <EventPromotionDetailCard
                           key={event.id}
                           item={event}
-                          onReserve={() => selectedAvailabilitySlot && onStartBooking(selectedAvailabilitySlot.date_time, previewPartySize, selectedAvailabilitySlot.shift_id, selectedTimeLabel)}
+                          onReserve={() => void reserveSelectedPreviewSlot()}
+                          onRestaurantOpen={() => setActiveTab("Menu")}
                           className="shadow-none"
                         />
                       ))}
@@ -833,7 +927,10 @@ function RestaurantStaffPreview({
                   <button
                     key={time}
                     type="button"
-                    onClick={() => setSelectedTime(time)}
+                    onClick={() => {
+                      setPreviewAvailabilityNotice(null);
+                      setSelectedTime(time);
+                    }}
                     className={cn(
                       "rounded-xl px-3 py-3 text-xs transition-colors",
                       selectedTime === time ? "bg-gold text-bg-base" : "bg-bg-elevated text-text-secondary hover:text-white",
@@ -864,11 +961,16 @@ function RestaurantStaffPreview({
             )}
             <Button
               className="mt-4 h-12 w-full rounded-xl"
-              onClick={() => selectedAvailabilitySlot && onStartBooking(selectedAvailabilitySlot.date_time, previewPartySize, selectedAvailabilitySlot.shift_id, selectedTimeLabel)}
-              disabled={!selectedAvailabilitySlot}
+              onClick={() => void reserveSelectedPreviewSlot()}
+              disabled={!selectedAvailabilitySlot || availability.loading || previewReserving}
             >
-              {selectedTimeLabel ? `Continue with ${selectedTimeLabel}` : "No times available"}
+              {previewReserving ? "Checking availability..." : selectedTimeLabel ? `Continue with ${selectedTimeLabel}` : "No times available"}
             </Button>
+            {previewAvailabilityNotice ? (
+              <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                {previewAvailabilityNotice}
+              </p>
+            ) : null}
             <p className="mt-5 rounded-xl bg-bg-elevated/60 p-3 text-xs leading-relaxed text-text-muted">
               Availability is calculated from this restaurant's saved tables, reservations, and booking rules.
             </p>
@@ -930,6 +1032,7 @@ export default function RestaurantPublicPage() {
   const { promotions: allPromos } = useAllActivePromotions();
   const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
+  const { summary: publicReviewSummary } = useRestaurantReviews(restaurant?.id);
   const restaurantPromos = useMemo(
     () => allPromos.filter((p) => p.restaurant_id === restaurant?.id),
     [allPromos, restaurant?.id],
@@ -1034,6 +1137,18 @@ export default function RestaurantPublicPage() {
   const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
   const availability = useAvailability();
   const fetchRestaurantSlots = availability.fetchSlots;
+  // Conflict filter: hide slots that overlap a logged-in diner's other bookings
+  // on the same calendar day across different restaurants. No-op for guests.
+  const dinerConflictWindows = useDinerConflictWindows({
+    userProfileId: profile?.id ?? null,
+    currentRestaurantId: restaurant?.id ?? null,
+    date: dineIn?.date || null,
+    timezone: restaurant?.timezone ?? null,
+  });
+  const filteredAvailabilitySlots = useMemo(
+    () => filterSlotsByConflicts(availability.slots, dinerConflictWindows),
+    [availability.slots, dinerConflictWindows],
+  );
 
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
@@ -1179,7 +1294,6 @@ export default function RestaurantPublicPage() {
     });
   }, [paymentSplitMode, splitPartyCount]);
   const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
-  const [customTipAmount, setCustomTipAmount] = useState("");
   const [placing, setPlacing] = useState(false);
   const placingRef = useRef(false);
   const [orderError, setOrderError] = useState<string | null>(null);
@@ -1202,39 +1316,59 @@ export default function RestaurantPublicPage() {
 
   useEffect(() => {
     if (!restaurant?.id || !dineIn.date || typeof dineIn.party_size !== "number") return;
-    void fetchRestaurantSlots(restaurant.id, dineIn.date, dineIn.party_size);
-  }, [fetchRestaurantSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
+    void fetchRestaurantSlots(restaurant.id, dineIn.date, dineIn.party_size, {
+      forceRefresh: bookingLockedFromPreview,
+    });
+  }, [bookingLockedFromPreview, fetchRestaurantSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
 
   const availableTimeOptions = useMemo(
-    () => availability.slots.map((slot) => formatCompactTimeLabel(slot.display_time)),
-    [availability.slots],
+    () => filteredAvailabilitySlots.map((slot) => formatCompactTimeLabel(slot.display_time)),
+    [filteredAvailabilitySlots],
   );
 
-  const displayedTimeOptions = useMemo(
-    () => (
-      dineIn.time && !availableTimeOptions.includes(dineIn.time)
-        ? [dineIn.time, ...availableTimeOptions]
-        : availableTimeOptions
-    ),
-    [availableTimeOptions, dineIn.time],
+  const lockedPreviewSlotAvailable = useMemo(
+    () => {
+      if (!bookingLockedFromPreview) return false;
+      if (!requestedIsoSlot) return true;
+      if (availability.loading || !dineIn.date) return true;
+      return filteredAvailabilitySlots.some((slot) =>
+        slot.date_time === requestedIsoSlot && (!requestedShiftId || slot.shift_id === requestedShiftId),
+      );
+    },
+    [availability.loading, bookingLockedFromPreview, dineIn.date, filteredAvailabilitySlots, requestedIsoSlot, requestedShiftId],
   );
+  const bookingFieldsLocked = bookingLockedFromPreview && lockedPreviewSlotAvailable;
+  const previewSlotNoLongerAvailable =
+    bookingLockedFromPreview && Boolean(requestedIsoSlot) && !availability.loading && !lockedPreviewSlotAvailable;
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
     if (availableTimeOptions.includes(dineIn.time)) return;
-    if (bookingLockedFromPreview && initialBookingTime && dineIn.time === initialBookingTime) return;
+    // When the URL pinned a specific slot, leave dineIn.time alone so the
+    // "preview time no longer available" warning is the user's only signal —
+    // never silently substitute a different time (which is how a 6pm pick
+    // ended up submitted as 1pm).
+    if (bookingLockedFromPreview && requestedIsoSlot && !lockedPreviewSlotAvailable) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
     });
-  }, [availability.loading, availability.slots.length, availableTimeOptions, bookingLockedFromPreview, dineIn.date, dineIn.time, initialBookingTime]);
+  }, [
+    availability.loading,
+    availability.slots.length,
+    availableTimeOptions,
+    bookingLockedFromPreview,
+    dineIn.date,
+    dineIn.time,
+    lockedPreviewSlotAvailable,
+    requestedIsoSlot,
+  ]);
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length > 0 || !dineIn.time) return;
-    if (bookingLockedFromPreview && requestedIsoSlot) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: "" }));
     });
-  }, [availability.loading, availability.slots.length, bookingLockedFromPreview, dineIn.date, dineIn.time, requestedIsoSlot]);
+  }, [availability.loading, availability.slots.length, dineIn.date, dineIn.time]);
 
   const filteredMenu = useMemo(() => {
     let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
@@ -1327,16 +1461,11 @@ export default function RestaurantPublicPage() {
   const discountedSubtotal = Math.max(0, cartTotal - discount);
   const tax                = discountedSubtotal * taxRate;
   const total              = discountedSubtotal + tax;
-  const parsedCustomTip = Number.parseFloat(customTipAmount);
-  const tipAmount =
-    tipOption === "after"
-      ? 0
-      : tipOption === "custom"
-      ? Number.isFinite(parsedCustomTip) && parsedCustomTip > 0
-        ? parsedCustomTip
-        : 0
-      : cartTotal * (Number.parseInt(tipOption, 10) / 100);
-  const totalNow = total + tipAmount;
+  // Tip preference UI removed; tip is no longer collected at checkout. Keeping
+  // the variable wired through downstream calls so existing call sites that
+  // record `tip_amount: 0` don't need to change.
+  const tipAmount = 0;
+  const totalNow = total;
 
   const splitEachShare = useMemo(() => {
     if (paymentSplitMode !== "split") return NaN;
@@ -1372,12 +1501,23 @@ export default function RestaurantPublicPage() {
     setCart((prev) => prev.filter((c) => c.id !== id));
   }
 
-  const selectedAvailabilitySlot = availability.slots.find((slot) =>
-    (requestedIsoSlot && slot.date_time === requestedIsoSlot) ||
-    formatCompactTimeLabel(slot.display_time) === dineIn.time,
+  // Resolve the slot to submit. When the URL pinned a specific slot via
+  // ?slot=<ISO>, prefer the exact ISO match — this prevents the previous
+  // bug where a 6pm pick could submit as 1pm because find() returned the
+  // first slot whose display_time matched the (auto-reset) dineIn.time.
+  // Only fall back to a display_time match when the user has actively
+  // changed the time field (so dineIn.time no longer matches the URL pin).
+  const isoSlotMatch = requestedIsoSlot
+    ? filteredAvailabilitySlots.find((slot) => slot.date_time === requestedIsoSlot)
+    : undefined;
+  const dineInTimeMatch = filteredAvailabilitySlots.find(
+    (slot) => formatCompactTimeLabel(slot.display_time) === dineIn.time,
   );
+  const selectedAvailabilitySlot = requestedIsoSlot
+    ? (isoSlotMatch ?? (dineIn.time && dineIn.time !== initialBookingTime ? dineInTimeMatch : undefined))
+    : dineInTimeMatch;
   const selectedPreviewSlot =
-    requestedIsoSlot && requestedShiftId && dineIn.time
+    lockedPreviewSlotAvailable && requestedIsoSlot && requestedShiftId && dineIn.time
       ? {
           shift_id: requestedShiftId,
           shift_name: "Selected",
@@ -1398,6 +1538,7 @@ export default function RestaurantPublicPage() {
       typeof dineIn.party_size === "number" &&
       dineIn.party_size >= 1 &&
       dineIn.party_size <= maxBookablePartySize &&
+      !availability.loading &&
       Boolean(selectedBookingSlot)
     );
   };
@@ -1565,6 +1706,21 @@ export default function RestaurantPublicPage() {
     );
   }
 
+  // Manage-existing-booking mode: deep link from confirmation SMS/email
+  // (`/<slug>?confirmation=<code>`). Render the manage view instead of the booking flow.
+  const manageCode = searchParams.get("confirmation")?.trim() || null;
+  if (manageCode && restaurantSlug) {
+    return (
+      <div className="min-h-screen bg-bg-base text-text-primary">
+        <ManageBookingView
+          slug={restaurantSlug}
+          code={manageCode}
+          backHref={`/${restaurantSlug}`}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
       {/* ── Sticky back button ───────────────────────────────────────────────── */}
@@ -1578,26 +1734,26 @@ export default function RestaurantPublicPage() {
       </Button>
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
-      <div className={`relative h-40 w-full bg-gradient-to-b ${gradient}`}>
+      <div className={`relative h-12 w-full bg-gradient-to-b ${gradient}`}>
         <div className="absolute inset-0 bg-gradient-to-t from-bg-base via-bg-base/20 to-transparent" />
       </div>
 
       {/* ── Restaurant info ───────────────────────────────────────────────────── */}
-      <div className="mx-auto -mt-8 max-w-6xl px-4 sm:px-6 lg:px-10">
+      <div className="mx-auto max-w-6xl px-4 pt-2 sm:px-6 lg:px-10">
         <div className="flex items-end justify-between gap-4 pb-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">{restaurant.name}</h1>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-              {restaurant.cuisine_type && <span className="text-text-secondary">{restaurant.cuisine_type}</span>}
+              {restaurant.cuisine_type && <span className="text-text-secondary">{capitalizeWords(restaurant.cuisine_type)}</span>}
               <RestaurantPriceMeter level={publicPriceLevel} />
               {publicDietaryTags.map((tag) => (
                 <DietaryTagPill key={tag} tag={tag} compact />
               ))}
-              {restaurant.avg_rating != null && (restaurant.total_reviews ?? 0) > 0 && (
+              {publicReviewSummary.avgRating != null && publicReviewSummary.totalReviews > 0 && (
                 <span className="flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5">
                   <Star className="size-3 fill-gold text-gold" />
-                  <span className="font-bold text-gold">{restaurant.avg_rating.toFixed(1)}</span>
-                  {restaurant.total_reviews && <span className="text-text-muted">({restaurant.total_reviews})</span>}
+                  <span className="font-bold text-gold">{publicReviewSummary.avgRating.toFixed(1)}</span>
+                  <span className="text-text-muted">({publicReviewSummary.totalReviews})</span>
                 </span>
               )}
               {restaurant.address && (
@@ -1731,16 +1887,16 @@ export default function RestaurantPublicPage() {
                             value={dineIn.time}
                             onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
                             disabled={
-                              bookingLockedFromPreview ||
-                              (dineIn.date ? availability.loading || availability.slots.length === 0 : false)
+                              bookingFieldsLocked ||
+                              (dineIn.date ? availability.loading || availableTimeOptions.length === 0 : false)
                             }
                             className={cn(
                               "h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40",
-                              bookingLockedFromPreview && "cursor-not-allowed opacity-55",
+                              bookingFieldsLocked && "cursor-not-allowed opacity-55",
                             )}
                           >
-                            {displayedTimeOptions.length > 0 ? (
-                              displayedTimeOptions.map((time) => (
+                            {availableTimeOptions.length > 0 ? (
+                              availableTimeOptions.map((time) => (
                                 <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
                               ))
                             ) : (
@@ -1751,7 +1907,11 @@ export default function RestaurantPublicPage() {
                         </div>
                         {dineIn.date && availability.loading ? (
                           <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>
-                        ) : dineIn.date && availability.slots.length === 0 ? (
+                        ) : previewSlotNoLongerAvailable ? (
+                          <p className="mt-1.5 text-[11px] text-warning">
+                            That preview time is no longer available. Pick another time.
+                          </p>
+                        ) : dineIn.date && availableTimeOptions.length === 0 ? (
                           <p className="mt-1.5 text-[11px] text-warning">
                             {typeof dineIn.party_size === "number" && dineIn.party_size > maxBookablePartySize
                               ? `Maximum party size is ${maxBookablePartySize}.`
@@ -1769,7 +1929,7 @@ export default function RestaurantPublicPage() {
                             min={1}
                             max={maxBookablePartySize}
                             value={dineIn.party_size}
-                            disabled={bookingLockedFromPreview}
+                            disabled={bookingFieldsLocked}
                             onChange={(e) => {
                               const raw = e.target.value;
                               if (raw === "") {
@@ -1783,11 +1943,11 @@ export default function RestaurantPublicPage() {
                             }}
                             className={cn(
                               "h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-                              bookingLockedFromPreview && "cursor-not-allowed opacity-55",
+                              bookingFieldsLocked && "cursor-not-allowed opacity-55",
                             )}
                           />
                         </div>
-                        {bookingLockedFromPreview ? (
+                        {bookingFieldsLocked ? (
                           <p className="mt-1.5 text-[11px] text-text-muted">
                             {t("customerPublic.booking.selectedFromPreview")}
                           </p>
@@ -2118,9 +2278,16 @@ export default function RestaurantPublicPage() {
           {/* ═══════════════════════════════════ STEP 4: CHECKOUT ══════════════ */}
           {step === "checkout" && (
             <motion.div key="checkout" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
-              <div className="mb-5 flex items-center justify-between">
+              <div className="mb-5 flex items-center justify-between gap-3">
                 <h2 className="text-lg font-bold text-white">Review & Pay</h2>
-                <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Edit details</button>
+                <button
+                  type="button"
+                  onClick={() => setStep("details")}
+                  className="inline-flex items-center gap-2 rounded-xl border-2 border-gold/40 bg-gold/10 px-5 py-3 text-base font-semibold text-gold shadow-md shadow-gold/10 transition-all hover:border-gold hover:bg-gold/20 hover:shadow-lg hover:shadow-gold/20"
+                >
+                  <ArrowLeft className="size-5" />
+                  Edit details
+                </button>
               </div>
 
               {/* Order summary */}
@@ -2158,14 +2325,6 @@ export default function RestaurantPublicPage() {
                     </div>
                   )}
                   <div className="flex justify-between text-sm">
-                    <span className="text-text-secondary">
-                      Tip {tipOption === "after" ? "(after experience)" : ""}
-                    </span>
-                    <span className="text-text-primary">
-                      {tipOption === "after" ? "Pay later" : formatCurrency(tipAmount, currency)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
                     <span className="text-text-secondary">Tax ({(taxRate * 100).toFixed(0)}%)</span>
                     <span className="text-text-primary">{formatCurrency(tax, currency)}</span>
                   </div>
@@ -2179,7 +2338,7 @@ export default function RestaurantPublicPage() {
               {/* Booking summary */}
               <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
                 <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-text-muted">Reservation</p>
-                <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-3 lg:grid-cols-4">
                   <div><p className="text-text-muted text-xs">Name</p><p className="font-medium text-text-primary">{dineIn.name}</p></div>
                   <div><p className="text-text-muted text-xs">Date & Time</p><p className="font-medium text-text-primary">{dineIn.date} · {formatCompactTimeLabel(dineIn.time)}</p></div>
                   <div><p className="text-text-muted text-xs">Party size</p><p className="font-medium text-text-primary">{dineIn.party_size || 1} guests</p></div>
@@ -2189,58 +2348,13 @@ export default function RestaurantPublicPage() {
                       <p className="font-medium text-text-primary">{dineIn.seating_preference}</p>
                     </div>
                   )}
-                  {dineIn.allergies && <div className="col-span-2"><p className="text-text-muted text-xs">Dietary notes</p><p className="font-medium text-text-primary">{dineIn.allergies}</p></div>}
+                  {dineIn.allergies && <div><p className="text-text-muted text-xs">Dietary notes</p><p className="font-medium text-text-primary">{dineIn.allergies}</p></div>}
                   {dineIn.occasion && <div><p className="text-text-muted text-xs">Occasion</p><p className="font-medium text-text-primary">{dineIn.occasion}</p></div>}
                 </div>
               </div>
 
               {/* Payment */}
               <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
-                <div className="mb-4 rounded-xl border border-border bg-bg-elevated p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-text-muted">
-                    Tip preference
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { id: "15", label: "15%" },
-                      { id: "18", label: "18%" },
-                      { id: "20", label: "20%" },
-                      { id: "custom", label: "Custom" },
-                      { id: "after", label: "Tip after experience" },
-                    ].map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() =>
-                          setTipOption(opt.id as "15" | "18" | "20" | "custom" | "after")
-                        }
-                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
-                          tipOption === opt.id
-                            ? "border-gold bg-gold/10 text-gold"
-                            : "border-border text-text-secondary hover:border-gold/30 hover:text-gold"
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                  {tipOption === "custom" && (
-                    <div className="mt-3">
-                      <Label htmlFor="custom-tip" className="mb-1.5 block text-xs text-text-muted">
-                        Custom tip amount
-                      </Label>
-                      <Input
-                        id="custom-tip"
-                        inputMode="decimal"
-                        value={customTipAmount}
-                        onChange={(e) =>
-                          setCustomTipAmount(e.target.value.replace(/[^\d.]/g, "").slice(0, 8))
-                        }
-                        placeholder="0.00"
-                      />
-                    </div>
-                  )}
-                </div>
                 <div className="mb-4 rounded-xl border border-border bg-bg-elevated p-3">
                   <div className="mb-2 flex items-center gap-2">
                     <Split className="size-4 text-gold" />
@@ -2465,11 +2579,12 @@ export default function RestaurantPublicPage() {
                 </div>
               )}
               <Button
-                className="mt-5 h-12 w-full text-base font-semibold"
+                size="lg"
+                className="mt-6 h-16 w-full rounded-2xl text-lg font-semibold tracking-wide [&_svg:not([class*='size-'])]:size-5"
                 disabled={(paymentSplitMode === "split" && !splitCheckoutValid) || placing}
                 onClick={() => void handlePlaceOrder()}
               >
-                <Lock className="size-4 mr-2" />
+                <Lock className="mr-2" />
                 {placing ? "Placing order…" : "Place Order"}
               </Button>
               <p className="mt-2 text-center text-[11px] text-text-muted">
@@ -2532,7 +2647,6 @@ export default function RestaurantPublicPage() {
                         setStep("details");
                         setCart([]);
                         setTipOption("18");
-                        setCustomTipAmount("");
                         setPaymentSplitMode("single");
                         setSplitPartyCountInput("2");
                         setCardNumber("");

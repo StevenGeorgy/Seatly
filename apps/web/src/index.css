@@ -225,3 +225,20 @@
 .pac-logo::after {
     display: none;
 }
+
+/* Map hover-name tooltip — strip Google InfoWindow chrome */
+.gm-style .gm-style-iw-c {
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+.gm-style .gm-style-iw-d {
+    overflow: visible !important;
+    padding: 0 !important;
+}
+.gm-style .gm-style-iw-tc {
+    display: none !important;
+}
+.gm-style .gm-style-iw-c button.gm-ui-hover-effect {
+    display: none !important;
+}

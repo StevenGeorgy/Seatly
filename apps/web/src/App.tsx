@@ -10,6 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppRoutes } from "@/routes/AppRoutes";
 import { useUser } from "@/hooks/useUser";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
+import { ReservationReviewPrompt } from "@/components/customer/ReservationReviewPrompt";
 
 const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password"]);
 const CenaivaVoiceShell = lazy(() =>
@@ -42,6 +43,16 @@ function AuthedCenaivaUI() {
   );
 }
 
+function AuthedReservationReviewPrompt() {
+  const { user, profile } = useUser();
+  const { pathname } = useLocation();
+
+  if (!user || !profile || PUBLIC_PATHS.has(pathname) || pathname.startsWith("/auth/")) return null;
+  if (pathname.startsWith("/dashboard")) return null;
+
+  return <ReservationReviewPrompt />;
+}
+
 function CustomerVoiceOrbFAB() {
   const assistant = useAssistant();
   const { state } = useAssistantStore();
@@ -71,6 +82,7 @@ export default function App() {
             <DevSupabaseBanner />
             <AppRoutes />
             <AuthedCenaivaUI />
+            <AuthedReservationReviewPrompt />
             <Toaster
               richColors
               position="top-center"

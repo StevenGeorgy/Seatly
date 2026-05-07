@@ -18,14 +18,16 @@ export function RestaurantPriceMeter({
 }: RestaurantPriceMeterProps) {
   const normalizedLevel = normalizeRestaurantPriceLevel(level);
 
+  if (normalizedLevel == null) return null;
+
   return (
     <span className={cn("inline-flex items-center gap-0.5 font-semibold", className)}>
       {PRICE_SLOTS.map((slot) => (
         <span
           key={slot}
           className={cn(
-            slot <= (normalizedLevel ?? 0) ? "text-gold" : "text-transparent [-webkit-text-stroke:1px_var(--text-muted)]",
-            slot <= (normalizedLevel ?? 0) ? activeClassName : inactiveClassName,
+            slot <= normalizedLevel ? "text-gold" : "text-transparent [-webkit-text-stroke:1px_var(--text-muted)]",
+            slot <= normalizedLevel ? activeClassName : inactiveClassName,
           )}
         >
           $

@@ -22,12 +22,15 @@ type RequestBody = {
   partySize?: unknown;
   special_request?: unknown;
   specialRequest?: unknown;
+  confirmation_code?: unknown;
+  confirmationCode?: unknown;
 };
 
 type ReservationRow = {
   id: string;
   restaurant_id: string;
   guest_id: string;
+  user_profile_id: string | null;
   reserved_at: string;
   party_size: number;
   status: string | null;
@@ -123,18 +126,9 @@ Deno.serve(async (req: Request) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!bearerToken) return json({ error: "Authentication required" }, 401);
-
-    const {
-      data: { user },
-      error: userError,
-    } = await adminClient.auth.getUser(bearerToken);
-    if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
-
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const reservationId = cleanString(body.reservation_id ?? body.reservationId);
+    const providedCode = cleanString(body.confirmation_code ?? body.confirmationCode);
     const date = cleanString(body.date);
     const time = cleanString(body.time);
     const partySize = Math.max(1, Math.floor(Number(body.party_size ?? body.partySize)));
@@ -145,30 +139,56 @@ Deno.serve(async (req: Request) => {
     if (!time || parseTimeToMinutes(time) == null) return json({ error: "Valid time is required" }, 400);
     if (!Number.isFinite(partySize) || partySize < 1) return json({ error: "Valid party size is required" }, 400);
 
-    const { data: profile, error: profileError } = await adminClient
-      .from("user_profiles")
-      .select("id")
-      .eq("auth_user_id", user.id)
-      .maybeSingle();
-    if (profileError) return json({ error: profileError.message }, 400);
-    if (!profile) return json({ error: "User profile not found" }, 403);
-
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
-      .select("id, restaurant_id, guest_id, reserved_at, party_size, status, special_request, internal_notes, confirmation_code, guest_full_name, guest_email, guest_phone")
+      .select("id, restaurant_id, guest_id, user_profile_id, reserved_at, party_size, status, special_request, internal_notes, confirmation_code, guest_full_name, guest_email, guest_phone")
       .eq("id", reservationId)
       .maybeSingle<ReservationRow>();
     if (reservationError) return json({ error: reservationError.message }, 400);
     if (!reservation) return json({ error: "Reservation not found" }, 404);
 
-    const { data: guest, error: guestError } = await adminClient
-      .from("guests")
-      .select("id, full_name, email, phone")
-      .eq("id", reservation.guest_id)
-      .eq("user_profile_id", profile.id)
-      .maybeSingle<GuestRow>();
-    if (guestError) return json({ error: guestError.message }, 400);
-    if (!guest) return json({ error: "You can only modify your own reservations" }, 403);
+    let guest: GuestRow | null = null;
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+    if (bearerToken) {
+      const {
+        data: { user },
+        error: userError,
+      } = await adminClient.auth.getUser(bearerToken);
+      if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
+
+      const { data: profile, error: profileError } = await adminClient
+        .from("user_profiles")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .maybeSingle();
+      if (profileError) return json({ error: profileError.message }, 400);
+      if (!profile) return json({ error: "User profile not found" }, 403);
+
+      const { data: ownedGuest, error: guestError } = await adminClient
+        .from("guests")
+        .select("id, full_name, email, phone")
+        .eq("id", reservation.guest_id)
+        .eq("user_profile_id", profile.id)
+        .maybeSingle<GuestRow>();
+      if (guestError) return json({ error: guestError.message }, 400);
+      if (!ownedGuest) return json({ error: "You can only modify your own reservations" }, 403);
+      guest = ownedGuest;
+    } else if (providedCode) {
+      const expectedCode = (reservation.confirmation_code ?? "").trim();
+      if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
+        return json({ error: "Invalid confirmation code" }, 401);
+      }
+      const { data: linkedGuest } = await adminClient
+        .from("guests")
+        .select("id, full_name, email, phone")
+        .eq("id", reservation.guest_id)
+        .maybeSingle<GuestRow>();
+      guest = linkedGuest;
+    } else {
+      return json({ error: "Authentication required" }, 401);
+    }
 
     if (!["pending", "confirmed"].includes(reservation.status ?? "pending")) {
       return json({ error: "Only upcoming reservations can be modified" }, 400);
@@ -261,6 +281,53 @@ Deno.serve(async (req: Request) => {
       return json({ error: "That time is no longer available for this party size" }, 409);
     }
 
+    // Diner double-book guard. Mirrors create-public-booking: matches by
+    // user_profile_id (logged-in) or guest_email/guest_phone (guest) and
+    // rejects when the new [start, start+turnMinutes] window overlaps an
+    // existing active reservation, whether it's at this restaurant or another.
+    // The reservation being edited is excluded by id so it doesn't conflict
+    // with itself.
+    {
+      const idClauses: string[] = [];
+      const guestEmailRaw = reservation.guest_email?.trim() ?? null;
+      const guestPhoneRaw = reservation.guest_phone?.trim() ?? null;
+      if (reservation.user_profile_id) idClauses.push(`user_profile_id.eq.${reservation.user_profile_id}`);
+      if (guestEmailRaw) idClauses.push(`guest_email.eq.${guestEmailRaw}`);
+      if (guestPhoneRaw) idClauses.push(`guest_phone.eq.${guestPhoneRaw}`);
+      if (idClauses.length > 0) {
+        const windowStart = new Date(reservedAt.getTime() - 24 * 60 * 60_000).toISOString();
+        const windowEnd = new Date(reservedAt.getTime() + 24 * 60 * 60_000).toISOString();
+        const { data: otherBookings } = await adminClient
+          .from("reservations")
+          .select("id, restaurant_id, reserved_at, duration_minutes")
+          .neq("id", reservationId)
+          .in("status", ["pending", "confirmed", "seated"])
+          .gte("reserved_at", windowStart)
+          .lte("reserved_at", windowEnd)
+          .or(idClauses.join(","));
+        const overlap = (otherBookings ?? []).find((row) => {
+          const otherStart = new Date(row.reserved_at);
+          const minutes = typeof row.duration_minutes === "number" && row.duration_minutes > 0
+            ? row.duration_minutes
+            : 90;
+          const otherEnd = new Date(otherStart.getTime() + minutes * 60_000);
+          return reservedAt < otherEnd && otherStart < slotEnd;
+        });
+        if (overlap) {
+          const sameRestaurant = overlap.restaurant_id === reservation.restaurant_id;
+          return json(
+            {
+              error: sameRestaurant
+                ? "You already have another reservation at this restaurant during that window. Please cancel or modify it first."
+                : "You already have a reservation at this time at another restaurant. Please cancel or modify that booking first.",
+              unavailable_reason: "diner_double_book",
+            },
+            409,
+          );
+        }
+      }
+    }
+
     const { data: tableIds, error: tableError } = await adminClient.rpc("find_available_table_group", {
       p_restaurant_id: reservation.restaurant_id,
       p_reserved_at: reservedAtIso,
@@ -308,28 +375,30 @@ Deno.serve(async (req: Request) => {
 
     const guestName =
       reservation.guest_full_name?.trim() ||
-      guest.full_name?.trim() ||
+      guest?.full_name?.trim() ||
       "there";
-    const guestEmail = reservation.guest_email?.trim() || guest.email?.trim() || null;
-    const guestPhone = reservation.guest_phone?.trim() || guest.phone?.trim() || null;
+    const guestEmail = reservation.guest_email?.trim() || guest?.email?.trim() || null;
+    const guestPhone = reservation.guest_phone?.trim() || guest?.phone?.trim() || null;
     const nextDateLabel = formatReservationDate(reservedAt, timezone);
     const codeLine = reservation.confirmation_code?.trim()
       ? ` Confirmation code: ${reservation.confirmation_code.trim()}.`
       : "";
-    const notification = await sendReservationNotification({
-      supabase: adminClient,
-      guestId: guest.id,
-      restaurantId: reservation.restaurant_id,
-      reservationId,
-      type: "reservation_modification",
-      email: guestEmail,
-      phone: guestPhone,
-      subject: `Your reservation at ${restaurantName} was updated`,
-      body:
-        `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
-        `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
-        codeLine,
-    });
+    const notification = guest
+      ? await sendReservationNotification({
+          supabase: adminClient,
+          guestId: guest.id,
+          restaurantId: reservation.restaurant_id,
+          reservationId,
+          type: "reservation_modification",
+          email: guestEmail,
+          phone: guestPhone,
+          subject: `Your reservation at ${restaurantName} was updated`,
+          body:
+            `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
+            `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
+            codeLine,
+        })
+      : ({ status: "skipped" as const, channel: null });
 
     return json({
       ok: true,

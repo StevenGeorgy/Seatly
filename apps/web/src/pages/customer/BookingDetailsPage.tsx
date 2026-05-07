@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { format } from "date-fns";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -31,7 +30,7 @@ import {
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { dateInTz, formatCompactTimeLabelInTz, timeInTz } from "@/lib/utils/time";
 
 function statusFor(row: MyReservationRow): ReservationDisplayStatus {
   return reservationDisplayStatus(row);
@@ -154,8 +153,9 @@ export default function BookingDetailsPage() {
 
   const openModifyDialog = () => {
     if (!reservation || !reservedAt || !canModify) return;
-    setModifyDate(format(reservedAt, "yyyy-MM-dd"));
-    setModifyTime(format(reservedAt, "HH:mm"));
+    const tz = reservation.restaurant?.timezone ?? null;
+    setModifyDate(dateInTz(reservedAt, tz));
+    setModifyTime(timeInTz(reservedAt, tz));
     setModifyPartySize(String(reservation.party_size));
     setModifyNotes(reservation.special_request ?? "");
     setModifyOpen(true);
@@ -167,8 +167,9 @@ export default function BookingDetailsPage() {
       return;
     }
     autoOpenedFromUrl.current = true;
-    setModifyDate(format(reservedAt, "yyyy-MM-dd"));
-    setModifyTime(format(reservedAt, "HH:mm"));
+    const tz = reservation.restaurant?.timezone ?? null;
+    setModifyDate(dateInTz(reservedAt, tz));
+    setModifyTime(timeInTz(reservedAt, tz));
     setModifyPartySize(String(reservation.party_size));
     setModifyNotes(reservation.special_request ?? "");
     setModifyOpen(true);
@@ -308,12 +309,18 @@ export default function BookingDetailsPage() {
                   <DetailRow
                     icon={CalendarDays}
                     label="Date"
-                    value={format(reservedAt, "EEEE, MMMM d, yyyy")}
+                    value={new Intl.DateTimeFormat("en-US", {
+                      timeZone: reservation.restaurant?.timezone ?? undefined,
+                      weekday: "long",
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    }).format(reservedAt)}
                   />
                   <DetailRow
                     icon={Clock}
                     label="Time"
-                    value={formatCompactTimeLabel(reservedAt)}
+                    value={formatCompactTimeLabelInTz(reservedAt, reservation.restaurant?.timezone ?? null)}
                   />
                   <DetailRow
                     icon={Users}

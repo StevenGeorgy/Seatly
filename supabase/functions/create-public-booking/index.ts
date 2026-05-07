@@ -194,12 +194,15 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant } = await supabase
       .from("restaurants")
-      .select("id, name, timezone, hours_json")
+      .select("id, name, slug, timezone, hours_json")
       .eq("id", restaurantId)
       .maybeSingle();
     const restaurantName = typeof restaurant?.name === "string" && restaurant.name.trim()
       ? restaurant.name.trim()
       : "the restaurant";
+    const restaurantSlug = typeof restaurant?.slug === "string" && restaurant.slug.trim()
+      ? restaurant.slug.trim()
+      : null;
     const localBookingDate = localDateForDateTime(reservedAt, restaurant?.timezone || "UTC");
     const closure = localBookingDate
       ? findClosedSpecialDayForDate(restaurant?.hours_json, localBookingDate)
@@ -387,11 +390,60 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // Diner double-book guard. Blocks a diner from holding two overlapping
+    // reservations whether they're at the same restaurant or different ones.
+    // Logged-in: matches by user_profile_id. Guest checkout: matches by phone
+    // OR email. The exact-match idempotency check above already returns the
+    // existing reservation when this is a re-submit of the same slot/party,
+    // so reaching this guard means the new request is a genuinely different
+    // booking that overlaps an existing one.
+    {
+      const idClauses: string[] = [];
+      if (userProfileId) idClauses.push(`user_profile_id.eq.${userProfileId}`);
+      if (guestEmail) idClauses.push(`guest_email.eq.${guestEmail}`);
+      if (guestPhone) idClauses.push(`guest_phone.eq.${guestPhone}`);
+      if (idClauses.length > 0) {
+        const slotStart = reservedAt;
+        const slotEnd = new Date(slotStart.getTime() + turnMinutes * 60_000);
+        // Pad ±24h to capture timezone edges; we'll do exact overlap math below.
+        const windowStart = new Date(slotStart.getTime() - 24 * 60 * 60_000).toISOString();
+        const windowEnd = new Date(slotStart.getTime() + 24 * 60 * 60_000).toISOString();
+        const { data: otherBookings } = await supabase
+          .from("reservations")
+          .select("id, restaurant_id, reserved_at, duration_minutes")
+          .in("status", ["pending", "confirmed", "seated"])
+          .gte("reserved_at", windowStart)
+          .lte("reserved_at", windowEnd)
+          .or(idClauses.join(","));
+        const overlap = (otherBookings ?? []).find((row) => {
+          const otherStart = new Date(row.reserved_at);
+          const minutes = typeof row.duration_minutes === "number" && row.duration_minutes > 0
+            ? row.duration_minutes
+            : 90;
+          const otherEnd = new Date(otherStart.getTime() + minutes * 60_000);
+          return slotStart < otherEnd && otherStart < slotEnd;
+        });
+        if (overlap) {
+          const sameRestaurant = overlap.restaurant_id === restaurantId;
+          return jsonResponse(
+            {
+              error: sameRestaurant
+                ? "You already have a reservation at this restaurant during that window. Please cancel or modify the existing one first."
+                : "You already have a reservation at this time at another restaurant. Please cancel or modify that booking first.",
+              unavailable_reason: "diner_double_book",
+            },
+            409,
+          );
+        }
+      }
+    }
+
     const { data: reservation, error: reservationError } = await supabase
       .from("reservations")
       .insert({
         restaurant_id: restaurantId,
         guest_id: guestId,
+        user_profile_id: userProfileId,
         shift_id: shiftId,
         party_size: partySize,
         reserved_at: reservedAt.toISOString(),
@@ -501,10 +553,14 @@ Deno.serve(async (req: Request) => {
 
     const reservationDateLabel = formatReservationDate(reservedAt);
     const confirmationSubject = `Your reservation at ${restaurantName}`;
+    const manageLink = restaurantSlug && savedConfirmationCode
+      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(savedConfirmationCode)}`
+      : null;
     const confirmationBody =
       `Hi ${guestName}, your table at ${restaurantName} is booked for ${partySize} ` +
       `${partySize === 1 ? "guest" : "guests"} on ${reservationDateLabel}. ` +
-      `Confirmation code: ${savedConfirmationCode}.`;
+      `Confirmation code: ${savedConfirmationCode}.` +
+      (manageLink ? ` Manage: ${manageLink}` : "");
     let confirmationChannel: "email" | "sms" | null = null;
     let confirmationStatus: "sent" | "skipped" | "failed" = "skipped";
 

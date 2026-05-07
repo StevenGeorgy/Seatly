@@ -14,6 +14,8 @@ const corsHeaders = {
 type RequestBody = {
   reservation_id?: unknown;
   reservationId?: unknown;
+  confirmation_code?: unknown;
+  confirmationCode?: unknown;
 };
 
 type ReservationRow = {
@@ -68,27 +70,10 @@ Deno.serve(async (req: Request) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!bearerToken) return json({ error: "Authentication required" }, 401);
-
-    const {
-      data: { user },
-      error: userError,
-    } = await adminClient.auth.getUser(bearerToken);
-    if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
-
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const reservationId = cleanString(body.reservation_id ?? body.reservationId);
+    const providedCode = cleanString(body.confirmation_code ?? body.confirmationCode);
     if (!reservationId) return json({ error: "reservation_id is required" }, 400);
-
-    const { data: profile, error: profileError } = await adminClient
-      .from("user_profiles")
-      .select("id")
-      .eq("auth_user_id", user.id)
-      .maybeSingle();
-    if (profileError) return json({ error: profileError.message }, 400);
-    if (!profile) return json({ error: "User profile not found" }, 403);
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
@@ -98,14 +83,48 @@ Deno.serve(async (req: Request) => {
     if (reservationError) return json({ error: reservationError.message }, 400);
     if (!reservation) return json({ error: "Reservation not found" }, 404);
 
-    const { data: guest, error: guestError } = await adminClient
-      .from("guests")
-      .select("id, full_name, email, phone")
-      .eq("id", reservation.guest_id)
-      .eq("user_profile_id", profile.id)
-      .maybeSingle<GuestRow>();
-    if (guestError) return json({ error: guestError.message }, 400);
-    if (!guest) return json({ error: "You can only cancel your own reservations" }, 403);
+    let guest: GuestRow | null = null;
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+    if (bearerToken) {
+      const {
+        data: { user },
+        error: userError,
+      } = await adminClient.auth.getUser(bearerToken);
+      if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
+
+      const { data: profile, error: profileError } = await adminClient
+        .from("user_profiles")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .maybeSingle();
+      if (profileError) return json({ error: profileError.message }, 400);
+      if (!profile) return json({ error: "User profile not found" }, 403);
+
+      const { data: ownedGuest, error: guestError } = await adminClient
+        .from("guests")
+        .select("id, full_name, email, phone")
+        .eq("id", reservation.guest_id)
+        .eq("user_profile_id", profile.id)
+        .maybeSingle<GuestRow>();
+      if (guestError) return json({ error: guestError.message }, 400);
+      if (!ownedGuest) return json({ error: "You can only cancel your own reservations" }, 403);
+      guest = ownedGuest;
+    } else if (providedCode) {
+      const expectedCode = (reservation.confirmation_code ?? "").trim();
+      if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
+        return json({ error: "Invalid confirmation code" }, 401);
+      }
+      const { data: linkedGuest } = await adminClient
+        .from("guests")
+        .select("id, full_name, email, phone")
+        .eq("id", reservation.guest_id)
+        .maybeSingle<GuestRow>();
+      guest = linkedGuest;
+    } else {
+      return json({ error: "Authentication required" }, 401);
+    }
 
     if (reservation.status === "cancelled") {
       return json({ ok: true, reservation_id: reservationId, status: "cancelled" });
@@ -130,10 +149,10 @@ Deno.serve(async (req: Request) => {
         : "the restaurant";
     const guestName =
       reservation.guest_full_name?.trim() ||
-      guest.full_name?.trim() ||
+      guest?.full_name?.trim() ||
       "there";
-    const guestEmail = reservation.guest_email?.trim() || guest.email?.trim() || null;
-    const guestPhone = reservation.guest_phone?.trim() || guest.phone?.trim() || null;
+    const guestEmail = reservation.guest_email?.trim() || guest?.email?.trim() || null;
+    const guestPhone = reservation.guest_phone?.trim() || guest?.phone?.trim() || null;
     const dateLabel = formatReservationDate(
       reservedAt,
       restaurant?.timezone?.trim() || "America/Toronto",
@@ -143,6 +162,10 @@ Deno.serve(async (req: Request) => {
       : "";
 
     const sendCancellationNotice = async () => {
+      if (!guest) {
+        // No linked guest record — skip notification but report skipped status.
+        return { status: "skipped" as const, channel: null };
+      }
       return await sendReservationNotification({
         supabase: adminClient,
         guestId: guest.id,

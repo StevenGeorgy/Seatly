@@ -146,12 +146,18 @@ async function fetchDisplayAvailabilitySlots(
   restaurantId: string,
   date: string,
   partySize: number,
+  options: { forceRefresh?: boolean } = {},
 ): Promise<AvailabilitySlot[]> {
   const unique: AvailabilitySlot[] = [];
   const seen = new Set<string>();
 
   for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
-    const result = await fetchAvailabilitySlots(restaurantId, addDateDays(date, offset), partySize)
+    const result = await fetchAvailabilitySlots(
+      restaurantId,
+      addDateDays(date, offset),
+      partySize,
+      { forceRefresh: options.forceRefresh },
+    )
       .catch(() => ({ slots: [] as AvailabilitySlot[] }));
     for (const slot of result.slots ?? []) {
       if (new Date(slot.date_time).getTime() < Date.now()) continue;
@@ -166,7 +172,10 @@ async function fetchDisplayAvailabilitySlots(
   return unique;
 }
 
-function adaptRestaurantPreview(restaurant: Restaurant, bookedToday: number): RestaurantPreviewSummary {
+function adaptRestaurantPreview(
+  restaurant: Restaurant,
+  stats: { bookedToday: number; avgRating: number | null; totalReviews: number },
+): RestaurantPreviewSummary {
   return {
     id: restaurant.id,
     slug: restaurant.slug,
@@ -174,7 +183,7 @@ function adaptRestaurantPreview(restaurant: Restaurant, bookedToday: number): Re
     cuisine: restaurant.cuisine_type ?? "",
     price: priceFromRange(restaurant.price_range),
     area: restaurant.city ?? restaurant.address ?? "",
-    bookedToday,
+    bookedToday: stats.bookedToday,
     slots: [],
     initials: restaurantInitials(restaurant.name),
     badge: restaurant.business_type ?? "",
@@ -182,6 +191,8 @@ function adaptRestaurantPreview(restaurant: Restaurant, bookedToday: number): Re
     features: [restaurant.cuisine_type, restaurant.business_type, restaurant.city].filter(Boolean) as string[],
     logoUrl: restaurant.logo_url,
     coverPhotoUrl: restaurant.cover_photo_url,
+    avgRating: stats.avgRating,
+    totalReviews: stats.totalReviews,
   };
 }
 
@@ -629,6 +640,7 @@ export default function DealsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<EventPromotionDisplay | null>(null);
   const [previewRestaurant, setPreviewRestaurant] = useState<RestaurantPreviewSummary | null>(null);
+  const [previewAvailabilityNotice, setPreviewAvailabilityNotice] = useState<string | null>(null);
   const [favoriteRestaurants, setFavoriteRestaurants] = useState<Set<string>>(new Set());
   const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
 
@@ -674,7 +686,7 @@ export default function DealsPage() {
   const restaurantPreviews = useMemo(
     () => publicRestaurants.map((restaurant) => adaptRestaurantPreview(
       restaurant,
-      statsByRestaurantId[restaurant.id]?.bookedToday ?? 0,
+      statsByRestaurantId[restaurant.id] ?? { bookedToday: 0, avgRating: null, totalReviews: 0 },
     )),
     [publicRestaurants, statsByRestaurantId],
   );
@@ -790,7 +802,10 @@ export default function DealsPage() {
           restaurant.name.toLowerCase() === item.restaurantName.toLowerCase()
         );
       });
-    if (preview) setPreviewRestaurant(preview);
+    if (preview) {
+      setPreviewAvailabilityNotice(null);
+      setPreviewRestaurant(preview);
+    }
   };
 
   const openRestaurantPreviewFromEvent = (e: DemoEvent) => {
@@ -830,17 +845,53 @@ export default function DealsPage() {
     bookItem(e.detail);
   };
 
-  const bookEventSlot = (e: DemoEvent, slot: AvailabilitySlot) => {
+  const refreshRestaurantDisplaySlots = async (
+    restaurantId: string,
+    partyCount: number,
+    options: { forceRefresh?: boolean } = {},
+  ) => {
+    const refreshedSlots = await fetchDisplayAvailabilitySlots(
+      restaurantId,
+      selectedBookingDate,
+      partyCount,
+      options,
+    );
+    setAvailabilityByRestaurantId((prev) => ({
+      ...prev,
+      [restaurantId]: refreshedSlots,
+    }));
+    return refreshedSlots;
+  };
+
+  const bookEventSlot = async (e: DemoEvent, slot: AvailabilitySlot) => {
+    const partyCount = Number.parseInt(partySize, 10) || 2;
+    const refreshed = await fetchAvailabilitySlots(
+      e.restaurantId,
+      slot.date_time.slice(0, 10),
+      partyCount,
+      { forceRefresh: true },
+    ).catch(() => null);
+    const refreshedSlot = refreshed?.slots.find((candidate) =>
+      candidate.date_time === slot.date_time && candidate.shift_id === slot.shift_id,
+    );
+    if (!refreshedSlot) {
+      await refreshRestaurantDisplaySlots(e.restaurantId, partyCount, { forceRefresh: true });
+      openRestaurantPreviewFromEvent(e);
+      setPreviewAvailabilityNotice(
+        refreshed?.message ?? "That time is no longer available. Pick another time.",
+      );
+      return;
+    }
     const params = new URLSearchParams({
       back: "deals",
-      slot: slot.date_time,
-      time: formatCompactTimeLabel(slot.display_time),
-      people: partySize,
-      date: slot.date_time.slice(0, 10),
+      slot: refreshedSlot.date_time,
+      time: formatCompactTimeLabel(refreshedSlot.display_time),
+      people: String(partyCount),
+      date: refreshedSlot.date_time.slice(0, 10),
       source: e.detail.source,
       item: e.detail.id,
     });
-    if (slot.shift_id) params.set("shift_id", slot.shift_id);
+    if (refreshedSlot.shift_id) params.set("shift_id", refreshedSlot.shift_id);
     const returnDetail = `${e.detail.source}-${e.detail.id}`;
     params.set("returnDetail", returnDetail);
     markCurrentDealsReturn(returnDetail);
@@ -1394,7 +1445,7 @@ export default function DealsPage() {
                           favoriteRestaurant={favoriteRestaurants.has(e.restaurantId)}
                           onToggleSave={() => toggleSave(e.id)}
                           onToggleFavoriteRestaurant={() => toggleFavoriteRestaurant(e.restaurantId)}
-                          onBookSlot={(slot) => bookEventSlot(e, slot)}
+                          onBookSlot={(slot) => void bookEventSlot(e, slot)}
                           onReserve={() => bookEvent(e)}
                           onOpen={() => openDetail(e)}
                           onRestaurantOpen={() => openRestaurantPreviewFromEvent(e)}
@@ -1425,7 +1476,7 @@ export default function DealsPage() {
                     favoriteRestaurant={favoriteRestaurants.has(e.restaurantId)}
                     onToggleSave={() => toggleSave(e.id)}
                     onToggleFavoriteRestaurant={() => toggleFavoriteRestaurant(e.restaurantId)}
-                    onBookSlot={(slot) => bookEventSlot(e, slot)}
+                    onBookSlot={(slot) => void bookEventSlot(e, slot)}
                     onReserve={() => bookEvent(e)}
                     onOpen={() => openDetail(e)}
                     onRestaurantOpen={() => openRestaurantPreviewFromEvent(e)}
@@ -1488,7 +1539,7 @@ export default function DealsPage() {
                               {e.when} · <span className="text-gold">{e.price}</span>
                             </p>
                             <div className="mt-2">
-                              <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => bookEventSlot(e, slot)} />
+                              <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => void bookEventSlot(e, slot)} />
                             </div>
                             <Button
                               size="sm"
@@ -1530,7 +1581,11 @@ export default function DealsPage() {
         restaurant={previewRestaurant}
         favorite={previewRestaurant ? favoriteRestaurants.has(previewRestaurant.id) : false}
         partySize={partySize}
-        onClose={() => setPreviewRestaurant(null)}
+        availabilityNotice={previewAvailabilityNotice}
+        onClose={() => {
+          setPreviewAvailabilityNotice(null);
+          setPreviewRestaurant(null);
+        }}
         onToggleFavorite={() => {
           if (!previewRestaurant) return;
           setFavoriteRestaurants((prev) => {

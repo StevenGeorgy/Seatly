@@ -53,6 +53,12 @@ type RestaurantPriceCategoryRow = {
   name: string;
 };
 
+type RestaurantReviewSummaryRow = {
+  restaurant_id?: string | null;
+  avg_rating?: number | string | null;
+  total_reviews?: number | null;
+};
+
 function itemsWithActiveCategoryNames(
   menuItems: RestaurantPriceItemRow[],
   categories: RestaurantPriceCategoryRow[],
@@ -87,6 +93,32 @@ function applyDerivedPriceLevels(
       restaurant.price_range,
     ),
   }));
+}
+
+function applyReviewSummaries(
+  restaurants: Restaurant[],
+  reviewRows: RestaurantReviewSummaryRow[] | null | undefined,
+): Restaurant[] {
+  const summaries = new Map(
+    (reviewRows ?? [])
+      .filter((row) => row.restaurant_id)
+      .map((row) => [
+        row.restaurant_id as string,
+        {
+          avg_rating: row.avg_rating == null ? null : Number(row.avg_rating),
+          total_reviews: row.total_reviews ?? 0,
+        },
+      ]),
+  );
+
+  return restaurants.map((restaurant) => {
+    const summary = summaries.get(restaurant.id);
+    return {
+      ...restaurant,
+      avg_rating: summary?.avg_rating ?? null,
+      total_reviews: summary?.total_reviews ?? 0,
+    };
+  });
 }
 
 export function usePublicRestaurants() {
@@ -132,12 +164,17 @@ export function usePublicRestaurants() {
         .in("restaurant_id", rows.map((restaurant) => restaurant.id))
         .eq("is_active", true);
 
+      const { data: reviewSummaryData } = await client.rpc("restaurant_review_summaries", {
+        p_restaurant_ids: rows.map((restaurant) => restaurant.id),
+      });
+
       if (cancelled) return;
-      setRestaurants(applyDerivedPriceLevels(
-        rows,
+      const withPrices = applyDerivedPriceLevels(
+        applyReviewSummaries(rows, reviewSummaryData as RestaurantReviewSummaryRow[] | null),
         (menuData ?? []) as RestaurantPriceItemRow[],
         (categoryData ?? []) as RestaurantPriceCategoryRow[],
-      ));
+      );
+      setRestaurants([...withPrices].sort((a, b) => (b.avg_rating ?? -1) - (a.avg_rating ?? -1)));
       setLoading(false);
     })();
 
@@ -202,9 +239,13 @@ export function useRestaurant(slugOrId?: string) {
           .eq("restaurant_id", row.id)
           .eq("is_active", true);
 
+        const { data: reviewSummaryData } = await client.rpc("restaurant_review_summaries", {
+          p_restaurant_ids: [row.id],
+        });
+
         if (cancelled) return;
         setRestaurant(applyDerivedPriceLevels(
-          [row],
+          applyReviewSummaries([row], reviewSummaryData as RestaurantReviewSummaryRow[] | null),
           (menuData ?? []) as RestaurantPriceItemRow[],
           (categoryData ?? []) as RestaurantPriceCategoryRow[],
         )[0]);

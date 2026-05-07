@@ -1,0 +1,413 @@
+import { useEffect, useMemo, useState } from "react";
+import { format } from "date-fns";
+import { Link } from "react-router-dom";
+import { ArrowLeft, CalendarDays, Clock, Loader2, Users, X } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
+
+type LookupRow = {
+  id: string;
+  restaurant_id: string;
+  reserved_at: string;
+  party_size: number;
+  status: string | null;
+  guest_full_name: string | null;
+  duration_minutes: number | null;
+  special_request: string | null;
+  restaurant_name: string | null;
+  restaurant_timezone: string | null;
+};
+
+type Props = {
+  slug: string;
+  code: string;
+  backHref: string;
+};
+
+const FINAL_STATUSES = new Set(["cancelled", "completed", "no_show"]);
+
+function formatLocalDate(iso: string, tz: string | null): { date: string; time: string } {
+  const date = new Date(iso);
+  const tzSafe = tz ?? "America/Toronto";
+  const dateLabel = date.toLocaleDateString("en-US", {
+    timeZone: tzSafe,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timeLabel = date.toLocaleTimeString("en-US", {
+    timeZone: tzSafe,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  return { date: dateLabel, time: timeLabel };
+}
+
+function isoTimeInTz(iso: string, tz: string | null): string {
+  const date = new Date(iso);
+  const tzSafe = tz ?? "America/Toronto";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tzSafe,
+    hourCycle: "h23",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(date);
+  const lookup = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${lookup("hour")}:${lookup("minute")}`;
+}
+
+export function ManageBookingView({ slug, code, backHref }: Props) {
+  const [reservation, setReservation] = useState<LookupRow | null>(null);
+  const [lookupState, setLookupState] = useState<"loading" | "found" | "missing" | "error">("loading");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [mode, setMode] = useState<"view" | "modify" | "confirmCancel" | "done">("view");
+  const [busy, setBusy] = useState(false);
+
+  // Modify form state
+  const [editDate, setEditDate] = useState<Date | undefined>(undefined);
+  const [editTime, setEditTime] = useState("");
+  const [editParty, setEditParty] = useState(2);
+  const [editNotes, setEditNotes] = useState("");
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
+  const [doneMessage, setDoneMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isSupabaseConfigured()) {
+        if (!cancelled) {
+          setLookupState("error");
+          setErrorMessage("Supabase is not configured.");
+        }
+        return;
+      }
+      const client = getSupabaseBrowserClient();
+      const { data, error } = await client.rpc("lookup_reservation_by_code", {
+        p_slug: slug,
+        p_code: code,
+      });
+      if (cancelled) return;
+      if (error) {
+        setLookupState("error");
+        setErrorMessage(error.message);
+        return;
+      }
+      const rows = (data as LookupRow[] | null) ?? [];
+      if (!rows.length) {
+        setLookupState("missing");
+        return;
+      }
+      const row = rows[0];
+      setReservation(row);
+      setLookupState("found");
+      // Seed modify form
+      setEditDate(new Date(row.reserved_at));
+      setEditTime(isoTimeInTz(row.reserved_at, row.restaurant_timezone));
+      setEditParty(row.party_size);
+      setEditNotes(row.special_request ?? "");
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, code]);
+
+  const labels = useMemo(
+    () => (reservation ? formatLocalDate(reservation.reserved_at, reservation.restaurant_timezone) : null),
+    [reservation],
+  );
+  const isFinal = reservation && reservation.status && FINAL_STATUSES.has(reservation.status);
+
+  const handleCancel = async () => {
+    if (!reservation) return;
+    setBusy(true);
+    try {
+      const client = getSupabaseBrowserClient();
+      const { data, error } = await client.functions.invoke("cancel-reservation", {
+        body: { reservation_id: reservation.id, confirmation_code: code },
+      });
+      if (error) {
+        setErrorMessage(error.message);
+        setMode("view");
+        return;
+      }
+      const result = (data ?? {}) as { error?: string };
+      if (result.error) {
+        setErrorMessage(result.error);
+        setMode("view");
+        return;
+      }
+      setDoneMessage("Your reservation has been cancelled. The restaurant has been notified.");
+      setMode("done");
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+      setMode("view");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleModify = async () => {
+    if (!reservation || !editDate) return;
+    if (!/^\d{2}:\d{2}$/.test(editTime)) {
+      setErrorMessage("Pick a valid time (HH:MM).");
+      return;
+    }
+    if (!Number.isFinite(editParty) || editParty < 1) {
+      setErrorMessage("Party size must be at least 1.");
+      return;
+    }
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      const dateStr = format(editDate, "yyyy-MM-dd");
+      const client = getSupabaseBrowserClient();
+      const { data, error } = await client.functions.invoke("modify-reservation", {
+        body: {
+          reservation_id: reservation.id,
+          confirmation_code: code,
+          date: dateStr,
+          time: editTime,
+          party_size: editParty,
+          special_request: editNotes,
+        },
+      });
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+      const result = (data ?? {}) as { error?: string };
+      if (result.error) {
+        setErrorMessage(result.error);
+        return;
+      }
+      setDoneMessage("Your reservation has been updated. We've sent you a confirmation.");
+      setMode("done");
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-xl px-4 py-12 sm:px-6">
+      <Button variant="ghost" size="sm" asChild className="mb-6 gap-1.5 text-text-secondary">
+        <Link to={backHref}>
+          <ArrowLeft className="size-4" />
+          Back to {reservation?.restaurant_name ?? "restaurant"}
+        </Link>
+      </Button>
+
+      {lookupState === "loading" && (
+        <div className="flex items-center gap-2 text-sm text-text-muted">
+          <Loader2 className="size-4 animate-spin" />
+          Loading your reservation…
+        </div>
+      )}
+
+      {lookupState === "error" && (
+        <div className="rounded-2xl border border-danger/40 bg-danger/10 p-5 text-sm text-danger">
+          We couldn't load this reservation: {errorMessage}
+        </div>
+      )}
+
+      {lookupState === "missing" && (
+        <div className="rounded-2xl border border-border bg-bg-surface p-5">
+          <h1 className="font-serif text-2xl text-white">This booking can no longer be managed.</h1>
+          <p className="mt-2 text-sm text-text-muted">
+            The link may be invalid or the reservation may have already been cancelled or completed. If you believe this is a mistake, contact the restaurant directly.
+          </p>
+        </div>
+      )}
+
+      {lookupState === "found" && reservation && labels && (
+        <div className="rounded-2xl border border-border bg-bg-surface p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h1 className="font-serif text-2xl text-white">Manage your reservation</h1>
+            {reservation.status && (
+              <span
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em]",
+                  isFinal ? "bg-bg-elevated text-text-muted" : "bg-gold/15 text-gold",
+                )}
+              >
+                {reservation.status}
+              </span>
+            )}
+          </div>
+
+          <p className="text-sm text-text-secondary">{reservation.restaurant_name}</p>
+          <p className="mt-1 font-serif text-xl text-white">{reservation.guest_full_name ?? "Guest"}</p>
+
+          <dl className="mt-5 space-y-3 text-sm">
+            <div className="flex items-center gap-3">
+              <CalendarDays className="size-4 text-gold" />
+              <div className="flex-1 text-text-secondary">{labels.date}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Clock className="size-4 text-gold" />
+              <div className="flex-1 text-text-secondary">{labels.time}</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Users className="size-4 text-gold" />
+              <div className="flex-1 text-text-secondary">
+                {reservation.party_size} {reservation.party_size === 1 ? "guest" : "guests"}
+              </div>
+            </div>
+            {reservation.special_request ? (
+              <div className="rounded-xl border border-border bg-bg-elevated p-3 text-text-secondary">
+                <span className="block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Notes</span>
+                <span className="mt-1 block">{reservation.special_request}</span>
+              </div>
+            ) : null}
+          </dl>
+
+          {errorMessage && (
+            <div className="mt-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+              {errorMessage}
+            </div>
+          )}
+
+          {mode === "done" && (
+            <div className="mt-5 rounded-xl border border-success/40 bg-success/10 p-4 text-sm text-success">
+              {doneMessage}
+            </div>
+          )}
+
+          {!isFinal && mode === "view" && (
+            <div className="mt-6 flex flex-wrap gap-2">
+              <Button onClick={() => setMode("modify")} disabled={busy}>
+                Modify booking
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setMode("confirmCancel")}
+                disabled={busy}
+              >
+                Cancel booking
+              </Button>
+            </div>
+          )}
+
+          {mode === "confirmCancel" && (
+            <div className="mt-6 rounded-xl border border-border bg-bg-elevated p-4">
+              <p className="text-sm text-white">Cancel this reservation?</p>
+              <p className="mt-1 text-xs text-text-muted">
+                The restaurant will be notified and the table will be released.
+              </p>
+              <div className="mt-4 flex gap-2">
+                <Button variant="destructive" onClick={handleCancel} disabled={busy}>
+                  {busy ? "Cancelling…" : "Yes, cancel"}
+                </Button>
+                <Button variant="ghost" onClick={() => setMode("view")} disabled={busy}>
+                  Keep booking
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {mode === "modify" && (
+            <div className="mt-6 space-y-4">
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  Date
+                </label>
+                <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-between gap-2 font-normal">
+                      {editDate ? format(editDate, "EEE, MMM d, yyyy") : "Pick a date"}
+                      <CalendarDays className="size-4 text-text-muted" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-auto p-3">
+                    <Calendar
+                      mode="single"
+                      selected={editDate}
+                      onSelect={(d) => {
+                        if (d) setEditDate(d);
+                        setCalendarOpen(false);
+                      }}
+                      disabled={(date) => {
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        return date < today;
+                      }}
+                      className="[--cell-size:2.5rem]"
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  Time
+                </label>
+                <Input
+                  type="time"
+                  value={editTime}
+                  onChange={(e) => setEditTime(e.target.value)}
+                  step={900}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  Party size
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={25}
+                  value={editParty}
+                  onChange={(e) => setEditParty(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                  Special request
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  rows={3}
+                  className="flex w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-foreground placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-gold/40"
+                  placeholder="Allergies, occasions, accessibility notes…"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <Button onClick={handleModify} disabled={busy}>
+                  {busy ? "Saving…" : "Save changes"}
+                </Button>
+                <Button variant="ghost" onClick={() => setMode("view")} disabled={busy}>
+                  <X className="size-4" />
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {mode === "done" && (
+            <div className="mt-5">
+              <Button asChild variant="outline">
+                <Link to={backHref}>Back to {reservation.restaurant_name ?? "restaurant"}</Link>
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

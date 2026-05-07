@@ -6,7 +6,6 @@
 
 import type { ReservationRow } from "@/hooks/useReservations";
 import type { TableRow, SectionRow } from "@/hooks/useFloorPlan";
-import type { WaitlistRow } from "@/hooks/useWaitlist";
 import type { OrderRow } from "@/hooks/useOrders";
 import type { MenuCategoryRow, MenuItemRow } from "@/hooks/useMenuItems";
 import type { AnalyticsRow } from "@/hooks/useAnalytics";
@@ -14,6 +13,23 @@ import type { GuestRow } from "@/hooks/useGuests";
 import type { StaffMemberRow } from "@/hooks/useStaffRoster";
 import type { ExpenseRow } from "@/hooks/useExpenses";
 import type { EventRow } from "@/hooks/useEvents";
+
+type WaitlistRow = {
+  id: string;
+  restaurant_id: string;
+  guest_name: string;
+  phone: string | null;
+  user_profile_id: string | null;
+  party_size: number;
+  position: number;
+  status: string;
+  estimated_wait_minutes: number | null;
+  contact_method: string | null;
+  remote_join: boolean;
+  notified_at: string | null;
+  response: string | null;
+  created_at: string;
+};
 
 const RID = "mock-restaurant-id";
 

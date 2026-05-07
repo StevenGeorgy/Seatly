@@ -51,7 +51,12 @@ export function useNotifications() {
     setLoading(false);
   }, [userId]);
 
-  useEffect(() => { void fetchNotifications(); }, [fetchNotifications]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void fetchNotifications();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [fetchNotifications]);
 
   useEffect(() => {
     if (!userId || !isSupabaseConfigured()) return;
@@ -61,13 +66,20 @@ export function useNotifications() {
       .channel(`notifications:${userId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${userId}` },
+        { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${userId}` },
         () => { void fetchNotifications(); },
       )
       .subscribe();
 
     return () => { void client.removeChannel(channel); };
   }, [userId, fetchNotifications]);
+
+  useEffect(() => {
+    if (!userId) return;
+    const handleNotificationsChanged = () => { void fetchNotifications(); };
+    window.addEventListener("cenaiva:notifications-changed", handleNotificationsChanged);
+    return () => window.removeEventListener("cenaiva:notifications-changed", handleNotificationsChanged);
+  }, [fetchNotifications, userId]);
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
 
