@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { BrowserRouter, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AuthProvider } from "@/contexts/auth-context";
 import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantProvider";
@@ -73,30 +74,42 @@ function CustomerVoiceOrbFAB() {
   );
 }
 
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 60_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <AssistantProvider>
-          <TooltipProvider delayDuration={300}>
-            <DevSupabaseBanner />
-            <AppRoutes />
-            <AuthedCenaivaUI />
-            <AuthedReservationReviewPrompt />
-            <Toaster
-              richColors
-              position="top-center"
-              toastOptions={{
-                style: {
-                  background: "#1A1A1A",
-                  border: "1px solid #2E2E2E",
-                  color: "#FFFFFF",
-                },
-              }}
-            />
-          </TooltipProvider>
-        </AssistantProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <AuthProvider>
+          <AssistantProvider>
+            <TooltipProvider delayDuration={300}>
+              <DevSupabaseBanner />
+              <AppRoutes />
+              <AuthedCenaivaUI />
+              <AuthedReservationReviewPrompt />
+              <Toaster
+                richColors
+                position="top-center"
+                toastOptions={{
+                  style: {
+                    background: "#1A1A1A",
+                    border: "1px solid #2E2E2E",
+                    color: "#FFFFFF",
+                  },
+                }}
+              />
+            </TooltipProvider>
+          </AssistantProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }

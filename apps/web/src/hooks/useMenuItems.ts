@@ -1,78 +1,68 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
-export function usePublicMenuCategories(restaurantId: string | null | undefined) {
-  const [categoryState, setCategoryState] = useState<{ restaurantId: string | null; rows: MenuCategoryRow[] }>({
-    restaurantId: null,
-    rows: [],
-  });
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!restaurantId || !isSupabaseConfigured()) {
-        setCategoryState({ restaurantId: restaurantId ?? null, rows: [] });
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setCategoryState({ restaurantId, rows: [] });
-      const client = getSupabaseBrowserClient();
-      const { data } = await client
-        .from("menu_categories")
-        .select("*")
-        .eq("restaurant_id", restaurantId)
-        .eq("is_active", true)
-        .order("sort_order");
-      if (cancelled) return;
-      setCategoryState({ restaurantId, rows: (data ?? []) as MenuCategoryRow[] });
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, [restaurantId]);
-
-  const categories = categoryState.restaurantId === (restaurantId ?? null) ? categoryState.rows : [];
-  return { categories, loading: loading || categoryState.restaurantId !== (restaurantId ?? null) };
+export async function fetchPublicMenuCategories(restaurantId: string): Promise<MenuCategoryRow[]> {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("menu_categories")
+    .select("*")
+    .eq("restaurant_id", restaurantId)
+    .eq("is_active", true)
+    .order("sort_order");
+  return (data ?? []) as MenuCategoryRow[];
 }
 
-export function usePublicMenuItems(restaurantId: string | null | undefined) {
-  const [itemState, setItemState] = useState<{ restaurantId: string | null; rows: MenuItemRow[] }>({
-    restaurantId: null,
-    rows: [],
+export async function fetchPublicMenuItems(restaurantId: string): Promise<MenuItemRow[]> {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("menu_items")
+    .select("*")
+    .eq("restaurant_id", restaurantId)
+    .eq("is_active", true)
+    .eq("is_available", true)
+    .not("category_id", "is", null)
+    .order("sort_order");
+  return (data ?? []) as MenuItemRow[];
+}
+
+const EMPTY_CATEGORIES: MenuCategoryRow[] = [];
+const EMPTY_ITEMS: MenuItemRow[] = [];
+
+export function usePublicMenuCategories(
+  restaurantId: string | null | undefined,
+  options: { enabled?: boolean } = {},
+) {
+  const enabled = (options.enabled ?? true) && Boolean(restaurantId);
+  const query = useQuery({
+    queryKey: ["public-menu-categories", restaurantId ?? null],
+    queryFn: () => fetchPublicMenuCategories(restaurantId as string),
+    enabled,
   });
-  const [loading, setLoading] = useState(true);
+  return {
+    categories: query.data ?? EMPTY_CATEGORIES,
+    loading: enabled ? query.isPending : false,
+  };
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!restaurantId || !isSupabaseConfigured()) {
-        setItemState({ restaurantId: restaurantId ?? null, rows: [] });
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setItemState({ restaurantId, rows: [] });
-      const client = getSupabaseBrowserClient();
-      const { data } = await client
-        .from("menu_items")
-        .select("*")
-        .eq("restaurant_id", restaurantId)
-        .eq("is_active", true)
-        .eq("is_available", true)
-        .not("category_id", "is", null)
-        .order("sort_order");
-      if (cancelled) return;
-      setItemState({ restaurantId, rows: (data ?? []) as MenuItemRow[] });
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, [restaurantId]);
-
-  const items = itemState.restaurantId === (restaurantId ?? null) ? itemState.rows : [];
-  return { items, loading: loading || itemState.restaurantId !== (restaurantId ?? null) };
+export function usePublicMenuItems(
+  restaurantId: string | null | undefined,
+  options: { enabled?: boolean } = {},
+) {
+  const enabled = (options.enabled ?? true) && Boolean(restaurantId);
+  const query = useQuery({
+    queryKey: ["public-menu-items", restaurantId ?? null],
+    queryFn: () => fetchPublicMenuItems(restaurantId as string),
+    enabled,
+  });
+  return {
+    items: query.data ?? EMPTY_ITEMS,
+    loading: enabled ? query.isPending : false,
+  };
 }
 
 export type MenuCategoryRow = {

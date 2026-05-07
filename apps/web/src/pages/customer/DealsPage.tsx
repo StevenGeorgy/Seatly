@@ -1598,7 +1598,7 @@ export default function DealsPage() {
             return next;
           });
         }}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate, options) => {
           if (!previewRestaurant) return;
           const slotDate = bookingDate
             ?? (customDate ? format(customDate, "yyyy-MM-dd") : format(new Date(), "yyyy-MM-dd"));
@@ -1616,7 +1616,18 @@ export default function DealsPage() {
             params.set("returnDetail", returnDetail);
             markCurrentDealsReturn(returnDetail);
           }
-          void navigate(`/${previewRestaurant.id}?${params.toString()}`);
+          void navigate(`/${previewRestaurant.id}?${params.toString()}`, options?.optimistic
+            ? {
+              state: {
+                previewSlotRevalidation: {
+                  slot,
+                  shiftId: shiftId ?? null,
+                  date: slotDate,
+                  partySize: Number.parseInt(selectedPartySize, 10) || 2,
+                },
+              },
+            }
+            : undefined);
         }}
       />
     </div>

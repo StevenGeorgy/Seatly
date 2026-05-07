@@ -768,45 +768,42 @@ async function executeTool(
       const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
       const turnTimeMinutes = await getRestaurantTurnTimeMinutes(restaurant_id, shift_id);
 
-      // Create reservation
-      const { data: reservation, error: resvErr } = await supabaseAdmin
-        .from("reservations")
-        .insert({
-          restaurant_id,
-          guest_id: guestId,
-          shift_id,
-          party_size,
-          reserved_at: date_time,
-          duration_minutes: turnTimeMinutes,
-          status: "confirmed",
-          source: "cenaiva",
-          confirmation_code: confirmationCode,
-          special_request: special_request || null,
-          occasion: occasion || null,
-        })
-        .select("id")
-        .single();
-      if (resvErr) return JSON.stringify({ error: `Reservation failed: ${resvErr.message}` });
-      const reservationId: string = reservation.id;
-
-      const assignedTableIds = await assignReservationTables({
-        reservation_id: reservationId,
-        restaurant_id,
-        reserved_at: date_time,
-        party_size,
-        turn_minutes: turnTimeMinutes,
+      // Atomic booking via book_reservation RPC. Advisory-lock + cover-cap +
+      // table selection + reservation insert + reservation_tables insert all
+      // happen inside a single transaction. AI bookings are written directly
+      // as 'confirmed' via p_status (the diner has already agreed in chat).
+      const { data: bookingRows, error: bookingError } = await supabaseAdmin.rpc("book_reservation", {
+        p_restaurant_id: restaurant_id,
+        p_shift_id: shift_id,
+        p_reserved_at: date_time,
+        p_party_size: party_size,
+        p_turn_minutes: turnTimeMinutes,
+        p_guest_id: guestId,
+        p_user_profile_id: userProfileId,
+        p_confirmation_code: confirmationCode,
+        p_source: "cenaiva",
+        p_special_request: special_request || null,
+        p_occasion: occasion || null,
+        p_status: "confirmed",
       });
-      if (assignedTableIds.length === 0) {
-        await supabaseAdmin
-          .from("reservations")
-          .update({
-            status: "cancelled",
-            cancelled_at: new Date().toISOString(),
-            cancellation_reason: "No available table for party size.",
-          })
-          .eq("id", reservationId);
-        return JSON.stringify({ error: "No available table can fit this party at that time." });
+      if (bookingError) {
+        const code = (bookingError as { code?: string }).code;
+        if (code === "P0001" || code === "23P01") {
+          return JSON.stringify({ error: "That time was just taken. Please pick another slot." });
+        }
+        if (code === "P0002") {
+          return JSON.stringify({ error: "That time no longer has enough cover capacity." });
+        }
+        return JSON.stringify({ error: `Reservation failed: ${bookingError.message}` });
       }
+      const bookingRow = Array.isArray(bookingRows) ? bookingRows[0] : bookingRows;
+      if (!bookingRow?.reservation_id) {
+        return JSON.stringify({ error: "Reservation failed: no reservation returned." });
+      }
+      const reservationId: string = bookingRow.reservation_id as string;
+      const assignedTableIds: string[] = Array.isArray(bookingRow.table_ids)
+        ? (bookingRow.table_ids as unknown[]).filter((id): id is string => typeof id === "string")
+        : [];
 
       const { data: rest } = await supabaseAdmin
         .from("restaurants")

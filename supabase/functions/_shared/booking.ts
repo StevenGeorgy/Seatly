@@ -1,5 +1,4 @@
 import { supabaseAdmin } from "./supabase.ts";
-import { assignReservationTables } from "./table-assignment.ts";
 import {
   closureUnavailableMessage,
   findClosedSpecialDayForDate,
@@ -227,26 +226,32 @@ export async function completeBooking(
   const confirmationCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const turnTimeMinutes = await getRestaurantTurnTimeMinutes(restaurant_id, shift_id);
 
-  // Create reservation
-  let reservationId: string | null = null;
-  const { data: reservation, error: resvErr } = await supabaseAdmin
-    .from("reservations")
-    .insert({
-      restaurant_id,
-      guest_id: guestId,
-      shift_id,
-      party_size,
-      reserved_at: date_time,
-      duration_minutes: turnTimeMinutes,
-      status: "confirmed",
-      source: "cenaiva",
-      confirmation_code: confirmationCode,
-      special_request: special_request ?? null,
-      occasion: occasion ?? null,
-    })
-    .select("id")
-    .single();
-  if (resvErr) {
+  // Atomic booking via book_reservation RPC. Status='confirmed' for AI-driven
+  // bookings (the diner has already agreed in chat). The advisory lock + the
+  // exclusion constraint on reservation_tables together guarantee no two
+  // overlapping bookings can be written for the same table.
+  const { data: bookingRows, error: bookingError } = await supabaseAdmin.rpc("book_reservation", {
+    p_restaurant_id: restaurant_id,
+    p_shift_id: shift_id,
+    p_reserved_at: date_time,
+    p_party_size: party_size,
+    p_turn_minutes: turnTimeMinutes,
+    p_guest_id: guestId,
+    p_user_profile_id: user_profile_id,
+    p_confirmation_code: confirmationCode,
+    p_source: "cenaiva",
+    p_special_request: special_request ?? null,
+    p_occasion: occasion ?? null,
+    p_status: "confirmed",
+  });
+  if (bookingError) {
+    const code = (bookingError as { code?: string }).code;
+    let errorMessage = `Reservation failed: ${bookingError.message}`;
+    if (code === "P0001" || code === "23P01") {
+      errorMessage = "That time was just taken. Please pick another slot.";
+    } else if (code === "P0002") {
+      errorMessage = "That time no longer has enough cover capacity.";
+    }
     return {
       success: false,
       confirmation_code: "",
@@ -259,33 +264,16 @@ export async function completeBooking(
       total: 0,
       currency: "CAD",
       checkout_url: null,
-      error: `Reservation failed: ${resvErr.message}`,
+      error: errorMessage,
     };
   }
-  reservationId = reservation.id;
-
-  const assignment = await assignReservationTables({
-    reservation_id: reservationId,
-    restaurant_id,
-    reserved_at: date_time,
-    party_size,
-    turn_minutes: turnTimeMinutes,
-  });
-  if (assignment.error) {
-    await supabaseAdmin
-      .from("reservations")
-      .update({
-        status: "cancelled",
-        cancelled_at: new Date().toISOString(),
-        cancellation_reason: "No available table for party size.",
-      })
-      .eq("id", reservationId);
-
+  const bookingRow = Array.isArray(bookingRows) ? bookingRows[0] : bookingRows;
+  if (!bookingRow?.reservation_id) {
     return {
       success: false,
       confirmation_code: "",
       order_type,
-      reservation_id: reservationId,
+      reservation_id: null,
       order_id: null,
       guest_id: guestId ?? null,
       subtotal: 0,
@@ -293,9 +281,10 @@ export async function completeBooking(
       total: 0,
       currency: "CAD",
       checkout_url: null,
-      error: assignment.error,
+      error: "Reservation failed: no reservation returned.",
     };
   }
+  const reservationId: string = bookingRow.reservation_id as string;
 
   // Calculate totals
   const { data: rest } = await supabaseAdmin

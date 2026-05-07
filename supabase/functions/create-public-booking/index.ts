@@ -280,51 +280,6 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const maxCovers = shift.max_covers ?? 100;
-    const slotStart = reservedAt;
-    const slotEnd = new Date(slotStart.getTime() + turnMinutes * 60_000);
-    const dayStart = new Date(slotStart);
-    dayStart.setUTCHours(0, 0, 0, 0);
-    const dayEnd = new Date(slotStart);
-    dayEnd.setUTCHours(23, 59, 59, 999);
-    const { data: overlappingReservations } = await supabase
-      .from("reservations")
-      .select("reserved_at, party_size, duration_minutes")
-      .eq("restaurant_id", restaurantId)
-      .eq("shift_id", shiftId)
-      .in("status", ["pending", "confirmed", "seated"])
-      .gte("reserved_at", dayStart.toISOString())
-      .lte("reserved_at", dayEnd.toISOString());
-    const totalCovers = (overlappingReservations ?? []).reduce((total: number, reservation) => {
-      const reservationStart = new Date(reservation.reserved_at);
-      const reservationEnd = new Date(
-        reservationStart.getTime() + Number(reservation.duration_minutes ?? turnMinutes) * 60_000,
-      );
-      if (slotStart < reservationEnd && slotEnd > reservationStart) {
-        return total + Number(reservation.party_size ?? 0);
-      }
-      return total;
-    }, partySize);
-    if (totalCovers > maxCovers) {
-      return jsonResponse({ error: "This time no longer has enough cover capacity." }, 409);
-    }
-
-    const { data: tableIds, error: tableLookupError } = await supabase.rpc("find_available_table_group", {
-      p_restaurant_id: restaurantId,
-      p_reserved_at: reservedAt.toISOString(),
-      p_party_size: partySize,
-      p_turn_minutes: turnMinutes,
-    });
-    const availableTableIds = Array.isArray(tableIds)
-      ? tableIds.filter((id): id is string => typeof id === "string")
-      : [];
-    if (tableLookupError || availableTableIds.length === 0) {
-      return jsonResponse(
-        { error: tableLookupError?.message ?? "No available table can fit this party at that time." },
-        409,
-      );
-    }
-
     const { data: canonicalGuestId, error: canonicalGuestError } = await supabase.rpc("canonical_guest_id", {
       p_restaurant_id: restaurantId,
       p_user_profile_id: userProfileId,
@@ -438,62 +393,60 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const { data: reservation, error: reservationError } = await supabase
-      .from("reservations")
-      .insert({
-        restaurant_id: restaurantId,
-        guest_id: guestId,
-        user_profile_id: userProfileId,
-        shift_id: shiftId,
-        party_size: partySize,
-        reserved_at: reservedAt.toISOString(),
-        duration_minutes: turnMinutes,
-        status: "pending",
-        source: "web",
-        confirmation_code: confirmationCode,
-        special_request: allergies,
-        dietary_notes: allergies,
-        occasion,
-        is_guest_checkout: !userProfileId,
-        guest_full_name: guestName,
-        guest_email: guestEmail,
-        guest_phone: guestPhone,
-      })
-      .select("id, confirmation_code")
-      .single();
-    if (reservationError) {
-      return jsonResponse({ error: `Reservation: ${reservationError.message}` }, 400);
-    }
-
-    const reservationId = reservation.id as string;
-    const savedConfirmationCode =
-      typeof reservation.confirmation_code === "string" && reservation.confirmation_code.trim()
-        ? reservation.confirmation_code
-        : confirmationCode;
-    const { data: assignedIds, error: assignmentError } = await supabase.rpc("assign_reservation_tables", {
-      p_reservation_id: reservationId,
+    // Atomic booking: cover-cap re-check, table selection, reservation insert,
+    // and reservation_tables insert all happen under a single advisory lock
+    // keyed on (restaurant_id, reserved_at). Two concurrent callers for the
+    // same slot serialize cleanly here. The exclusion constraint on
+    // reservation_tables is the unbreakable backstop if the lock is somehow
+    // bypassed (e.g. direct DB write).
+    const { data: bookingRows, error: bookingError } = await supabase.rpc("book_reservation", {
       p_restaurant_id: restaurantId,
+      p_shift_id: shiftId,
       p_reserved_at: reservedAt.toISOString(),
       p_party_size: partySize,
       p_turn_minutes: turnMinutes,
+      p_guest_id: guestId,
+      p_user_profile_id: userProfileId,
+      p_confirmation_code: confirmationCode,
+      p_source: "web",
+      p_special_request: allergies,
+      p_dietary_notes: allergies,
+      p_occasion: occasion,
+      p_is_guest_checkout: !userProfileId,
+      p_guest_full_name: guestName,
+      p_guest_email: guestEmail,
+      p_guest_phone: guestPhone,
     });
-    const assignedTableIds = Array.isArray(assignedIds)
-      ? assignedIds.filter((id): id is string => typeof id === "string")
-      : [];
-    if (assignmentError || assignedTableIds.length === 0) {
-      await supabase
-        .from("reservations")
-        .update({
-          status: "cancelled",
-          cancelled_at: new Date().toISOString(),
-          cancellation_reason: "No available table for party size.",
-        })
-        .eq("id", reservationId);
-      return jsonResponse(
-        { error: assignmentError?.message ?? "No available table can fit this party at that time." },
-        409,
-      );
+
+    if (bookingError) {
+      const code = (bookingError as { code?: string }).code;
+      if (code === "P0001" || code === "23P01") {
+        return jsonResponse(
+          { error: "This time was just taken. Please pick another slot.", unavailable_reason: "slot_taken" },
+          409,
+        );
+      }
+      if (code === "P0002") {
+        return jsonResponse({ error: "This time no longer has enough cover capacity." }, 409);
+      }
+      if (code === "P0003") {
+        return jsonResponse({ error: "Shift not found for this restaurant." }, 400);
+      }
+      return jsonResponse({ error: `Reservation: ${bookingError.message}` }, 400);
     }
+
+    const bookingRow = Array.isArray(bookingRows) ? bookingRows[0] : bookingRows;
+    if (!bookingRow?.reservation_id) {
+      return jsonResponse({ error: "Booking failed: no reservation returned." }, 500);
+    }
+    const reservationId = bookingRow.reservation_id as string;
+    const savedConfirmationCode =
+      typeof bookingRow.confirmation_code === "string" && bookingRow.confirmation_code.trim()
+        ? bookingRow.confirmation_code
+        : confirmationCode;
+    const assignedTableIds = Array.isArray(bookingRow.table_ids)
+      ? (bookingRow.table_ids as unknown[]).filter((id): id is string => typeof id === "string")
+      : [];
 
     let orderId: string | null = null;
     const cartItems = normalizeCartItems(payload.cart_items);

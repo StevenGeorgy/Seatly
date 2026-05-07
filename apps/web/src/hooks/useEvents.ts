@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -102,89 +103,90 @@ export function resolveEventMedia(file: File): { kind: EventMediaKind; mime: str
   return byExtension ? { kind: byExtension.kind, mime: byExtension.mime } : null;
 }
 
-export function useAllActiveEvents() {
-  const [events, setEvents] = useState<EventWithRestaurant[]>([]);
-  const [loading, setLoading] = useState(true);
+async function fetchAllActiveEvents(): Promise<EventWithRestaurant[]> {
+  if (!isSupabaseConfigured()) return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("events")
+    .select(`
+      *,
+      restaurants (
+        id,
+        name,
+        slug,
+        cuisine_type,
+        avg_rating,
+        cover_photo_url,
+        city,
+        price_range,
+        lat,
+        lng
+      )
+    `)
+    .eq("is_active", true)
+    .eq("is_private", false)
+    .or(`end_date.gte.${today},and(end_date.is.null,date.gte.${today})`)
+    .order("date", { ascending: true });
 
-  const fetchEvents = useCallback(async () => {
-    setLoading(true);
-    if (!isSupabaseConfigured()) {
-      setEvents([]);
-      setLoading(false);
-      return;
-    }
+  return (data ?? []) as unknown as EventWithRestaurant[];
+}
 
-    const today = new Date().toISOString().slice(0, 10);
-    const client = getSupabaseBrowserClient();
-    const { data } = await client
-      .from("events")
-      .select(`
-        *,
-        restaurants (
-          id,
-          name,
-          slug,
-          cuisine_type,
-          avg_rating,
-          cover_photo_url,
-          city,
-          price_range,
-          lat,
-          lng
-        )
-      `)
-      .eq("is_active", true)
-      .eq("is_private", false)
-      .or(`end_date.gte.${today},and(end_date.is.null,date.gte.${today})`)
-      .order("date", { ascending: true });
+const EMPTY_PUBLIC_EVENTS: EventWithRestaurant[] = [];
 
-    setEvents((data ?? []) as unknown as EventWithRestaurant[]);
-    setLoading(false);
-  }, []);
+export function useAllActiveEvents(options: { enabled?: boolean } = {}) {
+  const enabled = options.enabled ?? true;
+  const query = useQuery({
+    queryKey: ["all-active-events"],
+    queryFn: fetchAllActiveEvents,
+    enabled,
+  });
+  const refetch = useCallback(async () => {
+    await query.refetch();
+  }, [query]);
+  return {
+    events: query.data ?? EMPTY_PUBLIC_EVENTS,
+    loading: enabled ? query.isPending : false,
+    refetch,
+  };
+}
 
-  useEffect(() => {
-    void Promise.resolve().then(fetchEvents);
-  }, [fetchEvents]);
+const EMPTY_STAFF_EVENTS: EventRow[] = [];
 
-  return { events, loading, refetch: fetchEvents };
+async function fetchEventsByRestaurant(restaurantId: string): Promise<EventRow[]> {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseBrowserClient();
+  const { data, error: qErr } = await client
+    .from("events")
+    .select("*")
+    .eq("restaurant_id", restaurantId)
+    .order("date", { ascending: true });
+  if (qErr) throw new Error(qErr.message);
+  return (data ?? []) as EventRow[];
 }
 
 export function useEvents() {
   const { selectedRestaurantId } = useRestaurantScope();
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+
+  const query = useQuery({
+    queryKey: ["events-by-restaurant", selectedRestaurantId ?? null],
+    queryFn: () => fetchEventsByRestaurant(selectedRestaurantId as string),
+    enabled: Boolean(selectedRestaurantId),
+  });
+
+  const events = query.data ?? EMPTY_STAFF_EVENTS;
+  const loading = selectedRestaurantId ? query.isPending : false;
+  const error = (query.error as Error | null) ?? null;
 
   const fetchEvents = useCallback(async () => {
-    if (!selectedRestaurantId || !isSupabaseConfigured()) {
-      setEvents([]);
-      setLoading(false);
-      return;
-    }
+    await query.refetch();
+  }, [query]);
 
-    setLoading(true);
-    setError(null);
-    const client = getSupabaseBrowserClient();
-
-    const { data, error: qErr } = await client
-      .from("events")
-      .select("*")
-      .eq("restaurant_id", selectedRestaurantId)
-      .order("date", { ascending: true });
-
-    if (qErr) {
-      setError(new Error(qErr.message));
-      setEvents([]);
-    } else {
-      setEvents((data ?? []) as EventRow[]);
-    }
-    setLoading(false);
-  }, [selectedRestaurantId]);
-
-  useEffect(() => {
-    void Promise.resolve().then(fetchEvents);
-  }, [fetchEvents]);
+  const invalidate = useCallback(() => {
+    return queryClient.invalidateQueries({ queryKey: ["events-by-restaurant", selectedRestaurantId ?? null] });
+  }, [queryClient, selectedRestaurantId]);
 
   const createEvent = useCallback(async (payload: CreateEventPayload): Promise<string | null> => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) return "No restaurant selected.";
@@ -202,9 +204,9 @@ export function useEvents() {
       });
     setSaving(false);
     if (error) return error.message;
-    await fetchEvents();
+    await invalidate();
     return null;
-  }, [selectedRestaurantId, fetchEvents]);
+  }, [selectedRestaurantId, invalidate]);
 
   const updateEvent = useCallback(async (id: string, payload: Partial<CreateEventPayload>): Promise<string | null> => {
     if (!isSupabaseConfigured()) return "Supabase not configured.";
@@ -213,9 +215,9 @@ export function useEvents() {
     const { error } = await client.from("events").update(payload).eq("id", id);
     setSaving(false);
     if (error) return error.message;
-    await fetchEvents();
+    await invalidate();
     return null;
-  }, [fetchEvents]);
+  }, [invalidate]);
 
   const uploadEventMedia = useCallback(async (file: File): Promise<EventMediaUpload | string> => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) return "No restaurant selected.";
@@ -245,9 +247,9 @@ export function useEvents() {
     const client = getSupabaseBrowserClient();
     const { error } = await client.from("events").delete().eq("id", id);
     if (error) return false;
-    await fetchEvents();
+    await invalidate();
     return true;
-  }, [fetchEvents]);
+  }, [invalidate]);
 
   return { events, loading, saving, error, refetch: fetchEvents, createEvent, updateEvent, deleteEvent, uploadEventMedia };
 }

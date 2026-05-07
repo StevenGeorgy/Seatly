@@ -174,7 +174,18 @@ export async function getAvailability(
     .gte("reserved_at", dayStartUTC)
     .lte("reserved_at", dayEndUTC);
 
-  const slots: AvailabilitySlot[] = [];
+  // Build the list of candidate slots first using only in-memory checks
+  // (capacity + reservation overlap). Each candidate's table-assignment RPC
+  // is independent of every other candidate, so we run them all in parallel
+  // with Promise.all instead of awaiting one at a time. This turns ~44
+  // sequential round trips per shift into a single batched wait.
+  type SlotCandidate = {
+    shift_id: string;
+    shift_name: string;
+    slotStart: Date;
+    turnMins: number;
+  };
+  const candidates: SlotCandidate[] = [];
   const todayDate = new Date(today);
   const requestDate = new Date(dateOnly);
 
@@ -204,6 +215,8 @@ export async function getAvailability(
     }
     if (endMin <= slotMin) continue;
 
+    const shiftResvs = (reservations ?? []).filter((r: any) => r.shift_id === shift.id);
+
     while (slotMin + slotMins <= endMin) {
       const slotHour = Math.floor(slotMin / 60);
       const slotMinute = slotMin % 60;
@@ -213,10 +226,8 @@ export async function getAvailability(
       const slotStart = new Date(slotDateTimeUTC);
       const slotEnd = new Date(slotStart.getTime() + turnMins * 60_000);
 
-      const shiftResvs = (reservations ?? []).filter((r: any) => r.shift_id === shift.id);
       let totalCovers = party_size;
       let available = true;
-
       for (const r of shiftResvs) {
         const resvStart = new Date(r.reserved_at);
         const resvDuration = r.duration_minutes ?? turnMins;
@@ -231,38 +242,54 @@ export async function getAvailability(
       }
 
       if (available) {
-        const { data: tableIds, error: assignmentErr } = await supabaseAdmin.rpc("find_available_table_group", {
-          p_restaurant_id: restaurant_id,
-          p_reserved_at: slotStart.toISOString(),
-          p_party_size: party_size,
-          p_turn_minutes: turnMins,
-        });
-        const assignedTableIds = Array.isArray(tableIds)
-          ? tableIds.filter((id): id is string => typeof id === "string")
-          : [];
-        if (assignmentErr || assignedTableIds.length === 0) {
-          slotMin += slotMins;
-          continue;
-        }
-
-        slots.push({
+        candidates.push({
           shift_id: shift.id,
           shift_name: shift.name ?? "Shift",
-          date_time: slotStart.toISOString(),
-          display_time: slotStart.toLocaleTimeString("en-US", {
-            timeZone: timezone,
-            hour: "numeric",
-            minute: "2-digit",
-            hour12: true,
-          }),
-          table_ids: assignedTableIds,
-          duration_minutes: turnMins,
-          floor_capacity: floorCapacity,
+          slotStart,
+          turnMins,
         });
       }
 
       slotMin += slotMins;
     }
+  }
+
+  const assignments = await Promise.all(
+    candidates.map((candidate) =>
+      supabaseAdmin
+        .rpc("find_available_table_group", {
+          p_restaurant_id: restaurant_id,
+          p_reserved_at: candidate.slotStart.toISOString(),
+          p_party_size: party_size,
+          p_turn_minutes: candidate.turnMins,
+        })
+        .then(({ data, error }) => ({
+          tableIds: !error && Array.isArray(data)
+            ? data.filter((id): id is string => typeof id === "string")
+            : [],
+        })),
+    ),
+  );
+
+  const slots: AvailabilitySlot[] = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const assignedTableIds = assignments[i].tableIds;
+    if (assignedTableIds.length === 0) continue;
+    const candidate = candidates[i];
+    slots.push({
+      shift_id: candidate.shift_id,
+      shift_name: candidate.shift_name,
+      date_time: candidate.slotStart.toISOString(),
+      display_time: candidate.slotStart.toLocaleTimeString("en-US", {
+        timeZone: timezone,
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      table_ids: assignedTableIds,
+      duration_minutes: candidate.turnMins,
+      floor_capacity: floorCapacity,
+    });
   }
 
   // Cap at 48 (covers any reasonable shift in 30-min increments — e.g. an

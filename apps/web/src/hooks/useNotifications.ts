@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
@@ -16,47 +17,41 @@ export type NotificationRow = {
   created_at: string;
 };
 
+const EMPTY_NOTIFICATIONS: NotificationRow[] = [];
+
+async function fetchNotificationsForUser(userId: string): Promise<NotificationRow[]> {
+  if (!isSupabaseConfigured()) return [];
+  const client = getSupabaseBrowserClient();
+  const { data, error: qErr } = await client
+    .from("notifications")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (qErr) throw new Error(qErr.message);
+  return (data ?? []) as NotificationRow[];
+}
+
 export function useNotifications() {
   const { profile } = useUser();
-  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
+  const queryClient = useQueryClient();
   const userId = profile?.id;
 
-  const fetchNotifications = useCallback(async () => {
-    if (!userId || !isSupabaseConfigured()) {
-      setNotifications([]);
-      setLoading(false);
-      return;
-    }
+  const queryKey = ["notifications", userId ?? null] as const;
 
-    setLoading(true);
-    setError(null);
-    const client = getSupabaseBrowserClient();
+  const query = useQuery({
+    queryKey,
+    queryFn: () => fetchNotificationsForUser(userId as string),
+    enabled: Boolean(userId),
+  });
 
-    const { data, error: qErr } = await client
-      .from("notifications")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(50);
+  const notifications = query.data ?? EMPTY_NOTIFICATIONS;
+  const loading = userId ? query.isPending : false;
+  const error = (query.error as Error | null) ?? null;
 
-    if (qErr) {
-      setError(new Error(qErr.message));
-      setNotifications([]);
-    } else {
-      setNotifications((data ?? []) as NotificationRow[]);
-    }
-    setLoading(false);
-  }, [userId]);
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void fetchNotifications();
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [fetchNotifications]);
+  const refetch = useCallback(async () => {
+    await query.refetch();
+  }, [query]);
 
   useEffect(() => {
     if (!userId || !isSupabaseConfigured()) return;
@@ -67,19 +62,21 @@ export function useNotifications() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${userId}` },
-        () => { void fetchNotifications(); },
+        () => { void queryClient.invalidateQueries({ queryKey: ["notifications", userId] }); },
       )
       .subscribe();
 
     return () => { void client.removeChannel(channel); };
-  }, [userId, fetchNotifications]);
+  }, [userId, queryClient]);
 
   useEffect(() => {
     if (!userId) return;
-    const handleNotificationsChanged = () => { void fetchNotifications(); };
+    const handleNotificationsChanged = () => {
+      void queryClient.invalidateQueries({ queryKey: ["notifications", userId] });
+    };
     window.addEventListener("cenaiva:notifications-changed", handleNotificationsChanged);
     return () => window.removeEventListener("cenaiva:notifications-changed", handleNotificationsChanged);
-  }, [fetchNotifications, userId]);
+  }, [queryClient, userId]);
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
 
@@ -87,8 +84,10 @@ export function useNotifications() {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
     await client.from("notifications").update({ is_read: true }).eq("id", id);
-    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
-  }, []);
+    queryClient.setQueryData<NotificationRow[]>(["notifications", userId ?? null], (prev) =>
+      (prev ?? []).map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+    );
+  }, [queryClient, userId]);
 
-  return { notifications, unreadCount, loading, error, refetch: fetchNotifications, markRead };
+  return { notifications, unreadCount, loading, error, refetch, markRead };
 }

@@ -30,6 +30,7 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
 import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
+import { useRestaurantPrefetch } from "@/lib/prefetch";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
@@ -445,8 +446,10 @@ function GridCard({
   onBookSlot: (slot: AvailabilitySlot) => void;
   onOpen: () => void;
 }) {
+  const prefetch = useRestaurantPrefetch(r.id, r.slug);
   return (
     <motion.div
+      ref={prefetch.setRef}
       role="button"
       tabIndex={0}
       initial={{ opacity: 0, y: 16 }}
@@ -454,6 +457,9 @@ function GridCard({
       viewport={{ once: true, margin: "-50px" }}
       transition={{ duration: 0.4 }}
       onClick={onOpen}
+      onMouseEnter={prefetch.onMouseEnter}
+      onMouseLeave={prefetch.onMouseLeave}
+      onFocus={prefetch.onMouseEnter}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -515,12 +521,21 @@ function MapListCard({
   highlighted: boolean;
   onSelect: () => void;
 }) {
+  const prefetch = useRestaurantPrefetch(r.id, r.slug);
   return (
     <div
+      ref={prefetch.setRef}
       role="button"
       tabIndex={0}
-      onMouseEnter={() => onHover(r.id)}
-      onMouseLeave={() => onHover(null)}
+      onMouseEnter={() => {
+        onHover(r.id);
+        prefetch.onMouseEnter();
+      }}
+      onMouseLeave={() => {
+        onHover(null);
+        prefetch.onMouseLeave();
+      }}
+      onFocus={prefetch.onMouseEnter}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -1252,12 +1267,40 @@ export default function DiscoverPage() {
     shiftId?: string,
     _displayTime?: string,
     bookingDate?: string,
+    options: { optimistic?: boolean } = {},
   ) => {
-    void _displayTime;
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
     const slotDate = bookingDate
       ?? dateParamFromSelection(dateId, customDate);
     const partyCount = Number.parseInt(String(selectedPartySize), 10) || 2;
+    const navigateToSlot = (
+      nextSlot: string,
+      nextShiftId: string | undefined,
+      nextDisplayTime: string | undefined,
+      state?: unknown,
+    ) => {
+      const shiftQuery = nextShiftId ? `&shift_id=${encodeURIComponent(nextShiftId)}` : "";
+      const timeParam = nextDisplayTime
+        ? formatCompactTimeLabel(nextDisplayTime)
+        : formatCompactTimeLabel(nextSlot);
+      navigate(
+        `/${r.slug ?? r.id}?slot=${encodeURIComponent(nextSlot)}&time=${encodeURIComponent(timeParam)}&people=${partyCount}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
+        state ? { state } : undefined,
+      );
+    };
+
+    if (options.optimistic) {
+      navigateToSlot(slot, shiftId, _displayTime, {
+        previewSlotRevalidation: {
+          slot,
+          shiftId: shiftId ?? null,
+          date: slotDate,
+          partySize: partyCount,
+        },
+      });
+      return;
+    }
+
     const refreshed = await fetchAvailabilitySlots(r.id, slotDate, partyCount, { forceRefresh: true })
       .catch(() => null);
     const refreshedSlot = refreshed?.slots.find((candidate) =>
@@ -1274,11 +1317,7 @@ export default function DiscoverPage() {
       });
       return;
     }
-    const shiftQuery = refreshedSlot.shift_id ? `&shift_id=${encodeURIComponent(refreshedSlot.shift_id)}` : "";
-    const timeParam = formatCompactTimeLabel(refreshedSlot.display_time);
-    navigate(
-      `/${r.slug ?? r.id}?slot=${encodeURIComponent(refreshedSlot.date_time)}&time=${encodeURIComponent(timeParam)}&people=${partyCount}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
-    );
+    navigateToSlot(refreshedSlot.date_time, refreshedSlot.shift_id, refreshedSlot.display_time);
   };
 
   const openRestaurantPreview = (r: RestaurantCard) => {
@@ -2047,10 +2086,10 @@ export default function DiscoverPage() {
         onToggleFavorite={() => {
           if (activePreviewRestaurant) toggleFavorite(activePreviewRestaurant.id);
         }}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate, options) => {
           if (activePreviewRestaurant) {
             setPartySize(selectedPartySize);
-            return handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime, bookingDate);
+            return handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime, bookingDate, options);
           }
           return undefined;
         }}

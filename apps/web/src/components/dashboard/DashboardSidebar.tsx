@@ -547,17 +547,29 @@ export function DashboardSidebar() {
         currencyCode={selectedRestaurant?.currency ?? "cad"}
         onClose={() => setPreviewOpen(false)}
         onToggleFavorite={() => setPreviewFavorite((value) => !value)}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate, options) => {
           if (!selectedRestaurant) return;
           const publicPath = `/${selectedRestaurant.slug ?? selectedRestaurant.id}`;
           const shiftQuery = shiftId ? `&shift_id=${encodeURIComponent(shiftId)}` : "";
           const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
+          const dateQuery = bookingDate ? `&date=${encodeURIComponent(bookingDate)}` : "";
           const query =
             slot === "waitlist"
               ? "back=dashboard"
-              : `slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(timeParam)}&people=${selectedPartySize}${shiftQuery}&back=dashboard`;
+              : `slot=${encodeURIComponent(slot)}&time=${encodeURIComponent(timeParam)}&people=${selectedPartySize}${dateQuery}${shiftQuery}&back=dashboard`;
           setPreviewOpen(false);
-          void navigate(`${publicPath}?${query}`);
+          void navigate(`${publicPath}?${query}`, options?.optimistic && bookingDate
+            ? {
+              state: {
+                previewSlotRevalidation: {
+                  slot,
+                  shiftId: shiftId ?? null,
+                  date: bookingDate,
+                  partySize: Number.parseInt(selectedPartySize, 10) || 2,
+                },
+              },
+            }
+            : undefined);
         }}
       />
     </>

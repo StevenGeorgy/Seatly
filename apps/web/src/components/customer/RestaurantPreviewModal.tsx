@@ -84,6 +84,7 @@ type RestaurantPreviewModalProps = {
     shiftId?: string,
     displayTime?: string,
     bookingDate?: string,
+    options?: { optimistic?: boolean },
   ) => void | Promise<void>;
 };
 
@@ -377,10 +378,10 @@ export function RestaurantPreviewModal({
     const parsedDate = parse(previewDate, "yyyy-MM-dd", new Date());
     return isValid(parsedDate) ? parsedDate : undefined;
   }, [previewDate]);
-  const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId);
-  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId);
-  const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(resolvedRestaurantId);
-  const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
+  const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId, { enabled: activeTab === "menu" });
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId, { enabled: activeTab === "menu" });
+  const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(resolvedRestaurantId, { enabled: activeTab === "reviews" });
+  const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents({ enabled: activeTab === "events" });
   const {
     slots: availabilitySlots,
     loading: availabilityLoading,
@@ -601,25 +602,13 @@ export function RestaurantPreviewModal({
     setReserving(true);
     setStaleAvailabilityNotice(null);
     try {
-      const result = await fetchSlots(restaurant.id, previewDate, selectedPartySize, { forceRefresh: true });
-      const refreshedSlot = result.slots.find((availableSlot) =>
-        availableSlot.date_time === selectedSlot.date_time && availableSlot.shift_id === selectedSlot.shift_id,
-      );
-      if (!refreshedSlot) {
-        setStaleAvailabilityNotice(
-          result.slots.length > 0
-            ? "That time is no longer available. Pick another time."
-            : (result.message ?? "That time is no longer available. Try another date or party size."),
-        );
-        setTimeState({ restaurantId: restaurant.id, time: "" });
-        return;
-      }
       await onReserve(
-        refreshedSlot.date_time,
+        selectedSlot.date_time,
         String(selectedPartySize),
-        refreshedSlot.shift_id,
-        formatCompactTimeLabel(refreshedSlot.display_time),
+        selectedSlot.shift_id,
+        formatCompactTimeLabel(selectedSlot.display_time),
         previewDate,
+        { optimistic: true },
       );
     } finally {
       setReserving(false);

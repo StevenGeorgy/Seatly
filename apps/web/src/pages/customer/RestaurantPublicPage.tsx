@@ -1,7 +1,7 @@
 import { Fragment, useState, useMemo, useId, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
-import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
+import { useParams, Link, useSearchParams, useNavigate, useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   Star,
@@ -68,6 +68,7 @@ import { formatRestaurantHoursRows } from "@/lib/restaurant-hours";
 import {
   deriveRestaurantPriceLevel,
   deriveRestaurantPriceLevelFromMenu,
+  normalizeRestaurantPriceLevel,
 } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 
@@ -110,6 +111,15 @@ type PublicBookingResponse = {
   confirmation_delivery?: "sent" | "skipped" | "failed";
   confirmation_delivery_channel?: "email" | "sms" | null;
   error?: string;
+};
+
+type PreviewSlotRevalidationState = {
+  previewSlotRevalidation?: {
+    slot?: string;
+    shiftId?: string | null;
+    date?: string;
+    partySize?: number;
+  };
 };
 
 type SplitCardRow = {
@@ -304,6 +314,13 @@ function optionalDateValueFromSearch(value: string | null): string | null {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   if (value === "tomorrow" || value === "sat") return dateValueFromDiscoverPreset(value);
   return null;
+}
+
+function previewSlotRevalidationFromState(state: unknown): PreviewSlotRevalidationState["previewSlotRevalidation"] {
+  if (!state || typeof state !== "object" || !("previewSlotRevalidation" in state)) return undefined;
+  const candidate = (state as PreviewSlotRevalidationState).previewSlotRevalidation;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  return candidate;
 }
 
 function dateKey(date: Date): string {
@@ -1000,6 +1017,7 @@ export default function RestaurantPublicPage() {
   const { restaurantSlug } = useParams<{ restaurantSlug: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   /** Did the user arrive here from Cenaiva's prepay flow? If so, after the
    *  checkout confirms we want to drop them back on their dashboard rather
    *  than the generic "Back to Discover" CTA. */
@@ -1032,15 +1050,24 @@ export default function RestaurantPublicPage() {
   const initialBookingDate = requestedDateParam
     ?? (requestedIsoSlot ? requestedIsoSlot.slice(0, 10) : dateValueFromDiscoverPreset(searchParams.get("date")));
   const initialPartySize = Math.max(1, Number.parseInt(searchParams.get("people") ?? "2", 10) || 2);
+  const previewSlotRevalidation = previewSlotRevalidationFromState(location.state);
+  const previewSlotRevalidationMatchesRequest = Boolean(
+    previewSlotRevalidation &&
+    previewSlotRevalidation.slot === requestedIsoSlot &&
+    previewSlotRevalidation.date === initialBookingDate &&
+    previewSlotRevalidation.partySize === initialPartySize &&
+    (!previewSlotRevalidation.shiftId || previewSlotRevalidation.shiftId === requestedShiftId),
+  );
   const bookingLockedFromPreview = Boolean(
     searchParams.get("slot") ?? searchParams.get("time") ?? searchParams.get("date") ?? searchParams.get("people"),
   );
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
-  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id);
-  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id);
-  const { summary: publicReviewSummary } = useRestaurantReviews(restaurant?.id);
+  const [step, setStep] = useState<Step>("details");
+  const menuQueriesEnabled = step === "menu" || step === "checkout";
+  const { categories: dbCategories } = usePublicMenuCategories(restaurant?.id, { enabled: menuQueriesEnabled });
+  const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(restaurant?.id, { enabled: menuQueriesEnabled });
   const restaurantPromos = useMemo(
     () => allPromos.filter((p) => p.restaurant_id === restaurant?.id),
     [allPromos, restaurant?.id],
@@ -1075,7 +1102,6 @@ export default function RestaurantPublicPage() {
     [dbCategories, menuItems],
   );
 
-  const [step, setStep] = useState<Step>("details");
   const [activeCategory, setActiveCategory] = useState("All");
   const [activePromoId, setActivePromoId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -1145,6 +1171,7 @@ export default function RestaurantPublicPage() {
   const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
   const availability = useAvailability();
   const fetchRestaurantSlots = availability.fetchSlots;
+  const forcedPreviewRevalidationKeyRef = useRef<string | null>(null);
   // Conflict filter: hide slots that overlap a logged-in diner's other bookings
   // on the same calendar day across different restaurants. No-op for guests.
   const dinerConflictWindows = useDinerConflictWindows({
@@ -1324,10 +1351,31 @@ export default function RestaurantPublicPage() {
 
   useEffect(() => {
     if (!restaurant?.id || !dineIn.date || typeof dineIn.party_size !== "number") return;
-    void fetchRestaurantSlots(restaurant.id, dineIn.date, dineIn.party_size, {
-      forceRefresh: bookingLockedFromPreview,
-    });
-  }, [bookingLockedFromPreview, fetchRestaurantSlots, dineIn.date, dineIn.party_size, restaurant?.id]);
+    const previewRevalidationKey = previewSlotRevalidationMatchesRequest && requestedIsoSlot
+      ? `${restaurant.id}|${requestedIsoSlot}|${requestedShiftId}|${dineIn.date}|${dineIn.party_size}`
+      : "";
+    const forceRefresh = Boolean(
+      previewRevalidationKey &&
+      forcedPreviewRevalidationKeyRef.current !== previewRevalidationKey,
+    );
+    if (forceRefresh) {
+      forcedPreviewRevalidationKeyRef.current = previewRevalidationKey;
+    }
+    void fetchRestaurantSlots(
+      restaurant.id,
+      dineIn.date,
+      dineIn.party_size,
+      forceRefresh ? { forceRefresh: true } : undefined,
+    );
+  }, [
+    fetchRestaurantSlots,
+    dineIn.date,
+    dineIn.party_size,
+    previewSlotRevalidationMatchesRequest,
+    requestedIsoSlot,
+    requestedShiftId,
+    restaurant?.id,
+  ]);
 
   const availableTimeOptions = useMemo(
     () => filteredAvailabilitySlots.map((slot) => formatCompactTimeLabel(slot.display_time)),
@@ -1709,7 +1757,7 @@ export default function RestaurantPublicPage() {
     );
   }
 
-  const publicPriceLevel = deriveRestaurantPriceLevelFromMenu(menuItems);
+  const publicPriceLevel = normalizeRestaurantPriceLevel(restaurant.price_range);
   const publicDietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
 
   if (isStaffPreview) {
@@ -1774,11 +1822,11 @@ export default function RestaurantPublicPage() {
               {publicDietaryTags.map((tag) => (
                 <DietaryTagPill key={tag} tag={tag} compact />
               ))}
-              {publicReviewSummary.avgRating != null && publicReviewSummary.totalReviews > 0 && (
+              {restaurant.avg_rating != null && (restaurant.total_reviews ?? 0) > 0 && (
                 <span className="flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5">
                   <Star className="size-3 fill-gold text-gold" />
-                  <span className="font-bold text-gold">{publicReviewSummary.avgRating.toFixed(1)}</span>
-                  <span className="text-text-muted">({publicReviewSummary.totalReviews})</span>
+                  <span className="font-bold text-gold">{restaurant.avg_rating.toFixed(1)}</span>
+                  <span className="text-text-muted">({restaurant.total_reviews})</span>
                 </span>
               )}
               {restaurant.address && (
@@ -1823,6 +1871,11 @@ export default function RestaurantPublicPage() {
               </div>
 
               <div className="rounded-2xl border border-border bg-bg-surface p-5 sm:p-6">
+                {previewSlotNoLongerAvailable ? (
+                  <p className="mb-4 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                    That preview time is no longer available. Pick another time.
+                  </p>
+                ) : null}
                 <div className="space-y-4">
                     {/* Date + Time + Party */}
                     <div className="grid grid-cols-3 gap-3">
@@ -1938,9 +1991,7 @@ export default function RestaurantPublicPage() {
                         {dineIn.date && availability.loading ? (
                           <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>
                         ) : previewSlotNoLongerAvailable ? (
-                          <p className="mt-1.5 text-[11px] text-warning">
-                            That preview time is no longer available. Pick another time.
-                          </p>
+                          null
                         ) : dineIn.date && availableTimeOptions.length === 0 ? (
                           <p className="mt-1.5 text-[11px] text-warning">
                             {typeof dineIn.party_size === "number" && dineIn.party_size > maxBookablePartySize

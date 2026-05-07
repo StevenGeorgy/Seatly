@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { deriveRestaurantPriceLevel, type RestaurantPriceMenuItem } from "@/lib/restaurant-price-level";
@@ -121,140 +121,111 @@ function applyReviewSummaries(
   });
 }
 
+async function fetchPublicRestaurants(): Promise<Restaurant[]> {
+  if (!isSupabaseConfigured()) return [];
+
+  const client = getSupabaseBrowserClient();
+  const { data } = await client
+    .from("restaurants")
+    .select("*")
+    .eq("is_active", true)
+    .order("avg_rating", { ascending: false, nullsFirst: false });
+
+  const rows = (data ?? []) as Restaurant[];
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((restaurant) => restaurant.id);
+
+  const [{ data: menuData }, { data: categoryData }, { data: reviewSummaryData }] = await Promise.all([
+    client
+      .from("menu_items")
+      .select("restaurant_id, category_id, name, category, price, is_active, is_available")
+      .in("restaurant_id", ids)
+      .eq("is_active", true)
+      .eq("is_available", true)
+      .not("category_id", "is", null),
+    client
+      .from("menu_categories")
+      .select("id, restaurant_id, name")
+      .in("restaurant_id", ids)
+      .eq("is_active", true),
+    client.rpc("restaurant_review_summaries", { p_restaurant_ids: ids }),
+  ]);
+
+  const withPrices = applyDerivedPriceLevels(
+    applyReviewSummaries(rows, reviewSummaryData as RestaurantReviewSummaryRow[] | null),
+    (menuData ?? []) as RestaurantPriceItemRow[],
+    (categoryData ?? []) as RestaurantPriceCategoryRow[],
+  );
+  return [...withPrices].sort((a, b) => (b.avg_rating ?? -1) - (a.avg_rating ?? -1));
+}
+
+export async function fetchRestaurantBySlugOrId(slugOrId: string): Promise<Restaurant> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase env vars are not set.");
+  }
+
+  const client = getSupabaseBrowserClient();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
+  const column = isUuid ? "id" : "slug";
+  const { data, error: qErr } = await client
+    .from("restaurants")
+    .select("*")
+    .eq(column, slugOrId)
+    .single();
+
+  if (qErr || !data) {
+    throw new Error(qErr?.message ?? "Not found");
+  }
+
+  const row = data as Restaurant;
+  const [{ data: menuData }, { data: categoryData }, { data: reviewSummaryData }] = await Promise.all([
+    client
+      .from("menu_items")
+      .select("restaurant_id, category_id, name, category, price, is_active, is_available")
+      .eq("restaurant_id", row.id)
+      .eq("is_active", true)
+      .eq("is_available", true)
+      .not("category_id", "is", null),
+    client
+      .from("menu_categories")
+      .select("id, restaurant_id, name")
+      .eq("restaurant_id", row.id)
+      .eq("is_active", true),
+    client.rpc("restaurant_review_summaries", { p_restaurant_ids: [row.id] }),
+  ]);
+
+  return applyDerivedPriceLevels(
+    applyReviewSummaries([row], reviewSummaryData as RestaurantReviewSummaryRow[] | null),
+    (menuData ?? []) as RestaurantPriceItemRow[],
+    (categoryData ?? []) as RestaurantPriceCategoryRow[],
+  )[0];
+}
+
+const EMPTY_RESTAURANTS: Restaurant[] = [];
+
 export function usePublicRestaurants() {
-  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
-  const [loading, setLoading] = useState(true);
+  const query = useQuery({
+    queryKey: ["public-restaurants"],
+    queryFn: fetchPublicRestaurants,
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!isSupabaseConfigured()) {
-        if (cancelled) return;
-        setRestaurants([]);
-        setLoading(false);
-        return;
-      }
-
-      const client = getSupabaseBrowserClient();
-      const { data } = await client
-        .from("restaurants")
-        .select("*")
-        .eq("is_active", true)
-        .order("avg_rating", { ascending: false, nullsFirst: false });
-
-      if (cancelled) return;
-      const rows = (data ?? []) as Restaurant[];
-      if (rows.length === 0) {
-        setRestaurants([]);
-        setLoading(false);
-        return;
-      }
-
-      const { data: menuData } = await client
-        .from("menu_items")
-        .select("restaurant_id, category_id, name, category, price, is_active, is_available")
-        .in("restaurant_id", rows.map((restaurant) => restaurant.id))
-        .eq("is_active", true)
-        .eq("is_available", true)
-        .not("category_id", "is", null);
-
-      const { data: categoryData } = await client
-        .from("menu_categories")
-        .select("id, restaurant_id, name")
-        .in("restaurant_id", rows.map((restaurant) => restaurant.id))
-        .eq("is_active", true);
-
-      const { data: reviewSummaryData } = await client.rpc("restaurant_review_summaries", {
-        p_restaurant_ids: rows.map((restaurant) => restaurant.id),
-      });
-
-      if (cancelled) return;
-      const withPrices = applyDerivedPriceLevels(
-        applyReviewSummaries(rows, reviewSummaryData as RestaurantReviewSummaryRow[] | null),
-        (menuData ?? []) as RestaurantPriceItemRow[],
-        (categoryData ?? []) as RestaurantPriceCategoryRow[],
-      );
-      setRestaurants([...withPrices].sort((a, b) => (b.avg_rating ?? -1) - (a.avg_rating ?? -1)));
-      setLoading(false);
-    })();
-
-    return () => { cancelled = true; };
-  }, []);
-
-  return { restaurants, loading };
+  return {
+    restaurants: query.data ?? EMPTY_RESTAURANTS,
+    loading: query.isPending,
+  };
 }
 
 export function useRestaurant(slugOrId?: string) {
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const query = useQuery({
+    queryKey: ["restaurant", slugOrId],
+    queryFn: () => fetchRestaurantBySlugOrId(slugOrId as string),
+    enabled: Boolean(slugOrId),
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!slugOrId) {
-        if (cancelled) return;
-        setRestaurant(null);
-        setLoading(false);
-        return;
-      }
-
-      if (!isSupabaseConfigured()) {
-        if (cancelled) return;
-        setRestaurant(null);
-        setError(new Error("Supabase env vars are not set."));
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      setError(null);
-
-      const client = getSupabaseBrowserClient();
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
-      const column = isUuid ? "id" : "slug";
-      const { data, error: qErr } = await client
-        .from("restaurants")
-        .select("*")
-        .eq(column, slugOrId)
-        .single();
-
-      if (cancelled) return;
-      if (qErr || !data) {
-        setRestaurant(null);
-        setError(new Error(qErr?.message ?? "Not found"));
-      } else {
-        const row = data as Restaurant;
-        const { data: menuData } = await client
-          .from("menu_items")
-          .select("restaurant_id, category_id, name, category, price, is_active, is_available")
-          .eq("restaurant_id", row.id)
-          .eq("is_active", true)
-          .eq("is_available", true)
-          .not("category_id", "is", null);
-
-        const { data: categoryData } = await client
-          .from("menu_categories")
-          .select("id, restaurant_id, name")
-          .eq("restaurant_id", row.id)
-          .eq("is_active", true);
-
-        const { data: reviewSummaryData } = await client.rpc("restaurant_review_summaries", {
-          p_restaurant_ids: [row.id],
-        });
-
-        if (cancelled) return;
-        setRestaurant(applyDerivedPriceLevels(
-          applyReviewSummaries([row], reviewSummaryData as RestaurantReviewSummaryRow[] | null),
-          (menuData ?? []) as RestaurantPriceItemRow[],
-          (categoryData ?? []) as RestaurantPriceCategoryRow[],
-        )[0]);
-      }
-      setLoading(false);
-    })();
-
-    return () => { cancelled = true; };
-  }, [slugOrId]);
-
-  return { restaurant, loading, error };
+  return {
+    restaurant: query.data ?? null,
+    loading: slugOrId ? query.isPending : false,
+    error: (query.error as Error | null) ?? null,
+  };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X, Keyboard } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,9 +9,12 @@ import { NOISE_ROBUST_AUDIO_CONSTRAINTS } from "@/hooks/useDeepgramTranscription
 import { usePublicRestaurants } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
-import { CustomerMap } from "@/components/cenaiva/CustomerMap";
 import { RestaurantRail } from "@/components/cenaiva/RestaurantRail";
 import { BookingSheet, MANUAL_MENU_STATUSES } from "@/components/cenaiva/BookingSheet";
+
+const CustomerMap = lazy(() =>
+  import("@/components/cenaiva/CustomerMap").then((module) => ({ default: module.CustomerMap })),
+);
 
 interface CenaivaVoiceShellProps {
   /** When true, plays a hard-coded opening greeting as soon as the shell opens */
@@ -250,7 +253,9 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
               flow so the menu can fill the screen. */}
           {!inManualMenu && (
             <div className="flex-1 relative">
-              <CustomerMap restaurants={restaurants} />
+              <Suspense fallback={<div className="size-full bg-bg-base" />}>
+                <CustomerMap restaurants={restaurants} />
+              </Suspense>
 
               {/* Spoken text overlay */}
               <AnimatePresence>
