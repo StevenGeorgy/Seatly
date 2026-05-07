@@ -78,7 +78,13 @@ type RestaurantPreviewModalProps = {
   availabilityNotice?: string | null;
   onClose: () => void;
   onToggleFavorite: () => void;
-  onReserve: (slot: string, partySize: string, shiftId?: string, displayTime?: string) => void;
+  onReserve: (
+    slot: string,
+    partySize: string,
+    shiftId?: string,
+    displayTime?: string,
+    bookingDate?: string,
+  ) => void | Promise<void>;
 };
 
 const TABS: { id: PreviewTab; label: string }[] = [
@@ -427,11 +433,29 @@ export function RestaurantPreviewModal({
     });
   }, [availabilitySlots, dinerConflictWindows]);
   const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
+  const preferredAvailableSlot = useMemo(
+    () => preferredTime
+      ? availableSlots.find((slot) =>
+        slot.display_time === preferredTime ||
+        formatCompactTimeLabel(slot.display_time) === formatCompactTimeLabel(preferredTime),
+      ) ?? null
+      : null,
+    [availableSlots, preferredTime],
+  );
+  const selectedSlot = useMemo(
+    () => {
+      if (restaurant && timeState.restaurantId === restaurant.id) {
+        return availableSlots.find((slot) =>
+          slot.display_time === timeState.time ||
+          formatCompactTimeLabel(slot.display_time) === formatCompactTimeLabel(timeState.time),
+        ) ?? null;
+      }
+      return preferredAvailableSlot ?? availableSlots[0] ?? null;
+    },
+    [availableSlots, preferredAvailableSlot, restaurant, timeState.restaurantId, timeState.time],
+  );
 
-  const selectedTime =
-    restaurant && timeState.restaurantId === restaurant.id
-      ? timeState.time
-      : availableTimes[0] ?? "";
+  const selectedTime = selectedSlot?.display_time ?? "";
   const visibleAvailabilityNotice = staleAvailabilityNotice ?? (
     dismissedExternalAvailabilityNotice ? null : availabilityNotice ?? null
   );
@@ -573,14 +597,13 @@ export function RestaurantPreviewModal({
 
   const reserveSelectedSlot = async () => {
     if (!restaurant || reserving) return;
-    const slot = availableSlots.find((availableSlot) => availableSlot.display_time === selectedTime);
-    if (!slot) return;
+    if (!selectedSlot) return;
     setReserving(true);
     setStaleAvailabilityNotice(null);
     try {
       const result = await fetchSlots(restaurant.id, previewDate, selectedPartySize, { forceRefresh: true });
       const refreshedSlot = result.slots.find((availableSlot) =>
-        availableSlot.date_time === slot.date_time && availableSlot.shift_id === slot.shift_id,
+        availableSlot.date_time === selectedSlot.date_time && availableSlot.shift_id === selectedSlot.shift_id,
       );
       if (!refreshedSlot) {
         setStaleAvailabilityNotice(
@@ -591,11 +614,12 @@ export function RestaurantPreviewModal({
         setTimeState({ restaurantId: restaurant.id, time: "" });
         return;
       }
-      onReserve(
+      await onReserve(
         refreshedSlot.date_time,
         String(selectedPartySize),
         refreshedSlot.shift_id,
         formatCompactTimeLabel(refreshedSlot.display_time),
+        previewDate,
       );
     } finally {
       setReserving(false);
@@ -675,14 +699,20 @@ export function RestaurantPreviewModal({
     }
     if (!restaurant || availableTimes.length === 0) return;
     if (staleAvailabilityNotice) return;
-    if (timeState.restaurantId === restaurant.id && availableTimes.includes(timeState.time)) return;
+    if (
+      timeState.restaurantId === restaurant.id &&
+      availableTimes.some((time) =>
+        time === timeState.time ||
+        formatCompactTimeLabel(time) === formatCompactTimeLabel(timeState.time),
+      )
+    ) return;
     void Promise.resolve().then(() => {
       setTimeState({
         restaurantId: restaurant.id,
-        time: preferredTime && availableTimes.includes(preferredTime) ? preferredTime : availableTimes[0],
+        time: (preferredAvailableSlot ?? availableSlots[0])?.display_time ?? "",
       });
     });
-  }, [availabilityLoading, availableTimes, preferredTime, restaurant, staleAvailabilityNotice, timeState.restaurantId, timeState.time]);
+  }, [availabilityLoading, availableSlots, availableTimes, preferredAvailableSlot, restaurant, staleAvailabilityNotice, timeState.restaurantId, timeState.time]);
 
   useEffect(() => {
     if (!restaurant) return;

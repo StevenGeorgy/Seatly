@@ -299,6 +299,13 @@ function dateValueFromDiscoverPreset(value: string | null): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function optionalDateValueFromSearch(value: string | null): string | null {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (value === "tomorrow" || value === "sat") return dateValueFromDiscoverPreset(value);
+  return null;
+}
+
 function dateKey(date: Date): string {
   return format(date, "yyyy-MM-dd");
 }
@@ -405,7 +412,7 @@ function RestaurantStaffPreview({
   menuItems: MenuItem[];
   hasSavedMenu: boolean;
   onBack: () => void;
-  onStartBooking: (slot: string, partySize: number, shiftId?: string, displayTime?: string) => void;
+  onStartBooking: (slot: string, partySize: number, shiftId?: string, displayTime?: string, bookingDate?: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<StaffPreviewTab>("Menu");
   const [favorite, setFavorite] = useState(false);
@@ -510,6 +517,7 @@ function RestaurantStaffPreview({
         previewPartySize,
         refreshedSlot.shift_id,
         formatCompactTimeLabel(refreshedSlot.display_time),
+        previewDate,
       );
     } finally {
       setPreviewReserving(false);
@@ -1020,9 +1028,9 @@ export default function RestaurantPublicPage() {
     : requestedBookingTime
       ? formatCompactTimeLabel(requestedBookingTime)
       : "";
-  const initialBookingDate = requestedIsoSlot
-    ? requestedIsoSlot.slice(0, 10)
-    : dateValueFromDiscoverPreset(searchParams.get("date"));
+  const requestedDateParam = optionalDateValueFromSearch(searchParams.get("date"));
+  const initialBookingDate = requestedDateParam
+    ?? (requestedIsoSlot ? requestedIsoSlot.slice(0, 10) : dateValueFromDiscoverPreset(searchParams.get("date")));
   const initialPartySize = Math.max(1, Number.parseInt(searchParams.get("people") ?? "2", 10) || 2);
   const bookingLockedFromPreview = Boolean(
     searchParams.get("slot") ?? searchParams.get("time") ?? searchParams.get("date") ?? searchParams.get("people"),
@@ -1340,15 +1348,27 @@ export default function RestaurantPublicPage() {
   const bookingFieldsLocked = bookingLockedFromPreview && lockedPreviewSlotAvailable;
   const previewSlotNoLongerAvailable =
     bookingLockedFromPreview && Boolean(requestedIsoSlot) && !availability.loading && !lockedPreviewSlotAvailable;
+  const displayedTimeOptions = useMemo(
+    () => {
+      // When the field is locked from a preview pick, render only the URL's
+      // time. Mixing in other slot labels lets a disabled <select> visually
+      // fall back to whichever option matches first if React/the browser
+      // races on `value` vs. options, which previously made every locked
+      // booking display "11am" regardless of what was picked.
+      if (bookingFieldsLocked && dineIn.time) return [dineIn.time];
+      return availableTimeOptions;
+    },
+    [availableTimeOptions, bookingFieldsLocked, dineIn.time],
+  );
 
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
     if (availableTimeOptions.includes(dineIn.time)) return;
-    // When the URL pinned a specific slot, leave dineIn.time alone so the
-    // "preview time no longer available" warning is the user's only signal —
-    // never silently substitute a different time (which is how a 6pm pick
-    // ended up submitted as 1pm).
-    if (bookingLockedFromPreview && requestedIsoSlot && !lockedPreviewSlotAvailable) return;
+    // When the URL pinned a specific slot, leave dineIn.time alone — the URL
+    // is authoritative. A preview-time mismatch surfaces via the "no longer
+    // available" warning rather than a silent reset (which would both lie to
+    // the user about their pick and could submit a different time).
+    if (bookingLockedFromPreview && requestedIsoSlot) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
     });
@@ -1359,16 +1379,21 @@ export default function RestaurantPublicPage() {
     bookingLockedFromPreview,
     dineIn.date,
     dineIn.time,
-    lockedPreviewSlotAvailable,
     requestedIsoSlot,
   ]);
 
   useEffect(() => {
+    // Clear stale time only once the user has actually picked a date/party and
+    // the resulting fetch returned zero slots. Without the URL-pin guard, this
+    // would also fire on the very first render (slots.length === 0 before any
+    // fetch has started) and wipe the time we just read from the URL — that's
+    // how a 12:30pm pick was ending up displayed as 11am.
+    if (bookingLockedFromPreview) return;
     if (!dineIn.date || availability.loading || availability.slots.length > 0 || !dineIn.time) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: "" }));
     });
-  }, [availability.loading, availability.slots.length, dineIn.date, dineIn.time]);
+  }, [availability.loading, availability.slots.length, bookingLockedFromPreview, dineIn.date, dineIn.time]);
 
   const filteredMenu = useMemo(() => {
     let list = activeCategory === "All" ? menuItems : menuItems.filter((m) => m.category === activeCategory);
@@ -1694,8 +1719,8 @@ export default function RestaurantPublicPage() {
         menuItems={menuItems}
         hasSavedMenu={dbMenuItems.length > 0}
         onBack={() => navigate("/dashboard")}
-        onStartBooking={(slot, partySize, shiftId, displayTime) => {
-          const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot) ? slot.slice(0, 10) : todayDateValue();
+        onStartBooking={(slot, partySize, shiftId, displayTime, bookingDate) => {
+          const slotDate = bookingDate ?? (/^\d{4}-\d{2}-\d{2}T/.test(slot) ? slot.slice(0, 10) : todayDateValue());
           const slotTime = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
           setDineIn((details) => ({ ...details, date: slotDate, time: slotTime, party_size: partySize }));
           setStep("details");
@@ -1883,27 +1908,32 @@ export default function RestaurantPublicPage() {
                         <Label className="mb-1.5 block text-xs text-text-muted">Time</Label>
                         <div className="relative">
                           <Clock className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted z-10" />
-                          <select
-                            value={dineIn.time}
-                            onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
-                            disabled={
-                              bookingFieldsLocked ||
-                              (dineIn.date ? availability.loading || availableTimeOptions.length === 0 : false)
-                            }
-                            className={cn(
-                              "h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40",
-                              bookingFieldsLocked && "cursor-not-allowed opacity-55",
-                            )}
-                          >
-                            {availableTimeOptions.length > 0 ? (
-                              availableTimeOptions.map((time) => (
-                                <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
-                              ))
-                            ) : (
-                              <option value="">No times available</option>
-                            )}
-                          </select>
-                          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
+                          {bookingLockedFromPreview && dineIn.time ? (
+                            <div
+                              aria-disabled="true"
+                              className="flex h-10 w-full cursor-not-allowed items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary opacity-55"
+                            >
+                              <span className="truncate">{formatCompactTimeLabel(dineIn.time)}</span>
+                            </div>
+                          ) : (
+                            <>
+                              <select
+                                value={dineIn.time}
+                                onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
+                                disabled={dineIn.date ? availability.loading || displayedTimeOptions.length === 0 : false}
+                                className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40"
+                              >
+                                {displayedTimeOptions.length > 0 ? (
+                                  displayedTimeOptions.map((time) => (
+                                    <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
+                                  ))
+                                ) : (
+                                  <option value="">No times available</option>
+                                )}
+                              </select>
+                              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
+                            </>
+                          )}
                         </div>
                         {dineIn.date && availability.loading ? (
                           <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>

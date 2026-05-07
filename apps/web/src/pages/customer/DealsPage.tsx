@@ -152,9 +152,10 @@ async function fetchDisplayAvailabilitySlots(
   const seen = new Set<string>();
 
   for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
+    const bookingDate = addDateDays(date, offset);
     const result = await fetchAvailabilitySlots(
       restaurantId,
-      addDateDays(date, offset),
+      bookingDate,
       partySize,
       { forceRefresh: options.forceRefresh },
     )
@@ -164,7 +165,7 @@ async function fetchDisplayAvailabilitySlots(
       const key = `${slot.date_time}-${slot.display_time}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      unique.push(slot);
+      unique.push({ ...slot, booking_date: bookingDate });
       if (unique.length === 3) break;
     }
   }
@@ -887,7 +888,7 @@ export default function DealsPage() {
       slot: refreshedSlot.date_time,
       time: formatCompactTimeLabel(refreshedSlot.display_time),
       people: String(partyCount),
-      date: refreshedSlot.date_time.slice(0, 10),
+      date: slot.booking_date ?? selectedBookingDate,
       source: e.detail.source,
       item: e.detail.id,
     });
@@ -1581,6 +1582,8 @@ export default function DealsPage() {
         restaurant={previewRestaurant}
         favorite={previewRestaurant ? favoriteRestaurants.has(previewRestaurant.id) : false}
         partySize={partySize}
+        bookingDate={selectedBookingDate}
+        preferredTime={time}
         availabilityNotice={previewAvailabilityNotice}
         onClose={() => {
           setPreviewAvailabilityNotice(null);
@@ -1595,13 +1598,10 @@ export default function DealsPage() {
             return next;
           });
         }}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate) => {
           if (!previewRestaurant) return;
-          const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot)
-            ? slot.slice(0, 10)
-            : customDate
-              ? format(customDate, "yyyy-MM-dd")
-              : format(new Date(), "yyyy-MM-dd");
+          const slotDate = bookingDate
+            ?? (customDate ? format(customDate, "yyyy-MM-dd") : format(new Date(), "yyyy-MM-dd"));
           const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
           const params = new URLSearchParams({
             back: "deals",

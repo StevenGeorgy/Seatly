@@ -195,9 +195,10 @@ async function fetchDisplayAvailabilitySlots(
   const seen = new Set<string>();
 
   for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
+    const bookingDate = addDateDays(date, offset);
     const result = await fetchAvailabilitySlots(
       restaurantId,
-      addDateDays(date, offset),
+      bookingDate,
       partySize,
       { forceRefresh: options.forceRefresh },
     )
@@ -207,7 +208,7 @@ async function fetchDisplayAvailabilitySlots(
       const key = `${slot.date_time}-${slot.display_time}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      unique.push(slot);
+      unique.push({ ...slot, booking_date: bookingDate });
       if (unique.length === 3) break;
     }
   }
@@ -1250,12 +1251,12 @@ export default function DiscoverPage() {
     selectedPartySize = partySize,
     shiftId?: string,
     _displayTime?: string,
+    bookingDate?: string,
   ) => {
     void _displayTime;
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
-    const slotDate = /^\d{4}-\d{2}-\d{2}T/.test(slot)
-      ? slot.slice(0, 10)
-      : dateParamFromSelection(dateId, customDate);
+    const slotDate = bookingDate
+      ?? dateParamFromSelection(dateId, customDate);
     const partyCount = Number.parseInt(String(selectedPartySize), 10) || 2;
     const refreshed = await fetchAvailabilitySlots(r.id, slotDate, partyCount, { forceRefresh: true })
       .catch(() => null);
@@ -1918,7 +1919,7 @@ export default function DiscoverPage() {
                           saved={savedRestaurants.has(r.id)}
                           onToggleFav={() => toggleFavorite(r.id)}
                           onToggleSave={() => toggleSavedRestaurant(r.id)}
-                          onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                          onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
                           onOpen={() => openRestaurantPreview(r)}
                         />
                       ))}
@@ -1952,7 +1953,7 @@ export default function DiscoverPage() {
                     saved={savedRestaurants.has(r.id)}
                     onToggleFav={() => toggleFavorite(r.id)}
                     onToggleSave={() => toggleSavedRestaurant(r.id)}
-                    onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                    onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
                     onHover={setHoveredId}
                     highlighted={selectedId === r.id}
                     onSelect={() => setSelectedId(r.id)}
@@ -2012,7 +2013,7 @@ export default function DiscoverPage() {
                       restaurant={r}
                       favorite={favorites.has(r.id)}
                       saved={savedRestaurants.has(r.id)}
-                      onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                      onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
                       onClose={() => {
                         setSelectedId(null);
                         setHoveredId(null);
@@ -2046,11 +2047,12 @@ export default function DiscoverPage() {
         onToggleFavorite={() => {
           if (activePreviewRestaurant) toggleFavorite(activePreviewRestaurant.id);
         }}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate) => {
           if (activePreviewRestaurant) {
             setPartySize(selectedPartySize);
-            void handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime);
+            return handleSlotClick(activePreviewRestaurant, slot, selectedPartySize, shiftId, displayTime, bookingDate);
           }
+          return undefined;
         }}
       />
     </div>

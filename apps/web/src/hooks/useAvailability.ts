@@ -16,6 +16,7 @@ export interface AvailabilitySlot {
   table_ids?: string[];
   duration_minutes?: number;
   floor_capacity?: number;
+  booking_date?: string;
 }
 
 export type AvailabilityUnavailableReason =
@@ -56,7 +57,10 @@ function cloneAvailabilityResult(result: AvailabilityResult): AvailabilityResult
   return {
     slots: result.slots
       .filter((slot) => new Date(slot.date_time).getTime() >= Date.now())
-      .map((slot) => ({ ...slot, table_ids: slot.table_ids ? [...slot.table_ids] : undefined })),
+      .map((slot) => ({
+        ...slot,
+        table_ids: slot.table_ids ? [...slot.table_ids] : undefined,
+      })),
     floorCapacity: result.floorCapacity,
     error: result.error,
     unavailableReason: result.unavailableReason,
