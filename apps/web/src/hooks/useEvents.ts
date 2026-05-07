@@ -30,6 +30,7 @@ export type EventRow = {
 
 export type EventWithRestaurant = EventRow & {
   restaurants: {
+    id: string;
     name: string;
     slug: string;
     cuisine_type: string | null;
@@ -120,6 +121,7 @@ export function useAllActiveEvents() {
       .select(`
         *,
         restaurants (
+          id,
           name,
           slug,
           cuisine_type,
@@ -259,6 +261,7 @@ export async function fetchEventById(id: string): Promise<EventWithRestaurant | 
     .select(`
       *,
       restaurants (
+        id,
         name,
         slug,
         cuisine_type,

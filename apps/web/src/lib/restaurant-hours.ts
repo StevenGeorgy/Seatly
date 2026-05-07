@@ -106,7 +106,7 @@ export function parseRestaurantHoursJson(
         endDate: endDate || startDate,
         label: String(entry.label ?? entry.name ?? ""),
         description: String(entry.description ?? ""),
-        closed: Boolean(entry.closed),
+        closed: dateMode === "range" ? true : Boolean(entry.closed),
         from: String(entry.from ?? "12:00 PM"),
         to: String(entry.to ?? "10:00 PM"),
       };
@@ -138,7 +138,7 @@ export function restaurantHoursToJson(
         endDate: normalizedEnd,
         label,
         description,
-        closed,
+        closed: dateMode === "range" ? true : closed,
         from,
         to,
       }];

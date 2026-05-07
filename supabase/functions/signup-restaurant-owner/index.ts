@@ -144,6 +144,8 @@ Deno.serve(async (req: Request) => {
         address: body.address ?? null,
         city: body.city ?? null,
         province: body.province ?? null,
+        lat: typeof body.lat === "number" ? body.lat : null,
+        lng: typeof body.lng === "number" ? body.lng : null,
         phone: body.phone ?? null,
         description: body.description ?? null,
         cuisine_type: body.cuisine_type ?? null,

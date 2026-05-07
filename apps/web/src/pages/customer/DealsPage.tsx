@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { format } from "date-fns";
+import { addDays, format } from "date-fns";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,6 +11,7 @@ import {
   CalendarDays,
   Check,
   Flame,
+  Heart,
   LayoutGrid,
   LogOut,
   Map as MapIcon,
@@ -25,6 +26,7 @@ import {
 import { useUser } from "@/hooks/useUser";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
+import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import {
   fetchEventById,
   useAllActiveEvents,
@@ -79,6 +81,7 @@ type DemoEvent = {
   type: EventType;
   availability: string;
   restaurant: string;
+  restaurantId: string;
   title: string;
   when: string;
   price: string;
@@ -89,6 +92,7 @@ type DemoEvent = {
   detail: EventPromotionDisplay;
   lat: number | null;
   lng: number | null;
+  availableSlots: AvailabilitySlot[];
 };
 
 const DATE_FILTERS = ["Tonight", "This Weekend", "This Week", "All Dates"] as const;
@@ -131,6 +135,35 @@ function priceFromRange(range?: number | null): string {
 
 function restaurantInitials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).join(" ").toUpperCase() || "RESTAURANT";
+}
+
+function addDateDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return format(addDays(new Date(year, month - 1, day), days), "yyyy-MM-dd");
+}
+
+async function fetchDisplayAvailabilitySlots(
+  restaurantId: string,
+  date: string,
+  partySize: number,
+): Promise<AvailabilitySlot[]> {
+  const unique: AvailabilitySlot[] = [];
+  const seen = new Set<string>();
+
+  for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
+    const result = await fetchAvailabilitySlots(restaurantId, addDateDays(date, offset), partySize)
+      .catch(() => ({ slots: [] as AvailabilitySlot[] }));
+    for (const slot of result.slots ?? []) {
+      if (new Date(slot.date_time).getTime() < Date.now()) continue;
+      const key = `${slot.date_time}-${slot.display_time}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(slot);
+      if (unique.length === 3) break;
+    }
+  }
+
+  return unique;
 }
 
 function adaptRestaurantPreview(restaurant: Restaurant, bookedToday: number): RestaurantPreviewSummary {
@@ -198,6 +231,7 @@ function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
     type,
     availability: detail.availabilityLabel,
     restaurant: p.restaurants.name,
+    restaurantId: p.restaurants.id,
     title: p.title,
     when,
     price: priceLabel,
@@ -208,6 +242,7 @@ function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
     detail,
     lat: p.restaurants.lat,
     lng: p.restaurants.lng,
+    availableSlots: [],
   };
 }
 
@@ -225,6 +260,7 @@ function adaptEvent(event: EventWithRestaurant): DemoEvent {
     type,
     availability: detail.availabilityLabel,
     restaurant: event.restaurants.name,
+    restaurantId: event.restaurants.id,
     title: event.name,
     when: `${detail.dateLabel} · ${detail.timeLabel}`,
     price: detail.priceLabel,
@@ -235,6 +271,7 @@ function adaptEvent(event: EventWithRestaurant): DemoEvent {
     detail,
     lat: event.restaurants.lat,
     lng: event.restaurants.lng,
+    availableSlots: [],
   };
 }
 
@@ -280,17 +317,52 @@ function SectionEyebrow({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AvailableTimes({
+  slots,
+  onBookSlot,
+}: {
+  slots: AvailabilitySlot[];
+  onBookSlot: (slot: AvailabilitySlot) => void;
+}) {
+  const visibleSlots = slots.slice(0, 3);
+  if (visibleSlots.length === 0) return null;
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {visibleSlots.map((slot) => (
+        <button
+          key={`${slot.shift_id}-${slot.date_time}`}
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onBookSlot(slot);
+          }}
+          className="flex min-h-11 items-center justify-center rounded-md border border-gold/25 bg-gold/10 px-2 text-sm font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20"
+        >
+          {formatCompactTimeLabel(slot.display_time)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function EventCard({
   e,
   saved,
+  favoriteRestaurant,
   onToggleSave,
+  onToggleFavoriteRestaurant,
+  onBookSlot,
   onReserve,
   onOpen,
   onRestaurantOpen,
 }: {
   e: DemoEvent;
   saved: boolean;
+  favoriteRestaurant: boolean;
   onToggleSave: () => void;
+  onToggleFavoriteRestaurant: () => void;
+  onBookSlot: (slot: AvailabilitySlot) => void;
   onReserve: () => void;
   onOpen: () => void;
   onRestaurantOpen: () => void;
@@ -319,20 +391,32 @@ function EventCard({
             <Flame className="size-3" /> {e.availability}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            onToggleSave();
-          }}
-          aria-label="Save"
-          className="absolute right-3 top-3 rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
-        >
-          <Bookmark
-            className={cn("size-4", saved ? "fill-gold text-gold" : "text-white")}
-          />
-        </button>
+        <div className="absolute right-3 top-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              onToggleFavoriteRestaurant();
+            }}
+            aria-label="Favorite restaurant"
+            className="rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
+          >
+            <Heart className={cn("size-4", favoriteRestaurant ? "fill-gold text-gold" : "text-white")} />
+          </button>
+          <button
+            type="button"
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              onToggleSave();
+            }}
+            aria-label="Save"
+            className="rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
+          >
+            <Bookmark className={cn("size-4", saved ? "fill-gold text-gold" : "text-white")} />
+          </button>
+        </div>
       </div>
       <div className="flex flex-1 flex-col gap-3 p-5">
         <button
@@ -356,6 +440,7 @@ function EventCard({
             {e.price}
           </span>
         </div>
+        <AvailableTimes slots={e.availableSlots} onBookSlot={onBookSlot} />
         <Button
           onClick={(ev) => {
             ev.stopPropagation();
@@ -374,7 +459,10 @@ function EventCard({
 function ListEventCard({
   e,
   saved,
+  favoriteRestaurant,
   onToggleSave,
+  onToggleFavoriteRestaurant,
+  onBookSlot,
   onReserve,
   onOpen,
   onRestaurantOpen,
@@ -383,7 +471,10 @@ function ListEventCard({
 }: {
   e: DemoEvent;
   saved: boolean;
+  favoriteRestaurant: boolean;
   onToggleSave: () => void;
+  onToggleFavoriteRestaurant: () => void;
+  onBookSlot: (slot: AvailabilitySlot) => void;
   onReserve: () => void;
   onOpen: () => void;
   onRestaurantOpen: () => void;
@@ -426,19 +517,34 @@ function ListEventCard({
           >
             {e.restaurant}
           </button>
-          <button
-            type="button"
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onToggleSave();
-            }}
-            aria-label="Save"
-            className="rounded-full border border-border bg-bg-elevated p-1.5 hover:border-gold/40"
-          >
-            <Bookmark
-              className={cn("size-3.5", saved ? "fill-gold text-gold" : "text-white")}
-            />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onToggleFavoriteRestaurant();
+              }}
+              aria-label="Favorite restaurant"
+              className="rounded-full border border-border bg-bg-elevated p-1.5 hover:border-gold/40"
+            >
+              <Heart
+                className={cn("size-3.5", favoriteRestaurant ? "fill-gold text-gold" : "text-white")}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onToggleSave();
+              }}
+              aria-label="Save"
+              className="rounded-full border border-border bg-bg-elevated p-1.5 hover:border-gold/40"
+            >
+              <Bookmark
+                className={cn("size-3.5", saved ? "fill-gold text-gold" : "text-white")}
+              />
+            </button>
+          </div>
         </div>
         <p className="font-serif text-xl leading-tight text-white">{e.title}</p>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-text-secondary">
@@ -451,6 +557,7 @@ function ListEventCard({
             {e.price}
           </span>
         </div>
+        <AvailableTimes slots={e.availableSlots} onBookSlot={onBookSlot} />
         <Button
           onClick={(ev) => {
             ev.stopPropagation();
@@ -523,17 +630,46 @@ export default function DealsPage() {
   const [detailItem, setDetailItem] = useState<EventPromotionDisplay | null>(null);
   const [previewRestaurant, setPreviewRestaurant] = useState<RestaurantPreviewSummary | null>(null);
   const [favoriteRestaurants, setFavoriteRestaurants] = useState<Set<string>>(new Set());
+  const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
 
   const loading = promotionsLoading || eventsLoading;
   const restaurantIds = useMemo(() => publicRestaurants.map((restaurant) => restaurant.id), [publicRestaurants]);
   const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
+  const selectedBookingDate = useMemo(
+    () => customDate ? format(customDate, "yyyy-MM-dd") : format(new Date(), "yyyy-MM-dd"),
+    [customDate],
+  );
+  const selectedPartySize = Number.parseInt(partySize, 10) || 2;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (restaurantIds.length === 0) {
+        if (!cancelled) setAvailabilityByRestaurantId({});
+        return;
+      }
+      const rows = await Promise.all(restaurantIds.map(async (restaurantId) => [
+        restaurantId,
+        await fetchDisplayAvailabilitySlots(restaurantId, selectedBookingDate, selectedPartySize),
+      ] as const));
+      if (cancelled) return;
+      setAvailabilityByRestaurantId(Object.fromEntries(rows));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantIds, selectedBookingDate, selectedPartySize]);
 
   const events: DemoEvent[] = useMemo(() => {
-    return [
+    const rows = [
       ...activeEvents.map(adaptEvent),
       ...promotions.map(adaptPromotion),
     ];
-  }, [activeEvents, promotions]);
+    return rows.map((event) => ({
+      ...event,
+      availableSlots: availabilityByRestaurantId[event.restaurantId] ?? [],
+    }));
+  }, [activeEvents, availabilityByRestaurantId, promotions]);
 
   const restaurantPreviews = useMemo(
     () => publicRestaurants.map((restaurant) => adaptRestaurantPreview(
@@ -624,6 +760,13 @@ export default function DealsPage() {
       else next.add(id);
       return next;
     });
+  const toggleFavoriteRestaurant = (id: string) =>
+    setFavoriteRestaurants((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const openDetail = (e: DemoEvent) => {
     setDetailItem(e.detail);
@@ -685,6 +828,23 @@ export default function DealsPage() {
 
   const bookEvent = (e: DemoEvent) => {
     bookItem(e.detail);
+  };
+
+  const bookEventSlot = (e: DemoEvent, slot: AvailabilitySlot) => {
+    const params = new URLSearchParams({
+      back: "deals",
+      slot: slot.date_time,
+      time: formatCompactTimeLabel(slot.display_time),
+      people: partySize,
+      date: slot.date_time.slice(0, 10),
+      source: e.detail.source,
+      item: e.detail.id,
+    });
+    if (slot.shift_id) params.set("shift_id", slot.shift_id);
+    const returnDetail = `${e.detail.source}-${e.detail.id}`;
+    params.set("returnDetail", returnDetail);
+    markCurrentDealsReturn(returnDetail);
+    void navigate(`/${e.detail.restaurantSlug ?? e.restaurantId}?${params.toString()}`);
   };
 
   useEffect(() => {
@@ -1231,7 +1391,10 @@ export default function DealsPage() {
                           key={e.id}
                           e={e}
                           saved={saved.has(e.id)}
+                          favoriteRestaurant={favoriteRestaurants.has(e.restaurantId)}
                           onToggleSave={() => toggleSave(e.id)}
+                          onToggleFavoriteRestaurant={() => toggleFavoriteRestaurant(e.restaurantId)}
+                          onBookSlot={(slot) => bookEventSlot(e, slot)}
                           onReserve={() => bookEvent(e)}
                           onOpen={() => openDetail(e)}
                           onRestaurantOpen={() => openRestaurantPreviewFromEvent(e)}
@@ -1259,7 +1422,10 @@ export default function DealsPage() {
                     key={e.id}
                     e={e}
                     saved={saved.has(e.id)}
+                    favoriteRestaurant={favoriteRestaurants.has(e.restaurantId)}
                     onToggleSave={() => toggleSave(e.id)}
+                    onToggleFavoriteRestaurant={() => toggleFavoriteRestaurant(e.restaurantId)}
+                    onBookSlot={(slot) => bookEventSlot(e, slot)}
                     onReserve={() => bookEvent(e)}
                     onOpen={() => openDetail(e)}
                     onRestaurantOpen={() => openRestaurantPreviewFromEvent(e)}
@@ -1321,6 +1487,9 @@ export default function DealsPage() {
                             <p className="mt-1 text-xs text-text-secondary">
                               {e.when} · <span className="text-gold">{e.price}</span>
                             </p>
+                            <div className="mt-2">
+                              <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => bookEventSlot(e, slot)} />
+                            </div>
                             <Button
                               size="sm"
                               onClick={() => bookEvent(e)}

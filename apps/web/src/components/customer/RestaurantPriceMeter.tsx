@@ -24,7 +24,7 @@ export function RestaurantPriceMeter({
         <span
           key={slot}
           className={cn(
-            slot <= (normalizedLevel ?? 0) ? "text-gold" : "text-text-muted",
+            slot <= (normalizedLevel ?? 0) ? "text-gold" : "text-transparent [-webkit-text-stroke:1px_var(--text-muted)]",
             slot <= (normalizedLevel ?? 0) ? activeClassName : inactiveClassName,
           )}
         >

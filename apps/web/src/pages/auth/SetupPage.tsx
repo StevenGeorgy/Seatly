@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -27,6 +27,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
+import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -159,6 +160,8 @@ export default function SetupPage() {
   const [team, setTeam] = useState<TeamEntry[]>([]);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<StaffRole>("server");
+  const [addressLat, setAddressLat] = useState<number | null>(null);
+  const [addressLng, setAddressLng] = useState<number | null>(null);
 
   // Step 5 — Settings
   const [depositEnabled, setDepositEnabled] = useState(false);
@@ -171,6 +174,7 @@ export default function SetupPage() {
     resolver: zodResolver(restaurantSchema),
     defaultValues: { name: "", address: "", city: "", province: "", cuisine_type: "", phone: "", description: "", currency: "cad" },
   });
+  const setupAddress = useWatch({ control: form.control, name: "address" });
 
   const goNext = () => { setDirection(1);  setStep((s) => Math.min(s + 1, STEPS.length - 1)); };
   const goBack = () => { setDirection(-1); setStep((s) => Math.max(s - 1, 0)); };
@@ -230,6 +234,8 @@ export default function SetupPage() {
           address:         values.address,
           city:            values.city,
           province:        values.province,
+          lat:             addressLat,
+          lng:             addressLng,
           cuisine_type:    values.cuisine_type,
           phone:           values.phone || null,
           description:     values.description || null,
@@ -354,7 +360,22 @@ export default function SetupPage() {
                 </div>
                 <div className="flex flex-col gap-2">
                   <Label>Street Address <span className="text-danger">*</span></Label>
-                  <Input {...form.register("address")} placeholder="142 King St W" />
+                  <GoogleAddressAutocompleteInput
+                    value={setupAddress}
+                    onChange={(value) => {
+                      form.setValue("address", value, { shouldDirty: true, shouldValidate: true });
+                      setAddressLat(null);
+                      setAddressLng(null);
+                    }}
+                    onAddressSelected={(parts) => {
+                      form.setValue("address", parts.address || form.getValues("address"), { shouldDirty: true, shouldValidate: true });
+                      if (parts.city) form.setValue("city", parts.city, { shouldDirty: true, shouldValidate: true });
+                      if (parts.province) form.setValue("province", parts.province, { shouldDirty: true, shouldValidate: true });
+                      setAddressLat(parts.lat);
+                      setAddressLng(parts.lng);
+                    }}
+                    placeholder="142 King St W"
+                  />
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="flex flex-col gap-2">

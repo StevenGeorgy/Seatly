@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { addDays, format } from "date-fns";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -11,6 +11,7 @@ import {
   X,
   Check,
   Heart,
+  Bookmark,
   Bell,
   ArrowLeft,
   ArrowRight,
@@ -19,6 +20,10 @@ import {
   LogOut,
   User,
   Settings,
+  MapPin,
+  CalendarDays,
+  Clock,
+  Users,
 } from "lucide-react";
 
 import { useUser } from "@/hooks/useUser";
@@ -26,6 +31,7 @@ import { useMyStaffInvites } from "@/hooks/useMyStaffInvites";
 import { useNotifications } from "@/hooks/useNotifications";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
+import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
@@ -48,6 +54,8 @@ import { cn } from "@/lib/utils";
 import { normalizeRestaurantPriceLevel, restaurantPriceLabelFromRange, type RestaurantPriceLevel } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { hasGoogleMapsApiKey, loadGoogleMaps, type GoogleMapsMarker, type GoogleMapsNamespace } from "@/lib/google-maps";
+import { MarkerClusterer, type Cluster, type Renderer } from "@googlemaps/markerclusterer";
 
 function datePresetOptions() {
   const today = new Date();
@@ -61,22 +69,58 @@ function datePresetOptions() {
   ];
 }
 
-const TIME_OPTIONS = [
-  "6:00 PM",
-  "6:30 PM",
-  "7:00 PM",
-  "7:30 PM",
-  "8:00 PM",
-  "8:30 PM",
-  "9:00 PM",
-  "9:30 PM",
-];
+function formatTimeOption(hours24: number, minutes: number): string {
+  const period = hours24 >= 12 ? "PM" : "AM";
+  const display = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${display}:${minutes === 0 ? "00" : "30"} ${period}`;
+}
+
+const TIME_OPTIONS = (() => {
+  const out: string[] = [];
+  for (let h = 6; h < 24; h += 1) {
+    for (const m of [0, 30] as const) out.push(formatTimeOption(h, m));
+  }
+  return out;
+})();
+
+function getNearestUpcomingHalfHour(): string {
+  const now = new Date();
+  let h = now.getHours();
+  let m = now.getMinutes();
+  if (m === 0 || m === 30) {
+    // exact slot — keep
+  } else if (m < 30) {
+    m = 30;
+  } else {
+    h = (h + 1) % 24;
+    m = 0;
+  }
+  if (h < 6) {
+    h = 6;
+    m = 0;
+  }
+  return formatTimeOption(h, m);
+}
 
 const PRICE_OPTIONS = ["$", "$$", "$$$"];
 
 const FEATURE_OPTIONS = ["Vegetarian", "Vegan", "Gluten-free", "Halal", "Kosher", "Walk-ins accepted"];
 
-const PARTY_SIZES = [1, 2, 3, 4, 5, 6, 7, "8+"] as const;
+const PARTY_SIZES = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, "Large group",
+] as const;
+
+const RADIUS_OPTIONS = (() => {
+  const steps: (number | "anywhere")[] = [];
+  for (let km = 5; km <= 150; km += 5) steps.push(km);
+  steps.push("anywhere");
+  return steps;
+})();
+type RadiusOption = (typeof RADIUS_OPTIONS)[number];
+
+function radiusLabel(value: RadiusOption): string {
+  return value === "anywhere" ? "Anywhere" : `${value} km`;
+}
 
 type RestaurantCard = {
   id: string;
@@ -88,6 +132,7 @@ type RestaurantCard = {
   area: string;
   bookedToday: number;
   slots: string[];
+  availableSlots: AvailabilitySlot[];
   initials: string;
   badge: string;
   city: string;
@@ -100,11 +145,65 @@ type RestaurantCard = {
   lng: number | null;
 };
 
+type GeoPoint = {
+  lat: number;
+  lng: number;
+};
+
+type GoogleMapInstance = {
+  panTo: (point: GeoPoint) => void;
+  setZoom: (zoom: number) => void;
+  getZoom: () => number | undefined;
+  getBounds: () => { contains: (point: GeoPoint) => boolean } | undefined;
+};
+
+function distanceMeters(a: GeoPoint, b: GeoPoint): number {
+  const earthRadius = 6_371_000;
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * earthRadius * Math.asin(Math.sqrt(h));
+}
+
+function addDateDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return format(addDays(new Date(year, month - 1, day), days), "yyyy-MM-dd");
+}
+
+async function fetchDisplayAvailabilitySlots(
+  restaurantId: string,
+  date: string,
+  partySize: number,
+): Promise<AvailabilitySlot[]> {
+  const unique: AvailabilitySlot[] = [];
+  const seen = new Set<string>();
+
+  for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
+    const result = await fetchAvailabilitySlots(restaurantId, addDateDays(date, offset), partySize)
+      .catch(() => ({ slots: [] as AvailabilitySlot[] }));
+    for (const slot of result.slots ?? []) {
+      if (new Date(slot.date_time).getTime() < Date.now()) continue;
+      const key = `${slot.date_time}-${slot.display_time}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(slot);
+      if (unique.length === 3) break;
+    }
+  }
+
+  return unique;
+}
+
 function priceFromRange(range: number | null | undefined): string {
   return restaurantPriceLabelFromRange(range);
 }
 
-function adaptRestaurant(r: Restaurant, bookedToday: number): RestaurantCard {
+function adaptRestaurant(r: Restaurant, bookedToday: number, availableSlots: AvailabilitySlot[] = []): RestaurantCard {
   const initials = (r.name || "?").split(/\s+/).slice(0, 2).join(" ").toUpperCase();
   const dietaryTags = normalizeRestaurantDietaryTags(r.settings_json?.dietaryTags);
   const features = [
@@ -123,6 +222,7 @@ function adaptRestaurant(r: Restaurant, bookedToday: number): RestaurantCard {
     area: r.city ?? r.address ?? "",
     bookedToday,
     slots: [],
+    availableSlots,
     initials,
     badge: r.business_type ?? "",
     city: r.city ?? "",
@@ -153,25 +253,25 @@ function RestaurantCardImage({
   className?: string;
   logoClassName?: string;
 }) {
+  const coverPhotoUrl = restaurant.coverPhotoUrl ?? "";
+  const hasCoverPhoto = coverPhotoUrl.length > 0;
+
   return (
     <div className={cn("relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-bg-elevated", className)}>
-      {restaurant.coverPhotoUrl ? (
+      {hasCoverPhoto ? (
         <img
-          src={restaurant.coverPhotoUrl}
+          src={coverPhotoUrl}
           alt={`${restaurant.name} cover`}
           className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-105"
         />
       ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-gold/15 via-bg-elevated to-bg-base" />
+        <>
+          <div className="absolute inset-0 opacity-80 [background-image:repeating-linear-gradient(135deg,var(--gold)_0_1px,transparent_1px_14px)]" />
+          <div className="absolute inset-0 bg-black/50" />
+          <div className={cn("relative z-[1] size-9 rounded-full bg-gold/30 ring-4 ring-black/30", logoClassName)} />
+        </>
       )}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/20 to-bg-base/80" />
-      <div className={cn("relative flex size-14 items-center justify-center overflow-hidden rounded-2xl border border-gold/30 bg-bg-elevated font-mono text-xs font-semibold text-gold shadow-lg shadow-black/30", logoClassName)}>
-        {restaurant.logoUrl ? (
-          <img src={restaurant.logoUrl} alt={`${restaurant.name} logo`} className="size-full object-cover" />
-        ) : (
-          restaurant.initials
-        )}
-      </div>
+      {hasCoverPhoto ? <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/20 to-bg-base/80" /> : null}
     </div>
   );
 }
@@ -193,13 +293,132 @@ function DietaryTagChip({ tag }: { tag: RestaurantDietaryTag }) {
   );
 }
 
+function FilterPickerButton({
+  icon: Icon,
+  label,
+  value,
+  active,
+}: {
+  icon: typeof Heart;
+  label: string;
+  value: string;
+  active?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-[9rem] flex-1 cursor-pointer flex-col items-start gap-1 rounded-2xl border bg-bg-elevated px-4 py-3 transition-colors",
+        active
+          ? "border-gold/60 bg-gold/5"
+          : "border-border hover:border-gold/40",
+      )}
+    >
+      <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-text-muted">
+        <Icon className="size-3.5" />
+        {label}
+      </span>
+      <span className="truncate text-sm text-white">{value}</span>
+    </div>
+  );
+}
+
+function ScrollWheelPicker<T extends string | number>({
+  items,
+  value,
+  onChange,
+  formatLabel,
+  itemHeight = 40,
+}: {
+  items: readonly T[];
+  value: T;
+  onChange: (next: T) => void;
+  formatLabel?: (item: T) => string;
+  itemHeight?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  const visibleRows = 5;
+  const padding = ((visibleRows - 1) / 2) * itemHeight;
+  const selectedIndex = items.indexOf(value);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const target = Math.max(0, selectedIndex) * itemHeight;
+    if (Math.abs(node.scrollTop - target) > 1) {
+      node.scrollTo({ top: target, behavior: "auto" });
+    }
+  }, [selectedIndex, itemHeight]);
+
+  const handleScroll = () => {
+    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      const node = containerRef.current;
+      if (!node) return;
+      const idx = Math.round(node.scrollTop / itemHeight);
+      const clamped = Math.max(0, Math.min(items.length - 1, idx));
+      const next = items[clamped];
+      if (next !== undefined && next !== value) onChange(next);
+    });
+  };
+
+  return (
+    <div
+      className="relative overflow-hidden"
+      style={{ height: visibleRows * itemHeight }}
+    >
+      <div
+        className="pointer-events-none absolute left-2 right-2 top-1/2 z-0 -translate-y-1/2 rounded-lg border border-gold/30 bg-gold/5"
+        style={{ height: itemHeight }}
+      />
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="absolute inset-0 z-10 overflow-y-auto"
+        style={{
+          paddingTop: padding,
+          paddingBottom: padding,
+          scrollSnapType: "y mandatory",
+          scrollbarWidth: "none",
+        }}
+      >
+        {items.map((item, idx) => (
+          <button
+            key={String(item)}
+            type="button"
+            onClick={() => {
+              const node = containerRef.current;
+              if (node) node.scrollTo({ top: idx * itemHeight, behavior: "smooth" });
+            }}
+            className={cn(
+              "flex w-full items-center justify-center text-sm transition-colors",
+              item === value ? "font-semibold text-gold" : "text-text-secondary",
+            )}
+            style={{ height: itemHeight, scrollSnapAlign: "center" }}
+          >
+            {formatLabel ? formatLabel(item) : String(item)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FavoriteButton({
   active,
   onToggle,
+  icon,
+  label,
+  size = "md",
 }: {
   active: boolean;
   onToggle: () => void;
+  icon?: "heart" | "bookmark";
+  label?: string;
+  /** `lg` — map popup and other expanded surfaces */
+  size?: "md" | "lg";
 }) {
+  const Icon = icon === "bookmark" ? Bookmark : Heart;
   return (
     <button
       type="button"
@@ -208,11 +427,55 @@ function FavoriteButton({
         e.stopPropagation();
         onToggle();
       }}
-      className="rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
-      aria-label="Save restaurant"
+      className={cn(
+        "rounded-full border border-border bg-black/60 backdrop-blur transition-colors hover:border-gold/50",
+        size === "lg" ? "p-2" : "p-1.5",
+      )}
+      aria-label={label ?? "Save restaurant"}
     >
-      <Heart className={cn("size-4", active ? "fill-gold text-gold" : "text-white")} />
+      <Icon
+        className={cn(
+          size === "lg" ? "size-5" : "size-4",
+          active ? "fill-gold text-gold" : "text-white",
+        )}
+      />
     </button>
+  );
+}
+
+function AvailableTimes({
+  slots,
+  onBookSlot,
+  size = "md",
+}: {
+  slots: AvailabilitySlot[];
+  onBookSlot: (slot: AvailabilitySlot) => void;
+  size?: "md" | "lg";
+}) {
+  const visibleSlots = slots.slice(0, 3);
+  if (visibleSlots.length === 0) return null;
+  return (
+    <div className={cn("grid grid-cols-3", size === "lg" ? "gap-2.5" : "gap-2")}>
+      {visibleSlots.map((slot) => (
+        <button
+          key={`${slot.shift_id}-${slot.date_time}`}
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onBookSlot(slot);
+          }}
+          className={cn(
+            "flex items-center justify-center rounded-md border border-gold/25 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20",
+            size === "lg"
+              ? "min-h-12 px-3 text-base"
+              : "min-h-11 px-2 text-sm",
+          )}
+        >
+          {formatCompactTimeLabel(slot.display_time)}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -227,12 +490,18 @@ function SectionEyebrow({ children }: { children: React.ReactNode }) {
 function GridCard({
   r,
   favorite,
+  saved,
   onToggleFav,
+  onToggleSave,
+  onBookSlot,
   onOpen,
 }: {
   r: RestaurantCard;
   favorite: boolean;
+  saved: boolean;
   onToggleFav: () => void;
+  onToggleSave: () => void;
+  onBookSlot: (slot: AvailabilitySlot) => void;
   onOpen: () => void;
 }) {
   return (
@@ -259,36 +528,26 @@ function GridCard({
             <BadgeChip label={r.badge} />
           </div>
         ) : null}
-        <div className="absolute right-3 top-3">
-          <FavoriteButton active={favorite} onToggle={onToggleFav} />
+        {r.dietaryTags.length > 0 ? (
+          <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5">
+            {r.dietaryTags.slice(0, 3).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          </div>
+        ) : null}
+        <div className="absolute right-3 top-3 flex items-center gap-2">
+          <FavoriteButton active={favorite} onToggle={onToggleFav} icon="heart" label="Favorite restaurant" />
+          <FavoriteButton active={saved} onToggle={onToggleSave} icon="bookmark" label="Save restaurant" />
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-3 p-5">
         <div>
-          <p className="font-serif text-xl text-white">{r.name}</p>
+          <p className="font-serif text-2xl leading-tight tracking-tight text-white sm:text-3xl">{r.name}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
           {r.cuisine ? <span>{r.cuisine}</span> : null}
           {r.area ? <span>{r.area}</span> : null}
         </div>
-        {r.dietaryTags.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
-          </div>
-        ) : null}
-        <div className="mt-auto pt-2">
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpen();
-            }}
-            className="inline-flex items-center justify-center rounded-md border border-gold/30 bg-gold/10 px-4 py-2 text-xs font-semibold text-gold hover:bg-gold/20"
-          >
-            View preview
-          </button>
-        </div>
+        <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
       </div>
     </motion.div>
   );
@@ -297,17 +556,23 @@ function GridCard({
 function MapListCard({
   r,
   favorite,
+  saved,
   onToggleFav,
+  onToggleSave,
+  onBookSlot,
   onHover,
   highlighted,
-  onOpen,
+  onSelect,
 }: {
   r: RestaurantCard;
   favorite: boolean;
+  saved: boolean;
   onToggleFav: () => void;
+  onToggleSave: () => void;
+  onBookSlot: (slot: AvailabilitySlot) => void;
   onHover: (id: string | null) => void;
   highlighted: boolean;
-  onOpen: () => void;
+  onSelect: () => void;
 }) {
   return (
     <div
@@ -315,16 +580,16 @@ function MapListCard({
       tabIndex={0}
       onMouseEnter={() => onHover(r.id)}
       onMouseLeave={() => onHover(null)}
-      onClick={onOpen}
+      onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onOpen();
+          onSelect();
         }
       }}
       className={cn(
-        "flex cursor-pointer gap-4 rounded-2xl border bg-bg-surface/40 p-4 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base",
-        highlighted ? "border-gold/60" : "border-border hover:border-gold/30",
+        "flex cursor-pointer gap-4 rounded-2xl border bg-bg-surface/40 p-4 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base",
+        highlighted ? "border-gold/70 bg-gold/5 shadow-lg shadow-gold/10" : "border-border hover:border-gold/30 hover:bg-bg-surface/70",
       )}
     >
       <div className="relative w-40 shrink-0 overflow-hidden rounded-xl">
@@ -334,8 +599,14 @@ function MapListCard({
             <BadgeChip label={r.badge} />
           </div>
         ) : null}
-        <div className="absolute right-2 top-2">
-          <FavoriteButton active={favorite} onToggle={onToggleFav} />
+        {r.dietaryTags.length > 0 ? (
+          <div className="absolute bottom-2 left-2 right-2 flex flex-wrap gap-1">
+            {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          </div>
+        ) : null}
+        <div className="absolute right-2 top-2 flex items-center gap-1.5">
+          <FavoriteButton active={favorite} onToggle={onToggleFav} icon="heart" label="Favorite restaurant" />
+          <FavoriteButton active={saved} onToggle={onToggleSave} icon="bookmark" label="Save restaurant" />
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-2">
@@ -344,10 +615,7 @@ function MapListCard({
           <RestaurantPriceMeter level={r.priceLevel} />
           {r.cuisine ? <span>{r.cuisine}</span> : null}
           {r.area ? <span>{r.area}</span> : null}
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
-          {r.features.slice(0, 3).map((f) => (
+          {r.features.filter((feature) => !r.dietaryTags.some((tag) => feature === tag.replace(/_/g, "-"))).slice(0, 3).map((f) => (
             <span
               key={f}
               className="rounded-full border border-border bg-bg-elevated px-2 py-0.5 text-[11px] text-text-secondary"
@@ -356,6 +624,7 @@ function MapListCard({
             </span>
           ))}
         </div>
+        <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
         <p className="text-xs text-text-muted">
           {r.acceptsWalkins ? "Walk-ins accepted when available" : "Reservations only"}
         </p>
@@ -364,30 +633,402 @@ function MapListCard({
   );
 }
 
-function MapPin({
-  r,
+const CENAIVA_MAP_STYLES: Array<Record<string, unknown>> = [
+  { elementType: "geometry", stylers: [{ color: "#0A0A0A" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0A0A0A" }, { weight: 4 }] },
+  { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+
+  { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#2E2E2E" }] },
+  { featureType: "administrative.land_parcel", stylers: [{ visibility: "off" }] },
+  { featureType: "administrative.country", elementType: "labels.text.fill", stylers: [{ color: "#F5E6C8" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#F5E6C8" }] },
+  { featureType: "administrative.neighborhood", elementType: "labels.text.fill", stylers: [{ color: "#C9A84C" }] },
+
+  { featureType: "landscape.man_made", elementType: "geometry.fill", stylers: [{ color: "#242424" }] },
+  { featureType: "landscape.man_made", elementType: "geometry.stroke", stylers: [{ color: "#A8873A" }, { weight: 0.6 }] },
+  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#0F0F0F" }] },
+  { featureType: "landscape.natural.terrain", elementType: "geometry", stylers: [{ color: "#121412" }] },
+
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#888888" }] },
+  { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#0F1A12" }] },
+  { featureType: "poi.park", elementType: "labels.text.fill", stylers: [{ color: "#A8873A" }] },
+  { featureType: "poi.business", elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { featureType: "poi.medical", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.school", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.government", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.place_of_worship", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.sports_complex", stylers: [{ visibility: "off" }] },
+
+  { featureType: "road", elementType: "geometry.fill", stylers: [{ color: "#1A1A1A" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#0A0A0A" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#888888" }] },
+  { featureType: "road", elementType: "labels.text.stroke", stylers: [{ color: "#0A0A0A" }, { weight: 3 }] },
+  { featureType: "road", elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+  { featureType: "road.highway", elementType: "geometry.fill", stylers: [{ color: "#2E2E2E" }] },
+  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#0A0A0A" }] },
+  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#C9A84C" }] },
+  { featureType: "road.arterial", elementType: "geometry.fill", stylers: [{ color: "#242424" }] },
+  { featureType: "road.arterial", elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { featureType: "road.local", elementType: "geometry.fill", stylers: [{ color: "#1F1F1F" }] },
+  { featureType: "road.local", elementType: "labels", stylers: [{ visibility: "off" }] },
+
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0A1320" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#5C7088" }] },
+];
+
+function pinIconSvg({
   active,
-  onClick,
+  priceLevel,
 }: {
-  r: RestaurantCard;
   active: boolean;
-  onClick: () => void;
+  priceLevel: number | null;
+}): { url: string; size: { width: number; height: number } } {
+  const dollarCount = Math.min(Math.max(priceLevel ?? 1, 1), 3);
+  const dollars = "$".repeat(dollarCount);
+  const fontSize = active ? 14 : 12;
+  const padX = active ? 10 : 8;
+  const height = active ? 28 : 22;
+  const charWidth = fontSize * 0.65;
+  const width = Math.round(dollars.length * charWidth + padX * 2);
+  const fill = active ? "#F5E6C8" : "#0A0A0A";
+  const textColor = active ? "#0A0A0A" : "#C9A84C";
+  const stroke = active ? "#C9A84C" : "rgba(201,168,76,0.65)";
+  const strokeWidth = active ? 2 : 1.25;
+  const filterId = `s${active ? "a" : "d"}`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}' viewBox='0 0 ${width} ${height}'>
+    <defs>
+      <filter id='${filterId}' x='-50%' y='-50%' width='200%' height='200%'>
+        <feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000000' flood-opacity='0.55'/>
+      </filter>
+    </defs>
+    <rect x='${strokeWidth / 2}' y='${strokeWidth / 2}' width='${width - strokeWidth}' height='${height - strokeWidth}' rx='${height / 2}' ry='${height / 2}' fill='${fill}' stroke='${stroke}' stroke-width='${strokeWidth}' filter='url(#${filterId})'/>
+    <text x='50%' y='50%' dominant-baseline='central' text-anchor='middle' font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-weight='700' font-size='${fontSize}' fill='${textColor}'>${dollars}</text>
+  </svg>`;
+  return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, size: { width, height } };
+}
+
+function clusterIconSvg(count: number): { url: string; size: number } {
+  const size = count >= 50 ? 56 : count >= 10 ? 48 : 40;
+  const cx = size / 2;
+  const cy = size / 2;
+  const halo = size / 2 - 2;
+  const r = size / 2 - 7;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'>
+    <defs>
+      <filter id='cs' x='-50%' y='-50%' width='200%' height='200%'>
+        <feDropShadow dx='0' dy='2' stdDeviation='2.5' flood-color='#000000' flood-opacity='0.55'/>
+      </filter>
+    </defs>
+    <circle cx='${cx}' cy='${cy}' r='${halo}' fill='rgba(201,168,76,0.16)' stroke='rgba(245,230,200,0.35)' stroke-width='1.5'/>
+    <circle cx='${cx}' cy='${cy}' r='${r}' fill='#C9A84C' stroke='#0A0A0A' stroke-width='2' filter='url(#cs)'/>
+  </svg>`;
+  return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, size };
+}
+
+function GoogleDiscoverMap({
+  restaurants,
+  selectedId,
+  hoveredId,
+  userLocation,
+  onSelect,
+}: {
+  restaurants: RestaurantCard[];
+  selectedId: string | null;
+  hoveredId: string | null;
+  userLocation: GeoPoint | null;
+  onSelect: (id: string) => void;
 }) {
-  if (r.lat == null || r.lng == null) return null;
+  const mapNodeRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<GoogleMapInstance | null>(null);
+  const markersRef = useRef<GoogleMapsMarker[]>([]);
+  const clustererRef = useRef<MarkerClusterer | null>(null);
+  const userMarkerRef = useRef<GoogleMapsMarker | null>(null);
+  const googleReady = hasGoogleMapsApiKey();
+  const mappableRestaurants = useMemo(
+    () => restaurants.filter((r) => r.lat != null && r.lng != null),
+    [restaurants],
+  );
+
+  useEffect(() => {
+    if (!googleReady || !mapNodeRef.current) return;
+    let cancelled = false;
+
+    void loadGoogleMaps().then((maps) => {
+      if (cancelled || !mapNodeRef.current) return;
+      const center = userLocation ?? (
+        mappableRestaurants[0]?.lat != null && mappableRestaurants[0]?.lng != null
+          ? { lat: mappableRestaurants[0].lat, lng: mappableRestaurants[0].lng }
+          : { lat: 43.6532, lng: -79.3832 }
+      );
+      mapRef.current = new maps.Map(mapNodeRef.current, {
+        center,
+        zoom: userLocation ? 13 : 11,
+        disableDefaultUI: true,
+        zoomControl: false,
+        mapTypeControl: false,
+        fullscreenControl: false,
+        streetViewControl: false,
+        clickableIcons: false,
+        gestureHandling: "greedy",
+        backgroundColor: "#0A0A0A",
+        styles: CENAIVA_MAP_STYLES,
+      }) as GoogleMapInstance;
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [googleReady, mappableRestaurants, userLocation]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const google = (window as Window & { google?: { maps?: GoogleMapsNamespace } }).google;
+    const maps = google?.maps;
+    if (!map || !maps) return;
+
+    if (clustererRef.current) {
+      clustererRef.current.clearMarkers();
+      clustererRef.current = null;
+    }
+    markersRef.current.forEach((marker) => marker.setMap(null));
+
+    markersRef.current = mappableRestaurants.map((restaurant) => {
+      const active = selectedId === restaurant.id || hoveredId === restaurant.id;
+      const { url, size } = pinIconSvg({
+        active,
+        priceLevel: normalizeRestaurantPriceLevel(restaurant.priceLevel),
+      });
+      const marker = new maps.Marker({
+        position: { lat: restaurant.lat, lng: restaurant.lng },
+        title: restaurant.name,
+        icon: {
+          url,
+          scaledSize: new maps.Size(size.width, size.height),
+          anchor: new maps.Point(size.width / 2, size.height / 2),
+        },
+        zIndex: active ? 999 : 1,
+      });
+      marker.addListener("click", () => onSelect(restaurant.id));
+      return marker;
+    });
+
+    const renderer: Renderer = {
+      render: ({ count, position }: Cluster) => {
+        const { url, size } = clusterIconSvg(count);
+        return new maps.Marker({
+          position,
+          icon: {
+            url,
+            scaledSize: new maps.Size(size, size),
+            anchor: new maps.Point(size / 2, size / 2),
+          },
+          label: {
+            text: String(count),
+            color: "#0a0907",
+            fontWeight: "700",
+            fontSize: count >= 50 ? "13px" : "12px",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          },
+          zIndex: 1000 + count,
+        }) as unknown as google.maps.Marker;
+      },
+    };
+
+    clustererRef.current = new MarkerClusterer({
+      map: map as unknown as google.maps.Map,
+      markers: markersRef.current as unknown as google.maps.Marker[],
+      renderer,
+    });
+
+    return () => {
+      if (clustererRef.current) {
+        clustererRef.current.clearMarkers();
+        clustererRef.current = null;
+      }
+      markersRef.current.forEach((marker) => marker.setMap(null));
+      markersRef.current = [];
+    };
+  }, [hoveredId, mappableRestaurants, onSelect, selectedId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const google = (window as Window & { google?: { maps?: GoogleMapsNamespace } }).google;
+    const maps = google?.maps;
+    if (!map || !maps) return;
+
+    if (userMarkerRef.current) {
+      userMarkerRef.current.setMap(null);
+      userMarkerRef.current = null;
+    }
+    if (!userLocation) return;
+
+    userMarkerRef.current = new maps.Marker({
+      map,
+      position: userLocation,
+      title: "Your location",
+      icon: {
+        path: maps.SymbolPath.CIRCLE,
+        scale: 8,
+        fillColor: "#3B82F6",
+        fillOpacity: 1,
+        strokeColor: "#BFDBFE",
+        strokeWeight: 4,
+      },
+    });
+    map.panTo(userLocation);
+
+    return () => {
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setMap(null);
+        userMarkerRef.current = null;
+      }
+    };
+  }, [userLocation]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !selectedId) return;
+    const selected = mappableRestaurants.find((restaurant) => restaurant.id === selectedId);
+    if (selected?.lat == null || selected.lng == null) return;
+    const point = { lat: selected.lat, lng: selected.lng };
+    const bounds = map.getBounds?.();
+    if (bounds && bounds.contains(point)) return;
+    map.panTo(point);
+  }, [mappableRestaurants, selectedId]);
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "absolute -translate-x-1/2 -translate-y-full rounded-full border px-3 py-1 text-xs font-medium shadow-lg transition-all",
-        active
-          ? "z-20 border-gold bg-gold text-black shadow-gold/40"
-          : "border-gold/40 bg-bg-surface text-white hover:border-gold",
+    <div className="absolute inset-0">
+      {googleReady ? (
+        <>
+          <div ref={mapNodeRef} className="size-full" />
+          <div className="absolute right-4 top-4 overflow-hidden rounded-xl border border-gold/25 bg-bg-surface/90 shadow-2xl shadow-black/30 backdrop-blur">
+            <button
+              type="button"
+              onClick={() => {
+                const map = mapRef.current;
+                if (!map) return;
+                map.setZoom(Math.min((map.getZoom() ?? 12) + 1, 18));
+              }}
+              className="flex size-10 items-center justify-center border-b border-border text-lg font-semibold text-gold transition-colors hover:bg-gold/10 hover:text-white"
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const map = mapRef.current;
+                if (!map) return;
+                map.setZoom(Math.max((map.getZoom() ?? 12) - 1, 4));
+              }}
+              className="flex size-10 items-center justify-center text-lg font-semibold text-gold transition-colors hover:bg-gold/10 hover:text-white"
+              aria-label="Zoom out"
+            >
+              -
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="flex size-full items-center justify-center bg-bg-elevated px-8 text-center text-sm text-text-secondary">
+          Add VITE_GOOGLE_MAPS_API_KEY to the root .env and restart the dev server to enable Google Maps.
+        </div>
       )}
-      style={{ left: `${Math.max(8, Math.min(92, 50 + r.lng))}%`, top: `${Math.max(8, Math.min(92, 50 - r.lat))}%` }}
+    </div>
+  );
+}
+
+function MapRestaurantPopup({
+  restaurant,
+  favorite,
+  saved,
+  onBookSlot,
+  onClose,
+  onToggleFavorite,
+  onToggleSave,
+  onOpenPreview,
+}: {
+  restaurant: RestaurantCard;
+  favorite: boolean;
+  saved: boolean;
+  onBookSlot: (slot: AvailabilitySlot) => void;
+  onClose: () => void;
+  onToggleFavorite: () => void;
+  onToggleSave: () => void;
+  onOpenPreview: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpenPreview}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenPreview();
+        }
+      }}
+      aria-label={`Open ${restaurant.name} preview`}
+      className="group absolute bottom-4 left-4 z-10 flex w-[min(26rem,calc(100vw-2rem))] cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
     >
-      {r.name} <span className={active ? "text-black/70" : "text-gold"}>{r.price}</span>
-    </button>
+      <div className="relative">
+        <RestaurantCardImage
+          restaurant={restaurant}
+          className="aspect-auto h-36 sm:h-40"
+          logoClassName="size-10 sm:size-11"
+        />
+        {restaurant.badge ? (
+          <div className="absolute left-3 top-3 sm:left-4 sm:top-4">
+            <BadgeChip label={restaurant.badge} />
+          </div>
+        ) : null}
+        {restaurant.dietaryTags.length > 0 ? (
+          <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5 sm:left-4 sm:right-4">
+            {restaurant.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          </div>
+        ) : null}
+        <div className="absolute right-3 top-3 flex items-center gap-2 sm:right-4 sm:top-4">
+          <FavoriteButton
+            active={favorite}
+            onToggle={onToggleFavorite}
+            icon="heart"
+            label="Favorite restaurant"
+            size="lg"
+          />
+          <FavoriteButton
+            active={saved}
+            onToggle={onToggleSave}
+            icon="bookmark"
+            label="Save restaurant"
+            size="lg"
+          />
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onClose();
+            }}
+            className="rounded-full border border-border bg-black/60 p-2 text-white backdrop-blur transition-colors hover:border-gold/50"
+            aria-label="Close"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex flex-1 flex-col gap-3 p-4 sm:p-5">
+        <p className="font-serif text-2xl leading-tight tracking-tight text-white sm:text-[1.75rem]">
+          {restaurant.name}
+        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+          <RestaurantPriceMeter level={restaurant.priceLevel} className="text-base" />
+          {restaurant.cuisine ? <span>{restaurant.cuisine}</span> : null}
+          {restaurant.area ? <span>{restaurant.area}</span> : null}
+        </div>
+        <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} size="lg" />
+      </div>
+    </div>
   );
 }
 
@@ -409,31 +1050,71 @@ export default function DiscoverPage() {
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
-  const [datePopoverOpen, setDatePopoverOpen] = useState(false);
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [dateId, setDateId] = useState("today");
-  const [time, setTime] = useState(searchParams.get("time") ?? "7:30 PM");
+  const [time, setTime] = useState(searchParams.get("time") ?? getNearestUpcomingHalfHour());
   const [partySize, setPartySize] = useState<string>(
     searchParams.get("people") ?? "2",
   );
+  // Pending values while the filter panel is open — applied on Done click.
+  const [pendingDateId, setPendingDateId] = useState(dateId);
+  const [pendingCustomDate, setPendingCustomDate] = useState<Date | undefined>(undefined);
+  const [pendingTime, setPendingTime] = useState(time);
+  const [pendingPartySize, setPendingPartySize] = useState(partySize);
+  const [radius, setRadius] = useState<RadiusOption>("anywhere");
+  const [pendingRadius, setPendingRadius] = useState<RadiusOption>("anywhere");
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [partyPickerOpen, setPartyPickerOpen] = useState(false);
+  const [radiusPickerOpen, setRadiusPickerOpen] = useState(false);
   const [activePrices, setActivePrices] = useState<Set<string>>(new Set());
   const [activeFeatures, setActiveFeatures] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [savedRestaurants, setSavedRestaurants] = useState<Set<string>>(new Set());
+  const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mapEdgeMode, setMapEdgeMode] = useState(false);
+  const searchSentinelRef = useRef<HTMLDivElement | null>(null);
   const [previewRestaurant, setPreviewRestaurant] = useState<RestaurantCard | null>(null);
+  const [userLocation, setUserLocation] = useState<GeoPoint | null>(null);
+  const [locationStatus, setLocationStatus] = useState<"idle" | "requesting" | "allowed" | "denied" | "unsupported">(
+    () => ("geolocation" in navigator ? "idle" : "unsupported"),
+  );
   const previewParam = searchParams.get("preview");
   const previewSource = searchParams.get("from");
   const restaurantIds = useMemo(() => restaurants.map((restaurant) => restaurant.id), [restaurants]);
   const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
   const datePresets = useMemo(() => datePresetOptions(), []);
+  const selectedBookingDate = useMemo(() => dateParamFromSelection(dateId, customDate), [customDate, dateId]);
+  const selectedPartySize = Number.parseInt(partySize, 10) || 2;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (restaurantIds.length === 0) {
+        if (!cancelled) setAvailabilityByRestaurantId({});
+        return;
+      }
+      const rows = await Promise.all(restaurantIds.map(async (restaurantId) => [
+        restaurantId,
+        await fetchDisplayAvailabilitySlots(restaurantId, selectedBookingDate, selectedPartySize),
+      ] as const));
+      if (cancelled) return;
+      setAvailabilityByRestaurantId(Object.fromEntries(rows));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantIds, selectedBookingDate, selectedPartySize]);
 
   const cards: RestaurantCard[] = useMemo(() => {
     return restaurants.map((restaurant) => adaptRestaurant(
       restaurant,
       statsByRestaurantId[restaurant.id]?.bookedToday ?? 0,
+      availabilityByRestaurantId[restaurant.id] ?? [],
     ));
-  }, [restaurants, statsByRestaurantId]);
+  }, [availabilityByRestaurantId, restaurants, statsByRestaurantId]);
 
   const filtered = useMemo(() => {
     let list = cards;
@@ -452,8 +1133,39 @@ export default function DiscoverPage() {
     if (activeFeatures.size > 0) {
       list = list.filter((r) => r.features.some((feature) => activeFeatures.has(feature)));
     }
+    if (userLocation) {
+      if (radius !== "anywhere") {
+        const radiusMeters = radius * 1000;
+        list = list.filter((r) => {
+          if (r.lat == null || r.lng == null) return false;
+          return distanceMeters(userLocation, { lat: r.lat, lng: r.lng }) <= radiusMeters;
+        });
+      }
+      list = [...list].sort((a, b) => {
+        if (a.lat == null || a.lng == null) return 1;
+        if (b.lat == null || b.lng == null) return -1;
+        return distanceMeters(userLocation, { lat: a.lat, lng: a.lng }) - distanceMeters(userLocation, { lat: b.lat, lng: b.lng });
+      });
+    }
     return list;
-  }, [cards, search, activePrices, activeFeatures]);
+  }, [cards, search, activePrices, activeFeatures, userLocation, radius]);
+
+  useEffect(() => {
+    if (view !== "map" || locationStatus !== "idle") return;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setLocationStatus("allowed");
+      },
+      () => {
+        setLocationStatus("denied");
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 300_000 },
+    );
+  }, [locationStatus, view]);
 
   const urlPreviewRestaurant = useMemo(() => {
     if (!previewParam) return null;
@@ -467,7 +1179,8 @@ export default function DiscoverPage() {
     (activePrices.size > 0 ? 1 : 0) +
     (activeFeatures.size > 0 ? 1 : 0) +
     (dateId !== "today" ? 1 : 0) +
-    (time !== "7:30 PM" ? 1 : 0);
+    (partySize !== "2" ? 1 : 0) +
+    (radius !== "anywhere" ? 1 : 0);
 
   const togglePrice = (p: string) =>
     setActivePrices((prev) => {
@@ -492,15 +1205,50 @@ export default function DiscoverPage() {
       else next.add(id);
       return next;
     });
+  const toggleSavedRestaurant = (id: string) =>
+    setSavedRestaurants((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const clearAll = () => {
+    const defaultTime = getNearestUpcomingHalfHour();
     setDateId("today");
     setCustomDate(undefined);
-    setTime("7:30 PM");
+    setTime(defaultTime);
     setPartySize("2");
+    setRadius("anywhere");
     setActivePrices(new Set());
     setActiveFeatures(new Set());
+    setPendingDateId("today");
+    setPendingCustomDate(undefined);
+    setPendingTime(defaultTime);
+    setPendingPartySize("2");
+    setPendingRadius("anywhere");
   };
+
+  const applyFilters = () => {
+    setDateId(pendingDateId);
+    setCustomDate(pendingCustomDate);
+    setTime(pendingTime);
+    setPartySize(pendingPartySize);
+    setRadius(pendingRadius);
+    setFiltersOpen(false);
+  };
+
+  useEffect(() => {
+    if (filtersOpen) {
+      setPendingDateId(dateId);
+      setPendingCustomDate(customDate);
+      setPendingTime(time);
+      setPendingPartySize(partySize);
+      setPendingRadius(radius);
+    }
+    // Only sync when panel toggles open — actual values flow into pending.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersOpen]);
 
   const handleSlotClick = (
     r: RestaurantCard,
@@ -543,6 +1291,26 @@ export default function DiscoverPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (view !== "map") {
+      setMapEdgeMode(false);
+      return;
+    }
+    const checkScroll = () => {
+      const sentinel = searchSentinelRef.current;
+      if (!sentinel) return;
+      const rect = sentinel.getBoundingClientRect();
+      setMapEdgeMode(rect.top <= 88);
+    };
+    checkScroll();
+    window.addEventListener("scroll", checkScroll, { passive: true });
+    window.addEventListener("resize", checkScroll);
+    return () => {
+      window.removeEventListener("scroll", checkScroll);
+      window.removeEventListener("resize", checkScroll);
+    };
+  }, [view]);
 
   const featured = filtered.slice(0, 4);
   const dateNight = filtered.slice(4, 8).length === 4 ? filtered.slice(4, 8) : filtered.slice(0, 4);
@@ -742,6 +1510,7 @@ export default function DiscoverPage() {
             </button>
           </div>
         </div>
+        <div ref={searchSentinelRef} aria-hidden className="h-px w-full" />
 
         {/* Filters panel */}
         <AnimatePresence initial={false}>
@@ -776,135 +1545,214 @@ export default function DiscoverPage() {
                   </button>
                 </div>
 
-                <div className="mt-6 grid gap-8 lg:grid-cols-4">
-                  {/* Date */}
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
-                      Date
-                    </p>
-                    <ul className="mt-3 space-y-2">
-                      {datePresets.map((p) => {
-                        const active = dateId === p.id;
-                        const isCustom = p.id === "custom";
-                        const label =
-                          isCustom && customDate
-                            ? format(customDate, "EEE · MMM d")
-                            : p.label;
-                        if (isCustom) {
-                          return (
-                            <li key={p.id}>
-                              <Popover
-                                open={datePopoverOpen}
-                                onOpenChange={setDatePopoverOpen}
-                              >
-                                <PopoverTrigger asChild>
-                                  <button
-                                    type="button"
-                                    className={cn(
-                                      "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm transition-colors",
-                                      active
-                                        ? "bg-gold text-black"
-                                        : "text-text-secondary hover:bg-bg-elevated hover:text-white",
-                                    )}
-                                  >
-                                    {label}
-                                    {active && <Check className="size-4" />}
-                                  </button>
-                                </PopoverTrigger>
-                                <PopoverContent
-                                  align="start"
-                                  className="w-auto p-0"
-                                >
-                                  <Calendar
-                                    mode="single"
-                                    selected={customDate}
-                                    onSelect={(d) => {
-                                      if (d) {
-                                        setCustomDate(d);
-                                        setDateId("custom");
-                                      }
-                                      setDatePopoverOpen(false);
-                                    }}
-                                    initialFocus
-                                  />
-                                </PopoverContent>
-                              </Popover>
-                            </li>
-                          );
-                        }
-                        return (
-                          <li key={p.id}>
-                            <button
-                              type="button"
-                              onClick={() => setDateId(p.id)}
-                              className={cn(
-                                "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm transition-colors",
-                                active
-                                  ? "bg-gold text-black"
-                                  : "text-text-secondary hover:bg-bg-elevated hover:text-white",
-                              )}
-                            >
-                              {label}
-                              {active && <Check className="size-4" />}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
+                <div className="mt-6 flex flex-wrap gap-3 [&>*]:min-w-[12rem] [&>*]:flex-1">
+                  {/* Date picker */}
+                  <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="text-left">
+                        <FilterPickerButton
+                          icon={CalendarDays}
+                          label="Date"
+                          value={(() => {
+                            if (pendingDateId === "custom" && pendingCustomDate) {
+                              return format(pendingCustomDate, "EEE · MMM d");
+                            }
+                            return datePresets.find((p) => p.id === pendingDateId)?.label ?? "Pick a date";
+                          })()}
+                          active={pendingDateId !== "today"}
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-auto p-3">
+                      <Calendar
+                        mode="single"
+                        selected={pendingCustomDate ?? new Date()}
+                        onSelect={(d) => {
+                          if (d) {
+                            setPendingCustomDate(d);
+                            setPendingDateId("custom");
+                            setDatePickerOpen(false);
+                          }
+                        }}
+                        disabled={(date) => {
+                          const today = new Date();
+                          today.setHours(0, 0, 0, 0);
+                          return date < today;
+                        }}
+                        className="p-0 [--cell-size:2.75rem] text-base"
+                        classNames={{
+                          month_caption: "flex h-(--cell-size) w-full items-center justify-center px-(--cell-size) text-base font-semibold text-white",
+                          weekday: "flex-1 text-text-muted font-mono text-xs uppercase tracking-wider",
+                          day: "relative size-(--cell-size) p-0 text-center text-sm",
+                        }}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
 
-                  {/* Time */}
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
-                      Time
-                    </p>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      {TIME_OPTIONS.map((tt) => (
-                        <button
-                          key={tt}
-                          type="button"
-                          onClick={() => setTime(tt)}
-                          className={cn(
-                            "rounded-md border px-3 py-2 text-sm transition-colors",
-                            time === tt
-                              ? "border-gold bg-gold/15 text-gold"
-                              : "border-border bg-bg-surface text-text-secondary hover:border-gold/40",
-                          )}
+                  {/* Time picker */}
+                  <Popover open={timePickerOpen} onOpenChange={setTimePickerOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="text-left">
+                        <FilterPickerButton
+                          icon={Clock}
+                          label="Time"
+                          value={pendingTime}
+                          active={pendingTime !== getNearestUpcomingHalfHour()}
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-44 p-2">
+                      <ScrollWheelPicker
+                        items={TIME_OPTIONS}
+                        value={pendingTime}
+                        onChange={setPendingTime}
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          onClick={() => setTimePickerOpen(false)}
+                          className="h-8 px-3 text-xs"
                         >
-                          {formatCompactTimeLabel(tt)}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                          Done
+                        </Button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
 
-                  {/* Party size + Price */}
+                  {/* Party size picker */}
+                  <Popover open={partyPickerOpen} onOpenChange={setPartyPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="text-left">
+                        <FilterPickerButton
+                          icon={Users}
+                          label="Party size"
+                          value={
+                            /^\d+$/.test(pendingPartySize)
+                              ? `${pendingPartySize} ${pendingPartySize === "1" ? "guest" : "guests"}`
+                              : pendingPartySize
+                          }
+                          active={pendingPartySize !== "2"}
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-40 p-2">
+                      <ScrollWheelPicker
+                        items={PARTY_SIZES.map(String)}
+                        value={pendingPartySize}
+                        onChange={setPendingPartySize}
+                        formatLabel={(v) =>
+                          /^\d+$/.test(v) ? `${v} ${v === "1" ? "guest" : "guests"}` : v
+                        }
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          onClick={() => setPartyPickerOpen(false)}
+                          className="h-8 px-3 text-xs"
+                        >
+                          Done
+                        </Button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+
+                  {/* Radius picker */}
+                  <Popover open={radiusPickerOpen} onOpenChange={setRadiusPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <button type="button" className="text-left">
+                        <FilterPickerButton
+                          icon={LocateFixed}
+                          label="Radius"
+                          value={
+                            userLocation
+                              ? radiusLabel(pendingRadius)
+                              : locationStatus === "denied"
+                                ? "Location blocked"
+                                : "Tap to enable"
+                          }
+                          active={!!userLocation && pendingRadius !== "anywhere"}
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-56 p-3">
+                      {userLocation ? (
+                        <>
+                          <ScrollWheelPicker
+                            items={RADIUS_OPTIONS}
+                            value={pendingRadius}
+                            onChange={setPendingRadius}
+                            formatLabel={radiusLabel}
+                          />
+                          <div className="mt-2 flex justify-end">
+                            <Button
+                              size="sm"
+                              onClick={() => setRadiusPickerOpen(false)}
+                              className="h-8 px-3 text-xs"
+                            >
+                              Done
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="space-y-3 text-center">
+                          <div className="mx-auto flex size-9 items-center justify-center rounded-full bg-gold/15">
+                            <LocateFixed className="size-4 text-gold" />
+                          </div>
+                          <p className="text-sm font-medium text-white">
+                            {locationStatus === "denied"
+                              ? "Location is blocked"
+                              : "Find restaurants near you"}
+                          </p>
+                          <p className="text-xs text-text-secondary">
+                            {locationStatus === "denied"
+                              ? "Allow location for this site in your browser settings, then try again."
+                              : "We'll ask your browser for permission to use your location."}
+                          </p>
+                          <button
+                            type="button"
+                            disabled={locationStatus === "requesting" || locationStatus === "unsupported"}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              if (!("geolocation" in navigator)) {
+                                setLocationStatus("unsupported");
+                                return;
+                              }
+                              setLocationStatus("requesting");
+                              navigator.geolocation.getCurrentPosition(
+                                (position) => {
+                                  setUserLocation({
+                                    lat: position.coords.latitude,
+                                    lng: position.coords.longitude,
+                                  });
+                                  setLocationStatus("allowed");
+                                },
+                                (error) => {
+                                  console.warn("Geolocation request failed", error);
+                                  setLocationStatus("denied");
+                                },
+                                { enableHighAccuracy: true, timeout: 10_000, maximumAge: 300_000 },
+                              );
+                            }}
+                            className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-gold px-3 text-xs font-semibold text-black transition-colors hover:bg-gold/90 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <LocateFixed className="size-3.5" />
+                            {locationStatus === "requesting"
+                              ? "Requesting…"
+                              : locationStatus === "denied"
+                                ? "Try again"
+                                : "Enable location"}
+                          </button>
+                        </div>
+                      )}
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                <div className="mt-6 grid gap-8 lg:grid-cols-2">
                   <div>
                     <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
-                      Party size
-                    </p>
-                    <div className="mt-3 grid grid-cols-4 gap-2">
-                      {PARTY_SIZES.map((n) => {
-                        const v = String(n);
-                        const active = partySize === v;
-                        return (
-                          <button
-                            key={v}
-                            type="button"
-                            onClick={() => setPartySize(v)}
-                            className={cn(
-                              "rounded-md border py-2 text-sm transition-colors",
-                              active
-                                ? "border-gold bg-gold/15 text-gold"
-                                : "border-border bg-bg-surface text-text-secondary hover:border-gold/40",
-                            )}
-                          >
-                            {v}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
                       Price
                     </p>
                     <div className="mt-3 grid grid-cols-4 gap-2">
@@ -963,10 +1811,10 @@ export default function DiscoverPage() {
                     <span className="text-text-muted">restaurants match</span>
                   </p>
                   <Button
-                    onClick={() => setFiltersOpen(false)}
+                    onClick={applyFilters}
                     className="h-11 rounded-md px-6 font-semibold"
                   >
-                    Show results
+                    Done
                   </Button>
                 </div>
               </div>
@@ -1054,7 +1902,10 @@ export default function DiscoverPage() {
                           key={r.id + row.title}
                           r={r}
                           favorite={favorites.has(r.id)}
+                          saved={savedRestaurants.has(r.id)}
                           onToggleFav={() => toggleFavorite(r.id)}
+                          onToggleSave={() => toggleSavedRestaurant(r.id)}
+                          onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
                           onOpen={() => openRestaurantPreview(r)}
                         />
                       ))}
@@ -1068,103 +1919,90 @@ export default function DiscoverPage() {
 
         {/* Map view */}
         {!loading && filtered.length > 0 && view === "map" && (
-          <div className="mt-10 grid gap-6 lg:h-[calc(100vh-8rem)] lg:min-h-[560px] lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,1fr)] lg:overflow-hidden">
-            <div className="min-h-0 lg:flex lg:flex-col">
+          <div className="mt-10 grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,1fr)]">
+            <div>
               <div className="flex items-center justify-between">
                 <p className="text-sm text-text-secondary">
                   <span className="font-serif text-xl text-white">{filtered.length}</span>{" "}
-                  restaurants · sorted by <span className="text-gold">Best match</span>
+                  restaurants · sorted by <span className="text-gold">{userLocation ? "Nearest" : "Best match"}</span>
                 </p>
-                <p className="hidden text-xs text-text-muted sm:block">Hover to highlight on map</p>
+                <p className="hidden text-xs text-text-muted sm:block">
+                  {locationStatus === "requesting" ? "Requesting location..." : "Hover to highlight on map"}
+                </p>
               </div>
-              <div className="mt-4 space-y-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-2 lg:scrollbar-thin">
+              <div className="mt-4 space-y-4">
                 {filtered.map((r) => (
                   <MapListCard
                     key={r.id}
                     r={r}
                     favorite={favorites.has(r.id)}
+                    saved={savedRestaurants.has(r.id)}
                     onToggleFav={() => toggleFavorite(r.id)}
-                    onHover={(id) => {
-                      setHoveredId(id);
-                      if (id) setSelectedId(id);
-                    }}
+                    onToggleSave={() => toggleSavedRestaurant(r.id)}
+                    onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                    onHover={setHoveredId}
                     highlighted={hoveredId === r.id || selectedId === r.id}
-                    onOpen={() => openRestaurantPreview(r)}
+                    onSelect={() => setSelectedId(r.id)}
                   />
                 ))}
               </div>
             </div>
 
             {/* Map area */}
-            <div className="lg:h-full lg:min-h-0">
-              <div className="relative h-[560px] overflow-hidden rounded-2xl border border-border bg-bg-surface lg:h-full">
-                {/* faint grid */}
-                <div className="absolute inset-0 bg-gold/5" />
-
-                {/* you-are-here pulse */}
-                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                  <div className="size-4 rounded-full bg-blue-500 ring-4 ring-blue-500/30" />
-                </div>
-
-                {filtered.filter((r) => r.lat != null && r.lng != null).slice(0, 12).map((r) => (
-                  <MapPin
-                    key={r.id}
-                    r={r}
-                    active={hoveredId === r.id || selectedId === r.id}
-                    onClick={() => setSelectedId(r.id)}
-                  />
-                ))}
+            <div
+              className={cn(
+                "lg:sticky lg:top-[5.5rem] lg:h-[calc(100vh-5.5rem)] lg:transition-[margin] lg:duration-300 lg:ease-out",
+                mapEdgeMode && "lg:-mr-24 xl:-mr-32 2xl:-mr-40",
+              )}
+            >
+              <div
+                className={cn(
+                  "relative h-[560px] overflow-hidden rounded-2xl border border-border bg-bg-surface lg:h-full lg:transition-[border-radius,border-width] lg:duration-300",
+                  mapEdgeMode && "lg:rounded-r-none lg:border-r-0",
+                )}
+              >
+                <GoogleDiscoverMap
+                  restaurants={filtered}
+                  selectedId={selectedId}
+                  hoveredId={hoveredId}
+                  userLocation={userLocation}
+                  onSelect={setSelectedId}
+                />
 
                 {/* Re-center */}
                 <button
                   type="button"
-                  onClick={() => setSelectedId(null)}
+                  onClick={() => {
+                    setSelectedId(null);
+                    setLocationStatus("geolocation" in navigator ? "idle" : "unsupported");
+                  }}
                   className="absolute left-4 top-4 inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-surface/90 px-3 py-1.5 text-xs font-medium text-white backdrop-blur hover:border-gold/40"
                 >
                   <LocateFixed className="size-3.5 text-gold" />
-                  Re-center
+                  {userLocation ? "Use my location" : "Find near me"}
                 </button>
+                {locationStatus === "denied" || locationStatus === "unsupported" ? (
+                  <div className="absolute left-4 right-4 top-16 rounded-xl border border-border bg-bg-surface/90 px-3 py-2 text-xs text-text-secondary backdrop-blur sm:right-auto sm:max-w-sm">
+                    Location is unavailable. Search by city or restaurant name to browse manually.
+                  </div>
+                ) : null}
 
-                {/* Selected restaurant card */}
+                {/* Selected restaurant popup */}
                 {selectedId &&
                   (() => {
                     const r = filtered.find((x) => x.id === selectedId);
                     if (!r) return null;
                     return (
-                      <div className="absolute bottom-12 left-4 right-20 max-w-md rounded-2xl border border-border bg-bg-surface/95 p-3 shadow-2xl shadow-black/40 backdrop-blur">
-                        <div className="flex gap-3">
-                          <div className="size-20 shrink-0 overflow-hidden rounded-xl">
-                            <RestaurantCardImage restaurant={r} className="aspect-square" logoClassName="size-10" />
-                          </div>
-                          <div className="flex-1">
-                            <p className="font-serif text-lg text-white">{r.name}</p>
-                            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-                              <RestaurantPriceMeter level={r.priceLevel} />
-                              {r.cuisine ? <span>{r.cuisine}</span> : null}
-                            </div>
-                            {r.dietaryTags.length > 0 ? (
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {r.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
-                              </div>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => openRestaurantPreview(r)}
-                              className="mt-2 rounded-md bg-gold px-2.5 py-1 text-[11px] font-semibold text-black hover:opacity-90"
-                            >
-                              View preview
-                            </button>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedId(null)}
-                            className="self-start rounded-full p-1 text-text-muted hover:text-white"
-                            aria-label="Close"
-                          >
-                            <X className="size-4" />
-                          </button>
-                        </div>
-                      </div>
+                      <MapRestaurantPopup
+                        restaurant={r}
+                        favorite={favorites.has(r.id)}
+                        saved={savedRestaurants.has(r.id)}
+                        onBookSlot={(slot) => handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time)}
+                        onClose={() => setSelectedId(null)}
+                        onToggleFavorite={() => toggleFavorite(r.id)}
+                        onToggleSave={() => toggleSavedRestaurant(r.id)}
+                        onOpenPreview={() => openRestaurantPreview(r)}
+                      />
                     );
                   })()}
               </div>

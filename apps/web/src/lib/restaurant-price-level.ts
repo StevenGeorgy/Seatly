@@ -8,8 +8,6 @@ export type RestaurantPriceMenuItem = {
   is_available?: boolean | null;
 };
 
-export const DEFAULT_RESTAURANT_PRICE_LEVEL: RestaurantPriceLevel = 2;
-
 export const RESTAURANT_PRICE_LABELS: Record<RestaurantPriceLevel, string> = {
   1: "$",
   2: "$$",
@@ -46,7 +44,7 @@ export function restaurantPriceLevelFromLabel(label: string | null | undefined):
 }
 
 export function restaurantPriceLabelFromLevel(level: RestaurantPriceLevel | null | undefined): string {
-  return RESTAURANT_PRICE_LABELS[level ?? DEFAULT_RESTAURANT_PRICE_LEVEL];
+  return level == null ? "" : RESTAURANT_PRICE_LABELS[level];
 }
 
 export function restaurantPriceLabelFromRange(value: number | null | undefined): string {
@@ -79,10 +77,10 @@ export function averageMainEntreePrice(items: RestaurantPriceMenuItem[]): number
 export function deriveRestaurantPriceLevel(
   items: RestaurantPriceMenuItem[],
   fallbackRange?: number | null,
-): RestaurantPriceLevel {
+): RestaurantPriceLevel | null {
   const average = averageMainEntreePrice(items);
   if (average != null) return restaurantPriceLevelFromAverage(average);
-  return normalizeRestaurantPriceLevel(fallbackRange) ?? DEFAULT_RESTAURANT_PRICE_LEVEL;
+  return normalizeRestaurantPriceLevel(fallbackRange);
 }
 
 export function deriveRestaurantPriceLevelFromMenu(

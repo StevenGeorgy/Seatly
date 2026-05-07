@@ -51,6 +51,7 @@ export type PromotionRow = {
 
 export type PromotionWithRestaurant = PromotionRow & {
   restaurants: {
+    id: string;
     name: string;
     slug: string;
     cuisine_type: string | null;
@@ -87,6 +88,7 @@ export function useAllActivePromotions() {
       .select(`
         *,
         restaurants (
+          id,
           name,
           slug,
           cuisine_type,
@@ -220,6 +222,7 @@ export async function fetchPromotionById(id: string): Promise<PromotionWithResta
     .select(`
       *,
       restaurants (
+        id,
         name,
         slug,
         cuisine_type,

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent,
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { format, parse, isValid } from "date-fns";
+import { format, parse, isValid, startOfDay } from "date-fns";
+import type { DateRange } from "react-day-picker";
 import {
   Bell,
   CalendarDays,
@@ -21,6 +22,7 @@ import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { DashboardTimeWheelPicker } from "@/components/dashboard/DashboardTimeWheelPicker";
 import { BusinessTypeSelect } from "@/components/restaurant/BusinessTypeSelect";
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
+import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
 import { Button } from "@/components/ui/button";
 import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
@@ -92,6 +94,8 @@ type RestaurantInitialState = {
   city: string;
   province: string;
   country: string;
+  lat: number | null;
+  lng: number | null;
   businessType: string;
   legalName: string;
   websiteUrl: string;
@@ -184,8 +188,6 @@ function FieldRow({ label, hint, children }: { label: string; hint?: ReactNode; 
   );
 }
 
-type SpecialDayDateField = "start" | "end";
-
 function createSpecialDay(): RestaurantSpecialDay {
   return {
     id: crypto.randomUUID(),
@@ -237,6 +239,113 @@ function formatSpecialDayRange(sd: RestaurantSpecialDay): string {
   if (!start) return "No date selected";
   if (!end || end === start) return formatSpecialDateLabel(start);
   return `${formatSpecialDateLabel(start)} to ${formatSpecialDateLabel(end)}`;
+}
+
+function specialDayDateRange(sd: RestaurantSpecialDay): DateRange | undefined {
+  const from = parseSpecialDate(specialDayStart(sd));
+  if (!from) return undefined;
+  const to = specialDayUsesRange(sd) ? parseSpecialDate(specialDayEnd(sd)) : undefined;
+  return to && to > from ? { from, to } : { from };
+}
+
+function SpecialDateRangeField({
+  value,
+  onChange,
+  placeholder,
+  className,
+}: {
+  value: RestaurantSpecialDay;
+  onChange: (next: RestaurantSpecialDay) => void;
+  placeholder: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pendingStart, setPendingStart] = useState<Date | null>(null);
+  const today = startOfDay(new Date());
+  const todayIso = format(today, "yyyy-MM-dd");
+  const pendingStartIso = pendingStart ? format(pendingStart, "yyyy-MM-dd") : null;
+  const selected = pendingStart ? { from: pendingStart } : specialDayDateRange(value);
+
+  const selectRange = (range: DateRange | undefined) => {
+    if (!range?.from) return;
+    const from = startOfDay(range.from);
+    const to = range.to ? startOfDay(range.to) : undefined;
+    const startDate = format(from, "yyyy-MM-dd");
+
+    if (to && to > from) {
+      onChange({
+        ...value,
+        date: startDate,
+        dateMode: "range",
+        startDate,
+        endDate: format(to, "yyyy-MM-dd"),
+        closed: true,
+      });
+      setPendingStart(null);
+      setOpen(false);
+      return;
+    }
+
+    onChange({
+      ...value,
+      date: startDate,
+      dateMode: "single",
+      startDate,
+      endDate: startDate,
+    });
+    setPendingStart(from);
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setPendingStart(null);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "relative flex h-10 w-full cursor-pointer items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-left outline-none transition-colors hover:border-gold/30 focus-visible:ring-2 focus-visible:ring-gold/40",
+            className,
+          )}
+        >
+          <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+          <span className={cn("truncate text-xs leading-none", specialDayStart(value) ? "text-text-primary" : "text-text-muted")}>
+            {specialDayStart(value) ? formatSpecialDayRange(value) : placeholder}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="z-[60] w-auto border-border bg-bg-elevated p-2 text-text-primary shadow-2xl">
+        <Calendar
+          mode="range"
+          required={false}
+          showOutsideDays={false}
+          selected={selected}
+          onSelect={selectRange}
+          disabled={(date) => {
+            const iso = format(date, "yyyy-MM-dd");
+            if (iso < todayIso) return true;
+            return pendingStartIso ? iso <= pendingStartIso : false;
+          }}
+          classNames={{
+            day: "group/day relative flex-1 p-0 text-center select-none",
+            day_button: "relative isolate z-10 flex size-9 min-w-9 items-center justify-center rounded-md border-0 leading-none font-normal text-text-secondary hover:bg-gold/10 hover:text-white disabled:pointer-events-none disabled:opacity-30 data-[range-start=true]:bg-gold data-[range-start=true]:font-semibold data-[range-start=true]:text-black data-[range-middle=true]:bg-gold/15 data-[range-middle=true]:text-white data-[range-end=true]:bg-gold data-[range-end=true]:font-semibold data-[range-end=true]:text-black data-[selected-single=true]:bg-gold data-[selected-single=true]:font-semibold data-[selected-single=true]:text-black",
+            range_start: "rounded-l-md bg-gold/15",
+            range_middle: "rounded-none bg-gold/15",
+            range_end: "rounded-r-md bg-gold/15",
+            hidden: "invisible pointer-events-none",
+            outside: "invisible pointer-events-none",
+            disabled: "text-text-muted opacity-25",
+            today: "text-white",
+          }}
+          className="rounded-md border-0 bg-transparent"
+        />
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function normalizeTurnTime(value: string): number | null {
@@ -367,6 +476,8 @@ export default function SettingsPage() {
   const [city, setCity] = useState(selectedRestaurant?.city ?? "");
   const [province, setProvince] = useState(selectedRestaurant?.province ?? "");
   const [country, setCountry] = useState(selectedRestaurant?.country ?? "");
+  const [addressLat, setAddressLat] = useState<number | null>(null);
+  const [addressLng, setAddressLng] = useState<number | null>(null);
   const [businessType, setBusinessType] = useState<string>(normalizeRestaurantBusinessType(selectedRestaurant?.business_type));
   const [legalName, setLegalName] = useState(selectedRestaurant?.settings_json?.businessProfile?.legalName ?? "");
   const [websiteUrl, setWebsiteUrl] = useState(selectedRestaurant?.settings_json?.businessProfile?.websiteUrl ?? "");
@@ -412,11 +523,6 @@ export default function SettingsPage() {
   // Hours
   const [hours, setHours] = useState<RestaurantDayHours[]>(defaultRestaurantHours);
   const [specialDays, setSpecialDays] = useState<RestaurantSpecialDay[]>([]);
-  const [persistedSpecialDayIds, setPersistedSpecialDayIds] = useState<Set<string>>(() => new Set());
-  const [openSpecialDatePicker, setOpenSpecialDatePicker] = useState<{
-    id: string;
-    field: SpecialDayDateField;
-  } | null>(null);
   const [specialDetailsId, setSpecialDetailsId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
@@ -445,6 +551,8 @@ export default function SettingsPage() {
     setCity(selectedRestaurant?.city ?? "");
     setProvince(selectedRestaurant?.province ?? "");
     setCountry(selectedRestaurant?.country ?? "");
+    setAddressLat(selectedRestaurant?.lat ?? null);
+    setAddressLng(selectedRestaurant?.lng ?? null);
     setBusinessType(normalizeRestaurantBusinessType(selectedRestaurant?.business_type));
     setLegalName(selectedRestaurant?.settings_json?.businessProfile?.legalName ?? "");
     setWebsiteUrl(selectedRestaurant?.settings_json?.businessProfile?.websiteUrl ?? "");
@@ -469,7 +577,7 @@ export default function SettingsPage() {
     setPrimaryColor(selectedRestaurant?.settings_json?.theme?.primaryColor ?? "#C9A84C");
     setAccentColor(selectedRestaurant?.settings_json?.theme?.accentColor ?? "#22C55E");
     setBackgroundColor(selectedRestaurant?.settings_json?.theme?.backgroundColor ?? "#0A0A0A");
-  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.logo_url, selectedRestaurant?.cover_photo_url, selectedRestaurant?.email, selectedRestaurant?.city, selectedRestaurant?.province, selectedRestaurant?.country, selectedRestaurant?.business_type, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.accepts_walkins]);
+  }, [selectedRestaurant?.id, selectedRestaurant?.name, selectedRestaurant?.logo_url, selectedRestaurant?.cover_photo_url, selectedRestaurant?.email, selectedRestaurant?.city, selectedRestaurant?.province, selectedRestaurant?.country, selectedRestaurant?.lat, selectedRestaurant?.lng, selectedRestaurant?.business_type, selectedRestaurant?.currency, selectedRestaurant?.settings_json, selectedRestaurant?.accepts_walkins]);
 
   useEffect(() => () => revokeDraftUrl(logoDraftPreviewUrl), [logoDraftPreviewUrl]);
   useEffect(() => () => revokeDraftUrl(coverDraftPreviewUrl), [coverDraftPreviewUrl]);
@@ -479,7 +587,7 @@ export default function SettingsPage() {
     const client = getSupabaseBrowserClient();
     void client
       .from("restaurants")
-      .select("cuisine_type, address, email, phone, city, province, country, business_type, description, hours_json, plan, accepts_walkins, settings_json")
+        .select("cuisine_type, address, email, phone, city, province, country, lat, lng, business_type, description, hours_json, plan, accepts_walkins, settings_json")
       .eq("id", selectedRestaurant.id)
       .single()
       .then(({ data }) => {
@@ -491,6 +599,8 @@ export default function SettingsPage() {
         const cityValue = data.city ?? "";
         const provinceValue = data.province ?? "";
         const countryValue = data.country ?? "";
+        const latValue = typeof data.lat === "number" ? data.lat : null;
+        const lngValue = typeof data.lng === "number" ? data.lng : null;
         const businessTypeValue = normalizeRestaurantBusinessType(data.business_type);
         const settings = (data.settings_json ?? {}) as RestaurantSettings;
         const businessProfile = settings.businessProfile ?? EMPTY_BUSINESS_PROFILE;
@@ -507,6 +617,8 @@ export default function SettingsPage() {
         setCity(cityValue);
         setProvince(provinceValue);
         setCountry(countryValue);
+        setAddressLat(latValue);
+        setAddressLng(lngValue);
         setBusinessType(businessTypeValue);
         setLegalName(legalNameValue);
         setWebsiteUrl(websiteUrlValue);
@@ -523,6 +635,8 @@ export default function SettingsPage() {
           city: cityValue,
           province: provinceValue,
           country: countryValue,
+          lat: latValue,
+          lng: lngValue,
           businessType: businessTypeValue,
           legalName: legalNameValue,
           websiteUrl: websiteUrlValue,
@@ -537,7 +651,6 @@ export default function SettingsPage() {
         const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
         setSpecialDays(parsed.special);
-        setPersistedSpecialDayIds(new Set(parsed.special.map((s) => s.id)));
         setCurrentPlan(data.plan ?? null);
       });
   }, [
@@ -558,6 +671,8 @@ export default function SettingsPage() {
       restaurantInitial.city !== city ||
       restaurantInitial.province !== province ||
       restaurantInitial.country !== country ||
+      restaurantInitial.lat !== addressLat ||
+      restaurantInitial.lng !== addressLng ||
       restaurantInitial.businessType !== businessType ||
       restaurantInitial.legalName !== legalName ||
       restaurantInitial.websiteUrl !== websiteUrl ||
@@ -569,7 +684,7 @@ export default function SettingsPage() {
       dietaryTagsKey(restaurantInitial.dietaryTags) !== dietaryTagsKey(dietaryTags) ||
       restaurantInitial.turnTimeMinutes !== turnTimeMinutes
     );
-  }, [restaurantInitial, restaurantName, cuisine, address, contactEmail, phone, city, province, country, businessType, legalName, websiteUrl, instagramUrl, facebookUrl, description, currency, acceptsWalkins, dietaryTags, turnTimeMinutes]);
+  }, [restaurantInitial, restaurantName, cuisine, address, contactEmail, phone, city, province, country, addressLat, addressLng, businessType, legalName, websiteUrl, instagramUrl, facebookUrl, description, currency, acceptsWalkins, dietaryTags, turnTimeMinutes]);
 
   const toggleDietaryTag = (tag: RestaurantDietaryTag) => {
     setDietaryTags((current) => (
@@ -690,6 +805,8 @@ export default function SettingsPage() {
         city: city.trim() || null,
         province: province.trim() || null,
         country: country.trim() || null,
+        lat: addressLat,
+        lng: addressLng,
         business_type: businessType || null,
         description: description.trim().slice(0, RESTAURANT_DESCRIPTION_MAX_LENGTH) || null,
         currency,
@@ -720,6 +837,8 @@ export default function SettingsPage() {
       city,
       province,
       country,
+      lat: addressLat,
+      lng: addressLng,
       businessType,
       legalName: nextLegalName,
       websiteUrl: nextWebsiteUrl,
@@ -861,6 +980,8 @@ export default function SettingsPage() {
     setCity(restaurantInitial.city);
     setProvince(restaurantInitial.province);
     setCountry(restaurantInitial.country);
+    setAddressLat(restaurantInitial.lat);
+    setAddressLng(restaurantInitial.lng);
     setBusinessType(restaurantInitial.businessType);
     setLegalName(restaurantInitial.legalName);
     setWebsiteUrl(restaurantInitial.websiteUrl);
@@ -897,34 +1018,6 @@ export default function SettingsPage() {
     setSpecialDetailsId(null);
   };
 
-  const applyDateModeChange = (day: RestaurantSpecialDay, dateMode: RestaurantSpecialDay["dateMode"]) => {
-    const start = specialDayStart(day);
-    if (dateMode === "single") {
-      return { ...day, dateMode, endDate: start };
-    }
-    return { ...day, dateMode, endDate: specialDayEnd(day) || start };
-  };
-
-  const applyDateChange = (day: RestaurantSpecialDay, field: SpecialDayDateField, value: Date | undefined) => {
-    const nextDate = value ? format(value, "yyyy-MM-dd") : "";
-    if (field === "start") {
-      let nextEndDate = "";
-      if (nextDate) {
-        const currentEnd = specialDayEnd(day);
-        nextEndDate = day.dateMode === "range" && currentEnd >= nextDate ? currentEnd : nextDate;
-      }
-      return { ...day, date: nextDate, startDate: nextDate, endDate: nextEndDate };
-    }
-    const currentStart = specialDayStart(day) || nextDate;
-    const nextEndDate = nextDate && currentStart && nextDate < currentStart ? currentStart : nextDate;
-    return {
-      ...day,
-      date: currentStart,
-      startDate: currentStart,
-      endDate: nextEndDate || currentStart,
-    };
-  };
-
   const updateSpecialDay = (id: string, patch: Partial<RestaurantSpecialDay>) => {
     if (draftSpecialDay?.id === id) {
       setDraftSpecialDay({ ...draftSpecialDay, ...patch });
@@ -933,34 +1026,24 @@ export default function SettingsPage() {
     setSpecialDays((days) => days.map((day) => (day.id === id ? { ...day, ...patch } : day)));
   };
 
-  const setSpecialDayDateMode = (id: string, dateMode: RestaurantSpecialDay["dateMode"]) => {
+  const replaceSpecialDay = (id: string, nextDay: RestaurantSpecialDay) => {
     if (draftSpecialDay?.id === id) {
-      setDraftSpecialDay(applyDateModeChange(draftSpecialDay, dateMode));
-      return;
-    }
-    setSpecialDays((days) => days.map((day) => (day.id === id ? applyDateModeChange(day, dateMode) : day)));
-  };
-
-  const setSpecialDayDate = (id: string, field: SpecialDayDateField, value: Date | undefined) => {
-    if (draftSpecialDay?.id === id) {
-      setDraftSpecialDay(applyDateChange(draftSpecialDay, field, value));
+      setDraftSpecialDay(nextDay);
     } else {
-      setSpecialDays((days) => days.map((day) => (day.id === id ? applyDateChange(day, field, value) : day)));
+      setSpecialDays((days) => days.map((day) => (day.id === id ? nextDay : day)));
     }
-    if (value) setOpenSpecialDatePicker(null);
   };
 
   const closeSpecialDayDialog = () => {
     setDraftSpecialDay(null);
     setSpecialDetailsId(null);
-    setOpenSpecialDatePicker(null);
   };
 
   const commitSpecialDayDialog = () => {
     if (draftSpecialDay) {
       const start = specialDayStart(draftSpecialDay);
       const end = specialDayEnd(draftSpecialDay);
-      if (!start || !end || end < start) {
+      if (!start || !end || (draftSpecialDay.dateMode === "range" ? end <= start : end < start)) {
         toast.error("Choose a valid start and end date for this closure or holiday.");
         return;
       }
@@ -975,7 +1058,7 @@ export default function SettingsPage() {
     const invalidSpecialDay = specialDays.find((day) => {
       const start = specialDayStart(day);
       const end = specialDayEnd(day);
-      return !start || !end || end < start;
+      return !start || !end || (day.dateMode === "range" ? end <= start : end < start);
     });
     if (invalidSpecialDay) {
       setSpecialDetailsId(invalidSpecialDay.id);
@@ -1053,7 +1136,6 @@ export default function SettingsPage() {
     }
 
     refreshRestaurants();
-    setPersistedSpecialDayIds(new Set(specialDays.map((s) => s.id)));
     setSavingHours(false);
     toast.success(t("dashboard.settings.saved"));
   };
@@ -1176,16 +1258,44 @@ export default function SettingsPage() {
                   />
                 </FieldRow>
                 <FieldRow label="Address">
-                  <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="142 Yorkville Ave, Toronto, ON M5R 1C2" />
-                </FieldRow>
-                <FieldRow label={t("dashboard.settings.city")}>
-                  <Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Toronto" />
-                </FieldRow>
-                <FieldRow label={t("dashboard.settings.province")}>
-                  <Input value={province} onChange={(e) => setProvince(e.target.value)} placeholder="ON" />
-                </FieldRow>
-                <FieldRow label={t("dashboard.settings.country")}>
-                  <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Canada" />
+                  <div className="flex flex-col gap-2">
+                    <GoogleAddressAutocompleteInput
+                      value={address}
+                      onChange={(value) => {
+                        setAddress(value);
+                        setCity("");
+                        setProvince("");
+                        setCountry("");
+                        setAddressLat(null);
+                        setAddressLng(null);
+                      }}
+                      onAddressSelected={(parts) => {
+                        setAddress(parts.address || address);
+                        setCity(parts.city ?? "");
+                        setProvince(parts.province ?? "");
+                        setCountry(parts.country ?? "");
+                        setAddressLat(parts.lat);
+                        setAddressLng(parts.lng);
+                      }}
+                      placeholder="142 Yorkville Ave, Toronto, ON M5R 1C2"
+                    />
+                    {(city || province || country) ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {[city, province, country].filter(Boolean).map((part) => (
+                          <span
+                            key={part}
+                            className="inline-flex items-center rounded-full border border-border bg-bg-elevated px-2.5 py-0.5 font-mono text-[11px] text-text-secondary"
+                          >
+                            {part}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="font-mono text-[11px] text-text-muted">
+                        Pick from suggestions to auto-fill city, province, and country.
+                      </p>
+                    )}
+                  </div>
                 </FieldRow>
                 <FieldRow label={t("dashboard.settings.businessType")} hint={t("dashboard.settings.businessTypeHint")}>
                   <BusinessTypeSelect
@@ -1628,97 +1738,32 @@ export default function SettingsPage() {
                     </p>
                   )}
                   {specialDays.map((sd) => {
-                    const startDate = specialDayStart(sd);
-                    const endDate = specialDayEnd(sd);
                     const usesRange = specialDayUsesRange(sd);
-                    const lockDateMode = persistedSpecialDayIds.has(sd.id);
+                    const closedForDisplay = usesRange || sd.closed;
                     return (
                       <div
                         key={sd.id}
                         className="relative flex flex-col gap-3 rounded-lg bg-bg-elevated/40 px-4 py-3 sm:flex-row sm:items-start"
                       >
-                        <span className={cn("absolute inset-y-2 left-0 w-[3px] rounded-r", sd.closed ? "bg-danger" : "bg-warning")} />
+                        <span className={cn("absolute inset-y-2 left-0 w-[3px] rounded-r", closedForDisplay ? "bg-danger" : "bg-warning")} />
                         <div className="min-w-0 flex-1 pl-3">
                           <div className="flex flex-wrap items-center gap-2">
-                            <div className="inline-flex rounded-lg border border-border bg-bg-surface p-0.5">
-                              {(["single", "range"] as const).map((mode) => {
-                                const active = mode === "range" ? usesRange : !usesRange;
-                                const disabled = lockDateMode && !active;
-                                return (
-                                  <button
-                                    key={mode}
-                                    type="button"
-                                    disabled={disabled}
-                                    aria-disabled={disabled}
-                                    title={disabled ? "Date type is locked once saved" : undefined}
-                                    className={cn(
-                                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                                      active ? "bg-gold text-bg-base" : "text-text-muted hover:text-white",
-                                      disabled && "cursor-not-allowed opacity-40 hover:text-text-muted",
-                                    )}
-                                    onClick={() => {
-                                      if (disabled) return;
-                                      setSpecialDayDateMode(sd.id, mode);
-                                    }}
-                                  >
-                                    {mode === "range" ? "Date range" : "Single day"}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <Popover
-                              open={openSpecialDatePicker?.id === sd.id && openSpecialDatePicker.field === "start"}
-                              onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: sd.id, field: "start" } : null)}
-                            >
-                              <PopoverTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
-                                  <CalendarDays className="size-3.5" />
-                                  {startDate ? formatSpecialDateLabel(startDate) : "Start date"}
-                                </Button>
-                              </PopoverTrigger>
-                              <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0">
-                                <Calendar
-                                  mode="single"
-                                  required={false}
-                                  selected={parseSpecialDate(startDate)}
-                                  onSelect={(date) => setSpecialDayDate(sd.id, "start", date)}
-                                  className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                                />
-                              </PopoverContent>
-                            </Popover>
-                            {usesRange && (
-                              <Popover
-                                open={openSpecialDatePicker?.id === sd.id && openSpecialDatePicker.field === "end"}
-                                onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: sd.id, field: "end" } : null)}
-                              >
-                                <PopoverTrigger asChild>
-                                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
-                                    <CalendarDays className="size-3.5" />
-                                    {endDate ? formatSpecialDateLabel(endDate) : "End date"}
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent align="start" className="w-auto border-border bg-bg-elevated p-0">
-                                  <Calendar
-                                    mode="single"
-                                    required={false}
-                                    selected={parseSpecialDate(endDate)}
-                                    disabled={(date) => Boolean(startDate) && format(date, "yyyy-MM-dd") < startDate}
-                                    onSelect={(date) => setSpecialDayDate(sd.id, "end", date)}
-                                    className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                                  />
-                                </PopoverContent>
-                              </Popover>
-                            )}
+                            <SpecialDateRangeField
+                              value={sd}
+                              onChange={(nextDay) => replaceSpecialDay(sd.id, nextDay)}
+                              placeholder="Select dates"
+                              className="w-full sm:w-[260px]"
+                            />
                             <span className={cn(
                               "rounded-full px-2 py-1 text-[11px] font-medium",
-                              sd.closed ? "bg-danger/10 text-danger" : "bg-warning/10 text-warning",
+                              closedForDisplay ? "bg-danger/10 text-danger" : "bg-warning/10 text-warning",
                             )}>
-                              {sd.closed ? "Closed" : "Custom hours"}
+                              {closedForDisplay ? "Closed" : "Custom hours"}
                             </span>
                           </div>
                           <div className="mt-2 min-w-0">
                             <p className="truncate text-sm font-medium text-text-primary">
-                              {sd.label.trim() || (sd.closed ? "Closure or holiday" : "Hours exception")}
+                              {sd.label.trim() || (closedForDisplay ? "Closure or holiday" : "Hours exception")}
                             </p>
                             <p className="mt-0.5 text-xs text-text-muted">{formatSpecialDayRange(sd)}</p>
                             {sd.description.trim() && (
@@ -1786,94 +1831,17 @@ export default function SettingsPage() {
                     </div>
                   </DialogHeader>
                   {activeSpecialDay && (() => {
-                    const startDate = specialDayStart(activeSpecialDay);
-                    const endDate = specialDayEnd(activeSpecialDay);
                     const usesRange = specialDayUsesRange(activeSpecialDay);
-                    const lockDateMode = persistedSpecialDayIds.has(activeSpecialDay.id);
                     return (
                       <div className="space-y-5 px-6 py-5">
                         <div>
                           <p className="text-xs font-medium text-text-secondary">Dates</p>
                           <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <div className="inline-flex rounded-lg border border-border bg-bg-surface p-0.5">
-                              {(["single", "range"] as const).map((mode) => {
-                                const active = mode === "range" ? usesRange : !usesRange;
-                                const disabled = lockDateMode && !active;
-                                return (
-                                  <button
-                                    key={mode}
-                                    type="button"
-                                    disabled={disabled}
-                                    aria-disabled={disabled}
-                                    title={disabled ? "Date type is locked once saved" : undefined}
-                                    className={cn(
-                                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                                      active ? "bg-gold text-bg-base" : "text-text-muted hover:text-white",
-                                      disabled && "cursor-not-allowed opacity-40 hover:text-text-muted",
-                                    )}
-                                    onClick={() => {
-                                      if (disabled) return;
-                                      setSpecialDayDateMode(activeSpecialDay.id, mode);
-                                    }}
-                                  >
-                                    {mode === "range" ? "Date range" : "Single day"}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <Popover
-                              modal
-                              open={openSpecialDatePicker?.id === activeSpecialDay.id && openSpecialDatePicker.field === "start"}
-                              onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: activeSpecialDay.id, field: "start" } : null)}
-                            >
-                              <PopoverTrigger asChild>
-                                <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
-                                  <CalendarDays className="size-3.5" />
-                                  {startDate ? formatSpecialDateLabel(startDate) : "Start date"}
-                                </Button>
-                              </PopoverTrigger>
-                              <PopoverContent
-                                align="start"
-                                className="z-[60] w-auto border-border bg-bg-elevated p-0"
-                                onOpenAutoFocus={(event) => event.preventDefault()}
-                              >
-                                <Calendar
-                                  mode="single"
-                                  required={false}
-                                  selected={parseSpecialDate(startDate)}
-                                  onSelect={(date) => setSpecialDayDate(activeSpecialDay.id, "start", date)}
-                                  className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                                />
-                              </PopoverContent>
-                            </Popover>
-                            {usesRange && (
-                              <Popover
-                                modal
-                                open={openSpecialDatePicker?.id === activeSpecialDay.id && openSpecialDatePicker.field === "end"}
-                                onOpenChange={(open) => setOpenSpecialDatePicker(open ? { id: activeSpecialDay.id, field: "end" } : null)}
-                              >
-                                <PopoverTrigger asChild>
-                                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
-                                    <CalendarDays className="size-3.5" />
-                                    {endDate ? formatSpecialDateLabel(endDate) : "End date"}
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent
-                                  align="start"
-                                  className="z-[60] w-auto border-border bg-bg-elevated p-0"
-                                  onOpenAutoFocus={(event) => event.preventDefault()}
-                                >
-                                  <Calendar
-                                    mode="single"
-                                    required={false}
-                                    selected={parseSpecialDate(endDate)}
-                                    disabled={(date) => Boolean(startDate) && format(date, "yyyy-MM-dd") < startDate}
-                                    onSelect={(date) => setSpecialDayDate(activeSpecialDay.id, "end", date)}
-                                    className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                                  />
-                                </PopoverContent>
-                              </Popover>
-                            )}
+                            <SpecialDateRangeField
+                              value={activeSpecialDay}
+                              onChange={(nextDay) => replaceSpecialDay(activeSpecialDay.id, nextDay)}
+                              placeholder="Select dates"
+                            />
                           </div>
                         </div>
                         <div>
@@ -1900,37 +1868,46 @@ export default function SettingsPage() {
                             className="mt-2 min-h-24"
                           />
                         </div>
-                        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
-                          <div>
-                            <p className="text-sm font-medium text-text-primary">Closed all day</p>
+                        {usesRange ? (
+                          <div className="rounded-lg border border-danger/25 bg-danger/10 px-4 py-3">
+                            <p className="text-sm font-medium text-danger">Closed for full date range</p>
                             <p className="mt-0.5 text-xs text-text-muted">{formatSpecialDayRange(activeSpecialDay)}</p>
                           </div>
-                          <Switch
-                            checked={activeSpecialDay.closed}
-                            onCheckedChange={(closed) => updateSpecialDay(activeSpecialDay.id, { closed })}
-                          />
-                        </div>
-                        {!activeSpecialDay.closed && (
-                          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
-                            <span className="text-xs font-medium text-text-secondary">Custom hours</span>
-                            <DashboardTimeWheelPicker
-                              value={activeSpecialDay.from}
-                              onChange={(from) => updateSpecialDay(activeSpecialDay.id, { from })}
-                              valueFormat="12h"
-                              ariaLabel="Exception opening time"
-                              helperLabel="Opening time"
-                              doneLabel="Done"
-                            />
-                            <span className="text-xs text-text-muted">to</span>
-                            <DashboardTimeWheelPicker
-                              value={activeSpecialDay.to}
-                              onChange={(to) => updateSpecialDay(activeSpecialDay.id, { to })}
-                              valueFormat="12h"
-                              ariaLabel="Exception closing time"
-                              helperLabel="Closing time"
-                              doneLabel="Done"
-                            />
-                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
+                              <div>
+                                <p className="text-sm font-medium text-text-primary">Closed all day</p>
+                                <p className="mt-0.5 text-xs text-text-muted">{formatSpecialDayRange(activeSpecialDay)}</p>
+                              </div>
+                              <Switch
+                                checked={activeSpecialDay.closed}
+                                onCheckedChange={(closed) => updateSpecialDay(activeSpecialDay.id, { closed })}
+                              />
+                            </div>
+                            {!activeSpecialDay.closed && (
+                              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-4 py-3">
+                                <span className="text-xs font-medium text-text-secondary">Custom hours</span>
+                                <DashboardTimeWheelPicker
+                                  value={activeSpecialDay.from}
+                                  onChange={(from) => updateSpecialDay(activeSpecialDay.id, { from })}
+                                  valueFormat="12h"
+                                  ariaLabel="Exception opening time"
+                                  helperLabel="Opening time"
+                                  doneLabel="Done"
+                                />
+                                <span className="text-xs text-text-muted">to</span>
+                                <DashboardTimeWheelPicker
+                                  value={activeSpecialDay.to}
+                                  onChange={(to) => updateSpecialDay(activeSpecialDay.id, { to })}
+                                  valueFormat="12h"
+                                  ariaLabel="Exception closing time"
+                                  helperLabel="Closing time"
+                                  doneLabel="Done"
+                                />
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     );

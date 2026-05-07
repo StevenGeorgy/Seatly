@@ -713,18 +713,15 @@ export function RestaurantPreviewModal({
                                 <StripeArt
                                   label={item.name.slice(0, 8)}
                                   imageUrl={item.imageUrl}
-                                  className="min-h-28 rounded-none"
+                                  className="aspect-[4/3] min-h-0 rounded-none"
                                 />
                                 <div className="p-3">
-                                  <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
-                                    {item.category}
-                                  </p>
-                                  <p className="mt-1 font-serif text-base text-white">{item.name}</p>
+                                  <p className="font-serif text-base text-white">{item.name}</p>
                                   <p className="mt-1 line-clamp-2 text-xs text-text-secondary">
                                     {item.description}
                                   </p>
-                                  <div className="mt-3 flex items-center justify-between text-xs">
-                                    <span className="text-gold">
+                                  <div className="mt-3 flex items-center justify-between gap-2">
+                                    <span className="font-serif text-xl font-semibold tracking-tight text-gold">
                                       {formatCurrency(item.price, currencyCode)}
                                     </span>
                                     {item.badge ? (
@@ -766,7 +763,7 @@ export function RestaurantPreviewModal({
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-start justify-between gap-3">
                                       <p className="font-medium text-white">{item.name}</p>
-                                      <span className="shrink-0 text-xs text-gold">
+                                      <span className="shrink-0 font-serif text-lg font-semibold tracking-tight text-gold">
                                         {formatCurrency(item.price, currencyCode)}
                                       </span>
                                     </div>

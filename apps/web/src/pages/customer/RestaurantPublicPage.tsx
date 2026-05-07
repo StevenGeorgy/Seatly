@@ -252,18 +252,13 @@ function PreviewDishCard({ item, compact = false }: { item: MenuItem; compact?: 
         compact ? "grid grid-cols-[78px_minmax(0,1fr)] gap-3 p-3" : "",
       )}
     >
-      <div className={compact ? "h-full min-h-20" : "h-32"}>
+      <div className={compact ? "h-full min-h-20" : "aspect-[4/3]"}>
         <PreviewArt label={item.name} imageUrl={item.photoUrl} />
       </div>
       <div className={compact ? "min-w-0" : "p-4"}>
-        {!compact && (
-          <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
-            {item.category}
-          </p>
-        )}
-        <div className="mt-1 flex items-start justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <h3 className="line-clamp-2 font-serif text-lg leading-tight text-white">{item.name}</h3>
-          <span className="shrink-0 font-serif text-base text-gold">
+          <span className="shrink-0 font-serif text-2xl font-semibold tracking-tight text-gold">
             {formatCurrency(item.price, "cad")}
           </span>
         </div>
@@ -1572,18 +1567,23 @@ export default function RestaurantPublicPage() {
 
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
+      {/* ── Sticky back button ───────────────────────────────────────────────── */}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="fixed left-4 top-4 z-50 gap-1.5 border border-border bg-bg-elevated/85 shadow-xl shadow-black/40 backdrop-blur hover:bg-bg-elevated"
+        asChild
+      >
+        <Link to={backTarget}><ArrowLeft className="size-4" />Back</Link>
+      </Button>
+
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <div className={`relative h-40 w-full bg-gradient-to-b ${gradient}`}>
         <div className="absolute inset-0 bg-gradient-to-t from-bg-base via-bg-base/20 to-transparent" />
-        <div className="absolute left-4 top-4">
-          <Button variant="ghost" size="sm" className="gap-1.5 bg-black/30 backdrop-blur-sm hover:bg-black/50" asChild>
-            <Link to={backTarget}><ArrowLeft className="size-4" />Back</Link>
-          </Button>
-        </div>
       </div>
 
       {/* ── Restaurant info ───────────────────────────────────────────────────── */}
-      <div className="mx-auto -mt-8 max-w-2xl px-4 sm:px-6">
+      <div className="mx-auto -mt-8 max-w-6xl px-4 sm:px-6 lg:px-10">
         <div className="flex items-end justify-between gap-4 pb-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">{restaurant.name}</h1>

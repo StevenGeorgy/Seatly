@@ -37,6 +37,8 @@ export type StaffRestaurantRow = {
   city: string | null;
   province: string | null;
   country: string | null;
+  lat: number | null;
+  lng: number | null;
   business_type: string | null;
   currency: string;
   timezone: string;
@@ -87,7 +89,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         const client = getSupabaseBrowserClient();
         const query = client
           .from("restaurants")
-          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins")
+          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, lat, lng, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins")
           .in("id", ids);
         const { data, error: qErr } = await promiseWithTimeout(
           Promise.resolve(query) as Promise<{
