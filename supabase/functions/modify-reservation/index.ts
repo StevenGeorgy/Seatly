@@ -358,7 +358,7 @@ Deno.serve(async (req: Request) => {
 
     if (modifyError) {
       const code = (modifyError as { code?: string }).code;
-      if (code === "P0001" || code === "23P01") {
+      if (code === "P0001") {
         return json({ error: "That time is no longer available for this party size", unavailable_reason: "slot_taken" }, 409);
       }
       if (code === "P0002") {
@@ -372,6 +372,18 @@ Deno.serve(async (req: Request) => {
       }
       if (code === "P0005") {
         return json({ error: "Reservation not found" }, 404);
+      }
+      // P0006 raised by modify_reservation_slot's diner-overlap pre-check.
+      // 23P01 is the partial-exclusion-constraint backstop covering the same
+      // condition; map both to the same friendly response.
+      if (code === "P0006" || code === "23P01") {
+        return json(
+          {
+            error: "You already have a reservation at this time. Cancel or modify the existing one before booking again.",
+            unavailable_reason: "diner_double_book",
+          },
+          409,
+        );
       }
       return json({ error: modifyError.message }, 400);
     }

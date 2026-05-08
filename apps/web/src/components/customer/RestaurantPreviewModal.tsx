@@ -1031,17 +1031,25 @@ export function RestaurantPreviewModal({
                   <div className="rounded-2xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/30">
                     <h3 className="font-serif text-xl text-white">Reserve a table</h3>
                     <div className="mt-4 grid grid-cols-3 gap-2">
-                      <Popover open={bookingDatePopoverOpen} onOpenChange={setBookingDatePopoverOpen}>
+                      <Popover
+                        open={availabilityLoading || dateAvailabilityLoading ? false : bookingDatePopoverOpen}
+                        onOpenChange={(open) => {
+                          if (!availabilityLoading && !dateAvailabilityLoading) setBookingDatePopoverOpen(open);
+                        }}
+                      >
                         <PopoverTrigger asChild>
                           <button
                             id={bookingDateTriggerId}
                             type="button"
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                            disabled={availabilityLoading || dateAvailabilityLoading}
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <CalendarDays className="size-4 text-gold" />
                             <span>
                               <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-                              <p className="mt-1 text-sm text-white">{previewDateLabel}</p>
+                              <p className="mt-1 text-sm text-white">
+                                {availabilityLoading || dateAvailabilityLoading ? "Loading…" : previewDateLabel}
+                              </p>
                             </span>
                           </button>
                         </PopoverTrigger>
@@ -1065,11 +1073,17 @@ export function RestaurantPreviewModal({
                           />
                         </PopoverContent>
                       </Popover>
-                      <Popover open={timePopoverOpen} onOpenChange={setTimePopoverOpen}>
+                      <Popover
+                        open={availabilityLoading ? false : timePopoverOpen}
+                        onOpenChange={(open) => {
+                          if (!availabilityLoading) setTimePopoverOpen(open);
+                        }}
+                      >
                         <PopoverTrigger asChild>
                           <button
                             type="button"
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                            disabled={availabilityLoading}
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <Clock className="size-4 text-gold" />
                             <span>
@@ -1079,7 +1093,9 @@ export function RestaurantPreviewModal({
                                   ? "Loading…"
                                   : selectedTime
                                     ? shortTime(selectedTime)
-                                    : "No times"}
+                                    : availableTimes.length > 0
+                                      ? "Pick a time"
+                                      : "No times"}
                               </p>
                             </span>
                           </button>
@@ -1099,22 +1115,30 @@ export function RestaurantPreviewModal({
                             />
                           ) : (
                             <p className="px-2 py-3 text-center text-xs text-text-muted">
-                              {availabilityLoading ? "Checking availability…" : unavailableHeadline}
+                              {unavailableHeadline}
                             </p>
                           )}
                         </PopoverContent>
                       </Popover>
-                      <Popover open={partyPopoverOpen} onOpenChange={setPartyPopoverOpen}>
+                      <Popover
+                        open={availabilityLoading ? false : partyPopoverOpen}
+                        onOpenChange={(open) => {
+                          if (!availabilityLoading) setPartyPopoverOpen(open);
+                        }}
+                      >
                         <PopoverTrigger asChild>
                           <button
                             type="button"
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                            disabled={availabilityLoading}
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <Users className="size-4 text-gold" />
                             <span>
                               <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
                               <p className="mt-1 text-sm text-white">
-                                {selectedPartySize} guest{selectedPartySize === 1 ? "" : "s"}
+                                {availabilityLoading
+                                  ? "Loading…"
+                                  : `${selectedPartySize} guest${selectedPartySize === 1 ? "" : "s"}`}
                               </p>
                             </span>
                           </button>

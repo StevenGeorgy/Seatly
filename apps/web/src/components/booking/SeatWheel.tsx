@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -14,6 +14,7 @@ export function SeatWheel({ maxSeats, value, onCommit }: SeatWheelProps) {
     [maxSeats],
   );
   const [draftValue, setDraftValue] = useState(value);
+  const listRef = useRef<HTMLDivElement>(null);
   const scrollToSeat = (seat: number) => {
     setDraftValue(Math.min(Math.max(1, seat), maxSeats));
   };
@@ -25,17 +26,43 @@ export function SeatWheel({ maxSeats, value, onCommit }: SeatWheelProps) {
     void Promise.resolve().then(() => setDraftValue(value));
   }, [value]);
 
+  // Manual non-passive wheel listener — React's onWheel is passive, so the
+  // page scrolls before our handler can preventDefault.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) < 4) return;
+      event.preventDefault();
+      setDraftValue((prev) => {
+        const next = prev + (event.deltaY > 0 ? 1 : -1);
+        return Math.min(Math.max(1, next), maxSeats);
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [maxSeats]);
+
+  // Keep the highlighted option in view. Without this, wheel-stepping past
+  // the listbox's visible window leaves the highlight off-screen and the
+  // user is scrolling blind (the list doesn't auto-follow because we
+  // preventDefault the wheel event).
+  useEffect(() => {
+    const container = listRef.current;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(
+      `[data-seat-value="${draftValue}"]`,
+    );
+    target?.scrollIntoView({ block: "nearest" });
+  }, [draftValue]);
+
   return (
     <div>
       <div
+        ref={listRef}
         role="listbox"
         aria-label="Party size"
         tabIndex={0}
-        onWheel={(event) => {
-          event.preventDefault();
-          if (Math.abs(event.deltaY) < 4) return;
-          scrollToSeat(draftValue + (event.deltaY > 0 ? 1 : -1));
-        }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") scrollToSeat(draftValue + 1);
           if (event.key === "ArrowUp") scrollToSeat(draftValue - 1);
@@ -51,6 +78,7 @@ export function SeatWheel({ maxSeats, value, onCommit }: SeatWheelProps) {
               type="button"
               role="option"
               aria-selected={active}
+              data-seat-value={seat}
               onClick={() => commitSeat(seat)}
               className={cn(
                 "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",

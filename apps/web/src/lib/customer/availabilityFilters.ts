@@ -1,6 +1,6 @@
 import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 
 export type DisplayAvailabilityOptions = {
   forceRefresh?: boolean;
@@ -82,23 +82,65 @@ function payloadToSlots(payload: BatchedAvailabilityPayload | null | undefined):
   }));
 }
 
+/**
+ * Centered windowing: returns up to `maxSlots/2` slots strictly before the
+ * selected time + up to `maxSlots/2` slots at-or-after, ordered chrono.
+ * Backfills from whichever side has more if the other is short.
+ *
+ * Mirrors the SQL implementation in get_available_slots_for_restaurants_compact.
+ * Use this for single-restaurant fetches that go through the full
+ * get_available_slots_cached RPC (which doesn't apply windowing itself).
+ */
 function trimToDisplaySlots(
   slots: AvailabilitySlot[],
   selectedTime: string,
   date: string,
   maxSlots: number,
 ): AvailabilitySlot[] {
-  const seen = new Set<string>();
-  const matching: AvailabilitySlot[] = [];
-  for (const slot of filterSlotsAtOrAfterTime(slots, selectedTime)) {
+  const targetMinutes = timeLabelToMinutes(selectedTime);
+  const seenKeys = new Set<string>();
+  const dedup: AvailabilitySlot[] = [];
+  for (const slot of slots) {
     if (new Date(slot.date_time).getTime() < Date.now()) continue;
     const key = `${slot.date_time}-${slot.display_time}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    matching.push({ ...slot, booking_date: date });
-    if (matching.length === maxSlots) break;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    dedup.push({ ...slot, booking_date: date });
   }
-  return matching;
+
+  // No target time → keep the original "first N future slots" behavior.
+  if (targetMinutes == null) {
+    return dedup
+      .sort(
+        (a, b) => new Date(a.date_time).getTime() - new Date(b.date_time).getTime(),
+      )
+      .slice(0, maxSlots);
+  }
+
+  const sorted = dedup
+    .map((slot) => ({ slot, minutes: timeLabelToMinutes(slot.display_time) }))
+    .filter((x): x is { slot: AvailabilitySlot; minutes: number } => x.minutes != null)
+    .sort((a, b) => a.minutes - b.minutes);
+
+  const before = sorted.filter((s) => s.minutes < targetMinutes).slice(-Math.floor(maxSlots / 2));
+  const atOrAfter = sorted.filter((s) => s.minutes >= targetMinutes).slice(0, Math.ceil(maxSlots / 2));
+  const core = [...before, ...atOrAfter];
+
+  if (core.length < maxSlots) {
+    // Backfill from the larger side. Pick by absolute distance to target so
+    // closer alternatives appear first.
+    const used = new Set(core.map((c) => c.slot.date_time));
+    const extras = sorted
+      .filter((s) => !used.has(s.slot.date_time))
+      .sort((a, b) => Math.abs(a.minutes - targetMinutes) - Math.abs(b.minutes - targetMinutes))
+      .slice(0, maxSlots - core.length);
+    core.push(...extras);
+  }
+
+  return core
+    .sort((a, b) => a.minutes - b.minutes)
+    .slice(0, maxSlots)
+    .map((c) => c.slot);
 }
 
 /**
@@ -119,13 +161,16 @@ export async function fetchDisplayAvailabilitySlotsForRestaurants(
   if (restaurantIds.length === 0) return {};
 
   const client = getSupabaseBrowserClient();
-  // Compact variant: returns the first 6 future slots per restaurant and
-  // strips `table_ids` from each slot. The booking page re-fetches with full
-  // slot data, so the listing doesn't need them.
+  // Compact variant: server-side centered windowing — returns up to 3 slots
+  // before the selected time + up to 3 at/after. The server backfills from
+  // whichever side has more so the user always sees up to 6 alternatives.
+  // table_ids stripped; full slot data re-fetched on the booking page.
+  const targetTime = to24HourTime(selectedTime ?? "");
   const { data, error } = await client.rpc("get_available_slots_for_restaurants_compact", {
     p_restaurant_ids: restaurantIds,
     p_date: date,
     p_party_size: Math.max(1, Math.floor(partySize)),
+    p_target_time: targetTime,
   });
 
   if (error || !data || typeof data !== "object") {
@@ -136,7 +181,19 @@ export async function fetchDisplayAvailabilitySlotsForRestaurants(
   const result: Record<string, AvailabilitySlot[]> = {};
   for (const id of restaurantIds) {
     const slots = payloadToSlots(map[id]);
-    result[id] = trimToDisplaySlots(slots, selectedTime, date, maxSlots);
+    // Server already returned the centered 6, so client just stamps the
+    // booking_date and dedupes by display_time. No further trimming.
+    const seen = new Set<string>();
+    const stamped: AvailabilitySlot[] = [];
+    for (const slot of slots) {
+      if (new Date(slot.date_time).getTime() < Date.now()) continue;
+      const key = `${slot.date_time}-${slot.display_time}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      stamped.push({ ...slot, booking_date: date });
+      if (stamped.length === maxSlots) break;
+    }
+    result[id] = stamped;
   }
   return result;
 }
@@ -156,16 +213,7 @@ export async function fetchDisplayAvailabilitySlots(
     { forceRefresh: options.forceRefresh },
   ).catch(() => ({ slots: [] as AvailabilitySlot[] }));
 
-  const seen = new Set<string>();
-  const matchingSlots: AvailabilitySlot[] = [];
-  for (const slot of filterSlotsAtOrAfterTime(result.slots ?? [], selectedTime)) {
-    if (new Date(slot.date_time).getTime() < Date.now()) continue;
-    const key = `${slot.date_time}-${slot.display_time}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    matchingSlots.push({ ...slot, booking_date: date });
-    if (matchingSlots.length === maxSlots) break;
-  }
-
-  return matchingSlots;
+  // Single-restaurant fetch goes through get_available_slots_cached (no
+  // server-side windowing), so apply the centered trim client-side.
+  return trimToDisplaySlots(result.slots ?? [], selectedTime, date, maxSlots);
 }

@@ -4,6 +4,16 @@ import {
   formatReservationDate,
   sendReservationNotification,
 } from "../_shared/reservation-notifications.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+
+// Status semantics: this function permits cancelling reservations in any
+// status except an already-`cancelled` one (idempotent OK) or a past one
+// (rejected). That includes `seated`, `completed`, and `no_show` — diners
+// retain the ability to retract a booking even after the meal. The release
+// of `reservation_tables` happens via release_reservation_tables RPC, which
+// throws on `seated` rows; we fall back to a manual UPDATE in that case so
+// the cancel still completes. If business rules later require locking out
+// seated/completed cancels, do it here at the top of the handler.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,6 +32,7 @@ type ReservationRow = {
   id: string;
   restaurant_id: string;
   guest_id: string;
+  user_profile_id: string | null;
   reserved_at: string;
   party_size: number;
   status: string | null;
@@ -77,7 +88,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
-      .select("id, restaurant_id, guest_id, reserved_at, party_size, status, table_id, confirmation_code, guest_full_name, guest_email, guest_phone")
+      .select("id, restaurant_id, guest_id, user_profile_id, reserved_at, party_size, status, table_id, confirmation_code, guest_full_name, guest_email, guest_phone")
       .eq("id", reservationId)
       .maybeSingle<ReservationRow>();
     if (reservationError) return json({ error: reservationError.message }, 400);
@@ -124,6 +135,23 @@ Deno.serve(async (req: Request) => {
       guest = linkedGuest;
     } else {
       return json({ error: "Authentication required" }, 401);
+    }
+
+    // Rate limit. Lower than booking (20/min) and modify (15/min) — cancel
+    // shouldn't happen in bursts. Bucket per logged-in diner when present,
+    // otherwise per IP (and a confirmation_code path effectively gets per-IP).
+    try {
+      await enforceRateLimit(
+        adminClient,
+        "cancel",
+        rateLimitIdentifier(req, reservation.user_profile_id ?? null),
+        { limit: 10, windowSeconds: 60 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return json({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+      }
+      throw e;
     }
 
     if (reservation.status === "cancelled") {

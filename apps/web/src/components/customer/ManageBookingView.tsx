@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, CalendarDays, Clock, Loader2, Users, X } from "lucide-react";
+import { ArrowLeft, CalendarDays, Clock, Loader2, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -8,7 +8,14 @@ import {
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
+import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
 
 type LookupRow = {
@@ -91,6 +98,7 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
   const [modifyValidity, setModifyValidity] = useState<ModifyBookingValidity>({
     canSave: false,
     reason: null,
+    reasonKind: null,
   });
 
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
@@ -133,7 +141,7 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       };
       setModifyInitial(initial);
       setModifyValues(initial);
-      setModifyValidity({ canSave: false, reason: null });
+      setModifyValidity({ canSave: false, reason: null, reasonKind: null });
     };
     void run();
     return () => {
@@ -151,21 +159,36 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
     if (!reservation) return;
     setBusy(true);
     try {
+      // Raw fetch (not client.functions.invoke) so we can read body.error on
+      // non-2xx responses; functions.invoke wraps 4xx/5xx as generic
+      // "non-2xx status code" and discards the JSON body.
       const client = getSupabaseBrowserClient();
-      const { data, error } = await client.functions.invoke("cancel-reservation", {
-        body: { reservation_id: reservation.id, confirmation_code: code },
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/cancel-reservation`, {
+        method: "POST",
+        headers: {
+          apikey: getSupabaseAnonKey(),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          reservation_id: reservation.id,
+          confirmation_code: code,
+        }),
       });
-      if (error) {
-        setErrorMessage(error.message);
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || body.error || body.ok !== true) {
+        setErrorMessage(body.error ?? `Could not cancel reservation (${res.status}).`);
         setMode("view");
         return;
       }
-      const result = (data ?? {}) as { error?: string };
-      if (result.error) {
-        setErrorMessage(result.error);
-        setMode("view");
-        return;
-      }
+      // Drop cached availability so the freed-up slot reappears immediately
+      // without waiting for realtime / DB cache TTL.
+      invalidateAvailabilityCache(reservation.restaurant_id);
       setDoneMessage("Your reservation has been cancelled. The restaurant has been notified.");
       setMode("done");
     } catch (err) {
@@ -178,29 +201,50 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
 
   const handleModify = async () => {
     if (!reservation || !modifyValues || !modifyValidity.canSave) return;
+    // The edge function expects 24-hour HH:MM (it concatenates `${date}T${time}:00Z`
+    // into a Date constructor). The wheel commits a display string like "5:15pm".
+    const normalisedTime = to24HourTime(modifyValues.time);
+    if (!normalisedTime) {
+      setErrorMessage("Pick a valid time and try again.");
+      return;
+    }
     setBusy(true);
     setErrorMessage(null);
     try {
+      // Raw fetch (not client.functions.invoke) so we can read body.error on
+      // non-2xx responses. functions.invoke wraps any 4xx/5xx as a generic
+      // "non-2xx status code" message and discards the JSON body.
       const client = getSupabaseBrowserClient();
-      const { data, error } = await client.functions.invoke("modify-reservation", {
-        body: {
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/modify-reservation`, {
+        method: "POST",
+        headers: {
+          apikey: getSupabaseAnonKey(),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           reservation_id: reservation.id,
           confirmation_code: code,
           date: modifyValues.date,
-          time: modifyValues.time,
+          time: normalisedTime,
           party_size: modifyValues.partySize,
           special_request: modifyValues.notes,
-        },
+        }),
       });
-      if (error) {
-        setErrorMessage(error.message);
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        unavailable_reason?: string;
+      };
+      if (!res.ok || body.error || body.ok !== true) {
+        setErrorMessage(body.error ?? `Could not modify reservation (${res.status}).`);
         return;
       }
-      const result = (data ?? {}) as { error?: string };
-      if (result.error) {
-        setErrorMessage(result.error);
-        return;
-      }
+      // Drop cached availability so the previous slot reappears + the new
+      // one disappears for this device on the next view.
+      invalidateAvailabilityCache(reservation.restaurant_id);
       setDoneMessage("Your reservation has been updated. We've sent you a confirmation.");
       setMode("done");
     } catch (err) {
@@ -339,23 +383,39 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
                 onChange={setModifyValues}
                 onValidityChange={setModifyValidity}
               />
-              <p className="text-xs text-text-muted">
-                {busy
-                  ? "Saving changes…"
-                  : modifyValidity.reason ?? "Pick new details and save when you're ready."}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleModify}
-                  disabled={busy || !modifyValidity.canSave}
-                >
-                  {busy ? "Saving…" : "Save changes"}
-                </Button>
-                <Button variant="ghost" onClick={() => setMode("view")} disabled={busy}>
-                  <X className="size-4" />
-                  Cancel
-                </Button>
-              </div>
+              {(() => {
+                const pickedTime = modifyValues?.time
+                  ? formatCompactTimeLabel(modifyValues.time)
+                  : null;
+                const ctaLabel = busy
+                  ? "Saving…"
+                  : modifyValidity.reasonKind === "blocking" && modifyValidity.reason
+                    ? modifyValidity.reason
+                    : modifyValidity.reasonKind === "neutral" && modifyValidity.reason
+                      ? modifyValidity.reason
+                      : modifyValidity.canSave && pickedTime
+                        ? `Confirm ${pickedTime} changes`
+                        : "Pick new details to continue";
+                return (
+                  <div className="space-y-2">
+                    <Button
+                      onClick={handleModify}
+                      disabled={busy || !modifyValidity.canSave}
+                      className="h-14 w-full rounded-xl text-base font-semibold"
+                    >
+                      {ctaLabel}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setMode("view")}
+                      disabled={busy}
+                      className="h-9 w-full text-sm font-normal text-text-muted hover:text-text-primary"
+                    >
+                      Keep current booking
+                    </Button>
+                  </div>
+                );
+              })()}
             </div>
           )}
 

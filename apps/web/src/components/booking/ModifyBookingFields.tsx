@@ -26,6 +26,13 @@ import { formatCompactTimeLabel } from "@/lib/utils/time";
 export type ModifyBookingValidity = {
   canSave: boolean;
   reason: string | null;
+  /**
+   * `"blocking"` → the chosen combo is genuinely unbookable; render a yellow
+   *                banner so the user can't miss it.
+   * `"neutral"`  → loading / "no changes yet" / pick-a-date — render as muted
+   *                helper text instead.
+   */
+  reasonKind: "blocking" | "neutral" | null;
 };
 
 export type ModifyBookingValues = {
@@ -85,7 +92,11 @@ export function ModifyBookingFields({
   const [timePopoverOpen, setTimePopoverOpen] = useState(false);
   const [partyPopoverOpen, setPartyPopoverOpen] = useState(false);
 
-  const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
+  // `null` means "no fetch has completed for this restaurant/party/month yet"
+  // — distinct from an empty Set, which means "we asked and there are zero
+  // open dates." The unavailableDate predicate uses this distinction so the
+  // calendar doesn't grey out every date during the initial fetch race.
+  const [availableDateKeys, setAvailableDateKeys] = useState<Set<string> | null>(null);
   const [dateAvailabilityLoading, setDateAvailabilityLoading] = useState(false);
 
   // Mirror local state up to the parent on every change.
@@ -164,6 +175,26 @@ export function ModifyBookingFields({
     [availableSlots],
   );
 
+  // Drop the picked time when it's no longer in the live `availableTimes` set
+  // (e.g. user just bumped party size and the previously-picked slot doesn't
+  // fit the new party). Without this, the wheel still displays the stale
+  // value, the validity effect briefly sees a match in the OLD slots until
+  // the new fetch lands, and the user can race a Confirm click that the
+  // server then has to reject. Only runs once availability has actually
+  // settled (loading=false AND we have at least one slot or an explicit
+  // unavailable_reason from the RPC) — otherwise we'd clear during the
+  // transient empty-slots window every time the user changes a field.
+  useEffect(() => {
+    if (availabilityLoading) return;
+    if (!time) return;
+    if (availableTimes.length === 0) return; // handled by the blocking banner
+    const normalised = formatCompactTimeLabel(time);
+    const stillThere = availableTimes.some(
+      (candidate) => formatCompactTimeLabel(candidate) === normalised,
+    );
+    if (!stillThere) setTime("");
+  }, [availabilityLoading, time, availableTimes]);
+
   const dinerConflictNotices = useMemo(() => {
     if (dinerConflictWindows.length === 0) return [] as string[];
     if (availableSlots.length === slots.length) return [] as string[];
@@ -175,6 +206,8 @@ export function ModifyBookingFields({
     return Array.from(seen);
   }, [dinerConflictWindows, availableSlots.length, slots.length, restaurantTimezone]);
 
+  const [blockingReason, setBlockingReason] = useState<string | null>(null);
+
   // Calendar disabled predicate. Today's date may also be disabled if there
   // are no slots remaining; that's fine.
   const today = startOfToday();
@@ -182,7 +215,10 @@ export function ModifyBookingFields({
   const unavailableDate = (candidate: Date) => {
     if (candidate < today) return true;
     if (candidate > calendarRangeEnd) return true;
-    if (dateAvailabilityLoading) return false;
+    // While the first fetch is in flight (`loading`) or hasn't completed yet
+    // (`null` set), don't pre-grey future dates — otherwise the calendar
+    // pops open with everything disabled until the fetch lands.
+    if (dateAvailabilityLoading || availableDateKeys === null) return false;
     return !availableDateKeys.has(dateKey(candidate));
   };
 
@@ -210,10 +246,24 @@ export function ModifyBookingFields({
     );
   }, [time, availableTimes]);
 
+  // True while ANY availability fetch is in flight. The whole form locks
+  // during this window so the user can't change inputs faster than the
+  // server can respond — matches the contract: "they shouldn't be able to
+  // change any of it until the loading is completed".
+  const isLoading = availabilityLoading || dateAvailabilityLoading || availableDateKeys === null;
+
+  const partySizeLabel = `${partySize} guest${partySize === 1 ? "" : "s"}`;
+  const dateForBanner = useMemo(() => {
+    const parsed = safeParseDate(date);
+    if (!parsed) return null;
+    return parsed.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" });
+  }, [date]);
+
   // Derive validity. Reported up to the parent so it can drive its Save
-  // button + helper text.
+  // button + helper text. `reasonKind` tells the parent whether to render the
+  // reason as a yellow banner ("blocking") or muted text ("neutral").
   useEffect(() => {
-    let next: ModifyBookingValidity = { canSave: true, reason: null };
+    let next: ModifyBookingValidity = { canSave: true, reason: null, reasonKind: null };
 
     const hasChange =
       date !== initial.date
@@ -221,27 +271,56 @@ export function ModifyBookingFields({
       || notes !== initial.notes
       || (time && formatCompactTimeLabel(time) !== formatCompactTimeLabel(initial.time));
 
-    if (availabilityLoading || dateAvailabilityLoading) {
-      next = { canSave: false, reason: "Checking availability…" };
+    if (isLoading) {
+      next = { canSave: false, reason: "Checking availability…", reasonKind: "neutral" };
     } else if (!date) {
-      next = { canSave: false, reason: "Pick a date." };
+      next = { canSave: false, reason: "Pick a date.", reasonKind: "neutral" };
     } else if (!availableDateKeys.has(date)) {
-      next = { canSave: false, reason: "No times open on that date." };
+      next = {
+        canSave: false,
+        reason: dateForBanner
+          ? `No times open on ${dateForBanner} for ${partySizeLabel}. Try another date or smaller party.`
+          : "No times open on that date.",
+        reasonKind: "blocking",
+      };
     } else if (!availableTimes.length) {
       next = {
         canSave: false,
-        reason: unavailableMessage ?? unavailableHeadline(unavailableReason) ?? "No times available.",
+        reason:
+          unavailableMessage
+          ?? unavailableHeadline(unavailableReason)
+          ?? (dateForBanner
+            ? `No times available for ${partySizeLabel} on ${dateForBanner}. Try another date or smaller party.`
+            : `No times available for ${partySizeLabel}.`),
+        reasonKind: "blocking",
       };
+    } else if (!time) {
+      // Time is empty — either the user hasn't picked yet, or our auto-clear
+      // dropped the previous pick because it's no longer in availableTimes.
+      // This is a neutral "needs input" state, not a blocking error.
+      next = { canSave: false, reason: "Pick a time from the list.", reasonKind: "neutral" };
     } else if (!timeMatchesAvailableSlot) {
-      next = { canSave: false, reason: "Pick an available time." };
+      next = {
+        canSave: false,
+        reason: `That time isn't available for ${partySizeLabel}. Pick a time from the list.`,
+        reasonKind: "blocking",
+      };
     } else if (partySize > maxPartySize) {
-      next = { canSave: false, reason: `Party size exceeds capacity (${maxPartySize}).` };
+      next = {
+        canSave: false,
+        reason: `Party size exceeds capacity (${maxPartySize}).`,
+        reasonKind: "blocking",
+      };
     } else if (!hasChange) {
-      next = { canSave: false, reason: "No changes to save." };
+      next = { canSave: false, reason: "No changes to save.", reasonKind: "neutral" };
     }
 
+    setBlockingReason(next.reasonKind === "blocking" ? next.reason : null);
     onValidityChange(next);
   }, [
+    isLoading,
+    dateForBanner,
+    partySizeLabel,
     availabilityLoading,
     dateAvailabilityLoading,
     date,
@@ -264,16 +343,20 @@ export function ModifyBookingFields({
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Popover open={datePopoverOpen} onOpenChange={setDatePopoverOpen}>
+        <Popover
+          open={isLoading ? false : datePopoverOpen}
+          onOpenChange={(open) => !isLoading && setDatePopoverOpen(open)}
+        >
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+              disabled={isLoading}
+              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <CalendarDays className="size-4 text-gold" />
               <span>
                 <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-                <p className="mt-1 text-sm text-white">{previewDateLabel}</p>
+                <p className="mt-1 text-sm text-white">{isLoading ? "Loading…" : previewDateLabel}</p>
               </span>
             </button>
           </PopoverTrigger>
@@ -298,21 +381,27 @@ export function ModifyBookingFields({
           </PopoverContent>
         </Popover>
 
-        <Popover open={timePopoverOpen} onOpenChange={setTimePopoverOpen}>
+        <Popover
+          open={isLoading ? false : timePopoverOpen}
+          onOpenChange={(open) => !isLoading && setTimePopoverOpen(open)}
+        >
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+              disabled={isLoading}
+              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Clock className="size-4 text-gold" />
               <span>
                 <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Time</p>
                 <p className="mt-1 text-sm text-white">
-                  {availabilityLoading
+                  {isLoading
                     ? "Loading…"
                     : time
                       ? formatCompactTimeLabel(time)
-                      : "Pick a time"}
+                      : availableTimes.length > 0
+                        ? "Pick a time"
+                        : "No times"}
                 </p>
               </span>
             </button>
@@ -332,26 +421,28 @@ export function ModifyBookingFields({
               />
             ) : (
               <p className="px-2 py-3 text-center text-xs text-text-muted">
-                {availabilityLoading
-                  ? "Checking availability…"
-                  : unavailableMessage ?? "No times available."}
+                No times available.
               </p>
             )}
           </PopoverContent>
         </Popover>
       </div>
 
-      <Popover open={partyPopoverOpen} onOpenChange={setPartyPopoverOpen}>
+      <Popover
+        open={isLoading ? false : partyPopoverOpen}
+        onOpenChange={(open) => !isLoading && setPartyPopoverOpen(open)}
+      >
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+            disabled={isLoading}
+            className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Users className="size-4 text-gold" />
             <span>
               <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
               <p className="mt-1 text-sm text-white">
-                {partySize} guest{partySize === 1 ? "" : "s"}
+                {isLoading ? "Loading…" : `${partySize} guest${partySize === 1 ? "" : "s"}`}
               </p>
             </span>
           </button>
@@ -384,9 +475,23 @@ export function ModifyBookingFields({
             value={notes}
             onChange={(event) => setNotes(event.target.value)}
             rows={3}
+            disabled={isLoading}
             placeholder="Allergies, occasion, seating notes…"
-            className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-foreground placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-gold/40"
+            className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-foreground placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
           />
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <div className="rounded-xl border border-border bg-bg-elevated/40 px-3 py-2 text-xs leading-relaxed text-text-muted">
+          Checking availability…
+        </div>
+      ) : blockingReason ? (
+        <div className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+          <p className="font-semibold">{blockingReason}</p>
+          <p className="mt-1 text-warning/80">
+            Pick a different date, time, or party size to continue.
+          </p>
         </div>
       ) : null}
 

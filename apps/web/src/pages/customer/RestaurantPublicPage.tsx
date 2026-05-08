@@ -2,6 +2,7 @@ import { Fragment, useState, useMemo, useId, useEffect, useRef, useCallback } fr
 import { useTranslation } from "react-i18next";
 import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import { useParams, Link, useSearchParams, useNavigate, useLocation } from "react-router-dom";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   Star,
@@ -1688,8 +1689,15 @@ export default function RestaurantPublicPage() {
         // user sat on the checkout step long enough that another booker took
         // the slot. The server (`book_reservation` RPC) is still authoritative
         // — this is just a friendlier UX than waiting for the 409.
-        const slotDate = (selectedSlot.booking_date
-          ?? (selectedSlot.date_time?.length >= 10 ? selectedSlot.date_time.slice(0, 10) : null));
+        //
+        // IMPORTANT: use the restaurant-local date the user picked
+        // (`dineIn.date`, already YYYY-MM-DD). `selectedSlot.date_time` is a
+        // UTC ISO string, so slicing the first 10 chars of an evening EDT slot
+        // returns the *next* UTC day and we'd fetch the wrong window's
+        // availability — producing a false "no longer available" rejection.
+        const slotDate = (dineIn?.date && /^\d{4}-\d{2}-\d{2}$/.test(dineIn.date))
+          ? dineIn.date
+          : selectedSlot.booking_date ?? null;
         if (slotDate) {
           const refreshed = await fetchAvailabilitySlots(
             restaurant.id,
@@ -1808,7 +1816,13 @@ export default function RestaurantPublicPage() {
 
       setStep("confirmed");
     } catch (err) {
-      setOrderError(err instanceof Error ? err.message : "Failed to place order");
+      const message = err instanceof Error ? err.message : "Failed to place order";
+      setOrderError(message);
+      // The inline `orderError` strip only renders on the checkout step. The
+      // "Skip preorder · Confirm booking" button on the menu step also calls
+      // this handler, so we surface a toast so that path can never fail
+      // silently.
+      toast.error(message);
     } finally {
       placingRef.current = false;
       setPlacing(false);
@@ -1972,19 +1986,21 @@ export default function RestaurantPublicPage() {
                           Date <span className="text-danger">*</span>
                         </Label>
                         <Popover
-                          open={bookingLockedFromPreview ? false : dineInDatePopoverOpen}
+                          open={bookingLockedFromPreview || availability.loading || dateAvailabilityLoading ? false : dineInDatePopoverOpen}
                           onOpenChange={(open) => {
-                            if (!bookingLockedFromPreview) setDineInDatePopoverOpen(open);
+                            if (!bookingLockedFromPreview && !availability.loading && !dateAvailabilityLoading) {
+                              setDineInDatePopoverOpen(open);
+                            }
                           }}
                         >
                           <PopoverTrigger asChild>
                             <button
                               id={dineInDateTriggerId}
                               type="button"
-                              disabled={bookingLockedFromPreview}
+                              disabled={bookingLockedFromPreview || availability.loading || dateAvailabilityLoading}
                               className={cn(
                                 "relative flex h-10 w-full items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base",
-                                bookingLockedFromPreview
+                                bookingLockedFromPreview || availability.loading || dateAvailabilityLoading
                                   ? "cursor-not-allowed opacity-55"
                                   : "cursor-pointer hover:border-gold/30",
                               )}
@@ -2098,7 +2114,7 @@ export default function RestaurantPublicPage() {
                             min={1}
                             max={maxBookablePartySize}
                             value={dineIn.party_size}
-                            disabled={bookingFieldsLocked}
+                            disabled={bookingFieldsLocked || availability.loading}
                             onChange={(e) => {
                               const raw = e.target.value;
                               if (raw === "") {
@@ -2112,7 +2128,7 @@ export default function RestaurantPublicPage() {
                             }}
                             className={cn(
                               "h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-                              bookingFieldsLocked && "cursor-not-allowed opacity-55",
+                              (bookingFieldsLocked || availability.loading) && "cursor-not-allowed opacity-55",
                             )}
                           />
                         </div>

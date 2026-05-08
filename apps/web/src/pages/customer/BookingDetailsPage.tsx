@@ -24,16 +24,22 @@ import {
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
+import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
 import { useUser } from "@/hooks/useUser";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import {
   reservationDisplayStatus,
   reservationDisplayStatusKey,
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
 import { cn } from "@/lib/utils";
-import { dateInTz, formatCompactTimeLabelInTz, timeInTz } from "@/lib/utils/time";
+import { dateInTz, formatCompactTimeLabel, formatCompactTimeLabelInTz, timeInTz, to24HourTime } from "@/lib/utils/time";
 
 function statusFor(row: MyReservationRow): ReservationDisplayStatus {
   return reservationDisplayStatus(row);
@@ -78,16 +84,28 @@ async function cancelReservation(reservationId: string): Promise<void> {
     throw new Error("Authentication is not available. Configure Supabase first.");
   }
 
+  // Raw fetch (not client.functions.invoke) so we can read body.error on
+  // non-2xx responses. functions.invoke wraps any 4xx/5xx as a generic
+  // "Edge Function returned a non-2xx status code" message and discards the
+  // JSON body the edge function uses to explain why.
   const client = getSupabaseBrowserClient();
-  const { error, data } = await client.functions.invoke<{ ok?: boolean; error?: string }>(
-    "cancel-reservation",
-    {
-      body: { reservation_id: reservationId },
+  const { data: sessionData } = await client.auth.getSession();
+  const token = sessionData.session?.access_token ?? null;
+  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/cancel-reservation`, {
+    method: "POST",
+    headers: {
+      apikey: getSupabaseAnonKey(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": "application/json",
     },
-  );
-
-  if (error || data?.error || data?.ok !== true) {
-    throw new Error(data?.error ?? error?.message ?? "Could not cancel reservation.");
+    body: JSON.stringify({ reservation_id: reservationId }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+  };
+  if (!res.ok || body.error || body.ok !== true) {
+    throw new Error(body.error ?? `Could not cancel reservation (${res.status}).`);
   }
 }
 
@@ -104,22 +122,43 @@ async function modifyReservation(
     throw new Error("Authentication is not available. Configure Supabase first.");
   }
 
-  const client = getSupabaseBrowserClient();
-  const { error, data } = await client.functions.invoke<{ ok?: boolean; error?: string }>(
-    "modify-reservation",
-    {
-      body: {
-        reservation_id: reservationId,
-        date: payload.date,
-        time: payload.time,
-        party_size: payload.partySize,
-        special_request: payload.specialRequest,
-      },
-    },
-  );
+  // The edge function builds a UTC ISO via `new Date("${date}T${time}:00Z")`
+  // which only accepts 24-hour HH:MM. The wheel commits the slot's display
+  // string ("5:15pm") so we need to normalise here before sending.
+  const normalisedTime = to24HourTime(payload.time);
+  if (!normalisedTime) {
+    throw new Error("Pick a valid time and try again.");
+  }
 
-  if (error || data?.error || data?.ok !== true) {
-    throw new Error(data?.error ?? error?.message ?? "Could not modify reservation.");
+  // Raw fetch (not client.functions.invoke) so we can read body.error on
+  // non-2xx responses. functions.invoke wraps any 4xx/5xx as a generic
+  // "Edge Function returned a non-2xx status code" message and discards the
+  // JSON body the edge function uses to explain why.
+  const client = getSupabaseBrowserClient();
+  const { data: sessionData } = await client.auth.getSession();
+  const token = sessionData.session?.access_token ?? null;
+  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/modify-reservation`, {
+    method: "POST",
+    headers: {
+      apikey: getSupabaseAnonKey(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      reservation_id: reservationId,
+      date: payload.date,
+      time: normalisedTime,
+      party_size: payload.partySize,
+      special_request: payload.specialRequest,
+    }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    unavailable_reason?: string;
+  };
+  if (!res.ok || body.error || body.ok !== true) {
+    throw new Error(body.error ?? `Could not modify reservation (${res.status}).`);
   }
 }
 
@@ -131,6 +170,7 @@ export default function BookingDetailsPage() {
   const { upcoming, past, loading, refresh } = useMyReservations();
   const { profile } = useUser();
   const [cancelling, setCancelling] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
   const autoOpenedFromUrl = useRef(false);
   const [modifying, setModifying] = useState(false);
@@ -139,6 +179,7 @@ export default function BookingDetailsPage() {
   const [modifyValidity, setModifyValidity] = useState<ModifyBookingValidity>({
     canSave: false,
     reason: null,
+    reasonKind: null,
   });
 
   const reservation = useMemo(() => {
@@ -175,7 +216,7 @@ export default function BookingDetailsPage() {
     const initial = buildInitialModifyValues(reservation, reservedAt);
     setModifyInitial(initial);
     setModifyValues(initial);
-    setModifyValidity({ canSave: false, reason: null });
+    setModifyValidity({ canSave: false, reason: null, reasonKind: null });
     setModifyOpen(true);
   };
 
@@ -188,7 +229,7 @@ export default function BookingDetailsPage() {
     const initial = buildInitialModifyValues(reservation, reservedAt);
     setModifyInitial(initial);
     setModifyValues(initial);
-    setModifyValidity({ canSave: false, reason: null });
+    setModifyValidity({ canSave: false, reason: null, reasonKind: null });
     setModifyOpen(true);
     setSearchParams(
       (prev) => {
@@ -206,6 +247,10 @@ export default function BookingDetailsPage() {
     try {
       await cancelReservation(reservation.id);
       await refresh();
+      // Drop cached availability so this device sees the freed-up slot
+      // immediately without waiting for realtime / DB cache TTL.
+      if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
+      setCancelConfirmOpen(false);
       toast.success("Reservation cancelled.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
@@ -228,6 +273,9 @@ export default function BookingDetailsPage() {
         specialRequest: modifyValues.notes.trim(),
       });
       await refresh();
+      // Drop cached availability so the previous slot reappears and the new
+      // slot disappears for this device on the next view.
+      if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
       setModifyOpen(false);
       toast.success("Reservation modified.");
     } catch (error) {
@@ -412,7 +460,7 @@ export default function BookingDetailsPage() {
                 {canCancel ? (
                   <button
                     type="button"
-                    onClick={() => void handleCancel()}
+                    onClick={() => setCancelConfirmOpen(true)}
                     disabled={cancelling}
                     className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-danger/50 bg-danger/10 text-sm font-medium text-danger transition-colors hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -448,21 +496,74 @@ export default function BookingDetailsPage() {
               onValidityChange={setModifyValidity}
             />
           ) : null}
-          <p className="text-xs text-text-muted">
-            {modifying
-              ? "Saving changes…"
-              : modifyValidity.reason ?? "Pick new details and save when you're ready."}
+          {/*
+            Card-style CTA mirroring the customer "Reserve a table" pattern.
+            The button label encodes the current state — saving, loading,
+            blocking reason, no-pick, no-changes, or the dynamic "Confirm
+            7:15pm changes" when the new combo is bookable.
+          */}
+          {(() => {
+            const pickedTime = modifyValues?.time
+              ? formatCompactTimeLabel(modifyValues.time)
+              : null;
+            const ctaLabel = modifying
+              ? "Saving…"
+              : modifyValidity.reasonKind === "blocking" && modifyValidity.reason
+                ? modifyValidity.reason
+                : modifyValidity.reasonKind === "neutral" && modifyValidity.reason
+                  ? modifyValidity.reason
+                  : modifyValidity.canSave && pickedTime
+                    ? `Confirm ${pickedTime} changes`
+                    : "Pick new details to continue";
+            return (
+              <div className="mt-2 space-y-2">
+                <Button
+                  type="button"
+                  onClick={() => void handleModify()}
+                  disabled={modifying || !modifyValidity.canSave}
+                  className="h-14 w-full rounded-xl text-base font-semibold"
+                >
+                  {ctaLabel}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setModifyOpen(false)}
+                  disabled={modifying}
+                  className="h-9 w-full text-sm font-normal text-text-muted hover:text-text-primary"
+                >
+                  Keep current booking
+                </Button>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelConfirmOpen} onOpenChange={(open) => !cancelling && setCancelConfirmOpen(open)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel this reservation?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-text-secondary">
+            The restaurant will be notified and your table will be released. This can't be undone.
           </p>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setModifyOpen(false)}>
-              Keep current booking
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCancelConfirmOpen(false)}
+              disabled={cancelling}
+            >
+              Keep booking
             </Button>
             <Button
               type="button"
-              onClick={() => void handleModify()}
-              disabled={modifying || !modifyValidity.canSave}
+              onClick={() => void handleCancel()}
+              disabled={cancelling}
+              className="bg-danger text-white hover:bg-danger/90"
             >
-              {modifying ? "Saving..." : "Save changes"}
+              {cancelling ? "Cancelling..." : "Cancel booking"}
             </Button>
           </DialogFooter>
         </DialogContent>

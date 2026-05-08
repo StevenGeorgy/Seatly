@@ -102,3 +102,37 @@ function formatTimeParts(hours: number, minutes: number): string {
   if (minutes === 0) return `${displayHour}${suffix}`;
   return `${displayHour}:${String(minutes).padStart(2, "0")}${suffix}`;
 }
+
+/**
+ * Normalises a time string to 24-hour `HH:MM` (zero-padded).
+ *   "5:15pm"   → "17:15"
+ *   "5pm"      → "17:00"
+ *   "5:15 PM"  → "17:15"
+ *   "17:15"    → "17:15"
+ *   "9:30:00"  → "09:30"
+ * Returns `null` for unparseable input. The modify-reservation /
+ * create-public-booking edge functions build a UTC timestamp by string
+ * concatenation (`new Date("${date}T${time}:00Z")`) so anything other than
+ * `HH:MM` produces an Invalid Date and a 500 from the function.
+ */
+export function to24HourTime(value: string): string | null {
+  const trimmed = value.trim();
+  const meridiem = /^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m?\.?$/i.exec(trimmed);
+  if (meridiem) {
+    let hours = Number(meridiem[1]);
+    const minutes = Number(meridiem[2] ?? "0");
+    const period = meridiem[3].toLowerCase();
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    if (period === "p" && hours !== 12) hours += 12;
+    else if (period === "a" && hours === 12) hours = 0;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  }
+  const twentyFour = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(trimmed);
+  if (twentyFour) {
+    const hours = Number(twentyFour[1]);
+    const minutes = Number(twentyFour[2]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  }
+  return null;
+}
