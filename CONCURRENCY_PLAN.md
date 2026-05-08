@@ -113,11 +113,9 @@ Replace the multi-step JS flow with a single `supabase.rpc('book_reservation', .
 - [x] `apps/web/src/components/cenaiva/BookingSheet.tsx` — does **not** insert reservations directly. It calls the cenaiva flow which now goes through the RPC.
 - [x] `apps/web/src/pages/customer/RestaurantPublicPage.handlePlaceOrder` — does **not** insert directly; routes through `create-public-booking` edge function which is migrated.
 
-### Deferred to a follow-up plan: `modify-reservation`
+### Deferred to Phase F (see below): `modify-reservation`
 
-`supabase/functions/modify-reservation/index.ts` (L331, L362) still uses the old `find_available_table_group` + `assign_reservation_tables` pair. Its semantics are different from `book_reservation`: it must **release** an existing reservation's tables and **reassign** to a new slot, not insert a new reservation. The advisory lock should be on the new `(restaurant_id, reserved_at)` (to coordinate with concurrent fresh bookings) and the release-old + assign-new must be atomic.
-
-This needs its own RPC, e.g. `modify_reservation_slot(p_reservation_id, p_new_reserved_at, p_new_party_size, p_shift_id, p_turn_minutes)`. The exclusion constraint from Phase B already protects against the worst case (two reservations claiming the same table at overlapping windows); the modify path can fail with 23P01 today and be cleaned up in a follow-up.
+See **Phase F** for the full plan. Short version: the modify path is still racy at the application layer but the exclusion constraint from Phase B catches the worst case (it just returns an ugly 23P01/500 instead of a clean 409). Cleaning this up is correctness polish + UX, not new safety.
 
 ---
 
@@ -144,6 +142,46 @@ Why this is OK to defer:
 What to do before resuming:
 - [ ] **Don't re-run `tmp-e2e/concurrent-booking.mjs` unmodified.** It will jam the DB again at this compute tier. Drop the concurrency to N=5, or upgrade to Compute Small (~$10/mo on Pro) for ~200 connections.
 - [ ] Optional smaller-scale verification: 5 parallel POSTs is enough to prove the contention path without overloading the pool.
+
+---
+
+## Phase F — Atomic `modify_reservation_slot` RPC  ·  ~30-45 min  ·  needs Phase B
+
+`supabase/functions/modify-reservation/index.ts` (L331, L362) still uses the old `find_available_table_group` + `assign_reservation_tables` pair. Semantics differ from `book_reservation`: it must **release** the existing reservation's tables and **reassign** to a new slot, not insert a new reservation. Without an atomic RPC, two concurrent modifies for adjacent slots can race; the exclusion constraint catches the bad case but the user sees a raw 500.
+
+- [ ] New migration `supabase/migrations/<ts>_modify_reservation_rpc.sql`:
+  - [ ] Function `public.modify_reservation_slot(p_reservation_id uuid, p_new_reserved_at timestamptz, p_new_party_size int, p_shift_id uuid, p_turn_minutes int)` returning the same shape as `book_reservation`.
+  - [ ] Inside one transaction:
+    1. `pg_advisory_xact_lock` keyed on `(restaurant_id, p_new_reserved_at)`. Use the *same* hash function as `book_reservation` so modifies and fresh bookings serialize against each other.
+    2. Mark current `reservation_tables` rows for this reservation as `released_at = now()` (so the exclusion constraint stops considering them).
+    3. Cover-cap recheck for the new slot.
+    4. `find_available_table_group` for the new slot, **excluding** the just-released rows from "in use" set (handled automatically by the exclusion-constraint partial index `WHERE released_at IS NULL`).
+    5. Insert new `reservation_tables` rows.
+    6. Update the reservation row (`reserved_at`, `party_size`, `shift_id`, `duration_minutes`).
+  - [ ] Raises matching error codes: `P0001` (no_table), `P0002` (over_cover_cap), `P0003` (shift_not_found).
+  - [ ] Grants `EXECUTE` to `service_role, authenticated`.
+- [ ] `supabase/functions/modify-reservation/index.ts`:
+  - [ ] Replace L331 `find_available_table_group` + L362 `assign_reservation_tables` block with a single `supabase.rpc('modify_reservation_slot', { ... })` call.
+  - [ ] Translate `P0001`/`23P01` → `409 slot_taken`, `P0002` → `409 over_cover_cap`, `P0003` → 400.
+  - [ ] Existing comm-log + status-update logic stays unchanged.
+- [ ] Smoke test: pick a real reservation, modify to a different slot, verify old `reservation_tables` rows have `released_at` set and new rows exist with the right `slot_range`.
+
+**Why this matters:** the exclusion constraint already prevents the unsafe outcome (overlapping rows with the same table). Phase F upgrades the failure mode from "raw 500" to "clean 409 with a 'pick another time' message." Polish, not safety.
+
+---
+
+## Capacity recommendation — upgrade to Compute Small
+
+Independent of the code-level work in Phases A-F, the practical concurrency ceiling is the **Supabase compute tier**, not the booking code. The current Nano tier (~60 direct DB connections) caps sustained concurrent transactions at the same level.
+
+- **Current:** Nano. Sufficient for everyday traffic. The Phase E load test (20 simultaneous bookings on one slot) jammed this tier — pool exhausted, 504 cascade, ~5 min DB lockup.
+- **Recommended:** **Compute Small (~$10/mo on Pro plan, ~200 connections)**. Removes the practical capacity ceiling for any realistic restaurant-booking traffic.
+- **When to upgrade:**
+  - Before re-running any load tests.
+  - If you ever see PostgREST `503 BOOT_ERROR` or sustained 504s in production logs.
+  - If realistic peak concurrency (Friday 6pm bookings across all restaurants) starts approaching ~30+ in-flight transactions.
+
+This isn't a code task — it's a single Supabase dashboard click. Worth flagging as the cheapest concurrency unlock available.
 
 ---
 

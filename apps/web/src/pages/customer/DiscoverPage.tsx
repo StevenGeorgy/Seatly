@@ -1363,7 +1363,7 @@ export default function DiscoverPage() {
       window.removeEventListener("scroll", checkScroll);
       window.removeEventListener("resize", checkScroll);
     };
-  }, [view]);
+  }, [view, filtersOpen]);
 
   const featured = filtered.slice(0, 4);
   const dateNight = filtered.slice(4, 8).length === 4 ? filtered.slice(4, 8) : filtered.slice(0, 4);
@@ -2001,10 +2001,10 @@ export default function DiscoverPage() {
               </div>
             </div>
 
-            {/* Map area */}
+            {/* Map area — self-start so sticky locks to viewport inside grid (tall list row) */}
             <div
               className={cn(
-                "lg:sticky lg:top-[5.5rem] lg:h-[calc(100vh-5.5rem)] lg:transition-[margin] lg:duration-300 lg:ease-out",
+                "lg:sticky lg:top-[5.5rem] lg:z-10 lg:h-[calc(100vh-5.5rem)] lg:self-start lg:transition-[margin] lg:duration-300 lg:ease-out",
                 mapEdgeMode && "lg:-mr-24 xl:-mr-32 2xl:-mr-40",
               )}
             >
