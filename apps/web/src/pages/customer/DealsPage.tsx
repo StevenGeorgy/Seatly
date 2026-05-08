@@ -389,7 +389,7 @@ function AvailableTimes({
   onBookSlot: (slot: AvailabilitySlot) => void;
   size?: "md" | "lg";
 }) {
-  const visibleSlots = slots.slice(0, 3);
+  const visibleSlots = slots.slice(0, 6);
   if (visibleSlots.length === 0) return null;
   return (
     <div className={cn("grid grid-cols-3", size === "lg" ? "gap-2.5" : "gap-2")}>
@@ -2178,7 +2178,7 @@ export default function DealsPage() {
             return next;
           });
         }}
-        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate, options) => {
+        onReserve={(slot, selectedPartySize, shiftId, displayTime, bookingDate) => {
           if (!previewRestaurant) return;
           const slotDate = bookingDate ?? selectedBookingDate;
           const timeParam = displayTime ? formatCompactTimeLabel(displayTime) : formatCompactTimeLabel(slot);
@@ -2195,18 +2195,10 @@ export default function DealsPage() {
             params.set("returnDetail", returnDetail);
             markCurrentDealsReturn(returnDetail);
           }
-          void navigate(`/${previewRestaurant.id}?${params.toString()}`, options?.optimistic
-            ? {
-              state: {
-                previewSlotRevalidation: {
-                  slot,
-                  shiftId: shiftId ?? null,
-                  date: slotDate,
-                  partySize: normalizePartySize(selectedPartySize),
-                },
-              },
-            }
-            : undefined);
+          // Public page re-validates the slot before submit (handlePlaceOrder)
+          // and the modal/Discover paths force-refresh availability, so we no
+          // longer need to forward the previewSlotRevalidation hint.
+          void navigate(`/${previewRestaurant.id}?${params.toString()}`);
         }}
       />
     </div>

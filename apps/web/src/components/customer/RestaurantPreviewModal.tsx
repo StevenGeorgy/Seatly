@@ -27,7 +27,9 @@ import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/event
 import {
   fetchAvailableDateSet,
   filterSlotsByConflicts,
+  formatConflictWindow,
   useAvailability,
+  useAvailabilityRealtimeInvalidate,
   useDinerConflictWindows,
 } from "@/hooks/useAvailability";
 import { useUser } from "@/hooks/useUser";
@@ -35,6 +37,8 @@ import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
+import { TimeWheel } from "@/components/booking/TimeWheel";
+import { SeatWheel } from "@/components/booking/SeatWheel";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -128,149 +132,6 @@ function shortTime(time: string): string {
 
 function dateKey(date: Date): string {
   return format(date, "yyyy-MM-dd");
-}
-
-function TimeWheel({
-  times,
-  value,
-  onCommit,
-}: {
-  times: string[];
-  value: string;
-  onCommit: (value: string) => void;
-}) {
-  const [draftValue, setDraftValue] = useState(value || times[0] || "");
-
-  useEffect(() => {
-    void Promise.resolve().then(() => setDraftValue(value || times[0] || ""));
-  }, [value, times]);
-
-  const indexOfDraft = Math.max(0, times.indexOf(draftValue));
-  const moveDraft = (delta: number) => {
-    if (!times.length) return;
-    const next = Math.min(times.length - 1, Math.max(0, indexOfDraft + delta));
-    setDraftValue(times[next]);
-  };
-
-  const draftLabel = draftValue ? shortTime(draftValue) : "";
-
-  return (
-    <div>
-      <div
-        role="listbox"
-        aria-label="Time"
-        tabIndex={0}
-        onWheel={(event) => {
-          event.preventDefault();
-          if (Math.abs(event.deltaY) < 4) return;
-          moveDraft(event.deltaY > 0 ? 1 : -1);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") moveDraft(1);
-          if (event.key === "ArrowUp") moveDraft(-1);
-          if (event.key === "Enter" && draftValue) onCommit(draftValue);
-        }}
-        className="max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-base p-2 outline-none [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-gold/40"
-      >
-        {times.map((time) => {
-          const active = time === draftValue;
-          return (
-            <button
-              key={time}
-              type="button"
-              role="option"
-              aria-selected={active}
-              onClick={() => onCommit(time)}
-              className={cn(
-                "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",
-                active ? "bg-gold text-bg-base" : "text-text-secondary hover:bg-bg-elevated hover:text-white",
-              )}
-            >
-              {shortTime(time)}
-            </button>
-          );
-        })}
-      </div>
-      <button
-        type="button"
-        onClick={() => draftValue && onCommit(draftValue)}
-        disabled={!draftValue}
-        className="mt-2 h-10 w-full rounded-xl bg-gold text-sm font-semibold text-bg-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {draftLabel ? `Select ${draftLabel}` : "Select a time"}
-      </button>
-    </div>
-  );
-}
-
-function SeatWheel({
-  maxSeats,
-  value,
-  onCommit,
-}: {
-  maxSeats: number;
-  value: number;
-  onCommit: (value: number) => void;
-}) {
-  const seats = useMemo(() => Array.from({ length: Math.max(1, maxSeats) }, (_, index) => index + 1), [maxSeats]);
-  const [draftValue, setDraftValue] = useState(value);
-  const scrollToSeat = (seat: number) => {
-    setDraftValue(Math.min(Math.max(1, seat), maxSeats));
-  };
-  const commitSeat = (seat: number) => {
-    onCommit(Math.min(Math.max(1, seat), maxSeats));
-  };
-
-  useEffect(() => {
-    void Promise.resolve().then(() => setDraftValue(value));
-  }, [value]);
-
-  return (
-    <div>
-      <div
-        role="listbox"
-        aria-label="Party size"
-        tabIndex={0}
-        onWheel={(event) => {
-          event.preventDefault();
-          if (Math.abs(event.deltaY) < 4) return;
-          scrollToSeat(draftValue + (event.deltaY > 0 ? 1 : -1));
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") scrollToSeat(draftValue + 1);
-          if (event.key === "ArrowUp") scrollToSeat(draftValue - 1);
-          if (event.key === "Enter") commitSeat(draftValue);
-        }}
-        className="max-h-56 overflow-y-auto rounded-2xl border border-border bg-bg-base p-2 outline-none [scrollbar-color:var(--gold)_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-gold/40"
-      >
-        {seats.map((seat) => {
-          const active = seat === draftValue;
-          return (
-            <button
-              key={seat}
-              type="button"
-              role="option"
-              aria-selected={active}
-              onClick={() => commitSeat(seat)}
-              className={cn(
-                "flex h-10 w-full items-center justify-center rounded-xl text-sm transition-colors",
-                active ? "bg-gold text-bg-base" : "text-text-secondary hover:bg-bg-elevated hover:text-white",
-              )}
-            >
-              {seat} seat{seat === 1 ? "" : "s"}
-            </button>
-          );
-        })}
-      </div>
-      <button
-        type="button"
-        onClick={() => commitSeat(draftValue)}
-        className="mt-2 h-10 w-full rounded-xl bg-gold text-sm font-semibold text-bg-base transition-opacity hover:opacity-90"
-      >
-        Select {draftValue} guest{draftValue === 1 ? "" : "s"}
-      </button>
-    </div>
-  );
 }
 
 function StripeArt({
@@ -433,6 +294,17 @@ export function RestaurantPreviewModal({
       return true;
     });
   }, [availabilitySlots, dinerConflictWindows]);
+  const dinerConflictNotices = useMemo(() => {
+    if (dinerConflictWindows.length === 0) return [] as string[];
+    if (availableSlots.length === availabilitySlots.length) return [] as string[];
+    const seen = new Set<string>();
+    const tz = matchedRestaurantDetails?.timezone ?? null;
+    for (const window of dinerConflictWindows) {
+      const formatted = formatConflictWindow(window, tz);
+      if (formatted) seen.add(formatted);
+    }
+    return Array.from(seen);
+  }, [dinerConflictWindows, availableSlots.length, availabilitySlots.length, matchedRestaurantDetails?.timezone]);
   const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
   const preferredAvailableSlot = useMemo(
     () => preferredTime
@@ -602,13 +474,16 @@ export function RestaurantPreviewModal({
     setReserving(true);
     setStaleAvailabilityNotice(null);
     try {
+      // No `optimistic: true` — the parent re-checks availability against a
+      // forced refresh before navigating, so a slot that just got booked by
+      // another user shows the "no longer available" notice instead of
+      // taking the user to checkout on stale data.
       await onReserve(
         selectedSlot.date_time,
         String(selectedPartySize),
         selectedSlot.shift_id,
         formatCompactTimeLabel(selectedSlot.display_time),
         previewDate,
-        { optimistic: true },
       );
     } finally {
       setReserving(false);
@@ -633,6 +508,17 @@ export function RestaurantPreviewModal({
       { forceRefresh: true },
     );
   }, [clearSlots, fetchSlots, previewDate, restaurant, selectedPartySize]);
+
+  // Live invalidation: when another diner's booking lands at this restaurant
+  // while the preview is open, drop the cached availability and re-fetch the
+  // current view immediately so a slot that just got taken disappears.
+  useAvailabilityRealtimeInvalidate(
+    restaurant?.id ?? null,
+    () => {
+      if (!restaurant) return;
+      void fetchSlots(restaurant.id, previewDate, selectedPartySize, { forceRefresh: true });
+    },
+  );
 
   useEffect(() => {
     void Promise.resolve().then(() => setStaleAvailabilityNotice(null));
@@ -1253,6 +1139,16 @@ export function RestaurantPreviewModal({
                       <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
                         {visibleAvailabilityNotice}
                       </p>
+                    ) : null}
+                    {dinerConflictNotices.length > 0 ? (
+                      <div className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                        <p className="font-semibold">Some times are hidden because you're already booked:</p>
+                        <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                          {dinerConflictNotices.map((notice) => (
+                            <li key={notice}>{notice}</li>
+                          ))}
+                        </ul>
+                      </div>
                     ) : null}
 
                     <button

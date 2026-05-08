@@ -19,10 +19,13 @@ import { Button } from "@/components/ui/button";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  ModifyBookingFields,
+  type ModifyBookingValidity,
+  type ModifyBookingValues,
+} from "@/components/booking/ModifyBookingFields";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
+import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import {
   reservationDisplayStatus,
@@ -126,14 +129,17 @@ export default function BookingDetailsPage() {
   const { reservationId } = useParams<{ reservationId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { upcoming, past, loading, refresh } = useMyReservations();
+  const { profile } = useUser();
   const [cancelling, setCancelling] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
   const autoOpenedFromUrl = useRef(false);
   const [modifying, setModifying] = useState(false);
-  const [modifyDate, setModifyDate] = useState("");
-  const [modifyTime, setModifyTime] = useState("");
-  const [modifyPartySize, setModifyPartySize] = useState("2");
-  const [modifyNotes, setModifyNotes] = useState("");
+  const [modifyInitial, setModifyInitial] = useState<ModifyBookingValues | null>(null);
+  const [modifyValues, setModifyValues] = useState<ModifyBookingValues | null>(null);
+  const [modifyValidity, setModifyValidity] = useState<ModifyBookingValidity>({
+    canSave: false,
+    reason: null,
+  });
 
   const reservation = useMemo(() => {
     return [...upcoming, ...past].find((row) => row.id === reservationId) ?? null;
@@ -151,13 +157,25 @@ export default function BookingDetailsPage() {
     .filter(Boolean)
     .join(" · ");
 
+  const buildInitialModifyValues = (
+    row: MyReservationRow,
+    at: Date,
+  ): ModifyBookingValues => {
+    const tz = row.restaurant?.timezone ?? null;
+    return {
+      date: dateInTz(at, tz),
+      time: timeInTz(at, tz),
+      partySize: row.party_size,
+      notes: row.special_request ?? "",
+    };
+  };
+
   const openModifyDialog = () => {
     if (!reservation || !reservedAt || !canModify) return;
-    const tz = reservation.restaurant?.timezone ?? null;
-    setModifyDate(dateInTz(reservedAt, tz));
-    setModifyTime(timeInTz(reservedAt, tz));
-    setModifyPartySize(String(reservation.party_size));
-    setModifyNotes(reservation.special_request ?? "");
+    const initial = buildInitialModifyValues(reservation, reservedAt);
+    setModifyInitial(initial);
+    setModifyValues(initial);
+    setModifyValidity({ canSave: false, reason: null });
     setModifyOpen(true);
   };
 
@@ -167,11 +185,10 @@ export default function BookingDetailsPage() {
       return;
     }
     autoOpenedFromUrl.current = true;
-    const tz = reservation.restaurant?.timezone ?? null;
-    setModifyDate(dateInTz(reservedAt, tz));
-    setModifyTime(timeInTz(reservedAt, tz));
-    setModifyPartySize(String(reservation.party_size));
-    setModifyNotes(reservation.special_request ?? "");
+    const initial = buildInitialModifyValues(reservation, reservedAt);
+    setModifyInitial(initial);
+    setModifyValues(initial);
+    setModifyValidity({ canSave: false, reason: null });
     setModifyOpen(true);
     setSearchParams(
       (prev) => {
@@ -198,20 +215,17 @@ export default function BookingDetailsPage() {
   };
 
   const handleModify = async () => {
-    if (!reservation || !canModify || modifying) return;
-    const nextPartySize = Math.max(1, Math.floor(Number(modifyPartySize)));
-    if (!modifyDate || !modifyTime || !Number.isFinite(nextPartySize)) {
-      toast.error("Select a date, time, and guest count.");
+    if (!reservation || !canModify || modifying || !modifyValues || !modifyValidity.canSave) {
       return;
     }
 
     setModifying(true);
     try {
       await modifyReservation(reservation.id, {
-        date: modifyDate,
-        time: modifyTime,
-        partySize: nextPartySize,
-        specialRequest: modifyNotes.trim(),
+        date: modifyValues.date,
+        time: modifyValues.time,
+        partySize: modifyValues.partySize,
+        specialRequest: modifyValues.notes.trim(),
       });
       await refresh();
       setModifyOpen(false);
@@ -422,57 +436,32 @@ export default function BookingDetailsPage() {
           <DialogHeader>
             <DialogTitle>Modify booking</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label htmlFor="modify-date">Date</Label>
-                <Input
-                  id="modify-date"
-                  type="date"
-                  value={modifyDate}
-                  onChange={(event) => setModifyDate(event.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="modify-time">Time</Label>
-                <Input
-                  id="modify-time"
-                  type="time"
-                  step="1800"
-                  value={modifyTime}
-                  onChange={(event) => setModifyTime(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="modify-party-size">Guests</Label>
-              <Input
-                id="modify-party-size"
-                type="number"
-                min="1"
-                max="99"
-                value={modifyPartySize}
-                onChange={(event) => setModifyPartySize(event.target.value)}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="modify-notes">Special request / notes</Label>
-              <Textarea
-                id="modify-notes"
-                value={modifyNotes}
-                onChange={(event) => setModifyNotes(event.target.value)}
-                placeholder="Allergies, occasion, seating notes..."
-              />
-            </div>
-            <p className="text-xs text-text-muted">
-              Changes save only if the new date, time, and guest count are available.
-            </p>
-          </div>
+          {reservation && modifyInitial ? (
+            <ModifyBookingFields
+              key={`${reservation.id}-${modifyOpen}`}
+              restaurantId={reservation.restaurant?.id ?? ""}
+              restaurantTimezone={reservation.restaurant?.timezone ?? null}
+              reservationId={reservation.id}
+              userProfileId={profile?.id ?? null}
+              initial={modifyInitial}
+              onChange={setModifyValues}
+              onValidityChange={setModifyValidity}
+            />
+          ) : null}
+          <p className="text-xs text-text-muted">
+            {modifying
+              ? "Saving changes…"
+              : modifyValidity.reason ?? "Pick new details and save when you're ready."}
+          </p>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setModifyOpen(false)}>
               Keep current booking
             </Button>
-            <Button type="button" onClick={() => void handleModify()} disabled={modifying}>
+            <Button
+              type="button"
+              onClick={() => void handleModify()}
+              disabled={modifying || !modifyValidity.canSave}
+            >
               {modifying ? "Saving..." : "Save changes"}
             </Button>
           </DialogFooter>

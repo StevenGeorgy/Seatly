@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 
+import { CenaivaIcon } from "@/components/brand/CenaivaIcon";
+
 type AuthPageLayoutProps = {
   titleKey: string;
   children: ReactNode;
@@ -25,9 +27,13 @@ export function AuthPageLayout({ titleKey, children }: AuthPageLayoutProps) {
         {/* Brand */}
         <Link
           to="/"
-          className="mb-8 block text-center text-sm font-bold tracking-[0.3em] text-primary transition-opacity hover:opacity-80"
+          aria-label="Cenaiva home"
+          className="mb-8 flex flex-col items-center gap-2 transition-opacity hover:opacity-80"
         >
-          CENAIVA
+          <CenaivaIcon className="size-12" />
+          <span className="text-sm font-bold tracking-[0.3em] text-primary">
+            CENAIVA
+          </span>
         </Link>
 
         {/* Card */}

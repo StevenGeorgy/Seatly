@@ -1,7 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
-import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
-export type ConflictWindow = { start: Date; end: Date };
+export type ConflictWindow = {
+  start: Date;
+  end: Date;
+  reservationId?: string;
+  restaurantId?: string;
+  restaurantName?: string | null;
+  isSameRestaurant?: boolean;
+};
 
 export interface AvailabilitySlot {
   shift_id: string;
@@ -34,7 +41,11 @@ export type AvailabilityFetchOptions = {
   forceRefresh?: boolean;
 };
 
-const AVAILABILITY_CACHE_TTL_MS = 45_000;
+// Customer surfaces re-render this on every date / time / party-size change,
+// so we want short enough that two viewers a few seconds apart don't get a
+// stale "available" view of a slot that just got booked. 10s is short enough
+// to feel live, long enough to coalesce the usual burst of clicks.
+const AVAILABILITY_CACHE_TTL_MS = 10_000;
 
 type CachedAvailability = {
   expiresAt: number;
@@ -167,6 +178,22 @@ export async function fetchAvailabilitySlots(
   return cloneAvailabilityResult(await request);
 }
 
+/**
+ * Drops cached availability for a restaurant (or all restaurants when
+ * `restaurantId` is omitted). Called by realtime subscribers when a booking
+ * lands so the next render fetches fresh slots.
+ */
+export function invalidateAvailabilityCache(restaurantId?: string): void {
+  if (!restaurantId) {
+    availabilityCache.clear();
+    return;
+  }
+  const prefix = `${restaurantId}|`;
+  for (const key of Array.from(availabilityCache.keys())) {
+    if (key.startsWith(prefix)) availabilityCache.delete(key);
+  }
+}
+
 export function useAvailability() {
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [floorCapacity, setFloorCapacity] = useState<number | null>(null);
@@ -274,7 +301,7 @@ export async function fetchDinerConflictWindows(args: {
   const client = getSupabaseBrowserClient();
   let query = client
     .from("reservations")
-    .select("id, reserved_at, duration_minutes")
+    .select("id, reserved_at, duration_minutes, restaurant_id, restaurants(name)")
     .eq("user_profile_id", args.userProfileId)
     .in("status", ["pending", "confirmed", "seated"])
     .gte("reserved_at", args.dayStartUtcIso)
@@ -284,13 +311,42 @@ export async function fetchDinerConflictWindows(args: {
   }
   const { data, error } = await query;
   if (error || !data) return [];
+  const currentRestaurantId = args.currentRestaurantId;
   return data.map((row) => {
     const start = new Date(row.reserved_at);
     const minutes = typeof row.duration_minutes === "number" && row.duration_minutes > 0
       ? row.duration_minutes
       : 90;
-    return { start, end: new Date(start.getTime() + minutes * 60_000) };
+    const joined = (row as { restaurants?: { name?: string | null } | null }).restaurants;
+    return {
+      start,
+      end: new Date(start.getTime() + minutes * 60_000),
+      reservationId: row.id as string,
+      restaurantId: row.restaurant_id as string | undefined,
+      restaurantName: joined?.name ?? null,
+      isSameRestaurant: row.restaurant_id === currentRestaurantId,
+    };
   });
+}
+
+/**
+ * Formats a single conflict window as "Restaurant Name · 7:00–8:30 PM" in
+ * the supplied IANA timezone. Returns null when restaurant info is missing.
+ */
+export function formatConflictWindow(
+  conflict: ConflictWindow,
+  timezone: string | null,
+): string | null {
+  if (!conflict.restaurantName) return null;
+  const tz = timezone || "UTC";
+  const fmt = (d: Date) =>
+    d.toLocaleTimeString("en-US", {
+      timeZone: tz,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  return `${conflict.restaurantName} · ${fmt(conflict.start)}–${fmt(conflict.end)}`;
 }
 
 /**
@@ -361,4 +417,44 @@ export function useDinerConflictWindows(args: {
   }, [userProfileId, currentRestaurantId, date, timezone, excludeReservationId]);
 
   return windows;
+}
+
+/**
+ * Customer-facing realtime invalidator. Subscribes to inserts / updates on
+ * `reservations` for the active restaurant and clears the local availability
+ * cache whenever a row changes, then invokes the optional `onInvalidate`
+ * callback so the page can re-fetch.
+ *
+ * Scoped to a single restaurant only — Discover / Deals must NOT use this
+ * (one socket per card would explode connection counts).
+ */
+export function useAvailabilityRealtimeInvalidate(
+  restaurantId: string | null,
+  onInvalidate?: () => void,
+): void {
+  useEffect(() => {
+    if (!restaurantId || !isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    const channel = client
+      .channel(`avail:public:${restaurantId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "reservations",
+          filter: `restaurant_id=eq.${restaurantId}`,
+        },
+        () => {
+          invalidateAvailabilityCache(restaurantId);
+          if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+            onInvalidate?.();
+          }
+        },
+      )
+      .subscribe();
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [restaurantId, onInvalidate]);
 }

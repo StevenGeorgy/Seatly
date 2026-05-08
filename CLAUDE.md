@@ -32,6 +32,11 @@ edits here propagate to both agents in one step.
 - **Booking writes are atomic and double-booking-proof** via
   `book_reservation` + `modify_reservation_slot` + the
   `reservation_tables_no_overlap` exclusion constraint.
+- **Diner double-book is enforced at the DB layer** via three partial
+  GiST exclusions on `reservations` keyed on `user_profile_id`,
+  `lower(guest_email)`, and digits-only `guest_phone` against an active
+  `slot_range`. Both RPCs raise `P0006 / diner_double_book` ahead of the
+  exclusion as a friendlier error.
 - **Concurrency engineering is done.** The only remaining ceiling lever
   is compute upgrade (Small ~$5/mo) — only do that when production
   traffic regularly approaches 1,500+ concurrent.
@@ -41,7 +46,10 @@ edits here propagate to both agents in one step.
 ## Hard rules — never violate
 
 - Never bypass `book_reservation` or `modify_reservation_slot` for
-  reservation writes. They own the advisory lock + cover-cap recheck.
+  reservation writes. They own the advisory lock + cover-cap recheck +
+  diner-overlap pre-check. Direct INSERTs also fail the partial
+  exclusion constraints, but the error is opaque (`23P01`) — always go
+  through the RPCs so users see `P0006 / diner_double_book` instead.
 - Never cache booking writes. The atomic RPC + exclusion constraint own
   correctness; cached writes break that.
 - Never create migrations or run `DROP` / `DELETE` on the live project
@@ -78,7 +86,7 @@ problems came back into the codebase.
 - **Read cache:** `availability_cache` UNLOGGED table +
   `get_available_slots_cached` (20 s TTL, opportunistic 5 min prune).
 - **Batched listing:** `get_available_slots_for_restaurants_compact` —
-  returns first 3 future slots per restaurant, strips `table_ids`.
+  returns first 6 future slots per restaurant, strips `table_ids`.
 - **Batched range scan:** `restaurant_available_dates(uuid, int, date,
   date) → text[]` — replaces N day-probes.
 - **Rate limit:** `check_rate_limit(p_key, p_limit, p_window_seconds)` +
@@ -86,6 +94,20 @@ problems came back into the codebase.
 - **Atomic write:** advisory lock keyed on
   `(restaurant_id, reserved_at)` — same hash function for create and
   modify so they serialize against each other.
+- **Diner double-book guard:** `reservations.slot_range` (trigger-set,
+  not generated — `timestamptz + interval` is STABLE) +
+  `reservations_user_no_overlap` /
+  `reservations_guest_email_no_overlap` /
+  `reservations_guest_phone_no_overlap` partial exclusions.
+  `book_reservation` and `modify_reservation_slot` both pre-check and
+  raise `P0006 'diner_double_book'`; edge function maps it (and the
+  `23P01` backstop) to a 409 with `unavailable_reason: 'diner_double_book'`.
+- **Live availability invalidation on customer pages:**
+  `useAvailabilityRealtimeInvalidate(restaurantId, onInvalidate)` from
+  `apps/web/src/hooks/useAvailability.ts` — single postgres_changes
+  channel scoped to one restaurant, used by `RestaurantPreviewModal` and
+  `RestaurantPublicPage` only. Don't use it from Discover/Deals (one
+  socket per card explodes the connection count).
 
 ## Stack reminders
 

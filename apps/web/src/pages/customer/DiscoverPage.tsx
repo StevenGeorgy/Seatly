@@ -363,7 +363,7 @@ function AvailableTimes({
   onBookSlot: (slot: AvailabilitySlot) => void;
   size?: "md" | "lg";
 }) {
-  const visibleSlots = slots.slice(0, 3);
+  const visibleSlots = slots.slice(0, 6);
   if (visibleSlots.length === 0) return null;
   return (
     <div className={cn("grid grid-cols-3", size === "lg" ? "gap-2.5" : "gap-2")}>
@@ -1247,7 +1247,7 @@ export default function DiscoverPage() {
     shiftId?: string,
     _displayTime?: string,
     bookingDate?: string,
-    options: { optimistic?: boolean } = {},
+    _options: { optimistic?: boolean } = {},
   ) => {
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
     const slotDate = bookingDate
@@ -1269,18 +1269,10 @@ export default function DiscoverPage() {
       );
     };
 
-    if (options.optimistic) {
-      navigateToSlot(slot, shiftId, _displayTime, {
-        previewSlotRevalidation: {
-          slot,
-          shiftId: shiftId ?? null,
-          date: slotDate,
-          partySize: partyCount,
-        },
-      });
-      return;
-    }
-
+    // Always re-check availability against the live cache before navigating
+    // to checkout — even when the click came from the preview modal's
+    // confirm. The `optimistic` flag used to skip this and was the source of
+    // "the slot was already taken when I got to checkout" reports.
     const refreshed = await fetchAvailabilitySlots(r.id, slotDate, partyCount, { forceRefresh: true })
       .catch(() => null);
     const refreshedSlot = refreshed?.slots.find((candidate) =>

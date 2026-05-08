@@ -433,17 +433,30 @@ Deno.serve(async (req: Request) => {
 
     if (bookingError) {
       const code = (bookingError as { code?: string }).code;
-      if (code === "P0001" || code === "23P01") {
+      if (code === "P0001") {
         return jsonResponse(
           { error: "This time was just taken. Please pick another slot.", unavailable_reason: "slot_taken" },
           409,
         );
       }
       if (code === "P0002") {
-        return jsonResponse({ error: "This time no longer has enough cover capacity." }, 409);
+        return jsonResponse({ error: "This time no longer has enough cover capacity.", unavailable_reason: "over_cover_cap" }, 409);
       }
       if (code === "P0003") {
         return jsonResponse({ error: "Shift not found for this restaurant." }, 400);
+      }
+      // P0006 raised by book_reservation when the same diner already has an
+      // overlapping active reservation. 23P01 is the partial-exclusion
+      // constraint backstop covering the same condition; map both to the
+      // same diner_double_book response.
+      if (code === "P0006" || code === "23P01") {
+        return jsonResponse(
+          {
+            error: "You already have a reservation at this time. Cancel or modify the existing one before booking again.",
+            unavailable_reason: "diner_double_book",
+          },
+          409,
+        );
       }
       return jsonResponse({ error: `Reservation: ${bookingError.message}` }, 400);
     }

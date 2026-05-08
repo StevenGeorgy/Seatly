@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { format } from "date-fns";
 import { Link } from "react-router-dom";
 import { ArrowLeft, CalendarDays, Clock, Loader2, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  ModifyBookingFields,
+  type ModifyBookingValidity,
+  type ModifyBookingValues,
+} from "@/components/booking/ModifyBookingFields";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +51,19 @@ function formatLocalDate(iso: string, tz: string | null): { date: string; time: 
   return { date: dateLabel, time: timeLabel };
 }
 
+function isoDateInTz(iso: string, tz: string | null): string {
+  const date = new Date(iso);
+  const tzSafe = tz ?? "America/Toronto";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tzSafe,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const lookup = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${lookup("year")}-${lookup("month")}-${lookup("day")}`;
+}
+
 function isoTimeInTz(iso: string, tz: string | null): string {
   const date = new Date(iso);
   const tzSafe = tz ?? "America/Toronto";
@@ -71,12 +85,13 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
   const [mode, setMode] = useState<"view" | "modify" | "confirmCancel" | "done">("view");
   const [busy, setBusy] = useState(false);
 
-  // Modify form state
-  const [editDate, setEditDate] = useState<Date | undefined>(undefined);
-  const [editTime, setEditTime] = useState("");
-  const [editParty, setEditParty] = useState(2);
-  const [editNotes, setEditNotes] = useState("");
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  // Modify form state — driven by the shared ModifyBookingFields component.
+  const [modifyInitial, setModifyInitial] = useState<ModifyBookingValues | null>(null);
+  const [modifyValues, setModifyValues] = useState<ModifyBookingValues | null>(null);
+  const [modifyValidity, setModifyValidity] = useState<ModifyBookingValidity>({
+    canSave: false,
+    reason: null,
+  });
 
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
 
@@ -110,10 +125,15 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       setReservation(row);
       setLookupState("found");
       // Seed modify form
-      setEditDate(new Date(row.reserved_at));
-      setEditTime(isoTimeInTz(row.reserved_at, row.restaurant_timezone));
-      setEditParty(row.party_size);
-      setEditNotes(row.special_request ?? "");
+      const initial: ModifyBookingValues = {
+        date: isoDateInTz(row.reserved_at, row.restaurant_timezone),
+        time: isoTimeInTz(row.reserved_at, row.restaurant_timezone),
+        partySize: row.party_size,
+        notes: row.special_request ?? "",
+      };
+      setModifyInitial(initial);
+      setModifyValues(initial);
+      setModifyValidity({ canSave: false, reason: null });
     };
     void run();
     return () => {
@@ -157,28 +177,19 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
   };
 
   const handleModify = async () => {
-    if (!reservation || !editDate) return;
-    if (!/^\d{2}:\d{2}$/.test(editTime)) {
-      setErrorMessage("Pick a valid time (HH:MM).");
-      return;
-    }
-    if (!Number.isFinite(editParty) || editParty < 1) {
-      setErrorMessage("Party size must be at least 1.");
-      return;
-    }
+    if (!reservation || !modifyValues || !modifyValidity.canSave) return;
     setBusy(true);
     setErrorMessage(null);
     try {
-      const dateStr = format(editDate, "yyyy-MM-dd");
       const client = getSupabaseBrowserClient();
       const { data, error } = await client.functions.invoke("modify-reservation", {
         body: {
           reservation_id: reservation.id,
           confirmation_code: code,
-          date: dateStr,
-          time: editTime,
-          party_size: editParty,
-          special_request: editNotes,
+          date: modifyValues.date,
+          time: modifyValues.time,
+          party_size: modifyValues.partySize,
+          special_request: modifyValues.notes,
         },
       });
       if (error) {
@@ -316,79 +327,28 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
             </div>
           )}
 
-          {mode === "modify" && (
+          {mode === "modify" && modifyInitial && (
             <div className="mt-6 space-y-4">
-              <div>
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                  Date
-                </label>
-                <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
-                  <PopoverTrigger asChild>
-                    <Button variant="outline" className="w-full justify-between gap-2 font-normal">
-                      {editDate ? format(editDate, "EEE, MMM d, yyyy") : "Pick a date"}
-                      <CalendarDays className="size-4 text-text-muted" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-auto p-3">
-                    <Calendar
-                      mode="single"
-                      selected={editDate}
-                      onSelect={(d) => {
-                        if (d) setEditDate(d);
-                        setCalendarOpen(false);
-                      }}
-                      disabled={(date) => {
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-                        return date < today;
-                      }}
-                      className="[--cell-size:2.5rem]"
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-
-              <div>
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                  Time
-                </label>
-                <Input
-                  type="time"
-                  value={editTime}
-                  onChange={(e) => setEditTime(e.target.value)}
-                  step={900}
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                  Party size
-                </label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={25}
-                  value={editParty}
-                  onChange={(e) => setEditParty(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                  Special request
-                </label>
-                <textarea
-                  value={editNotes}
-                  onChange={(e) => setEditNotes(e.target.value)}
-                  rows={3}
-                  className="flex w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-foreground placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-gold/40"
-                  placeholder="Allergies, occasions, accessibility notes…"
-                />
-              </div>
-
+              <ModifyBookingFields
+                key={`${reservation.id}-modify`}
+                restaurantId={reservation.restaurant_id}
+                restaurantTimezone={reservation.restaurant_timezone}
+                reservationId={reservation.id}
+                userProfileId={null}
+                initial={modifyInitial}
+                onChange={setModifyValues}
+                onValidityChange={setModifyValidity}
+              />
+              <p className="text-xs text-text-muted">
+                {busy
+                  ? "Saving changes…"
+                  : modifyValidity.reason ?? "Pick new details and save when you're ready."}
+              </p>
               <div className="flex gap-2">
-                <Button onClick={handleModify} disabled={busy}>
+                <Button
+                  onClick={handleModify}
+                  disabled={busy || !modifyValidity.canSave}
+                >
                   {busy ? "Saving…" : "Save changes"}
                 </Button>
                 <Button variant="ghost" onClick={() => setMode("view")} disabled={busy}>

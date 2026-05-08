@@ -115,14 +115,13 @@ export async function fetchDisplayAvailabilitySlotsForRestaurants(
   selectedTime: string,
   options: DisplayAvailabilityOptions = {},
 ): Promise<Record<string, AvailabilitySlot[]>> {
-  const maxSlots = options.maxSlots ?? 3;
+  const maxSlots = options.maxSlots ?? 6;
   if (restaurantIds.length === 0) return {};
 
   const client = getSupabaseBrowserClient();
-  // Compact variant: returns only the first 3 future slots per restaurant
-  // and strips `table_ids` from each slot. ~16× smaller payload than the
-  // full batched RPC, with identical UX since the listing only renders the
-  // first 3 slot pills and the booking page re-fetches with full data.
+  // Compact variant: returns the first 6 future slots per restaurant and
+  // strips `table_ids` from each slot. The booking page re-fetches with full
+  // slot data, so the listing doesn't need them.
   const { data, error } = await client.rpc("get_available_slots_for_restaurants_compact", {
     p_restaurant_ids: restaurantIds,
     p_date: date,
@@ -149,7 +148,7 @@ export async function fetchDisplayAvailabilitySlots(
   selectedTime: string,
   options: DisplayAvailabilityOptions = {},
 ): Promise<AvailabilitySlot[]> {
-  const maxSlots = options.maxSlots ?? 3;
+  const maxSlots = options.maxSlots ?? 6;
   const result = await fetchAvailabilitySlots(
     restaurantId,
     date,

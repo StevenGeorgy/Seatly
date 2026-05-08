@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useId, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useId, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import { useParams, Link, useSearchParams, useNavigate, useLocation } from "react-router-dom";
@@ -41,7 +41,10 @@ import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialL
 import {
   fetchAvailabilitySlots,
   filterSlotsByConflicts,
+  formatConflictWindow,
+  invalidateAvailabilityCache,
   useAvailability,
+  useAvailabilityRealtimeInvalidate,
   useDinerConflictWindows,
 } from "@/hooks/useAvailability";
 import { useAllActiveEvents } from "@/hooks/useEvents";
@@ -111,6 +114,11 @@ type PublicBookingResponse = {
   confirmation_delivery?: "sent" | "skipped" | "failed";
   confirmation_delivery_channel?: "email" | "sms" | null;
   error?: string;
+  unavailable_reason?:
+    | "slot_taken"
+    | "over_cover_cap"
+    | "diner_double_book"
+    | string;
 };
 
 type PreviewSlotRevalidationState = {
@@ -1185,6 +1193,32 @@ export default function RestaurantPublicPage() {
     [availability.slots, dinerConflictWindows],
   );
 
+  // Build the diner-conflict notice strings. Only show when at least one
+  // slot was actually hidden — i.e., a server slot exists but doesn't
+  // appear in the filtered list. Otherwise the banner is noisy.
+  const dinerConflictNotices = useMemo(() => {
+    if (dinerConflictWindows.length === 0) return [] as string[];
+    if (filteredAvailabilitySlots.length === availability.slots.length) return [] as string[];
+    const seen = new Set<string>();
+    const tz = restaurant?.timezone ?? null;
+    for (const window of dinerConflictWindows) {
+      const formatted = formatConflictWindow(window, tz);
+      if (formatted) seen.add(formatted);
+    }
+    return Array.from(seen);
+  }, [dinerConflictWindows, filteredAvailabilitySlots.length, availability.slots.length, restaurant?.timezone]);
+
+  // Live invalidation: when another diner's booking lands at this restaurant,
+  // drop the cached availability so the next render shows fresh slots. If a
+  // date/party is currently in view, kick a re-fetch right away.
+  const dineInDate = dineIn?.date || null;
+  const dineInPartySize = typeof dineIn?.party_size === "number" ? dineIn.party_size : null;
+  const refetchSlots = useCallback(() => {
+    if (!restaurant?.id || !dineInDate || !dineInPartySize) return;
+    void fetchRestaurantSlots(restaurant.id, dineInDate, dineInPartySize, { forceRefresh: true });
+  }, [restaurant?.id, dineInDate, dineInPartySize, fetchRestaurantSlots]);
+  useAvailabilityRealtimeInvalidate(restaurant?.id ?? null, refetchSlots);
+
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
   // checkout (split bill, different card), it links here with the order_id.
@@ -1649,6 +1683,33 @@ export default function RestaurantPublicPage() {
           throw new Error("Please choose an available time.");
         }
         const partySize = typeof dineIn.party_size === "number" ? dineIn.party_size : 1;
+
+        // Final live re-check before submitting. Cuts out the case where the
+        // user sat on the checkout step long enough that another booker took
+        // the slot. The server (`book_reservation` RPC) is still authoritative
+        // — this is just a friendlier UX than waiting for the 409.
+        const slotDate = (selectedSlot.booking_date
+          ?? (selectedSlot.date_time?.length >= 10 ? selectedSlot.date_time.slice(0, 10) : null));
+        if (slotDate) {
+          const refreshed = await fetchAvailabilitySlots(
+            restaurant.id,
+            slotDate,
+            partySize,
+            { forceRefresh: true },
+          ).catch(() => null);
+          const stillAvailable = refreshed?.slots.some(
+            (candidate) =>
+              candidate.date_time === selectedSlot.date_time
+              && (!selectedSlot.shift_id || candidate.shift_id === selectedSlot.shift_id),
+          );
+          if (refreshed && !stillAvailable) {
+            throw new Error(
+              refreshed.message
+              ?? "That time was just taken. Please pick another time and try again.",
+            );
+          }
+        }
+
         const cartItems = cart.map((item) => ({
           menu_item_id: item.id,
           name: item.name,
@@ -1688,6 +1749,19 @@ export default function RestaurantPublicPage() {
         });
         const body = await res.json().catch(() => ({})) as PublicBookingResponse;
         if (!res.ok || body.error || !body.reservation_id) {
+          // Surface a friendlier prompt for the diner double-book case so the
+          // user knows the action they need to take next.
+          if (body.unavailable_reason === "diner_double_book") {
+            throw new Error(
+              body.error
+              ?? "You already have a reservation at this time. Cancel or modify it from “My bookings” first.",
+            );
+          }
+          // Slot/cap collisions: drop our local availability cache so the
+          // user sees fresh slots when they back up.
+          if (body.unavailable_reason === "slot_taken" || body.unavailable_reason === "over_cover_cap") {
+            if (restaurant?.id) invalidateAvailabilityCache(restaurant.id);
+          }
           throw new Error(body.error ?? "Reservation failed");
         }
         setConfirmationCode(body.confirmation_code ?? "");
@@ -1727,6 +1801,10 @@ export default function RestaurantPublicPage() {
           .update({ phone: contactPhone })
           .eq("id", profile.id);
       }
+
+      // Drop cached availability so this device sees the new state on the
+      // next view without waiting for the realtime channel to fire.
+      if (restaurant?.id) invalidateAvailabilityCache(restaurant.id);
 
       setStep("confirmed");
     } catch (err) {
@@ -1875,6 +1953,16 @@ export default function RestaurantPublicPage() {
                   <p className="mb-4 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
                     That preview time is no longer available. Pick another time.
                   </p>
+                ) : null}
+                {dinerConflictNotices.length > 0 ? (
+                  <div className="mb-4 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+                    <p className="font-semibold">Some times are hidden because you're already booked:</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                      {dinerConflictNotices.map((notice) => (
+                        <li key={notice}>{notice}</li>
+                      ))}
+                    </ul>
+                  </div>
                 ) : null}
                 <div className="space-y-4">
                     {/* Date + Time + Party */}
