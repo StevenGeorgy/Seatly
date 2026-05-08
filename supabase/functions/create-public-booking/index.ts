@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 import {
@@ -172,6 +173,18 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
         userProfileId = profile?.id ?? null;
       }
+    }
+
+    try {
+      await enforceRateLimit(supabase, "book", rateLimitIdentifier(req, userProfileId), {
+        limit: 20,
+        windowSeconds: 60,
+      });
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return jsonResponse({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+      }
+      throw e;
     }
 
     const { data: turnMinutesData, error: turnError } = await supabase.rpc("restaurant_turn_time_minutes", {

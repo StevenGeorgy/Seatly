@@ -10,34 +10,68 @@ Tracks progress against `~/.claude/plans/playful-crafting-wave.md`. Ordered simp
 
 ## 🤖 Agent handoff notes (read this first)
 
-If you are picking this plan up cold (e.g. Codex, a fresh Claude Code session, or a different agent), read this section before touching anything.
+If you are picking this plan up cold (e.g. Codex, a fresh Claude Code session, or a different agent), read this section before touching anything. Pairs with `WORK_LOG.md` — that file has the most recent session-by-session log; this section is the durable "what's still live" snapshot.
 
 **Hard rules — do not violate:**
 - **Booking rules are frozen.** Capacity math, conflict detection, table assignment via `find_available_table_group`, advance-booking-days, blackout dates, hours_json, special days, RLS policies, auth flows — none of these change. The plan is purely about latency.
 - **The pre-commit re-validation must survive.** Phase 5 changes *when* the modal navigates, not whether the slot is re-checked before insert. The reservation insert path in `RestaurantPublicPage.handlePlaceOrder` is untouched.
-- **Phase 4's SQL function must produce byte-identical output to the current edge function** for the same `(restaurant_id, date, party_size)`. Verify with a side-by-side test on at least 3 real restaurants × today/tomorrow × party 2/4/8 *before* flipping `USE_SQL_AVAILABILITY`. The old edge-function path stays in place behind the flag for one release as a rollback safety net.
+- **`get_available_slots` is now the single source of truth for availability** for the customer flow. Any modification must keep its output byte-identical to what `_shared/availability.ts` produced (parity script `tmp-e2e/phase4-availability-parity.mjs` enforces 18 inputs). The legacy TS path under `USE_SQL_AVAILABILITY=0` is still deployed as rollback insurance for one release — do not remove it.
+- **Customer browser does NOT use the edge function for availability anymore.** `apps/web/src/hooks/useAvailability.ts:fetchAvailabilityFromNetwork` calls `supabase.rpc("get_available_slots", ...)` directly. The edge function `get-availability/index.ts` is still deployed (still flag-gated, still working) but only the AI/voice flows hit it now. If you need to change customer-side availability behaviour, edit the hook *and* the SQL function in lockstep.
+
+**Current production state (2026-05-08):**
+- Phases 1, 2, 3, 4, 5, 6, 7 all shipped (✓ in their sections below).
+- Phase 10 (a/b/c/d) shipped — see `CONCURRENCY_PLAN.md` for the per-phase details. Speed-relevant pieces:
+  - **Phase 10a:** `availability_cache` UNLOGGED table + `get_available_slots_cached` wrapper. SQL miss 26 ms, hit 0.08 ms.
+  - **Phase 10b:** `get_available_slots_for_restaurants` collapses Discover/Deals fanout into 1 RPC.
+  - **Phase 10c:** `restaurant_available_dates` collapses the modal calendar's 30 day-probes into 1 server-side scan.
+- **Levers 1 + 3 follow-ups shipped (post-Phase 10):**
+  - Cache TTL bumped 7 s → 20 s on `get_available_slots_cached`. Higher hit rate, slightly stale-availability tradeoff (booking writes still atomic).
+  - **Compact batched RPC** `get_available_slots_for_restaurants_compact` returns first 3 future slots per restaurant, strips `table_ids`. Wire payload **26 KB → 1.7 KB (15.7× reduction)** for Discover/Deals. `availabilityFilters.ts` switched to the compact variant. Real win for mobile users on 3G/4G; smaller JSON parse on the client.
+- Direct-RPC swap (post-Phase 4 follow-up): browser bypasses the edge function for availability and now calls `get_available_slots_cached` directly.
+- Modal UX defaults: today's date, party=2, closest-to-now slot auto-selected. `forceRefresh: true` on every modal fetch so the 45s cache is bypassed inside the modal. The Time tile shows "No times" and the popover renders the unavailability message when empty. Calendar uses Phase 10c batched date scan (1 RPC, was 30).
+- `USE_SQL_AVAILABILITY=1` is set on the deployed function. Unset it on the dashboard to revert to the legacy TS code path with no code change.
+- 18/18 byte-identical parity validated. SQL `get_available_slots` executes in ~28 ms (`EXPLAIN ANALYZE`); browser-direct cached RPC warm latency ~80–150 ms; compact batched RPC payload ~1.7 KB per Discover load.
 
 **Already done — do not redo:**
-The four ✅ items in the section below are complete. Skipping them is correct; redoing them risks reintroducing the time-field bug we already fixed.
+The ✅ items in each phase section below are complete. Skipping them is correct.
+
+**Open follow-ups (in priority order, speed-focused):**
+
+These move per-user perceived speed, not the concurrency ceiling. For ceiling work see `CONCURRENCY_PLAN.md`.
+
+1. **Real-user metrics (RUM) wiring** (~30 min). Today all latency claims (e.g. "~80 ms warm cached RPC") are extrapolated from k6 + benchmarks — no real production measurement. Wire up Vercel Analytics or `web-vitals` package + a small backend to record FCP/LCP/INP/TTFB from real users. Without this, every speed claim in this doc is theoretical.
+2. **Phase 4.1 — cenaiva paths to SQL availability** (~1 hr). `cenaiva-orchestrate` still uses `_shared/availability.ts` (legacy 50-query path); `cenaiva-chat` has its own inline slot logic. Both should call `get_available_slots_cached` for the same 28 ms server-side win the customer flow already gets. AI prompt branches need their own validation.
+3. **Phase 8 — marketing prerender** (~30 min if pages are clean). Marketing pages (home, pricing, restaurant landing) currently render client-side. Prerender them so first paint = static HTML. Biggest remaining LCP win for ad / SEO traffic. No change to booking surfaces.
+4. **Lazy zod in `@cenaiva/assistant`** (~45 min). ~19 KB gzipped off the initial bundle. Cold-load FCP win.
+5. **Phase 9 — dashboard cleanup** (1–2 days). Convert staff hooks (`useReservations`, `useOverviewStats`, `useStaffRoster`, `useGuests`) to TanStack Query, then wire sidebar prefetch. Customer paths unaffected.
+
+**Concurrency follow-ups removed from this list (now done or deferred):**
+- ~~Compute Small upgrade~~ — left to a single dashboard click when production traffic warrants it. See `CONCURRENCY_PLAN.md`.
+- ~~Phase F (modify_reservation_slot)~~ — shipped 2026-05-08.
+- ~~Phase 10 (edge-cache + batched RPCs + rate limits)~~ — shipped 2026-05-08 as Phases 10a/b/c/d.
 
 **Environment / credentials:**
 - Repo root: `/Users/mark_habbi/Seatly-12` (monorepo, web app at `apps/web`).
-- Supabase CLI v2.98.1 is installed at `/usr/local/bin/supabase`. You may not have a logged-in session — `supabase migration up` and `supabase functions deploy` will fail without it. If unauthenticated, hand the deploy step back to the user instead of trying to work around it.
-- Postgres migrations live in `supabase/migrations/` and are timestamp-prefixed.
-- Edge functions live in `supabase/functions/`. The shared availability code is in `supabase/functions/_shared/availability.ts`. `cenaiva-chat/index.ts` and possibly `cenaiva-orchestrate/index.ts` have **their own copies** of similar logic — when you change Phase 4, swap them too.
-- Vite dev server: `npm run dev` from the repo root (delegates to `apps/web`).
-- Type-check before claiming a phase is done: `npx tsc --noEmit -p apps/web`.
+- Supabase CLI v2.98.1 at `/usr/local/bin/supabase`, logged in as Mark, Seatly project (`exbjodmnpdiayfzrdyux`) linked.
+- Supabase MCP connected (HTTP transport). Use `mcp__supabase__apply_migration` for DDL, `mcp__supabase__execute_sql` for ad-hoc queries, `mcp__supabase__get_logs` for edge-function latency.
+- Postgres migrations live in `supabase/migrations/`, timestamp-prefixed.
+- Edge functions live in `supabase/functions/`. The shared availability code is in `supabase/functions/_shared/availability.ts`. `cenaiva-chat/index.ts` and `cenaiva-orchestrate/index.ts` have **their own copies** of similar logic and still use the legacy path — Phase 4.1 swaps these.
+- Vite dev server: `npm run dev` from the repo root.
+- Type-check before claiming any phase done: `npx tsc --noEmit -p apps/web`.
+- Parity test: `SUPABASE_URL=… SUPABASE_PUBLISHABLE_KEY=… node tmp-e2e/phase4-availability-parity.mjs`.
 
 **Riskiest moments:**
-- **Phase 1 (TanStack Query migration)** is the largest mechanical change — touches ~10 hooks plus their callsites. Run the dev server and click through Discover → modal → booking → confirm after *each* hook conversion, not just at the end. Preserve each hook's existing return shape exactly so callers don't need edits.
-- **Phase 4 (SQL availability function)** is the biggest correctness risk. The fallback flag (`USE_SQL_AVAILABILITY`) is non-negotiable. Do not delete the old edge-function code path in the same PR as the cutover.
-- **Phase 5 (optimistic navigation)** has a rare race window. Make sure the existing "preview time no longer available" warning in `RestaurantPublicPage.tsx` still fires when the in-flight re-validation comes back negative.
+- **Any change to `get_available_slots`** must be re-validated by the parity script before deploying. The byte-identical contract holds today and must keep holding.
+- **Any change to `useAvailability.ts`** affects every customer flow that lists times. Smoke through Discover → preview modal → booking page → confirm after each edit.
+- **Phase 4.1 (cenaiva swap)** has its own validation surface — the AI consumes slot text in prompt branches. Don't assume parity from the customer-side test covers it.
+- **The modal's calendar probe** fires ~30 parallel RPC calls per modal open (one per day of the visible month, to dot-mark bookable dates). On Compute Nano this is fine but noticeable; if you're chasing further speed, batch this into a single SQL function (`restaurant_available_dates(restaurant_id, party_size, start_date, end_date)` returning a date[]).
 
 **Testing surface (run before marking any phase done):**
 - `npx tsc --noEmit -p apps/web` — must pass.
-- Manual customer flow: Discover → click restaurant card → preview modal opens → pick non-default time → Continue → booking page shows the picked time/date/party → step through Menu and Checkout. Then a real reservation insert in a test restaurant.
-- For Phase 3 (indexes): `EXPLAIN ANALYZE` the two queries the availability function runs (the `reservations` predicate and the `shifts` predicate) — should switch from seq scan to index scan.
-- For Phase 4: side-by-side comparison test described above.
+- Manual customer flow: Discover → click card → modal opens with today's date, party 2, closest-to-now time pre-picked; popover shows full available time list; change date/party → "Loading…" appears, then list updates; Continue → booking page shows the picked slot → step through Menu and Checkout; complete a real reservation insert in a test restaurant.
+- Parity: `node tmp-e2e/phase4-availability-parity.mjs` — must show 18/18 pass.
+- DB latency: `EXPLAIN ANALYZE SELECT public.get_available_slots(...)` — should be ~25–35ms.
+- Edge function latency: `mcp__supabase__get_logs --service edge-function` — used by AI flows, should still be 150–500ms.
 
 **When stuck or uncertain, stop and surface the question** rather than guess at booking semantics. Speed is the only goal; integrity is the line.
 
@@ -127,18 +161,24 @@ Make clicks feel instant by warming the cache during browse.
 
 ## Phase 4 — Single-shot SQL availability function  ·  ~1 hr  ·  no FE dependency
 
-Collapse N+1 round trips in the edge function to a single RPC.
+Collapse N+1 round trips in the edge function to a single RPC. **Customer endpoint shipped; cenaiva-* deferred to Phase 4.1.**
 
-- [ ] New migration `supabase/migrations/20260508000100_get_available_slots.sql`
-- [ ] Port slot-building logic from `supabase/functions/_shared/availability.ts`:
-  - [ ] Timezone resolution + hours_json lookup
-  - [ ] Special-day / blackout handling
-  - [ ] Slot enumeration + capacity rollup
-  - [ ] Reuse existing `find_available_table_group` SQL function
-- [ ] Edge function `get-availability/index.ts` becomes thin wrapper, gated by `USE_SQL_AVAILABILITY` env flag (keep old path as fallback for one release)
-- [ ] Side-by-side comparison test: 3 real restaurants × today/tomorrow × party 2/4/8 → byte-identical slot lists
-- [ ] Same swap for `cenaiva-chat/index.ts` and any duplicates in `cenaiva-orchestrate`
-- [ ] Deploy both functions + verify wall-time delta in logs
+- [x] New migration `supabase/migrations/20260508000600_get_available_slots.sql` (plus 3 plpgsql helpers).
+- [x] Ported slot-building logic from `supabase/functions/_shared/availability.ts:60-308`:
+  - [x] Timezone resolution + hours_json lookup (special-day precedence)
+  - [x] Closure-day early-return with `closureUnavailableMessage` parity
+  - [x] Slot enumeration + capacity rollup (per-shift, capped at 48)
+  - [x] Reuse existing `find_available_table_group` SQL function (one pass)
+- [x] Edge function `get-availability/index.ts` flag-gated by `USE_SQL_AVAILABILITY` env. Old path stays for rollback (one release).
+- [x] Side-by-side parity script `tmp-e2e/phase4-availability-parity.mjs` — 3 restaurants × today/tomorrow × party 2/4/8 = 18/18 byte-identical (`assert.deepStrictEqual`). Ran with flag OFF (legacy HTTP vs RPC) and again post-flip (both sides on SQL).
+- [x] Deployed + flag flipped (`supabase secrets set USE_SQL_AVAILABILITY=1`). Server-side SQL execution: **28.5ms** via `EXPLAIN ANALYZE`. Edge function execution_time_ms in logs: ~150–500ms (down from 1.5–9.0s on legacy v56 deployment).
+- [ ] **Phase 4.1 (deferred):** Same swap for `cenaiva-orchestrate` (uses `_shared/availability.ts` directly) and `cenaiva-chat/index.ts` (its own inline slot logic). AI/voice paths — separate validation surface; wait for Phase 4 to bake before doing.
+
+**Subtle ports for the byte-identical contract** (notes for Phase 4.1 to match):
+- `display_time` is formatted in TS (`toLocaleTimeString("en-US", { timeZone, hour: "numeric", minute: "2-digit", hour12: true })`) because V8/ICU emits a NARROW NO-BREAK SPACE (U+202F) between time and AM/PM that PG's `to_char` would replace with a regular space.
+- Top-level `floor_capacity` uses `SUM(capacity) WHERE is_active=true` (matching the wrapper's `getFloorCapacity`). The party-size guard message uses `restaurant_floor_capacity()` RPC (matching inner availability.ts). They usually agree but can diverge when tables are `status='blocked'`.
+- `duration_minutes` per slot is `shift.turn_time_minutes ?? 90` (the wrapper overrides `settings_json.turnTimeMinutes`).
+- Shifts iterated `ORDER BY id ASC` for deterministic ordering.
 
 ---
 

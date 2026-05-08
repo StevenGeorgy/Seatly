@@ -6,6 +6,7 @@ import {
   formatReservationDate,
   sendReservationNotification,
 } from "../_shared/reservation-notifications.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -197,6 +198,20 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Past reservations cannot be modified" }, 400);
     }
 
+    try {
+      await enforceRateLimit(
+        adminClient,
+        "modify",
+        rateLimitIdentifier(req, reservation.user_profile_id ?? null),
+        { limit: 15, windowSeconds: 60 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return json({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+      }
+      throw e;
+    }
+
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")
       .select("name, timezone, hours_json, settings_json")
@@ -328,50 +343,57 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const { data: tableIds, error: tableError } = await adminClient.rpc("find_available_table_group", {
-      p_restaurant_id: reservation.restaurant_id,
-      p_reserved_at: reservedAtIso,
-      p_party_size: partySize,
-      p_turn_minutes: turnMinutes,
-      p_exclude_reservation_id: reservationId,
-    });
-    const assignedTableIds = Array.isArray(tableIds)
-      ? tableIds.filter((id): id is string => typeof id === "string")
-      : [];
-    if (tableError || assignedTableIds.length === 0) {
-      return json({ error: "That time is no longer available for this party size" }, 409);
-    }
-
     const marker = `[Diner modified booking at ${new Date().toISOString()}]`;
     const previousNotes = reservation.internal_notes?.trim();
     const internalNotes = previousNotes ? `${previousNotes}\n${marker}` : marker;
 
-    const { error: updateError } = await adminClient
+    const { data: modifyRows, error: modifyError } = await adminClient.rpc("modify_reservation_slot", {
+      p_reservation_id: reservationId,
+      p_restaurant_id: reservation.restaurant_id,
+      p_shift_id: selectedShift.id,
+      p_new_reserved_at: reservedAtIso,
+      p_new_party_size: partySize,
+      p_turn_minutes: turnMinutes,
+    });
+
+    if (modifyError) {
+      const code = (modifyError as { code?: string }).code;
+      if (code === "P0001" || code === "23P01") {
+        return json({ error: "That time is no longer available for this party size", unavailable_reason: "slot_taken" }, 409);
+      }
+      if (code === "P0002") {
+        return json({ error: "That time is no longer available for this party size", unavailable_reason: "over_cover_cap" }, 409);
+      }
+      if (code === "P0003") {
+        return json({ error: "No active shift is available at that time" }, 400);
+      }
+      if (code === "P0004") {
+        return json({ error: "Only upcoming reservations can be modified" }, 400);
+      }
+      if (code === "P0005") {
+        return json({ error: "Reservation not found" }, 404);
+      }
+      return json({ error: modifyError.message }, 400);
+    }
+
+    const modifyRow = Array.isArray(modifyRows) ? modifyRows[0] : modifyRows;
+    const nextTableIds: string[] = Array.isArray(modifyRow?.out_table_ids)
+      ? modifyRow.out_table_ids.filter((id: unknown): id is string => typeof id === "string")
+      : [];
+    if (nextTableIds.length === 0) {
+      return json({ error: "That time is no longer available for this party size", unavailable_reason: "slot_taken" }, 409);
+    }
+
+    // Persist non-slot fields the RPC does not touch (special_request, internal_notes).
+    const { error: notesError } = await adminClient
       .from("reservations")
       .update({
-        reserved_at: reservedAtIso,
-        party_size: partySize,
-        shift_id: selectedShift.id,
         special_request: specialRequest || null,
         internal_notes: internalNotes,
         updated_at: new Date().toISOString(),
       })
       .eq("id", reservationId);
-    if (updateError) return json({ error: updateError.message }, 400);
-
-    const { data: reassignedTables, error: assignmentError } = await adminClient.rpc("assign_reservation_tables", {
-      p_reservation_id: reservationId,
-      p_restaurant_id: reservation.restaurant_id,
-      p_reserved_at: reservedAtIso,
-      p_party_size: partySize,
-      p_turn_minutes: turnMinutes,
-    });
-    const nextTableIds = Array.isArray(reassignedTables)
-      ? reassignedTables.filter((id): id is string => typeof id === "string")
-      : [];
-    if (assignmentError || nextTableIds.length === 0) {
-      return json({ error: "Reservation updated, but tables could not be reassigned" }, 409);
-    }
+    if (notesError) return json({ error: notesError.message }, 400);
 
     const guestName =
       reservation.guest_full_name?.trim() ||

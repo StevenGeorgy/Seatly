@@ -79,6 +79,61 @@ Deno.serve(async (req) => {
       return jsonRes({ error: "restaurant_id and date required" }, 400);
     }
 
+    // SPEED_PLAN Phase 4: when USE_SQL_AVAILABILITY=1, the entire slot list is
+    // built by a single Postgres function call (`get_available_slots`). Old TS
+    // path remains for one release as rollback insurance — unset the env to
+    // revert.
+    if (Deno.env.get("USE_SQL_AVAILABILITY") === "1") {
+      const timezoneSql = await getRestaurantTimezone(restaurantId);
+      const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc("get_available_slots_cached", {
+        p_restaurant_id: restaurantId,
+        p_date: date,
+        p_party_size: partySize,
+      });
+      if (rpcError) throw rpcError;
+      const result = (rpcData ?? {}) as {
+        slots?: Array<{
+          shift_id: string;
+          shift_name: string;
+          date_time: string;
+          table_ids?: string[];
+          duration_minutes?: number;
+        }>;
+        floor_capacity?: number | null;
+        configured_hours_window?: string | null;
+        unavailable_reason?: string | null;
+        message?: string | null;
+      };
+      const sqlSlots: PublicAvailabilitySlot[] = (result.slots ?? []).map((slot) => ({
+        shift_id: slot.shift_id,
+        shift_name: slot.shift_name,
+        date_time: slot.date_time,
+        // Format display_time in TS using the same call as the legacy path so
+        // V8's NARROW NO-BREAK SPACE between "7:00" and "PM" matches byte-for-
+        // byte. Doing this in PG would emit a regular space and break parity.
+        display_time: new Date(slot.date_time).toLocaleTimeString("en-US", {
+          timeZone: timezoneSql,
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        }),
+        table_ids: slot.table_ids ?? [],
+        duration_minutes: slot.duration_minutes,
+        floor_capacity: result.floor_capacity ?? undefined,
+      }));
+      const hoursWindow = result.configured_hours_window
+        ?? (sqlSlots.length
+          ? `${sqlSlots[0].display_time} to ${sqlSlots[sqlSlots.length - 1].display_time}`
+          : null);
+      return jsonRes({
+        slots: sqlSlots,
+        floor_capacity: result.floor_capacity ?? null,
+        hours_window: hoursWindow,
+        unavailable_reason: result.unavailable_reason ?? null,
+        message: result.message ?? null,
+      });
+    }
+
     const [availability, timezone, floorCapacity] = await Promise.all([
       getAvailability(restaurantId, date, partySize),
       getRestaurantTimezone(restaurantId),

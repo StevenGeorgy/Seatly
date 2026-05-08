@@ -38,6 +38,11 @@ import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewM
 import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
 import { ScrollWheelPicker } from "@/components/customer/ScrollWheelPicker";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
+import {
+  fetchDisplayAvailabilitySlots,
+  fetchDisplayAvailabilitySlotsForRestaurants,
+  normalizePartySize,
+} from "@/lib/customer/availabilityFilters";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -179,42 +184,6 @@ function distanceMeters(a: GeoPoint, b: GeoPoint): number {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * earthRadius * Math.asin(Math.sqrt(h));
-}
-
-function addDateDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return format(addDays(new Date(year, month - 1, day), days), "yyyy-MM-dd");
-}
-
-async function fetchDisplayAvailabilitySlots(
-  restaurantId: string,
-  date: string,
-  partySize: number,
-  options: { forceRefresh?: boolean } = {},
-): Promise<AvailabilitySlot[]> {
-  const unique: AvailabilitySlot[] = [];
-  const seen = new Set<string>();
-
-  for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
-    const bookingDate = addDateDays(date, offset);
-    const result = await fetchAvailabilitySlots(
-      restaurantId,
-      bookingDate,
-      partySize,
-      { forceRefresh: options.forceRefresh },
-    )
-      .catch(() => ({ slots: [] as AvailabilitySlot[] }));
-    for (const slot of result.slots ?? []) {
-      if (new Date(slot.date_time).getTime() < Date.now()) continue;
-      const key = `${slot.date_time}-${slot.display_time}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      unique.push({ ...slot, booking_date: bookingDate });
-      if (unique.length === 3) break;
-    }
-  }
-
-  return unique;
 }
 
 function priceFromRange(range: number | null | undefined): string {
@@ -1058,6 +1027,7 @@ export default function DiscoverPage() {
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [savedRestaurants, setSavedRestaurants] = useState<Set<string>>(new Set());
   const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapEdgeMode, setMapEdgeMode] = useState(false);
@@ -1074,26 +1044,34 @@ export default function DiscoverPage() {
   const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
   const datePresets = useMemo(() => datePresetOptions(), []);
   const selectedBookingDate = useMemo(() => dateParamFromSelection(dateId, customDate), [customDate, dateId]);
-  const selectedPartySize = Number.parseInt(partySize, 10) || 2;
+  const selectedPartySize = normalizePartySize(partySize);
+  const listingLoading = loading || availabilityLoading;
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (restaurantIds.length === 0) {
-        if (!cancelled) setAvailabilityByRestaurantId({});
+        if (!cancelled) {
+          setAvailabilityByRestaurantId({});
+          setAvailabilityLoading(false);
+        }
         return;
       }
-      const rows = await Promise.all(restaurantIds.map(async (restaurantId) => [
-        restaurantId,
-        await fetchDisplayAvailabilitySlots(restaurantId, selectedBookingDate, selectedPartySize),
-      ] as const));
+      setAvailabilityLoading(true);
+      const map = await fetchDisplayAvailabilitySlotsForRestaurants(
+        restaurantIds,
+        selectedBookingDate,
+        selectedPartySize,
+        time,
+      );
       if (cancelled) return;
-      setAvailabilityByRestaurantId(Object.fromEntries(rows));
+      setAvailabilityByRestaurantId(map);
+      setAvailabilityLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [restaurantIds, selectedBookingDate, selectedPartySize]);
+  }, [restaurantIds, selectedBookingDate, selectedPartySize, time]);
 
   const cards: RestaurantCard[] = useMemo(() => {
     return restaurants.map((restaurant) => adaptRestaurant(
@@ -1104,7 +1082,7 @@ export default function DiscoverPage() {
   }, [availabilityByRestaurantId, restaurants, statsByRestaurantId]);
 
   const filtered = useMemo(() => {
-    let list = cards;
+    let list = cards.filter((r) => r.availableSlots.length > 0);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -1169,6 +1147,7 @@ export default function DiscoverPage() {
     (activePrices.size > 0 ? 1 : 0) +
     (activeFeatures.size > 0 ? 1 : 0) +
     (dateId !== "today" ? 1 : 0) +
+    (time !== getNearestUpcomingHalfHour() ? 1 : 0) +
     (partySize !== "2" ? 1 : 0) +
     (radius !== "anywhere" ? 1 : 0);
 
@@ -1251,6 +1230,7 @@ export default function DiscoverPage() {
       restaurantId,
       selectedBookingDate,
       partyCount,
+      time,
       options,
     );
     setAvailabilityByRestaurantId((prev) => ({
@@ -1272,7 +1252,7 @@ export default function DiscoverPage() {
     const backQuery = isDashboardPreview ? "&back=dashboard" : "";
     const slotDate = bookingDate
       ?? dateParamFromSelection(dateId, customDate);
-    const partyCount = Number.parseInt(String(selectedPartySize), 10) || 2;
+    const partyCount = normalizePartySize(selectedPartySize);
     const navigateToSlot = (
       nextSlot: string,
       nextShiftId: string | undefined,
@@ -1876,7 +1856,7 @@ export default function DiscoverPage() {
         </AnimatePresence>
 
         {/* Loading */}
-        {loading && (
+        {listingLoading && (
           <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <div
@@ -1888,7 +1868,7 @@ export default function DiscoverPage() {
         )}
 
         {/* Empty */}
-        {!loading && filtered.length === 0 && (
+        {!listingLoading && filtered.length === 0 && (
           <div className="mt-16 flex flex-col items-center gap-3 py-16 text-center">
             <div className="flex size-14 items-center justify-center rounded-2xl bg-gold/10">
               <Search className="size-6 text-gold" />
@@ -1902,7 +1882,7 @@ export default function DiscoverPage() {
         )}
 
         {/* Grid view */}
-        {!loading && filtered.length > 0 && view === "grid" && (() => {
+        {!listingLoading && filtered.length > 0 && view === "grid" && (() => {
           const rows = [
             { key: "available", eyebrow: "Curated", title: "Available tonight near you", pool: filtered, preview: featured },
             { key: "date-night", eyebrow: "Curated", title: "Date night picks", pool: filtered, preview: dateNight },
@@ -1971,7 +1951,7 @@ export default function DiscoverPage() {
         })()}
 
         {/* Map view */}
-        {!loading && filtered.length > 0 && view === "map" && (
+        {!listingLoading && filtered.length > 0 && view === "map" && (
           <div className="mt-10 grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,1fr)]">
             <div>
               <div className="flex items-center justify-between">

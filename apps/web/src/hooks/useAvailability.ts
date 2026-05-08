@@ -1,10 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  getSupabaseAnonKey,
-  getSupabaseBrowserClient,
-  getSupabaseProjectUrl,
-  isSupabaseConfigured,
-} from "@/lib/supabase/client";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export type ConflictWindow = { start: Date; end: Date };
 
@@ -68,46 +63,75 @@ function cloneAvailabilityResult(result: AvailabilityResult): AvailabilityResult
   };
 }
 
+// Calls `get_available_slots_cached` directly via PostgREST. The cached
+// wrapper checks an UNLOGGED cache table for results computed within the last
+// 7 seconds; on miss it computes fresh and upserts. Drops the same restaurant/
+// date/party request from many concurrent users into one DB compute, which is
+// the primary lever for raising the concurrent-availability ceiling.
 async function fetchAvailabilityFromNetwork(
   restaurantId: string,
   date: string,
   partySize: number,
 ): Promise<AvailabilityResult> {
-  const url = `${getSupabaseProjectUrl()}/functions/v1/get-availability?restaurant_id=${restaurantId}&date=${date}&party_size=${partySize}`;
-
-  let token: string | null = null;
-  if (isSupabaseConfigured()) {
-    const client = getSupabaseBrowserClient();
-    const { data } = await client.auth.getSession();
-    token = data.session?.access_token ?? null;
-  }
-
-  const res = await fetch(url, {
-    headers: {
-      apikey: getSupabaseAnonKey(),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+  const client = getSupabaseBrowserClient();
+  const { data, error } = await client.rpc("get_available_slots_cached", {
+    p_restaurant_id: restaurantId,
+    p_date: date,
+    p_party_size: partySize,
   });
 
-  const json = await res.json() as {
-    slots?: AvailabilitySlot[];
-    floor_capacity?: number;
-    error?: string;
-    unavailable_reason?: AvailabilityUnavailableReason | null;
-    message?: string | null;
-  };
-  const nextFloorCapacity =
-    typeof json.floor_capacity === "number"
-      ? json.floor_capacity
-      : json.slots?.find((slot) => typeof slot.floor_capacity === "number")?.floor_capacity ?? null;
-  const unavailableReason = json.unavailable_reason ?? null;
-  const message = typeof json.message === "string" ? json.message : null;
-
-  if (json.error) {
-    return { slots: [], floorCapacity: nextFloorCapacity, error: json.error, unavailableReason, message };
+  if (error) {
+    return {
+      slots: [],
+      floorCapacity: null,
+      error: error.message,
+      unavailableReason: null,
+      message: null,
+    };
   }
 
-  return { slots: json.slots ?? [], floorCapacity: nextFloorCapacity, error: null, unavailableReason, message };
+  const result = (data ?? {}) as {
+    slots?: Array<{
+      shift_id: string;
+      shift_name: string;
+      date_time: string;
+      table_ids?: string[] | null;
+      duration_minutes?: number;
+    }>;
+    floor_capacity?: number | null;
+    unavailable_reason?: AvailabilityUnavailableReason | null;
+    message?: string | null;
+    timezone?: string | null;
+  };
+
+  const timezone = result.timezone || "UTC";
+  const floorCapacity = typeof result.floor_capacity === "number" ? result.floor_capacity : null;
+
+  // display_time stays formatted in the browser using V8's en-US time
+  // formatter (the same call the edge function used) so the output matches
+  // what users were seeing before this swap.
+  const slots: AvailabilitySlot[] = (result.slots ?? []).map((slot) => ({
+    shift_id: slot.shift_id,
+    shift_name: slot.shift_name,
+    date_time: slot.date_time,
+    display_time: new Date(slot.date_time).toLocaleTimeString("en-US", {
+      timeZone: timezone,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }),
+    table_ids: slot.table_ids ?? [],
+    duration_minutes: slot.duration_minutes,
+    floor_capacity: floorCapacity ?? undefined,
+  }));
+
+  return {
+    slots,
+    floorCapacity,
+    error: null,
+    unavailableReason: result.unavailable_reason ?? null,
+    message: result.message ?? null,
+  };
 }
 
 export async function fetchAvailabilitySlots(
@@ -205,6 +229,30 @@ export function useAvailability() {
     fetchSlots,
     clearSlots,
   };
+}
+
+/**
+ * Returns the set of dates within [startDate, endDate] (inclusive, max 62
+ * days) that have ≥1 available slot for the given party size. Used by the
+ * preview modal calendar to disable dates that have nothing — replaces the
+ * old per-day fanout (~30 parallel `fetchAvailabilitySlots` calls per modal
+ * open).
+ */
+export async function fetchAvailableDateSet(args: {
+  restaurantId: string;
+  partySize: number;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+}): Promise<Set<string>> {
+  const client = getSupabaseBrowserClient();
+  const { data, error } = await client.rpc("restaurant_available_dates", {
+    p_restaurant_id: args.restaurantId,
+    p_party_size: Math.max(1, Math.floor(args.partySize)),
+    p_start_date: args.startDate,
+    p_end_date: args.endDate,
+  });
+  if (error || !Array.isArray(data)) return new Set();
+  return new Set(data.filter((d): d is string => typeof d === "string"));
 }
 
 /**

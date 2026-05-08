@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
-import { addDays, endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
+import { endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
 import {
   Bookmark,
   CalendarDays,
@@ -25,7 +25,7 @@ import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialL
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
 import {
-  fetchAvailabilitySlots,
+  fetchAvailableDateSet,
   filterSlotsByConflicts,
   useAvailability,
   useDinerConflictWindows,
@@ -615,6 +615,11 @@ export function RestaurantPreviewModal({
     }
   };
 
+  // Force a fresh DB hit every time the modal mounts or the user changes the
+  // date / party size. The 45s in-memory cache exists to make Discover's
+  // background prefetch + repeat opens cheap, but inside the modal the user
+  // expects each interaction to re-check the database — both so the data is
+  // current and so the "Loading…" indicator appears as visible feedback.
   useEffect(() => {
     if (!restaurant) {
       clearSlots();
@@ -625,6 +630,7 @@ export function RestaurantPreviewModal({
       restaurant.id,
       previewDate,
       selectedPartySize,
+      { forceRefresh: true },
     );
   }, [clearSlots, fetchSlots, previewDate, restaurant, selectedPartySize]);
 
@@ -645,24 +651,25 @@ export function RestaurantPreviewModal({
     let cancelled = false;
     const monthStart = startOfMonth(calendarMonth);
     const monthEnd = endOfMonth(calendarMonth);
-    const days: string[] = [];
-    for (let cursor = monthStart; cursor <= monthEnd; cursor = addDays(cursor, 1)) {
-      if (cursor >= startOfToday()) days.push(dateKey(cursor));
+    const today = startOfToday();
+    const rangeStart = monthStart < today ? today : monthStart;
+    if (rangeStart > monthEnd) {
+      setAvailableDateKeys(new Set());
+      setDateAvailabilityLoading(false);
+      return;
     }
 
     void Promise.resolve().then(() => {
       if (!cancelled) setDateAvailabilityLoading(true);
     });
-    void Promise.all(
-      days.map(async (day) => {
-        const result = await fetchAvailabilitySlots(restaurant.id, day, selectedPartySize);
-        return result.slots.length > 0 ? day : null;
-      }),
-    )
+    void fetchAvailableDateSet({
+      restaurantId: restaurant.id,
+      partySize: selectedPartySize,
+      startDate: dateKey(rangeStart),
+      endDate: dateKey(monthEnd),
+    })
       .then((availableDays) => {
-        if (!cancelled) {
-          setAvailableDateKeys(new Set(availableDays.filter((day): day is string => Boolean(day))));
-        }
+        if (!cancelled) setAvailableDateKeys(availableDays);
       })
       .catch(() => {
         if (!cancelled) setAvailableDateKeys(new Set());
@@ -702,6 +709,7 @@ export function RestaurantPreviewModal({
       });
     });
   }, [availabilityLoading, availableSlots, availableTimes, preferredAvailableSlot, restaurant, staleAvailabilityNotice, timeState.restaurantId, timeState.time]);
+
 
   useEffect(() => {
     if (!restaurant) return;
@@ -1175,14 +1183,17 @@ export function RestaurantPreviewModal({
                         <PopoverTrigger asChild>
                           <button
                             type="button"
-                            disabled={availableTimes.length === 0}
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
                           >
                             <Clock className="size-4 text-gold" />
                             <span>
                               <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Time</p>
                               <p className="mt-1 text-sm text-white">
-                                {selectedTime ? shortTime(selectedTime) : "Pick a time"}
+                                {availabilityLoading
+                                  ? "Loading…"
+                                  : selectedTime
+                                    ? shortTime(selectedTime)
+                                    : "No times"}
                               </p>
                             </span>
                           </button>
@@ -1202,7 +1213,7 @@ export function RestaurantPreviewModal({
                             />
                           ) : (
                             <p className="px-2 py-3 text-center text-xs text-text-muted">
-                              {unavailableHeadline}
+                              {availabilityLoading ? "Checking availability…" : unavailableHeadline}
                             </p>
                           )}
                         </PopoverContent>

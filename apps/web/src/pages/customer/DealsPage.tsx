@@ -49,6 +49,11 @@ import {
   RestaurantPreviewModal,
   type RestaurantPreviewSummary,
 } from "@/components/customer/RestaurantPreviewModal";
+import {
+  fetchDisplayAvailabilitySlots,
+  fetchDisplayAvailabilitySlotsForRestaurants,
+  normalizePartySize,
+} from "@/lib/customer/availabilityFilters";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -217,42 +222,6 @@ function priceFromRange(range?: number | null): string {
 
 function restaurantInitials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).join(" ").toUpperCase() || "RESTAURANT";
-}
-
-function addDateDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return format(addDays(new Date(year, month - 1, day), days), "yyyy-MM-dd");
-}
-
-async function fetchDisplayAvailabilitySlots(
-  restaurantId: string,
-  date: string,
-  partySize: number,
-  options: { forceRefresh?: boolean } = {},
-): Promise<AvailabilitySlot[]> {
-  const unique: AvailabilitySlot[] = [];
-  const seen = new Set<string>();
-
-  for (let offset = 0; offset < 7 && unique.length < 3; offset += 1) {
-    const bookingDate = addDateDays(date, offset);
-    const result = await fetchAvailabilitySlots(
-      restaurantId,
-      bookingDate,
-      partySize,
-      { forceRefresh: options.forceRefresh },
-    )
-      .catch(() => ({ slots: [] as AvailabilitySlot[] }));
-    for (const slot of result.slots ?? []) {
-      if (new Date(slot.date_time).getTime() < Date.now()) continue;
-      const key = `${slot.date_time}-${slot.display_time}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      unique.push({ ...slot, booking_date: bookingDate });
-      if (unique.length === 3) break;
-    }
-  }
-
-  return unique;
 }
 
 function adaptRestaurantPreview(
@@ -1053,6 +1022,7 @@ export default function DealsPage() {
   const [previewAvailabilityNotice, setPreviewAvailabilityNotice] = useState<string | null>(null);
   const [favoriteRestaurants, setFavoriteRestaurants] = useState<Set<string>>(new Set());
   const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [userLocation, setUserLocation] = useState<GeoPoint | null>(null);
   const [locationStatus, setLocationStatus] = useState<"idle" | "requesting" | "allowed" | "denied" | "unsupported">(
     () => ("geolocation" in navigator ? "idle" : "unsupported"),
@@ -1060,6 +1030,7 @@ export default function DealsPage() {
   const searchSentinelRef = useRef<HTMLDivElement | null>(null);
 
   const loading = promotionsLoading || eventsLoading;
+  const listingLoading = loading || availabilityLoading;
   const restaurantIds = useMemo(() => publicRestaurants.map((restaurant) => restaurant.id), [publicRestaurants]);
   const { statsByRestaurantId } = useRestaurantPreviewStatsByRestaurantIds(restaurantIds);
   const datePresets = useMemo(() => datePresetOptions(), []);
@@ -1067,26 +1038,33 @@ export default function DealsPage() {
     () => dateParamFromSelection(dateId, customDate),
     [customDate, dateId],
   );
-  const selectedPartySize = Number.parseInt(partySize, 10) || 2;
+  const selectedPartySize = normalizePartySize(partySize);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       if (restaurantIds.length === 0) {
-        if (!cancelled) setAvailabilityByRestaurantId({});
+        if (!cancelled) {
+          setAvailabilityByRestaurantId({});
+          setAvailabilityLoading(false);
+        }
         return;
       }
-      const rows = await Promise.all(restaurantIds.map(async (restaurantId) => [
-        restaurantId,
-        await fetchDisplayAvailabilitySlots(restaurantId, selectedBookingDate, selectedPartySize),
-      ] as const));
+      setAvailabilityLoading(true);
+      const map = await fetchDisplayAvailabilitySlotsForRestaurants(
+        restaurantIds,
+        selectedBookingDate,
+        selectedPartySize,
+        time,
+      );
       if (cancelled) return;
-      setAvailabilityByRestaurantId(Object.fromEntries(rows));
+      setAvailabilityByRestaurantId(map);
+      setAvailabilityLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [restaurantIds, selectedBookingDate, selectedPartySize]);
+  }, [restaurantIds, selectedBookingDate, selectedPartySize, time]);
 
   const events: DemoEvent[] = useMemo(() => {
     const rows = [
@@ -1109,10 +1087,12 @@ export default function DealsPage() {
   const detailParam = searchParams.get("detail");
 
   const filtered = useMemo(() => {
-    let list = events.map((e) => ({
-      ...e,
-      _price: PRICE_FOR_TYPE[e.type] ?? "$$",
-    }));
+    let list = events
+      .filter((e) => e.availableSlots.length > 0)
+      .map((e) => ({
+        ...e,
+        _price: PRICE_FOR_TYPE[e.type] ?? "$$",
+      }));
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -1349,6 +1329,7 @@ export default function DealsPage() {
       restaurantId,
       selectedBookingDate,
       partyCount,
+      time,
       options,
     );
     setAvailabilityByRestaurantId((prev) => ({
@@ -1359,10 +1340,11 @@ export default function DealsPage() {
   };
 
   const bookEventSlot = async (e: DemoEvent, slot: AvailabilitySlot) => {
-    const partyCount = Number.parseInt(partySize, 10) || 2;
+    const partyCount = normalizePartySize(partySize);
+    const slotDate = slot.booking_date ?? selectedBookingDate;
     const refreshed = await fetchAvailabilitySlots(
       e.restaurantId,
-      slot.date_time.slice(0, 10),
+      slotDate,
       partyCount,
       { forceRefresh: true },
     ).catch(() => null);
@@ -1382,7 +1364,7 @@ export default function DealsPage() {
       slot: refreshedSlot.date_time,
       time: formatCompactTimeLabel(refreshedSlot.display_time),
       people: String(partyCount),
-      date: slot.booking_date ?? selectedBookingDate,
+      date: slotDate,
       source: e.detail.source,
       item: e.detail.id,
     });
@@ -1865,7 +1847,7 @@ export default function DealsPage() {
         </AnimatePresence>
 
         {/* Loading */}
-        {loading && (
+        {listingLoading && (
           <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <div
@@ -1877,7 +1859,7 @@ export default function DealsPage() {
         )}
 
         {/* Empty */}
-        {!loading && filtered.length === 0 && (
+        {!listingLoading && filtered.length === 0 && (
           <div className="mt-16 flex flex-col items-center gap-3 py-16 text-center">
             <div className="flex size-14 items-center justify-center rounded-2xl bg-gold/10">
               <Tag className="size-6 text-gold" />
@@ -1900,7 +1882,7 @@ export default function DealsPage() {
         )}
 
         {/* Grid view */}
-        {!loading && filtered.length > 0 && view === "grid" && (() => {
+        {!listingLoading && filtered.length > 0 && view === "grid" && (() => {
           const rows = [
             {
               key: "tonight" as const,
@@ -1990,7 +1972,7 @@ export default function DealsPage() {
         })()}
 
         {/* Map view — layout matches Discover (sticky map, list scrolls with page) */}
-        {!loading && filtered.length > 0 && view === "map" && (
+        {!listingLoading && filtered.length > 0 && view === "map" && (
           <div className="mt-10 grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(420px,1fr)]">
             <div>
               <div className="flex items-center justify-between">
@@ -2220,7 +2202,7 @@ export default function DealsPage() {
                   slot,
                   shiftId: shiftId ?? null,
                   date: slotDate,
-                  partySize: Number.parseInt(selectedPartySize, 10) || 2,
+                  partySize: normalizePartySize(selectedPartySize),
                 },
               },
             }

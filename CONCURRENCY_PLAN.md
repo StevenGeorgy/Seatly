@@ -145,43 +145,203 @@ What to do before resuming:
 
 ---
 
-## Phase F — Atomic `modify_reservation_slot` RPC  ·  ~30-45 min  ·  needs Phase B
+## Phase F — Atomic `modify_reservation_slot` RPC  ·  SHIPPED 2026-05-08
 
-`supabase/functions/modify-reservation/index.ts` (L331, L362) still uses the old `find_available_table_group` + `assign_reservation_tables` pair. Semantics differ from `book_reservation`: it must **release** the existing reservation's tables and **reassign** to a new slot, not insert a new reservation. Without an atomic RPC, two concurrent modifies for adjacent slots can race; the exclusion constraint catches the bad case but the user sees a raw 500.
+`supabase/functions/modify-reservation/index.ts` now goes through a single atomic RPC. Same advisory-lock key as `book_reservation`, so concurrent modifies and fresh bookings on the same slot serialize cleanly. Exclusion-constraint violations and no-table outcomes return clean 409s instead of raw 500s.
 
-- [ ] New migration `supabase/migrations/<ts>_modify_reservation_rpc.sql`:
-  - [ ] Function `public.modify_reservation_slot(p_reservation_id uuid, p_new_reserved_at timestamptz, p_new_party_size int, p_shift_id uuid, p_turn_minutes int)` returning the same shape as `book_reservation`.
-  - [ ] Inside one transaction:
-    1. `pg_advisory_xact_lock` keyed on `(restaurant_id, p_new_reserved_at)`. Use the *same* hash function as `book_reservation` so modifies and fresh bookings serialize against each other.
-    2. Mark current `reservation_tables` rows for this reservation as `released_at = now()` (so the exclusion constraint stops considering them).
-    3. Cover-cap recheck for the new slot.
-    4. `find_available_table_group` for the new slot, **excluding** the just-released rows from "in use" set (handled automatically by the exclusion-constraint partial index `WHERE released_at IS NULL`).
-    5. Insert new `reservation_tables` rows.
-    6. Update the reservation row (`reserved_at`, `party_size`, `shift_id`, `duration_minutes`).
-  - [ ] Raises matching error codes: `P0001` (no_table), `P0002` (over_cover_cap), `P0003` (shift_not_found).
-  - [ ] Grants `EXECUTE` to `service_role, authenticated`.
-- [ ] `supabase/functions/modify-reservation/index.ts`:
-  - [ ] Replace L331 `find_available_table_group` + L362 `assign_reservation_tables` block with a single `supabase.rpc('modify_reservation_slot', { ... })` call.
-  - [ ] Translate `P0001`/`23P01` → `409 slot_taken`, `P0002` → `409 over_cover_cap`, `P0003` → 400.
-  - [ ] Existing comm-log + status-update logic stays unchanged.
-- [ ] Smoke test: pick a real reservation, modify to a different slot, verify old `reservation_tables` rows have `released_at` set and new rows exist with the right `slot_range`.
+- [x] Migration `supabase/migrations/20260508000800_modify_reservation_rpc.sql` applied (function `public.modify_reservation_slot(...)`).
+- [x] `modify-reservation/index.ts` swapped from `find_available_table_group` + reservation update + `assign_reservation_tables` to a single `rpc('modify_reservation_slot', ...)` call.
+- [x] Error-code mapping: P0001/23P01 → 409 slot_taken, P0002 → 409 over_cover_cap, P0003 → 400 shift_not_found, P0004 → 400 not_modifiable, P0005 → 404. Notes/special-request update kept as a separate `update reservations` since the RPC only touches slot fields.
+- [x] Smoke test (book → modify → assertions → cleanup) passed against the live project. Released_at set on old row, new slot_range correct on new row, reservation row updated.
+- Note: OUT columns are prefixed `out_` (out_reservation_id, out_table_ids, out_duration) to avoid 42702 ambiguity with `reservation_tables.reservation_id` inside the function body.
+
+### Original plan (kept for reference)
+
+- [x] New migration `supabase/migrations/<ts>_modify_reservation_rpc.sql`:
+  - [x] Function `public.modify_reservation_slot(...)` returning `(out_reservation_id, out_table_ids, out_duration)`.
+  - [x] Advisory lock on `(restaurant_id, p_new_reserved_at)` using the same hash as `book_reservation`.
+  - [x] Release-then-update-then-reinsert flow inside one transaction.
+  - [x] Raises P0001/P0002/P0003/P0004/P0005 + 22023.
+  - [x] Grants EXECUTE to service_role, authenticated.
+- [x] `supabase/functions/modify-reservation/index.ts` migrated to the RPC; error mapping in place.
+- [x] Smoke test passed (see status note above).
 
 **Why this matters:** the exclusion constraint already prevents the unsafe outcome (overlapping rows with the same table). Phase F upgrades the failure mode from "raw 500" to "clean 409 with a 'pick another time' message." Polish, not safety.
 
 ---
 
-## Capacity recommendation — upgrade to Compute Small
+## Capacity status — post Phase 10 (2026-05-08)
 
-Independent of the code-level work in Phases A-F, the practical concurrency ceiling is the **Supabase compute tier**, not the booking code. The current Nano tier (~60 direct DB connections) caps sustained concurrent transactions at the same level.
+**Practical concurrent-user ceiling: ~2250** active Discover/Deals browsers on Micro compute, p95 < 1 s, 0 failures. Up from 24 pre-Phase-10. The booking write path stays correct under any concurrency level via the atomic RPCs + exclusion constraint; the ceiling above is the *availability read* path, which is what determines how many users can simultaneously browse and pick a slot.
 
-- **Current:** Nano. Sufficient for everyday traffic. The Phase E load test (20 simultaneous bookings on one slot) jammed this tier — pool exhausted, 504 cascade, ~5 min DB lockup.
-- **Recommended:** **Compute Small (~$10/mo on Pro plan, ~200 connections)**. Removes the practical capacity ceiling for any realistic restaurant-booking traffic.
-- **When to upgrade:**
-  - Before re-running any load tests.
-  - If you ever see PostgREST `503 BOOT_ERROR` or sustained 504s in production logs.
-  - If realistic peak concurrency (Friday 6pm bookings across all restaurants) starts approaching ~30+ in-flight transactions.
+Phase 10 (cache, batched listing, batched dates, rate limits) is fully shipped. Phase F (atomic modify RPC) is fully shipped. Compute is on Micro; Small/Large are the next steps when launch traffic justifies them.
 
-This isn't a code task — it's a single Supabase dashboard click. Worth flagging as the cheapest concurrency unlock available.
+### CDN deliberation (2026-05-08) — declined for now
+
+After Levers 1 + 3 shipped, the next biggest concurrency lever was a CDN (Cloudflare) in front of availability reads. After examining the tradeoffs against this app's situation it was deferred. Documenting the reasoning so a future agent doesn't re-litigate from scratch.
+
+**What CDN would buy:**
+- Practical concurrent-user ceiling on Micro: from ~2,250 to ~50,000–100,000 (CDN edge absorbs 95%+ of availability reads with 20 s TTL).
+- Cache HIT latency for Toronto users: ~80–150 ms → ~20–50 ms.
+- Free DDoS protection + basic WAF (Cloudflare Free tier, $0/mo).
+
+**What CDN would cost (non-cash):**
+- New trust boundary — Cloudflare TLS-terminates and sees plaintext traffic.
+- Misconfiguration footgun — wrong cache-key or accidentally-cached booking POST = data leak. Mitigation: explicit allow-list page rules.
+- PIPEDA / Canadian data residency wrinkle — Cloudflare Free logs land in US infra. Hard residency control needs Enterprise (~$5–15k/yr).
+- New SPOF — Cloudflare outages now also take the app down.
+- Origin still discoverable — `xxx.supabase.co` resolves directly unless additional firewall rules are configured.
+- Slight accuracy degradation — CDN 20 s TTL stacks with PG 20 s TTL → worst-case stale availability window grows from ~20 s to ~40 s. Booking correctness is unchanged (atomic RPC + exclusion constraint own correctness regardless of cache state).
+
+**Why declined for now:**
+- Current ceiling (~2,250) is 50–100× realistic near-term traffic for a Canadian restaurant booking app.
+- Compute upgrade (Small ~$5/mo extra after credit, Large ~$100/mo) is a five-minute click that moves the ceiling without any of CDN's tradeoffs.
+- Booking accuracy is a stated priority; the staleness-window stack is a small but real degradation.
+- No production abuse signal (DDoS, scraping) observed.
+
+**Revisit when any of these become true:**
+1. Real production traffic regularly approaches 1,500+ concurrent users.
+2. Automated abuse / scraping / credential stuffing shows up in logs.
+3. App expands to serve users far from Toronto (US, Europe, international).
+
+When CDN is added, start on **Cloudflare Free**, allow-list cache only the `get_available_slots*` POST endpoints, never cache booking writes, and document a DNS-bypass runbook for outages.
+
+### Phase 10 follow-ups: Lever 1 + Lever 3 shipped (2026-05-08)
+
+After Phase 10d, eight further code-level levers were enumerated. Two were shipped:
+
+- **Lever 1: TTL bump 7 s → 20 s** on `get_available_slots_cached`. More cache hits over time. Worst-case staleness: a freshly-booked slot stays visible in browse views for up to 20 s; the booking write is atomic so this just shows up as 409 slot_taken on collision, not a corrupt double-booking.
+- **Lever 3: Compact batched RPC** `get_available_slots_for_restaurants_compact(uuid[], text, int)`. Returns first 3 future slots per restaurant, strips `table_ids`. Migration `20260508001300_batched_availability_compact.sql`. Wire payload **26 KB → 1.7 KB (15.7× smaller)**. `availabilityFilters.ts` swapped to the compact variant.
+
+**k6 finding (be honest):** at Micro compute, the ceiling is essentially unchanged (~600–750 VUs batched = 1800–2250 effective lookups at p95 < 1 s). The bottleneck at this tier is CPU/connections, not network — so the 16× wire-byte reduction doesn't move k6 numbers. The win is real for mobile users on 3G/4G where bandwidth and parse time matter, and for cache hit rate over a 20 s window.
+
+**Deferred (not shipped):**
+- **Lever 2 (CDN/HTTP cache headers):** browser calls go direct to PostgREST, which Supabase manages — we can't set custom `Cache-Control` headers without routing through a worker or back through the edge function. 2–4 hr lift, not 30 min. Left for when concurrency demand justifies it.
+- **Lever 4 (PG connection tuning):** `max_connections` and the PostgREST pool are compute-tier-managed on Supabase; can't be tuned without upgrading the tier.
+- **Levers 5–8** (pre-warm, replicas, cross-tab dedup, service worker): noted but not built.
+
+### Phase 10d shipped — application-level rate limits live (2026-05-08)
+
+- New `check_rate_limit(text, int, int) → boolean` Postgres function backed by an UNLOGGED `rate_limit_buckets` table (fixed-window counter, opportunistic cleanup of >1h-old buckets at 1% probability per call).
+- Edge function helpers: `enforceRateLimit` + `rateLimitIdentifier` in `supabase/functions/_shared/rate-limit.ts`.
+- Wired into:
+  - `create-public-booking`: 20 attempts / 60 s per IP (or per user_id when logged in).
+  - `modify-reservation`: 15 attempts / 60 s per IP (or per user_profile_id of the reservation owner).
+- Smoke test: 25 sequential booking attempts from one IP → first 20 went through (and got their normal 400 from invalid input), next 5 returned 429 with `unavailable_reason: "rate_limited"`.
+- Important: Supabase edge network strips `x-forwarded-for` and substitutes the real upstream IP, so attackers can't spoof bucket identity.
+- Migration: `20260508001200_rate_limit.sql`.
+
+### Current ceilings — post Phase 10c (batched modal date RPC) on Micro compute
+
+- **Modal calendar (date range, 31 days):** 50 VUs at p95 891 ms. Higher cold-path latency (31× day probes per call) but fires only once per modal calendar open.
+- k6 date-range ramp:
+  - 50 VUs / 30s: p95 891 ms, 40 rps, 0.24% errors.
+  - 100 VUs / 30s: p95 1.31 s, 80 rps, 0 errors.
+  - 250 VUs / 30s: p95 1.89 s, 172 rps, 0 errors.
+- Note: this endpoint is rarer than 10a/10b — only fires when a user opens the calendar in the preview modal.
+
+### Previous ceiling — post Phase 10b (batched listing RPC) on Micro compute
+
+- **Batched RPC ceiling:** 500-750 VUs at p95<1s, where each VU fetches 3 restaurants per call. Effective concurrent restaurant-availability lookups: **1500-2250**. Up from 24 pre-cache.
+- k6 batched ramp:
+  - 250 VUs / 30s: p95 394 ms, 208 rps, 0 failures.
+  - 500 VUs / 30s: p95 568 ms, 399 rps, 0 failures.
+  - 750 VUs / 30s: p95 1.3 s, 465 rps, 0 failures (just over threshold).
+- Throughput: 465 batched rps × 3 restaurants = **1395 effective lookups/s** (was 22 pre-cache → 63× improvement).
+- Discover/Deals page-load cost: from N RPCs (one per visible card) to 1 RPC for the whole list.
+
+### Previous ceiling — post Phase 10a (single-RPC cached) on Micro compute
+
+- **Single-RPC ceiling:** ~750–1000 VUs at p95<1s.
+- k6 ramp on the cached endpoint:
+  - 25 VUs / 30s: p95 129 ms, 23 rps, 0 failures.
+  - 100 VUs / 30s: p95 95 ms, 92 rps, 0 failures.
+  - 250 VUs / 30s: p95 110 ms, 223 rps, 0 failures.
+  - 500 VUs / 30s: p95 263 ms, 422 rps, 0 failures.
+  - 750 VUs / 30s: p95 304 ms, 612 rps, 0 failures.
+  - 1000 VUs / 30s: p95 1.12 s, 681 rps, 0 failures (just over threshold).
+  - 1500 VUs / 30s: p95 2.47 s, 698 rps, 0 failures (degrades but does not fail).
+- Throughput plateau: ~700 rps — likely PostgREST/connection-pool limit on Micro. Lifts on Small/Medium.
+- Cache effectiveness: SQL miss 26 ms vs hit 0.08 ms (320× speedup at the function level).
+
+### Pre-cache historical ceiling (kept for context)
+
+- Pre-cache one-number answer was **24 concurrent active availability users** on Nano with `p95 < 1s`.
+- This does **not** mean only 24 registered users or 24 monthly users. It means 24 users actively triggering availability reads at the same time on the current direct RPC path.
+- **Current project setting:** `max_connections = 60`, with `3` reserved for superuser connections. Treat this as roughly **57 usable direct DB connections** before Supabase services and PostgREST pools consume their share.
+- **Known failure point:** the Phase E test with 20 simultaneous bookings on the same slot jammed Nano: connection pool exhaustion, 504 cascade, one 503 BOOT_ERROR, ~5 min lockup.
+- **Correctness:** double-booking is still prevented by `book_reservation` + `reservation_tables_no_overlap`. The risk is request timeout/capacity, not corrupt reservations.
+
+### How we got from 24 to ~2250 concurrent users — Phase 10 complete
+
+Phase 10 shipped 2026-05-08 (compute upgraded Nano → Micro the same day). Status of each step:
+
+1. **Cache availability for 5-10 seconds.** ✅ Phase 10a.
+   - `availability_cache` UNLOGGED table + `get_available_slots_cached` wrapper, 7s TTL, opportunistic 5min prune.
+   - SQL miss 26 ms, hit 0.08 ms (320× speedup at the function level).
+2. **Batch Discover/Deals availability.** ✅ Phase 10b.
+   - `get_available_slots_for_restaurants(uuid[], text, int) → jsonb` keyed by restaurant_id; internally calls the cached function per id.
+   - Discover/Deals rewired from `Promise.all` per-card fanout to one batched call.
+3. **Batch restaurant modal calendar checks.** ✅ Phase 10c.
+   - `restaurant_available_dates(uuid, int, date, date) → text[]` server-side scans up to 62 days, returns dates with ≥1 slot. Hard cap at 62 days.
+   - Modal calendar effect rewired from 30 parallel day-probes to one range call.
+4. **Compute upgrade.** Done to Micro for daily ops; Small/Large remain available for launch headroom.
+5. **Rate-limit repeated refreshes.** ✅ Phase 10d.
+   - `check_rate_limit` SQL function + UNLOGGED `rate_limit_buckets` table.
+   - Wired into `create-public-booking` (20/min) and `modify-reservation` (15/min). 429s with `unavailable_reason: "rate_limited"`.
+6. **Keep booking writes uncached and atomic.** ✅ Original constraint, still in force.
+   - All booking writes still flow through `book_reservation` / `modify_reservation_slot`.
+   - Exclusion constraint `reservation_tables_no_overlap` is the unbreakable backstop.
+
+**Result:** practical concurrent-user ceiling on Micro is ~2250 active Discover/Deals browsers at p95 < 1s. Single-restaurant page hot path holds ~1000. Modal calendar opens hold ~50.
+
+### Remaining scaling work before a 30,000-user launch
+
+**App-level engineering is done.** Phases A–F + 10a/b/c/d + Levers 1/3 are all shipped. The only remaining lever for raising the concurrent-user ceiling is the Supabase compute tier. Everything below is operational, not engineering.
+
+1. **Compute upgrade is the next dial — only when traffic warrants it.**
+   - Currently **Micro** (free under Pro credit, holds ~2,250 concurrent).
+   - Step up to **Small** (~$5/mo extra) when production traffic regularly hits 1,500+ — lifts ceiling 2–3×.
+   - Step up to **Large** (~$100/mo extra) for the 30,000-user launch target.
+   - Resize is hourly-billed, prorated, and reversible; no lock-in.
+2. **Run a real staging load test before a launch.** Bring up a staging project on the target tier; run all three `tmp-e2e/availability-*.k6.js` scripts at the expected traffic plus a small (≤5 concurrent) `concurrent-booking.mjs` to verify the booking path under load.
+3. **Watch for rate-limit false positives during launch.** Booking endpoints are at 20/min (create) and 15/min (modify) per IP. Real users won't hit that, but corporate NATs or shared Wi-Fi can — adjust limits in the migration if support reports false 429s.
+4. **Do NOT re-run `tmp-e2e/concurrent-booking.mjs` unmodified.** Destructive at small compute tiers — N=20 hot-slot bookings against one advisory lock will jam the pool. Drop N to ≤5.
+5. **Reconsider CDN if traffic pattern changes.** See "CDN deliberation" section above for the decision criteria.
+
+**There are no further code-level concurrency levers worth pursuing at this scale.** Pre-warm workers, read replicas, service workers, cross-tab dedup all add complexity for diminishing returns relative to a $5/mo compute click.
+
+### Supabase infra cost estimate
+
+Current Supabase docs list compute as usage-based hourly billing with these approximate monthly rates:
+
+| Tier | Direct DB connections | Pooler clients | Compute | One-project Pro org estimate after $10 compute credit |
+| --- | ---: | ---: | ---: | ---: |
+| Small | 90 | 400 | ~$15/mo | ~$30/mo total (`$25 Pro + $15 compute - $10 credit`) |
+| Medium | 120 | 600 | ~$60/mo | ~$75/mo total |
+| Large | 160 | 800 | ~$110/mo | ~$125/mo total |
+| XL | 240 | 1,000 | ~$210/mo | ~$225/mo total |
+| 2XL | 380 | 1,500 | ~$410/mo | ~$425/mo total |
+
+Recommended budget:
+
+- **Normal pre-launch / light production:** Small or Medium, about **$30-$75/mo** total for one Supabase project on Pro.
+- **30,000-user launch target:** Large, about **$125/mo** total for one Supabase project on Pro, plus any egress/storage/auth overages.
+- **Heavy launch or many simultaneous restaurant searches:** XL/2XL temporarily, about **$225-$425/mo** total, then resize down after observing real metrics.
+
+Notes:
+
+- Prices are approximate and based on current Supabase docs checked on 2026-05-08. Re-check the dashboard before upgrading.
+- Compute changes can cause a short maintenance window; Supabase docs say usually under 2 minutes, but it can take longer.
+- Extra costs not included here: egress, Storage, Edge Functions, custom SMTP, custom domain, PITR, read replicas, observability/log drains, and frontend hosting.
+
+### Engineering estimate
+
+- **Minimum launch hardening:** compute upgrade + availability cache + staging load test: **0.5-1.5 days**.
+- **Recommended 30,000-user work:** cache + batched listing RPC + modal date-batch RPC + rate limits + load tests: **3-5 engineering days**.
+- **Full production readiness:** above plus Phase F, observability dashboards, alerting, rollback docs, and repeated load tests: **5-8 engineering days**.
+
+If contracted out, multiply those day ranges by the engineer's day rate. At `$800-$1,500/day`, the recommended 30,000-user pass is roughly **$2,400-$7,500 one-time engineering**, plus the monthly Supabase/hosting costs above.
 
 ---
 
@@ -189,6 +349,18 @@ This isn't a code task — it's a single Supabase dashboard click. Worth flaggin
 
 - [x] **Atomic RPC works under PostgREST** (single call: 200 in 0.84s; error path 22023 in 0.77s).
 - [x] **Booking flow regression test:** end-to-end synthetic booking against a real restaurant succeeded; trigger populated `slot_range`; modify path propagated correctly; cleanup succeeded (Phase A/B/C tests).
+- [x] **Read-only availability k6 baseline:** `tmp-e2e/availability-read.k6.js` tested the `get_available_slots` RPC path used by Discover/Deals filters without creating bookings.
+  - 1 VU / 10s: 9 requests, 0 failures, p95 534 ms.
+  - 5 VUs / 30s: 114 requests, 0 failures, p95 1.53 s. This crossed the strict 1 s latency threshold but did not fail correctness checks.
+  - 10 VUs / 30s: 274 requests, 0 failures, p95 133 ms, max 2.22 s.
+  - Ramp-to-ceiling follow-up:
+    - 15 VUs / 30s: 434 requests, 0 failures, p95 90 ms.
+    - 20 VUs / 30s: 580 requests, 0 failures, p95 79 ms.
+    - 23 VUs / 30s: 651 requests, 0 failures, p95 120 ms.
+    - 24 VUs / 30s: 680 requests, 0 failures, p95 131 ms.
+    - 25 VUs / 30s failed the strict p95 threshold twice: first p95 2.82 s, rerun p95 1.13 s. Both runs still had 0 request failures and 100% availability checks.
+  - Current read-only availability ceiling on this project: **24 k6 VUs / ~22 requests per second** under the `p95 < 1s` threshold. Treat 25 VUs as unstable without caching/batching or a compute upgrade.
+  - Post-test DB connection snapshots were normal: PostgREST held 11 idle `authenticator` connections with no active buildup.
 - [ ] Live multi-request contention test (deferred — see Phase E status above).
 - [ ] No latency regression in production logs (monitor over the next few days of normal traffic).
 - [x] Edge function returns `409 unavailable_reason: 'slot_taken'` on P0001/23P01 (verified via direct error-path RPC and code review of the JS error translator in `create-public-booking`, `cenaiva-chat`, `_shared/booking.ts`).
