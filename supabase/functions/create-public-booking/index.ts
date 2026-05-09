@@ -458,6 +458,15 @@ Deno.serve(async (req: Request) => {
           409,
         );
       }
+      if (code === "P0007") {
+        return jsonResponse(
+          {
+            error: "Please provide a name and email or phone to complete your booking.",
+            unavailable_reason: "missing_identifier",
+          },
+          400,
+        );
+      }
       return jsonResponse({ error: `Reservation: ${bookingError.message}` }, 400);
     }
 

@@ -270,7 +270,7 @@ export async function fetchAvailableDateSet(args: {
   partySize: number;
   startDate: string; // YYYY-MM-DD
   endDate: string;   // YYYY-MM-DD
-}): Promise<Set<string>> {
+}): Promise<Set<string> | null> {
   const client = getSupabaseBrowserClient();
   const { data, error } = await client.rpc("restaurant_available_dates", {
     p_restaurant_id: args.restaurantId,
@@ -278,8 +278,107 @@ export async function fetchAvailableDateSet(args: {
     p_start_date: args.startDate,
     p_end_date: args.endDate,
   });
-  if (error || !Array.isArray(data)) return new Set();
+  if (error) {
+    // Distinguish fetch failure from "no dates": callers treat `null` as
+    // permissive (don't grey the calendar) while an empty Set still means
+    // "we asked and there are zero open dates." Without this distinction,
+    // an RPC error blanks the entire calendar — a calendar full of greyed
+    // dates is the same UI as "fully booked."
+    console.warn("restaurant_available_dates RPC failed:", error.message);
+    return null;
+  }
+  if (!Array.isArray(data)) return new Set();
   return new Set(data.filter((d): d is string => typeof d === "string"));
+}
+
+/**
+ * Returns the soonest YYYY-MM-DD in [`fromDate`, `fromDate + 60 days`] that has
+ * at least one available slot for `partySize`. Short-circuits to `fromDate`
+ * when today already has a slot — saves the second RPC on the cold-load
+ * happy path. Returns null when nothing's available in the window.
+ *
+ * Used by `<AvailabilityPanel>` to pre-populate the date picker with the
+ * "next closest day" the moment a customer opens a restaurant page.
+ */
+export async function fetchNextAvailableDate(args: {
+  restaurantId: string;
+  partySize: number;
+  fromDate: string; // YYYY-MM-DD in restaurant local time
+}): Promise<string | null> {
+  // Try `fromDate` first — most restaurants have slots today, so this is the
+  // common case and skips the 60-day scan entirely.
+  const today = await fetchAvailabilitySlots(args.restaurantId, args.fromDate, args.partySize);
+  if (today.slots.length > 0) return args.fromDate;
+
+  // Fallback: ask the DB for the soonest available date in the next 60 days.
+  const start = args.fromDate;
+  const startDate = new Date(`${args.fromDate}T00:00:00Z`);
+  const endDate = new Date(startDate.getTime() + 60 * 24 * 60 * 60_000);
+  const end = endDate.toISOString().slice(0, 10);
+  const set = await fetchAvailableDateSet({
+    restaurantId: args.restaurantId,
+    partySize: args.partySize,
+    startDate: start,
+    endDate: end,
+  });
+  if (!set || set.size === 0) return null;
+  // Sort lexicographically — YYYY-MM-DD strings sort chronologically.
+  return Array.from(set).sort()[0] ?? null;
+}
+
+/**
+ * Picks the slot in `slots` whose `display_time` is closest to "now" rendered
+ * in the supplied IANA timezone. Used to populate the time control on cold
+ * load. Returns "HH:MM" 24h, or null when slots is empty.
+ *
+ * "Now" is treated as wall-clock in the restaurant's tz, rounded to the
+ * nearest 15 min — matches OpenTable's default behavior.
+ */
+export function closestSlotTimeToNow(
+  slots: AvailabilitySlot[],
+  timezone: string,
+): string | null {
+  if (slots.length === 0) return null;
+  // Compute "now" as minutes-since-midnight in the restaurant's tz, rounded
+  // to nearest 15. Intl gives us hour/minute strings; parse and combine.
+  const nowFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone || "UTC",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const hStr = nowFmt.find((p) => p.type === "hour")?.value ?? "0";
+  const mStr = nowFmt.find((p) => p.type === "minute")?.value ?? "0";
+  const nowMinutes = parseInt(hStr, 10) * 60 + parseInt(mStr, 10);
+  const targetMinutes = Math.round(nowMinutes / 15) * 15;
+
+  let best: { slot: AvailabilitySlot; distance: number } | null = null;
+  for (const slot of slots) {
+    const partsFmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone || "UTC",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(slot.date_time));
+    const sh = partsFmt.find((p) => p.type === "hour")?.value ?? "0";
+    const sm = partsFmt.find((p) => p.type === "minute")?.value ?? "0";
+    const slotMinutes = parseInt(sh, 10) * 60 + parseInt(sm, 10);
+    const distance = Math.abs(slotMinutes - targetMinutes);
+    if (!best || distance < best.distance) {
+      best = { slot, distance };
+    }
+  }
+  if (!best) return null;
+  // Re-render the chosen slot's hour/minute as HH:MM.
+  const partsFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone || "UTC",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(best.slot.date_time));
+  const h = partsFmt.find((p) => p.type === "hour")?.value ?? "00";
+  const m = partsFmt.find((p) => p.type === "minute")?.value ?? "00";
+  return `${h.padStart(2, "0")}:${m.padStart(2, "0")}`;
 }
 
 /**

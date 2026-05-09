@@ -16,6 +16,7 @@ const LoyaltyPage = lazy(() => import("@/pages/marketing/LoyaltyPage"));
 const RestaurantsPage = lazy(() => import("@/pages/marketing/RestaurantsPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
+const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
 const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
 const DiscoverPage = lazy(() => import("@/pages/customer/DiscoverPage"));
@@ -104,6 +105,14 @@ export function AppRoutes() {
           element={
             <RequireAuth>
               <AccountPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/voice"
+          element={
+            <RequireAuth>
+              <AccountVoicePage />
             </RequireAuth>
           }
         />

@@ -4,11 +4,37 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
+import { useCenaivaSmallPrompt } from "@/hooks/useCenaivaSmallPrompt";
+import { useCenaivaAvailability } from "@/hooks/useCenaivaAvailability";
+import { useCenaivaLatencyBudget, type LatencyTransport } from "@/hooks/useCenaivaLatencyBudget";
+import { useCenaivaVoicePreference } from "@/hooks/useCenaivaVoicePreference";
 import { NOISE_ROBUST_AUDIO_CONSTRAINTS, prefetchDeepgramToken } from "@/hooks/useDeepgramTranscription";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
+import {
+  NO_AUTO_RELISTEN_STATUSES,
+  RELISTEN_AFTER_RESPONSE_MS,
+} from "@/components/cenaiva/assistantStoreConstants";
 import { useUser } from "@/hooks/useUser";
 import { useSavedCards } from "@/hooks/useSavedCards";
-import type { OrchestratorRequestType } from "@cenaiva/assistant";
+import { buildWakeGreeting } from "@/lib/cenaiva/buildWakeGreeting";
+import {
+  shouldRouteAsCenaivaBookingConfirmation,
+  transcriptForCenaivaBookingConfirmation,
+} from "@/lib/cenaiva/confirmationIntent";
+import { isCenaivaProcessPrompt } from "@/lib/cenaiva/simplePromptIntent";
+import {
+  getCenaivaRecommendationMode,
+  normalizeSingleRestaurantRecommendationResponse,
+  applyClientDiscoveryMemory,
+} from "@/lib/cenaiva/recommendationIntent";
+import {
+  buildLocalAvailabilityResponse,
+  planLocalBookingTurn,
+  type CenaivaAvailabilityOption,
+} from "@/lib/cenaiva/localBookingCollector";
+import type { AssistantResponseType, OrchestratorRequestType } from "@cenaiva/assistant";
+
+const FAST_PATH_ENABLED = (import.meta.env.VITE_CENAIVA_FAST_PATH ?? "true") !== "false";
 
 // ── Context exposed to child components ───────────────────────────────────────
 
@@ -16,7 +42,7 @@ interface AssistantContextValue {
   open: (
     restaurantId?: string,
     restaurantName?: string,
-    opts?: { autoListen?: boolean },
+    opts?: { autoListen?: boolean; greetingText?: string },
   ) => void;
   close: () => void;
   /**
@@ -77,6 +103,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const { hasCard } = useSavedCards();
   const orchestrator = useCenaivaOrchestrator();
   const voice = useCenaivaVoice();
+  const smallPrompt = useCenaivaSmallPrompt();
+  const availability = useCenaivaAvailability();
+  const voicePref = useCenaivaVoicePreference();
+  const latency = useCenaivaLatencyBudget();
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -97,6 +127,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
   const speechHintsRef = useRef<string[]>([]);
   const autoListenOnOpenRef = useRef(false);
+  const turnIdRef = useRef(0);
+  // Tracks options the user is still picking between after a Stage 2 result.
+  // Mirrors mobile's `pendingOptions` slot in the assistant store.
+  const pendingOptionsRef = useRef<CenaivaAvailabilityOption[]>([]);
+  // Greeting text passed to open() — spoken after audio context unlocks.
+  const greetingTextRef = useRef<string | null>(null);
   // The wake-word recognizer and the command recognizer cannot BOTH hold the
   // mic on Chrome — only one active SpeechRecognition instance is allowed.
   // When we open the shell we must synchronously tear down the wake-word
@@ -167,11 +203,44 @@ function AssistantInner({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  // Helper: finish a local-stage turn — apply response, speak it, and
+  // schedule relisten if the resulting booking status allows it.
+  const finishLocalResponse = useCallback(
+    async (
+      response: AssistantResponseType,
+      opts?: { schedule_relisten?: boolean; clearPendingOptions?: boolean },
+    ) => {
+      dispatch({ type: "APPLY_RESPONSE", response });
+      if (opts?.clearPendingOptions) pendingOptionsRef.current = [];
+      if (response.spoken_text) {
+        await voice.speak(response.spoken_text);
+      }
+      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+      processingRef.current = false;
+      const next = stateRef.current;
+      if (
+        opts?.schedule_relisten &&
+        isOpenRef.current &&
+        !textModeRef.current &&
+        !NO_AUTO_RELISTEN_STATUSES.has(next.booking.status)
+      ) {
+        setTimeout(() => {
+          if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+        }, RELISTEN_AFTER_RESPONSE_MS);
+      }
+    },
+    [dispatch, voice],
+  );
+
   const sendTranscript = useCallback(
     async (
       transcript: string,
       opts?: { restaurantId?: string; silent?: boolean; force?: boolean },
     ) => {
+      const turnId = ++turnIdRef.current;
+      latency.start(turnId);
+      latency.mark(turnId, "transcriptAt");
+
       if (processingRef.current) {
         if (!opts?.force) return;
         orchestrator.cancel();
@@ -189,12 +258,144 @@ function AssistantInner({ children }: { children: ReactNode }) {
       dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
 
       const current = stateRef.current;
+      const isBookingConfirmationReply = shouldRouteAsCenaivaBookingConfirmation(
+        current.booking.status,
+        transcript,
+      );
+      const orchestratorTranscript = transcriptForCenaivaBookingConfirmation(
+        current.booking.status,
+        transcript,
+      );
+      const isProcessPrompt = isCenaivaProcessPrompt(transcript);
+      const recommendationMode = getCenaivaRecommendationMode(transcript);
       const browserTimeZone =
         typeof Intl !== "undefined"
           ? Intl.DateTimeFormat().resolvedOptions().timeZone
           : undefined;
+
+      // ── STAGE 1 — local booking collector ───────────────────────────────────
+      if (FAST_PATH_ENABLED) {
+        const decision = planLocalBookingTurn({
+          transcript,
+          booking: current.booking,
+          conversationId: current.conversationId,
+          selectedRestaurantId: opts?.restaurantId ?? current.booking.restaurant_id,
+          selectedRestaurantName: current.booking.restaurant_name,
+          timezone: browserTimeZone || "America/Toronto",
+          pendingOptions: pendingOptionsRef.current,
+          lastAssistantPrompt: current.lastSpokenText || null,
+        });
+
+        if (decision.kind === "local_response") {
+          if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
+          await finishLocalResponse(decision.response, {
+            schedule_relisten: true,
+            clearPendingOptions: decision.clearPendingOptions,
+          });
+          latency.summarize(turnId);
+          return;
+        }
+
+        if (decision.kind === "check_availability") {
+          // Speak filler in parallel with the availability call. "One moment
+          // please." is in COMMON_TTS_CACHE_TEXTS so playback is local-IDB
+          // (sub-50ms) once the user has primed the cache.
+          if (decision.filler) {
+            if (voice.isStreamingTTSAvailable) {
+              voice.speakStreamingChunk(decision.filler);
+            } else {
+              void voice.speak(decision.filler);
+            }
+          }
+          dispatch({ type: "APPLY_RESPONSE", response: decision.responseBeforeCheck });
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), 20_000);
+          try {
+            const { data: result } = await availability.check(
+              decision.request as unknown as Record<string, unknown>,
+              { signal: controller.signal },
+            );
+            if (!result) {
+              if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
+              await voice.speak(
+                "I could not reach live availability. Try another date and time, or ask for the restaurant hours.",
+              );
+              dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+              processingRef.current = false;
+              latency.summarize(turnId);
+              return;
+            }
+            const { response: availResponse, pendingOptions } =
+              buildLocalAvailabilityResponse({
+                conversationId: current.conversationId,
+                request: decision.request,
+                result: result as unknown as Parameters<
+                  typeof buildLocalAvailabilityResponse
+                >[0]["result"],
+              });
+            pendingOptionsRef.current = pendingOptions;
+            if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
+            await finishLocalResponse(availResponse, { schedule_relisten: true });
+          } finally {
+            window.clearTimeout(timer);
+          }
+          latency.summarize(turnId);
+          return;
+        }
+        // decision.kind === 'pass' → continue to Stage 3 / 4
+      }
+
+      // ── STAGE 3 — small-prompt fast-path ─────────────────────────────────────
+      // Skip when the user is replying yes/no to a confirmation prompt or when
+      // the transcript is clearly a process/booking prompt (those go to the
+      // orchestrator so the booking flow proceeds correctly).
+      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt) {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 8_000);
+        try {
+          const { data: smallResult } = await smallPrompt.send(
+            {
+              transcript,
+              booking: {
+                restaurant_id: current.booking.restaurant_id,
+                restaurant_name: current.booking.restaurant_name,
+                party_size: current.booking.party_size,
+                date: current.booking.date,
+                time: current.booking.time,
+              },
+              voice_id: voicePref.voiceId,
+            },
+            { signal: controller.signal },
+          );
+          if (smallResult) {
+            const asResponse: AssistantResponseType = {
+              conversation_id: current.conversationId ?? "",
+              spoken_text: smallResult.spoken_text,
+              intent: "general_question" as AssistantResponseType["intent"],
+              step: "general" as AssistantResponseType["step"],
+              next_expected_input:
+                smallResult.next_expected_input as AssistantResponseType["next_expected_input"],
+              ui_actions: [],
+              booking: null,
+              map: null,
+              filters: null,
+              assistant_memory: null,
+            };
+            await finishLocalResponse(asResponse, { schedule_relisten: true });
+            latency.summarize(turnId);
+            return;
+          }
+          // null → fall through to Stage 4
+        } catch {
+          // abort or fetch error → fall through to Stage 4
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+
+      // ── STAGE 4 — full orchestrator (with recommendation_mode + memory) ─────
       const req: OrchestratorRequestType = {
-        transcript,
+        transcript: orchestratorTranscript,
         screen: "discover",
         booking_state: {
           restaurant_id: current.booking.restaurant_id,
@@ -226,6 +427,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
         filters: current.filters,
         visible_restaurant_ids: current.map.marker_restaurant_ids,
         selected_restaurant_id: opts?.restaurantId ?? current.booking.restaurant_id,
+        recommendation_mode: recommendationMode ?? undefined,
+        assistant_memory: current.memory,
         user_location: userLocationRef.current,
         timezone: browserTimeZone || undefined,
         conversation_id: current.conversationId ?? undefined,
@@ -234,15 +437,22 @@ function AssistantInner({ children }: { children: ReactNode }) {
         reservation_id: current.booking.reservation_id,
       };
 
+      latency.mark(turnId, "requestSentAt");
+
       // Capture what the orchestrator streamed via speech_chunk SSE frames.
       // After the final payload arrives we compare this to spoken_text — if
       // they match we skip the trailing voice.speak() (avoiding a double-
       // speak), otherwise we discard the queued audio and speak the override.
       let streamedText = "";
+      let firstChunkSeen = false;
       const streamingActive = voice.isStreamingTTSAvailable && !opts?.silent;
       const streamCallbacks = streamingActive
         ? {
             onSpeechChunk: (text: string) => {
+              if (!firstChunkSeen) {
+                latency.mark(turnId, "firstSpeechChunkAt");
+                firstChunkSeen = true;
+              }
               streamedText += (streamedText ? " " : "") + text;
               voice.speakStreamingChunk(text);
             },
@@ -250,14 +460,16 @@ function AssistantInner({ children }: { children: ReactNode }) {
               streamedText = "";
               voice.discardStreamingSpeech();
             },
+            onTransport: (t: LatencyTransport) => latency.markTransport(turnId, t),
           }
         : undefined;
 
       try {
-        const response = await orchestrator.send(req, streamCallbacks);
+        const rawResponse = await orchestrator.send(req, streamCallbacks);
+        latency.mark(turnId, "finalReceivedAt");
         processingRef.current = false;
 
-        if (!response) {
+        if (!rawResponse) {
           // Orchestrator returned null (network / timeout / 500). Handle text
           // mode and voice mode differently: chat users can see a banner + toast,
           // voice users need an audible retry cue. Discard any partially-
@@ -282,8 +494,21 @@ function AssistantInner({ children }: { children: ReactNode }) {
               if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
             }, RELISTEN_AFTER_ERROR_MS);
           }
+          latency.summarize(turnId);
           return;
         }
+
+        // Apply recommendation-mode capping (single → one card + "I'd go with X")
+        // and discovery memory (anti-repeat for "other restaurants" follow-ups).
+        const cappedResponse =
+          recommendationMode === "single"
+            ? normalizeSingleRestaurantRecommendationResponse(rawResponse, transcript)
+            : rawResponse;
+        const response = applyClientDiscoveryMemory(cappedResponse, transcript, {
+          rawResponse,
+          previousMemory: current.memory,
+          recommendationMode,
+        });
 
         dispatch({ type: "APPLY_RESPONSE", response });
 
@@ -316,6 +541,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
           const base = spokenText.trim().replace(/[.!?]*$/, "");
           spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
         }
+
+        latency.mark(turnId, "playbackRequestedAt");
         if (spokenText && !opts?.silent) {
           // Normalize for comparison — strip trailing punctuation/whitespace
           // and collapse internal whitespace so minor formatting differences
@@ -340,23 +567,23 @@ function AssistantInner({ children }: { children: ReactNode }) {
           voice.discardStreamingSpeech();
         }
 
-        // In the manual menu / prepay flow the UI is button-driven — we only
-        // open the mic on explicit tap (for ingredient / allergen questions).
-        // Skip the automatic re-listen so the mic doesn't silently reopen
-        // after every response.
-        const manualMenuActive = [
-          "offering_preorder",
-          "browsing_menu",
-        ].includes(stateRef.current.booking.status);
-
-        if (isOpenRef.current && !textModeRef.current && !manualMenuActive) {
-          // Hand off straight back into listening as soon as speech ends.
+        // Skip auto-relisten in checkout/menu/payment flows (button-driven UI).
+        // Mirrors mobile: status set is broader than web's old `manualMenuActive`
+        // and includes paid/post_booking/charging so the mic doesn't reopen
+        // mid-payment-success.
+        const next = stateRef.current;
+        if (
+          isOpenRef.current &&
+          !textModeRef.current &&
+          !NO_AUTO_RELISTEN_STATUSES.has(next.booking.status)
+        ) {
           if (isOpenRef.current && !textModeRef.current) {
             void startListeningRef.current();
           }
         } else {
           dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         }
+        latency.summarize(turnId);
       } catch (err) {
         processingRef.current = false;
         if (streamingActive) voice.discardStreamingSpeech();
@@ -376,9 +603,21 @@ function AssistantInner({ children }: { children: ReactNode }) {
             if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
           }, RELISTEN_AFTER_ERROR_MS);
         }
+        latency.summarize(turnId);
       }
     },
-    [dispatch, orchestrator, voice, navigate, hasCard],
+    [
+      dispatch,
+      orchestrator,
+      voice,
+      navigate,
+      hasCard,
+      latency,
+      smallPrompt,
+      availability,
+      voicePref.voiceId,
+      finishLocalResponse,
+    ],
   );
 
   const startListening = useCallback(async () => {
@@ -459,8 +698,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, []);
 
   const open = useCallback(
-    (restaurantId?: string, restaurantName?: string, opts?: { autoListen?: boolean }) => {
+    (
+      restaurantId?: string,
+      restaurantName?: string,
+      opts?: { autoListen?: boolean; greetingText?: string },
+    ) => {
       autoListenOnOpenRef.current = opts?.autoListen === true;
+      greetingTextRef.current = opts?.greetingText ?? null;
       isOpenRef.current = true;
       requestLocation();
       // Prime browser speech in the same user gesture that opens the shell.
@@ -485,14 +729,32 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // starts the utterance, the token is already in hand — saves the
       // 100-300ms /deepgram-live-token round-trip on the first turn.
       prefetchDeepgramToken();
+      // Wake the orchestrator + small-prompt edge runtimes so the user's
+      // first real turn doesn't pay cold-start latency. Fire-and-forget.
+      void orchestrator.prewarm();
+      smallPrompt.prewarm(voicePref.voiceId);
 
       if (restaurantId && restaurantName) {
         dispatch({ type: "PRESELECT_RESTAURANT", restaurant_id: restaurantId, restaurant_name: restaurantName });
       } else {
         dispatch({ type: "OPEN" });
       }
+
+      // Greet first, listen second — the wake-word path passes a personalized
+      // greeting; bare orb taps don't pass one and just go straight to listen.
+      if (opts?.autoListen && opts?.greetingText) {
+        void (async () => {
+          try {
+            await voice.speak(opts.greetingText!);
+          } finally {
+            if (isOpenRef.current && !textModeRef.current) {
+              void startListeningRef.current();
+            }
+          }
+        })();
+      }
     },
-    [dispatch, requestLocation, voice],
+    [dispatch, requestLocation, voice, orchestrator, smallPrompt, voicePref.voiceId],
   );
 
   // voice is a fresh object literal every render of useCenaivaVoice, so any
@@ -585,7 +847,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
     if (!user) return;
     // Prime the audio pipeline again on wake so the greeting reliably plays.
     try { voice.primeTTS(); } catch { /* noop */ }
-    open(undefined, undefined, { autoListen: true });
+    const greetingText = buildWakeGreeting(user);
+    open(undefined, undefined, { autoListen: true, greetingText });
   }, [user, open, voice]);
 
   const { setEnabled: setWakeWordEnabled, forceStop: forceStopWakeWord } =

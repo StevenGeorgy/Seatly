@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AuthProvider } from "@/contexts/auth-context";
+import { CenaivaVoicePreferenceProvider } from "@/contexts/CenaivaVoicePreferenceProvider";
 import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
 import { DevSupabaseBanner } from "@/components/layout/DevSupabaseBanner";
@@ -89,25 +90,27 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <AssistantProvider>
-            <TooltipProvider delayDuration={300}>
-              <DevSupabaseBanner />
-              <AppRoutes />
-              <AuthedCenaivaUI />
-              <AuthedReservationReviewPrompt />
-              <Toaster
-                richColors
-                position="top-center"
-                toastOptions={{
-                  style: {
-                    background: "#1A1A1A",
-                    border: "1px solid #2E2E2E",
-                    color: "#FFFFFF",
-                  },
-                }}
-              />
-            </TooltipProvider>
-          </AssistantProvider>
+          <CenaivaVoicePreferenceProvider>
+            <AssistantProvider>
+              <TooltipProvider delayDuration={300}>
+                <DevSupabaseBanner />
+                <AppRoutes />
+                <AuthedCenaivaUI />
+                <AuthedReservationReviewPrompt />
+                <Toaster
+                  richColors
+                  position="top-center"
+                  toastOptions={{
+                    style: {
+                      background: "#1A1A1A",
+                      border: "1px solid #2E2E2E",
+                      color: "#FFFFFF",
+                    },
+                  }}
+                />
+              </TooltipProvider>
+            </AssistantProvider>
+          </CenaivaVoicePreferenceProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

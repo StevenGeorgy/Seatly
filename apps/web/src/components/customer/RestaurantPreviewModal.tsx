@@ -1,7 +1,7 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
-import { endOfMonth, format, isValid, parse, startOfMonth, startOfToday } from "date-fns";
+import { format } from "date-fns";
 import {
   Bookmark,
   CalendarDays,
@@ -18,27 +18,21 @@ import {
   X,
 } from "lucide-react";
 
-import { Calendar } from "@/components/ui/calendar";
+import { AvailabilityPanel } from "@/components/booking/AvailabilityPanel";
 import { EventPromotionDetailCard } from "@/components/customer/EventPromotionDetailCard";
 import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
 import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { eventToDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
 import {
-  fetchAvailableDateSet,
-  filterSlotsByConflicts,
-  formatConflictWindow,
+  type AvailabilitySlot,
   useAvailability,
   useAvailabilityRealtimeInvalidate,
-  useDinerConflictWindows,
 } from "@/hooks/useAvailability";
 import { useUser } from "@/hooks/useUser";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
-import { TimeWheel } from "@/components/booking/TimeWheel";
-import { SeatWheel } from "@/components/booking/SeatWheel";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -130,10 +124,6 @@ function shortTime(time: string): string {
   return formatCompactTimeLabel(time);
 }
 
-function dateKey(date: Date): string {
-  return format(date, "yyyy-MM-dd");
-}
-
 function StripeArt({
   label,
   className,
@@ -178,7 +168,10 @@ export function RestaurantPreviewModal({
     restaurantId: null,
     tab: "menu",
   });
-  const [timeState, setTimeState] = useState<{ restaurantId: string | null; time: string }>({
+  // Time selection now lives inside AvailabilityPanel via onSelectSlot.
+  // We keep the setter so external callers (preferredTime, etc.) can still
+  // seed a starting time if needed, but we read the live time from pickedSlot.
+  const [, setTimeState] = useState<{ restaurantId: string | null; time: string }>({
     restaurantId: null,
     time: "",
   });
@@ -191,19 +184,13 @@ export function RestaurantPreviewModal({
     date: "",
     partySize: 2,
   });
-  const bookingDateTriggerId = useId();
-  const [bookingDatePopoverOpen, setBookingDatePopoverOpen] = useState(false);
-  const [partyPopoverOpen, setPartyPopoverOpen] = useState(false);
-  const [timePopoverOpen, setTimePopoverOpen] = useState(false);
   const [staleAvailabilityNotice, setStaleAvailabilityNotice] = useState<string | null>(null);
   const [dismissedExternalAvailabilityNotice, setDismissedExternalAvailabilityNotice] = useState(false);
   const [reserving, setReserving] = useState(false);
-  const [calendarMonth, setCalendarMonth] = useState(() => {
-    const parsedDate = parse(bookingDate ?? todayDateValue(), "yyyy-MM-dd", new Date());
-    return isValid(parsedDate) ? parsedDate : new Date();
-  });
-  const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
-  const [dateAvailabilityLoading, setDateAvailabilityLoading] = useState(false);
+  // Slot the diner clicked in the AvailabilityPanel grid. Drives the
+  // "Continue with X" button below; AvailabilityPanel owns date / time /
+  // party state itself.
+  const [pickedSlot, setPickedSlot] = useState<AvailabilitySlot | null>(null);
 
   const previewRestaurantKey = restaurant?.slug ?? restaurant?.id;
   const { restaurant: restaurantDetails } = useRestaurant(previewRestaurantKey);
@@ -230,104 +217,21 @@ export function RestaurantPreviewModal({
     restaurant && bookingState.restaurantId === restaurant.id
       ? bookingState.partySize
       : fallbackPartySize;
-  const previewDateLabel = new Date(`${previewDate}T12:00:00`).toLocaleDateString("en-CA", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
-  const previewCalendarDay = useMemo(() => {
-    const parsedDate = parse(previewDate, "yyyy-MM-dd", new Date());
-    return isValid(parsedDate) ? parsedDate : undefined;
-  }, [previewDate]);
   const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId, { enabled: activeTab === "menu" });
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId, { enabled: activeTab === "menu" });
   const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(resolvedRestaurantId, { enabled: activeTab === "reviews" });
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents({ enabled: activeTab === "events" });
   const {
-    slots: availabilitySlots,
-    loading: availabilityLoading,
     fetchSlots,
     clearSlots,
     floorCapacity,
-    unavailableReason,
-    unavailableMessage,
   } = useAvailability();
   const { profile } = useUser();
-  const dinerConflictWindows = useDinerConflictWindows({
-    userProfileId: profile?.id ?? null,
-    currentRestaurantId: restaurant?.id ?? null,
-    date: previewDate || null,
-    timezone: matchedRestaurantDetails?.timezone ?? null,
-  });
   const maxPreviewPartySize = Math.max(1, floorCapacity ?? 50);
-  const unavailableHeadline = (() => {
-    if (availabilityLoading) return "Checking availability...";
-    switch (unavailableReason) {
-      case "party_size_out_of_range":
-        return floorCapacity
-          ? `This restaurant seats up to ${floorCapacity} guests. Try a smaller party or contact the restaurant directly for larger groups.`
-          : "That party size is outside this restaurant's bookable range.";
-      case "fully_booked":
-        return "Fully booked for this date — try another day.";
-      case "closed":
-        return "Closed on this date.";
-      case "no_shifts":
-        return "No service hours configured for this date.";
-      case "no_future_slots":
-        return "No more times available later today — try another date.";
-      case "no_slots":
-      default:
-        return unavailableMessage ?? "Unavailable for this date and party size.";
-    }
-  })();
-  const unavailableDate = (date: Date) => {
-    if (date < startOfToday()) return true;
-    if (dateAvailabilityLoading) return false;
-    return !availableDateKeys.has(dateKey(date));
-  };
-
-  const availableSlots = useMemo(() => {
-    const seen = new Set<string>();
-    return filterSlotsByConflicts(availabilitySlots, dinerConflictWindows).filter((slot) => {
-      if (seen.has(slot.display_time)) return false;
-      seen.add(slot.display_time);
-      return true;
-    });
-  }, [availabilitySlots, dinerConflictWindows]);
-  const dinerConflictNotices = useMemo(() => {
-    if (dinerConflictWindows.length === 0) return [] as string[];
-    if (availableSlots.length === availabilitySlots.length) return [] as string[];
-    const seen = new Set<string>();
-    const tz = matchedRestaurantDetails?.timezone ?? null;
-    for (const window of dinerConflictWindows) {
-      const formatted = formatConflictWindow(window, tz);
-      if (formatted) seen.add(formatted);
-    }
-    return Array.from(seen);
-  }, [dinerConflictWindows, availableSlots.length, availabilitySlots.length, matchedRestaurantDetails?.timezone]);
-  const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
-  const preferredAvailableSlot = useMemo(
-    () => preferredTime
-      ? availableSlots.find((slot) =>
-        slot.display_time === preferredTime ||
-        formatCompactTimeLabel(slot.display_time) === formatCompactTimeLabel(preferredTime),
-      ) ?? null
-      : null,
-    [availableSlots, preferredTime],
-  );
-  const selectedSlot = useMemo(
-    () => {
-      if (restaurant && timeState.restaurantId === restaurant.id) {
-        return availableSlots.find((slot) =>
-          slot.display_time === timeState.time ||
-          formatCompactTimeLabel(slot.display_time) === formatCompactTimeLabel(timeState.time),
-        ) ?? null;
-      }
-      return preferredAvailableSlot ?? availableSlots[0] ?? null;
-    },
-    [availableSlots, preferredAvailableSlot, restaurant, timeState.restaurantId, timeState.time],
-  );
-
+  // Slot used for the "Continue with X" button — sourced from AvailabilityPanel's
+  // onSelectSlot callback, falling back to the parent's `preferredTime` when the
+  // panel hasn't bootstrapped yet.
+  const selectedSlot = pickedSlot;
   const selectedTime = selectedSlot?.display_time ?? "";
   const visibleAvailabilityNotice = staleAvailabilityNotice ?? (
     dismissedExternalAvailabilityNotice ? null : availabilityNotice ?? null
@@ -532,70 +436,11 @@ export function RestaurantPreviewModal({
     void Promise.resolve().then(() => setDismissedExternalAvailabilityNotice(false));
   }, [restaurant?.id]);
 
+  // Reset the picked slot when the restaurant changes — the previously-clicked
+  // slot is meaningless for a different restaurant.
   useEffect(() => {
-    if (!restaurant) return;
-    let cancelled = false;
-    const monthStart = startOfMonth(calendarMonth);
-    const monthEnd = endOfMonth(calendarMonth);
-    const today = startOfToday();
-    const rangeStart = monthStart < today ? today : monthStart;
-    if (rangeStart > monthEnd) {
-      setAvailableDateKeys(new Set());
-      setDateAvailabilityLoading(false);
-      return;
-    }
-
-    void Promise.resolve().then(() => {
-      if (!cancelled) setDateAvailabilityLoading(true);
-    });
-    void fetchAvailableDateSet({
-      restaurantId: restaurant.id,
-      partySize: selectedPartySize,
-      startDate: dateKey(rangeStart),
-      endDate: dateKey(monthEnd),
-    })
-      .then((availableDays) => {
-        if (!cancelled) setAvailableDateKeys(availableDays);
-      })
-      .catch(() => {
-        if (!cancelled) setAvailableDateKeys(new Set());
-      })
-      .finally(() => {
-        if (!cancelled) setDateAvailabilityLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [calendarMonth, restaurant, selectedPartySize]);
-
-  useEffect(() => {
-    if (!restaurant || availabilityLoading) return;
-    if (availableTimes.length === 0) {
-      if (timeState.restaurantId === restaurant.id && timeState.time) {
-        void Promise.resolve().then(() => {
-          setTimeState({ restaurantId: restaurant.id, time: "" });
-        });
-      }
-      return;
-    }
-    if (!restaurant || availableTimes.length === 0) return;
-    if (staleAvailabilityNotice) return;
-    if (
-      timeState.restaurantId === restaurant.id &&
-      availableTimes.some((time) =>
-        time === timeState.time ||
-        formatCompactTimeLabel(time) === formatCompactTimeLabel(timeState.time),
-      )
-    ) return;
-    void Promise.resolve().then(() => {
-      setTimeState({
-        restaurantId: restaurant.id,
-        time: (preferredAvailableSlot ?? availableSlots[0])?.display_time ?? "",
-      });
-    });
-  }, [availabilityLoading, availableSlots, availableTimes, preferredAvailableSlot, restaurant, staleAvailabilityNotice, timeState.restaurantId, timeState.time]);
-
+    setPickedSlot(null);
+  }, [restaurant?.id]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -681,9 +526,9 @@ export function RestaurantPreviewModal({
                           {t(`restaurantDietaryTags.${tag}`)}
                         </span>
                       ))}
-                      {availableTimes.length > 0 && (
+                      {restaurant.slots.length > 0 && (
                         <span className="rounded-md border border-success/30 bg-success/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-success">
-                          {availableTimes.length} times today
+                          {restaurant.slots.length} times today
                         </span>
                       )}
                     </div>
@@ -1030,133 +875,30 @@ export function RestaurantPreviewModal({
                 <aside className="lg:sticky lg:top-6 lg:self-start">
                   <div className="rounded-2xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/30">
                     <h3 className="font-serif text-xl text-white">Reserve a table</h3>
-                    <div className="mt-4 grid grid-cols-3 gap-2">
-                      <Popover
-                        open={availabilityLoading || dateAvailabilityLoading ? false : bookingDatePopoverOpen}
-                        onOpenChange={(open) => {
-                          if (!availabilityLoading && !dateAvailabilityLoading) setBookingDatePopoverOpen(open);
+                    <div className="mt-4">
+                      <AvailabilityPanel
+                        restaurantId={restaurant.id}
+                        restaurantTimezone={matchedRestaurantDetails?.timezone || "America/Toronto"}
+                        userProfileId={profile?.id ?? null}
+                        initialDate={previewDate || undefined}
+                        initialPartySize={selectedPartySize}
+                        initialTime={preferredTime || undefined}
+                        selectedSlotIso={pickedSlot?.date_time ?? null}
+                        maxPartySize={maxPreviewPartySize}
+                        onStateChange={({ date: nextDate, partySize: nextParty }) => {
+                          if (!restaurant) return;
+                          if (nextDate && nextDate !== previewDate) {
+                            setRestaurantDate(nextDate);
+                          }
+                          if (nextParty !== selectedPartySize) {
+                            setRestaurantPartySize(nextParty);
+                          }
                         }}
-                      >
-                        <PopoverTrigger asChild>
-                          <button
-                            id={bookingDateTriggerId}
-                            type="button"
-                            disabled={availabilityLoading || dateAvailabilityLoading}
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <CalendarDays className="size-4 text-gold" />
-                            <span>
-                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-                              <p className="mt-1 text-sm text-white">
-                                {availabilityLoading || dateAvailabilityLoading ? "Loading…" : previewDateLabel}
-                              </p>
-                            </span>
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          align="start"
-                          className="z-[90] w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
-                        >
-                          <Calendar
-                            mode="single"
-                            required={false}
-                            selected={previewCalendarDay}
-                            month={calendarMonth}
-                            onMonthChange={setCalendarMonth}
-                            onSelect={(date) => {
-                              if (!date) return;
-                              setRestaurantDate(format(date, "yyyy-MM-dd"));
-                              setBookingDatePopoverOpen(false);
-                            }}
-                            disabled={unavailableDate}
-                            className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                          />
-                        </PopoverContent>
-                      </Popover>
-                      <Popover
-                        open={availabilityLoading ? false : timePopoverOpen}
-                        onOpenChange={(open) => {
-                          if (!availabilityLoading) setTimePopoverOpen(open);
+                        onSelectSlot={(slot) => {
+                          setPickedSlot(slot);
+                          setRestaurantTime(slot.display_time);
                         }}
-                      >
-                        <PopoverTrigger asChild>
-                          <button
-                            type="button"
-                            disabled={availabilityLoading}
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <Clock className="size-4 text-gold" />
-                            <span>
-                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Time</p>
-                              <p className="mt-1 text-sm text-white">
-                                {availabilityLoading
-                                  ? "Loading…"
-                                  : selectedTime
-                                    ? shortTime(selectedTime)
-                                    : availableTimes.length > 0
-                                      ? "Pick a time"
-                                      : "No times"}
-                              </p>
-                            </span>
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          align="start"
-                          className="z-[90] w-48 border-border bg-bg-elevated p-2 text-text-primary shadow-2xl"
-                        >
-                          {availableTimes.length > 0 ? (
-                            <TimeWheel
-                              times={availableTimes}
-                              value={selectedTime || availableTimes[0]}
-                              onCommit={(time) => {
-                                setRestaurantTime(time);
-                                setTimePopoverOpen(false);
-                              }}
-                            />
-                          ) : (
-                            <p className="px-2 py-3 text-center text-xs text-text-muted">
-                              {unavailableHeadline}
-                            </p>
-                          )}
-                        </PopoverContent>
-                      </Popover>
-                      <Popover
-                        open={availabilityLoading ? false : partyPopoverOpen}
-                        onOpenChange={(open) => {
-                          if (!availabilityLoading) setPartyPopoverOpen(open);
-                        }}
-                      >
-                        <PopoverTrigger asChild>
-                          <button
-                            type="button"
-                            disabled={availabilityLoading}
-                            className="flex items-center gap-3 rounded-xl bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <Users className="size-4 text-gold" />
-                            <span>
-                              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
-                              <p className="mt-1 text-sm text-white">
-                                {availabilityLoading
-                                  ? "Loading…"
-                                  : `${selectedPartySize} guest${selectedPartySize === 1 ? "" : "s"}`}
-                              </p>
-                            </span>
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          align="start"
-                          className="z-[90] w-48 border-border bg-bg-elevated p-2 text-text-primary shadow-2xl"
-                        >
-                          <SeatWheel
-                            maxSeats={maxPreviewPartySize}
-                            value={selectedPartySize}
-                            onCommit={(party) => {
-                              setRestaurantPartySize(party);
-                              setPartyPopoverOpen(false);
-                            }}
-                          />
-                        </PopoverContent>
-                      </Popover>
+                      />
                     </div>
 
                     {visibleAvailabilityNotice ? (
@@ -1164,24 +906,14 @@ export function RestaurantPreviewModal({
                         {visibleAvailabilityNotice}
                       </p>
                     ) : null}
-                    {dinerConflictNotices.length > 0 ? (
-                      <div className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
-                        <p className="font-semibold">Some times are hidden because you're already booked:</p>
-                        <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                          {dinerConflictNotices.map((notice) => (
-                            <li key={notice}>{notice}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
 
                     <button
                       type="button"
                       onClick={reserveSelectedSlot}
-                      disabled={!selectedTime || availabilityLoading || reserving}
+                      disabled={!selectedTime || reserving}
                       className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-gold px-4 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {reserving ? "Checking availability..." : selectedTime ? `Continue with ${shortTime(selectedTime)}` : "No times available"}
+                      {reserving ? "Checking availability..." : selectedTime ? `Continue with ${shortTime(selectedTime)}` : "Pick a time above"}
                       <CalendarDays className="size-4" />
                     </button>
 

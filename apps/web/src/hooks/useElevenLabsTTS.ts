@@ -1,10 +1,115 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+
+// ── Persistent TTS cache (IndexedDB) ─────────────────────────────────────────
+//
+// Common assistant phrases ("One moment please.", "How many guests?", etc.)
+// are spoken on hundreds of turns per user. Caching the MP3 blob in
+// IndexedDB by `${voiceId}:${normalizedText}` cuts the very-first-frame
+// latency on those phrases from ~300–500 ms (network → ElevenLabs → blob)
+// to single-digit ms (IDB read → blob URL).
+//
+// The version suffix is bumped any time the upstream model / format
+// (codec, bitrate, sampling rate) changes — it forces a fresh fetch instead
+// of replaying stale audio. Mirror of mobile's useMobileTTS cache key.
+
+const TTS_CACHE_VERSION = "flash25-mp3-44100-128-v1";
+const TTS_DB_NAME = "cenaivaTtsCache";
+const TTS_DB_STORE = "phrases";
+
+const COMMON_TTS_CACHE_TEXTS: ReadonlyArray<string> = [
+  "One moment please.",
+  "What restaurant or area should I book?",
+  "How many guests?",
+  "What date and time should I book?",
+  "What date should I book?",
+  "What time should I book?",
+  "I could not reach live availability. Try another date and time, or ask for the restaurant hours.",
+  "Something went wrong. Try again.",
+  "Please sign in to continue.",
+];
+
+function djb2Hash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function cacheKey(voiceId: string | null | undefined, text: string): string {
+  const normalized = text.trim().toLowerCase();
+  const voiceKey = voiceId ?? "default";
+  return `${TTS_CACHE_VERSION}-${djb2Hash(`${voiceKey}:${normalized}`)}`;
+}
+
+function openTtsDb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  return new Promise<IDBDatabase | null>((resolve) => {
+    try {
+      const req = indexedDB.open(TTS_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(TTS_DB_STORE)) {
+          db.createObjectStore(TTS_DB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function readCachedBlob(
+  voiceId: string | null | undefined,
+  text: string,
+): Promise<Blob | null> {
+  const db = await openTtsDb();
+  if (!db) return null;
+  return await new Promise<Blob | null>((resolve) => {
+    try {
+      const tx = db.transaction(TTS_DB_STORE, "readonly");
+      const store = tx.objectStore(TTS_DB_STORE);
+      const req = store.get(cacheKey(voiceId, text));
+      req.onsuccess = () => {
+        const value: unknown = req.result;
+        resolve(value instanceof Blob ? value : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function writeCachedBlob(
+  voiceId: string | null | undefined,
+  text: string,
+  blob: Blob,
+): Promise<void> {
+  const db = await openTtsDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(TTS_DB_STORE, "readwrite");
+      const store = tx.objectStore(TTS_DB_STORE);
+      store.put(blob, cacheKey(voiceId, text));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
 
 async function getBearerToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
@@ -14,6 +119,15 @@ async function getBearerToken(): Promise<string | null> {
 }
 
 async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null> {
+  // Cache hit → no network. Wraps in try/catch for safety; IDB rejecting
+  // (private mode, quota) just routes us to the live fetch path.
+  try {
+    const cached = await readCachedBlob(voiceId, text);
+    if (cached) return cached;
+  } catch {
+    /* fall through to live fetch */
+  }
+
   const token = await getBearerToken();
   if (!token) return null;
   try {
@@ -27,14 +141,27 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
       body: JSON.stringify({ text, voice_id: voiceId }),
     });
     if (!res.ok) return null;
-    return await res.blob();
+    const blob = await res.blob();
+    // Best-effort cache write — never block playback on it.
+    if (COMMON_TTS_CACHE_TEXTS.includes(text)) {
+      void writeCachedBlob(voiceId, text, blob);
+    }
+    return blob;
   } catch {
     return null;
   }
 }
 
-export function useElevenLabsTTS() {
+export type UseElevenLabsTTSOptions = {
+  voiceId?: string | null;
+};
+
+export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const voiceIdRef = useRef<string | null | undefined>(options?.voiceId ?? null);
+  useEffect(() => {
+    voiceIdRef.current = options?.voiceId ?? null;
+  }, [options?.voiceId]);
   // Reuse ONE HTMLAudioElement across every speak() call. Creating a fresh
   // `new Audio(url)` each turn was the biggest source of TTS flakiness:
   // Chrome's autoplay policy attaches the "unmuted" grant to a specific
@@ -142,8 +269,9 @@ export function useElevenLabsTTS() {
   const speakQueued = useCallback(
     (text: string, voiceId?: string) => {
       if (!text.trim()) return;
+      const effectiveVoiceId = voiceId ?? voiceIdRef.current ?? undefined;
       const gen = queueGenerationRef.current;
-      queueRef.current.push(fetchTTSBlob(text, voiceId));
+      queueRef.current.push(fetchTTSBlob(text, effectiveVoiceId));
       // Kick off the player loop if it isn't running. If it is, the new
       // promise will get picked up on the next iteration.
       if (!playerRunningRef.current) {
@@ -194,7 +322,8 @@ export function useElevenLabsTTS() {
     async (text: string, voiceId?: string): Promise<boolean> => {
       stop();
 
-      const blob = await fetchTTSBlob(text, voiceId);
+      const effectiveVoiceId = voiceId ?? voiceIdRef.current ?? undefined;
+      const blob = await fetchTTSBlob(text, effectiveVoiceId);
       if (!blob) return false;
 
       const url = URL.createObjectURL(blob);
@@ -237,5 +366,31 @@ export function useElevenLabsTTS() {
     [stop, getAudio],
   );
 
-  return { speak, speakQueued, discardQueued, drainQueue, stop, isSpeaking };
+  /**
+   * Warm the IndexedDB cache for the current voiceId × all common phrases.
+   * Sequential, non-blocking — silently no-ops if the user gesture / token
+   * isn't ready yet. Re-callable; phrases already cached are skipped by
+   * `fetchTTSBlob` itself before the network is touched.
+   */
+  const primeCache = useCallback(async (): Promise<void> => {
+    const voiceId = voiceIdRef.current ?? undefined;
+    for (const text of COMMON_TTS_CACHE_TEXTS) {
+      try {
+        const cached = await readCachedBlob(voiceId, text);
+        if (cached) continue;
+      } catch {
+        /* ignore */
+      }
+      // fetchTTSBlob writes COMMON_TTS_CACHE_TEXTS into the cache.
+      await fetchTTSBlob(text, voiceId);
+    }
+  }, []);
+
+  // Re-warm the cache when the voiceId changes.
+  useEffect(() => {
+    if (!options?.voiceId) return;
+    void primeCache();
+  }, [options?.voiceId, primeCache]);
+
+  return { speak, speakQueued, discardQueued, drainQueue, stop, isSpeaking, primeCache };
 }

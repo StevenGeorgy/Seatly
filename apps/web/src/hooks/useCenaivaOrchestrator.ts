@@ -21,6 +21,8 @@ async function getBearerToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+export type LatencyTransport = "readable_stream" | "buffered_text" | "xhr_event_source";
+
 /**
  * Optional callbacks for consuming the orchestrator's streamed SSE frames.
  * - onSpeechChunk: called for every sentence-boundary chunk the LLM produces.
@@ -28,10 +30,14 @@ async function getBearerToken(): Promise<string | null> {
  *   while the orchestrator is still running its tool loop.
  * - onDiscardPendingSpeech: the model spoke text and then pivoted to a tool
  *   call — drop any chunks already queued so we don't speak superseded text.
+ * - onTransport: invoked once when the underlying HTTP transport is known
+ *   (today always 'readable_stream'). Used by the latency-budget hook to
+ *   record per-turn transport selection.
  */
 export interface SendCallbacks {
   onSpeechChunk?: (text: string) => void;
   onDiscardPendingSpeech?: () => void;
+  onTransport?: (transport: LatencyTransport) => void;
 }
 
 export function useCenaivaOrchestrator() {
@@ -96,6 +102,7 @@ export function useCenaivaOrchestrator() {
         // one or more `data: <json>` lines — we always emit a single line, so
         // we just split on \n\n and parse the JSON after `data: `.
         const reader = res.body.getReader();
+        callbacks?.onTransport?.("readable_stream");
         const decoder = new TextDecoder();
         let buffer = "";
         let finalPayload: Record<string, unknown> | null = null;
@@ -178,5 +185,30 @@ export function useCenaivaOrchestrator() {
     abortRef.current?.abort();
   }, []);
 
-  return { send, loading, error, lastErrorRef, cancel };
+  /**
+   * Fire a tiny `{ prewarm: true }` POST to wake the orchestrator's edge
+   * runtime + warm OpenAI's connection pool before the user's first real
+   * turn. Best-effort — never throws, never blocks.
+   */
+  const prewarm = useCallback(async (): Promise<void> => {
+    if (!isSupabaseConfigured()) return;
+    const token = await getBearerToken();
+    if (!token) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 6_000);
+    void fetch(`${getSupabaseProjectUrl()}/functions/v1/cenaiva-orchestrate`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: getSupabaseAnonKey(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ prewarm: true }),
+      signal: controller.signal,
+    })
+      .catch(() => undefined)
+      .finally(() => window.clearTimeout(timer));
+  }, []);
+
+  return { send, loading, error, lastErrorRef, cancel, prewarm };
 }

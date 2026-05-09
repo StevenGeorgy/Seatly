@@ -3,6 +3,7 @@ import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useDeepgramTranscription } from "@/hooks/useDeepgramTranscription";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
+import { useCenaivaVoicePreference } from "@/hooks/useCenaivaVoicePreference";
 
 // When not explicitly disabled, route command voice input through Deepgram's
 // Nova transcription path. Browser STT fallback is intentionally disabled so
@@ -11,9 +12,10 @@ const DEEPGRAM_ENABLED = import.meta.env.VITE_DEEPGRAM_STT_ENABLED !== "false";
 
 export function useCenaivaVoice() {
   const { dispatch, state } = useAssistantStore();
+  const voicePref = useCenaivaVoicePreference();
   const speech = useCenaivaSpeech();
   const deepgram = useDeepgramTranscription();
-  const elevenlabs = useElevenLabsTTS();
+  const elevenlabs = useElevenLabsTTS({ voiceId: voicePref.voiceId });
 
   const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
@@ -156,6 +158,14 @@ export function useCenaivaVoice() {
     dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
   }, [elevenlabs, dispatch]);
 
+  // primeTTS bundles both halves of "first-utterance latency": Safari/Chrome
+  // audio-context unlock (speech.primeTTS, fast, sync) + IDB common-phrase
+  // cache warm-up (elevenlabs.primeCache, async, fire-and-forget).
+  const primeTTS = useCallback(() => {
+    speech.primeTTS();
+    void elevenlabs.primeCache();
+  }, [speech, elevenlabs]);
+
   return {
     startListening,
     stopListening,
@@ -165,7 +175,7 @@ export function useCenaivaVoice() {
     drainStreamingSpeech,
     isStreamingTTSAvailable,
     stopSpeaking,
-    primeTTS: speech.primeTTS,
+    primeTTS,
     voiceStatus: state.voiceStatus,
     isRecognitionSupported: DEEPGRAM_ENABLED && deepgram.isSupported,
     isSpeaking: elevenlabs.isSpeaking || speech.isSpeaking,

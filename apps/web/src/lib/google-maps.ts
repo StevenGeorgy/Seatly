@@ -1,5 +1,56 @@
 const GOOGLE_MAPS_SCRIPT_ID = "google-maps-js";
 
+/**
+ * Cenaiva-branded dark map theme. Used everywhere Google Maps renders in the
+ * customer-facing app (DiscoverPage, voice shell). Single source of truth so
+ * the look stays consistent — never inline this array elsewhere.
+ */
+export const CENAIVA_MAP_STYLES: Array<Record<string, unknown>> = [
+  { elementType: "geometry", stylers: [{ color: "#0A0A0A" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#0A0A0A" }, { weight: 4 }] },
+  { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+
+  { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#2E2E2E" }] },
+  { featureType: "administrative.land_parcel", stylers: [{ visibility: "off" }] },
+  { featureType: "administrative.country", elementType: "labels.text.fill", stylers: [{ color: "#F5E6C8" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#F5E6C8" }] },
+  { featureType: "administrative.neighborhood", elementType: "labels.text.fill", stylers: [{ color: "#C9A84C" }] },
+
+  { featureType: "landscape.man_made", elementType: "geometry.fill", stylers: [{ color: "#242424" }] },
+  { featureType: "landscape.man_made", elementType: "geometry.stroke", stylers: [{ color: "#A8873A" }, { weight: 0.6 }] },
+  { featureType: "landscape.natural", elementType: "geometry", stylers: [{ color: "#0F0F0F" }] },
+  { featureType: "landscape.natural.terrain", elementType: "geometry", stylers: [{ color: "#121412" }] },
+
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#888888" }] },
+  { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#0F1A12" }] },
+  { featureType: "poi.park", elementType: "labels.text.fill", stylers: [{ color: "#A8873A" }] },
+  { featureType: "poi.business", elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { featureType: "poi.medical", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.school", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.government", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.place_of_worship", stylers: [{ visibility: "off" }] },
+  { featureType: "poi.sports_complex", stylers: [{ visibility: "off" }] },
+
+  { featureType: "road", elementType: "geometry.fill", stylers: [{ color: "#1A1A1A" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#0A0A0A" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#888888" }] },
+  { featureType: "road", elementType: "labels.text.stroke", stylers: [{ color: "#0A0A0A" }, { weight: 3 }] },
+  { featureType: "road", elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+  { featureType: "road.highway", elementType: "geometry.fill", stylers: [{ color: "#2E2E2E" }] },
+  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#0A0A0A" }] },
+  { featureType: "road.highway", elementType: "labels.text.fill", stylers: [{ color: "#C9A84C" }] },
+  { featureType: "road.arterial", elementType: "geometry.fill", stylers: [{ color: "#242424" }] },
+  { featureType: "road.arterial", elementType: "labels.text.fill", stylers: [{ color: "#AAAAAA" }] },
+  { featureType: "road.local", elementType: "geometry.fill", stylers: [{ color: "#1F1F1F" }] },
+  { featureType: "road.local", elementType: "labels", stylers: [{ visibility: "off" }] },
+
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0A1320" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#5C7088" }] },
+];
+
 export type GoogleMapsMarker = {
   setMap: (map: unknown | null) => void;
   addListener: (eventName: string, handler: () => void) => { remove: () => void };

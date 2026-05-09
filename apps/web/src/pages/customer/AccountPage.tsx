@@ -467,6 +467,21 @@ export default function AccountPage() {
             </Button>
           </div>
         </form>
+
+        <Link
+          to="/account/voice"
+          className="mt-5 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">Cenaiva voice settings</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Pick the voice Cenaiva uses when she speaks back.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
       </>
     );
   };

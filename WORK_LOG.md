@@ -289,6 +289,160 @@ Verified with `npx tsc --noEmit -p apps/web`. Browser smoke verified Discover an
 
 ---
 
+## Hey Cenaiva web↔mobile parity — shipped 2026-05-09
+
+**What:** web's `AssistantProvider.sendTranscript` rewritten to mirror mobile's four-stage pipeline. Most utterances now skip the LLM entirely.
+
+**Pipeline:**
+1. `planLocalBookingTurn` (pure TS, ~0–50ms) — missing-field prompts, ambiguous-time disambig, pending-option pick.
+2. `useCenaivaAvailability.check` (~200–800ms) — `cenaiva-availability` edge function with cached "One moment please." filler. 20s `AbortController` timeout.
+3. `useCenaivaSmallPrompt.send` (~400–1500ms) — `cenaiva-small-prompt` edge function for off-topic Q&A. 8s timeout. Skipped on confirmation replies / process prompts.
+4. `useCenaivaOrchestrator.send` (~1.5–8s SSE) — full LLM tool loop, augmented with `recommendation_mode` + `assistant_memory`. `voice_id` deliberately omitted.
+
+Kill switch: `VITE_CENAIVA_FAST_PATH=false` skips Stages 1–3.
+
+**Files shipped (12 PRs' worth, executed as one body of work):**
+- `packages/assistant/src/{types,schema,index}.ts` — `AssistantMemory`, `recommendation_mode`, `assistant_memory` on `OrchestratorRequest` + `AssistantResponse`.
+- `apps/web/src/lib/cenaiva/` — 8 helpers (verbatim ports + 1 web-side `restaurantAdapter`):
+  `confirmationIntent`, `simplePromptIntent`, `recommendationIntent` (297 lines),
+  `filterRestaurants` (135 lines), `localBookingCollector` (1,200 lines),
+  `buildWakeGreeting`, `voicePreference`, `restaurantAdapter`.
+- `apps/web/src/lib/cenaiva/__tests__/*.test.ts` × 6 — **98 tests, all passing**.
+- `apps/web/src/components/cenaiva/AssistantStore.tsx` — added `memory` field, `RESET_ASSISTANT_CONTEXT`, `mergeAssistantMemory`, `bookingProcessMemoryFromState`. Constants moved to `assistantStoreConstants.ts` (avoids `react-refresh/only-export-components`).
+- `apps/web/src/components/cenaiva/AssistantProvider.tsx` — four-stage `sendTranscript`, `finishLocalResponse` helper, `open(greetingText)`, `onWake → buildWakeGreeting(user)`. Preserved: anti-double-speak, `sayGoodbyeAndClose`, `forceStopWakeWord`, `MAX_EMPTY_RELISTENS = 3`, paid-auto-close.
+- `apps/web/src/hooks/` — `useCenaivaSmallPrompt`, `useCenaivaAvailability`, `useCenaivaLatencyBudget`, `useCenaivaVoicePreference` (split from provider for HMR). `useCenaivaOrchestrator` gained `prewarm()` + `onTransport`. `useElevenLabsTTS` gained IndexedDB cache `cenaivaTtsCache` (version `flash25-mp3-44100-128-v1`, djb2-hashed) for `COMMON_TTS_CACHE_TEXTS` (9 phrases). `useCenaivaVoice` threads `voicePref.voiceId`.
+- `apps/web/src/contexts/CenaivaVoicePreferenceProvider.tsx` + `cenaiva-voice-preference-context.ts` — `localStorage['@cenaiva/tts-voice/${authUserId}']` + `user_profiles.cenaiva_tts_voice` (text col, nullable, deployed).
+- `apps/web/src/pages/customer/AccountVoicePage.tsx` + `/account/voice` route + link from `AccountPage` Preferences section.
+- `apps/web/{vitest.config.ts,vitest.setup.ts}` + `package.json` scripts — added Vitest infra (the project had no test runner).
+- `.env.example` — `VITE_CENAIVA_TTS_VOICE_FEMALE_ID`, `VITE_CENAIVA_TTS_VOICE_MALE_ID`, `VITE_CENAIVA_VOICE_DEBUG`, `VITE_CENAIVA_FAST_PATH`.
+
+**Hard rule preserved:** `apps/web/src/hooks/useCenaivaWakeWord.ts` — zero diff vs `main`. The recognizer works perfectly on web; touching it has historically broken Chrome's "one SpeechRecognition holds the mic" rule.
+
+**Backend audit (Supabase MCP):**
+- `cenaiva-availability` v8 ACTIVE
+- `cenaiva-small-prompt` v4 ACTIVE
+- `cenaiva-orchestrate` v161 ACTIVE
+- `elevenlabs-tts` v34 ACTIVE
+- `user_profiles.cenaiva_tts_voice` column exists (text, nullable)
+
+The two fast-path edge functions live deployed in the project but are NOT committed to `supabase/functions/` in this repo — mobile owns them.
+
+**Verification:**
+- `npm run test:run` (apps/web): 98/98 passing across 6 test files.
+- `npx tsc --noEmit -p apps/web/tsconfig.app.json`: clean for all new code (5 pre-existing errors in `RestaurantPublicPage.tsx` exist on `main`, unrelated).
+- `npm run lint`: 127 problems = exact `main` baseline. Zero new lint errors.
+- `git diff -- apps/web/src/hooks/useCenaivaWakeWord.ts`: empty.
+
+**Source plans:**
+- `jolly-prancing-clover.md` — full 2,575-line spec.
+- `step2-source-handoff.md` — verbatim mobile source for the 3 large helpers + 3 test files. Kept for future cherry-picks.
+- `/Users/mark_habbi/.claude/plans/make-a-detailed-plan-floating-sky.md` — execution sequencing.
+
+---
+
+## Booking-flow QA bug fixes — shipped 2026-05-09 (post-rebuild)
+
+QA caught two real bugs the same day the AvailabilityPanel rebuild shipped. Both fixed.
+
+**Bug 1 — Same-diner double-booking.** Two confirmed reservations on Mark Testing at `2026-05-09 16:00 UTC` (party 2 + party 3) landed under one user. Both rows had `user_profile_id=null`, `guest_email=null`, `guest_phone=null`. Their `guest_id` was set but the three partial GiST exclusions (`reservations_user_no_overlap` / `reservations_guest_email_no_overlap` / `reservations_guest_phone_no_overlap`) all WHERE-clause-require at least one of those three; with all three null, the exclusions never fire. The `book_reservation` overlap pre-check has the same gap. Source `'app'` — likely the mobile/voice path that creates a `guest_id` but doesn't ever capture email/phone for an unauthenticated diner.
+
+Fix shipped via `apply_migration` on project `exbjodmnpdiayfzrdyux`:
+
+1. `update reservations set status='cancelled'` for the two visible bad rows.
+2. `alter table reservations add constraint reservations_must_have_identifier check (user_profile_id is not null or (guest_email is not null and length(trim(guest_email)) > 0) or (guest_phone is not null and regexp_replace(guest_phone, '\D', '', 'g') <> '')) not valid;` — NOT VALID so historical all-null rows aren't blocked from being read or re-saved; only NEW writes pay the check.
+3. `book_reservation` updated: explicit `IF p_user_profile_id IS NULL AND v_email_norm IS NULL AND v_phone_norm IS NULL THEN RAISE EXCEPTION 'missing_identifier' USING ERRCODE='P0007'`. Plus the `INSERT` block now traps `check_violation` and re-raises as `missing_identifier` so the front-end sees a friendly P0007 instead of a 23514.
+
+Verified: `do $$ ... insert all-null ... exception when check_violation ... $$;` correctly catches.
+
+**Bug 2 — Calendar marked all future dates as disabled.** `restaurant_available_dates` was returning the right 16 dates for May 9–31 (party 2), but the panel was rendering them as greyed out. Root cause: `fetchAvailableDateSet` previously returned an empty `Set` on RPC error, indistinguishable from a legitimate "no openings this month." The panel's predicate then disabled every date.
+
+Fix in `apps/web/src/hooks/useAvailability.ts`: `fetchAvailableDateSet` now returns `Set<string> | null`. `null` signals fetch failure (logs a `console.warn` for observability); empty Set retains its meaning of "we asked, no openings." Updated three callers (`AvailabilityPanel`, `ModifyBookingFields`, `RestaurantPreviewModal`) to treat `null` as permissive — predicate falls through and dates remain clickable. Also updated `fetchNextAvailableDate` to treat null as no-result.
+
+**Files modified:**
+- (DB) Migration `reservations_require_identifier` — CHECK + RPC update.
+- `apps/web/src/hooks/useAvailability.ts` — return type + null-error semantics on `fetchAvailableDateSet`; `fetchNextAvailableDate` checks for null.
+- `apps/web/src/components/booking/AvailabilityPanel.tsx` — `.catch` sets `null` (was empty Set); `.then` passes through whatever the helper returns.
+- `apps/web/src/components/booking/ModifyBookingFields.tsx` — same pattern.
+- `apps/web/src/components/customer/RestaurantPreviewModal.tsx` — state widened to `Set<string> | null`; predicate gates on null; same null-on-error catch.
+
+**Verification:**
+- TypeScript: clean.
+- Tests: 98/98.
+- Lint: 127 problems = exact `main` baseline (zero new errors / warnings).
+- `git diff -- apps/web/src/hooks/useCenaivaWakeWord.ts`: empty.
+- DB constraint smoke: `do $$ ... insert all-nulls ... $$` correctly raises `check_violation`.
+
+---
+
+## OpenTable-style booking flow rebuild — shipped 2026-05-09
+
+**What:** customer booking widget on `RestaurantPublicPage` rebuilt to OpenTable's pattern. Defaults on cold load (today / closest time to "now" / 2 guests / 6 centered slot pills). Any change to date / time / guests refetches and re-windows. Diner-conflict UX surfaces conflicting slots as DISABLED pills with tooltips instead of silently filtering. Owner dashboard reservations list already auto-refreshes via existing `postgres_changes` subscription on `useReservations.ts:188-207`.
+
+**Phase 3 (deposits) deferred** behind a Stripe test-card smoke run. `PreviewModal` + `ModifyBookingFields` widget unification also deferred — both already work with their existing TimeWheel/SeatWheel UX; only the PublicPage was the surfaced pain point.
+
+**Files shipped:**
+- `apps/web/src/components/booking/AvailabilityPanel.tsx` — NEW unified widget (~360 lines). Calendar + TimeWheel popover (30-min target-time picks) + SeatWheel popover + horizontal 6-pill grid + conflict notices. Centered windowing via inline `centerSlotsAround(slots, time, 6)`.
+- `apps/web/src/hooks/useAvailability.ts` — added `fetchNextAvailableDate` (today short-circuit, then 60-day `restaurant_available_dates` scan) + `closestSlotTimeToNow` helpers.
+- `apps/web/src/pages/customer/RestaurantPublicPage.tsx` — replaced ~170 lines of date/time/party UI with `<AvailabilityPanel>`. Deleted `dateAvailabilityLoading` state, `displayedTimeOptions` memo, `dineInDatePopoverOpen` state, `dinerConflictNotices` memo (panel renders its own), the dead `selectedSlot.booking_date ?? null` fallback, and the unused `bookingFieldsLocked` derived. **All 5 pre-existing TS errors cleared as a side effect.**
+- `apps/web/src/hooks/useRestaurantSeatTotal.ts` — NEW (~50 lines). `sum(tables.capacity) where is_active=true`.
+- `apps/web/src/pages/dashboard/SettingsPage.tsx` — added "Seat capacity" FieldRow next to turn-time. Owners now see their physical-seat ceiling, with a hint about raising `shifts.max_covers` for whole-restaurant bookings.
+- `cenaiva-database.md` — NEW, repo root, ~656 lines / ~5,000 words. Two-mode design: 12 sections of context (schema, RPCs, edge functions, status enums, realtime, RLS, performance rules, error codes, migration ledger), then an actionable 30-item checklist at the bottom for the mobile Claude agent.
+
+**Hard rules preserved:**
+- `apps/web/src/hooks/useCenaivaWakeWord.ts` zero diff.
+- All atomic write RPCs untouched (`book_reservation`, `modify_reservation_slot`).
+- No DDL — Phase 1 / 2 / 4 of the plan are pure client + helper code; Phase 3 (deposits) is the only piece that requires a migration and was deferred.
+
+**Verification:**
+- `npx tsc --noEmit -p apps/web/tsconfig.app.json`: **clean** (was 5 errors on `main`, now 0).
+- `npm run test:run` (apps/web): 98/98 passing.
+- `npm run lint`: 127 problems = exact `main` baseline. **Zero new lint errors.**
+- `git diff -- apps/web/src/hooks/useCenaivaWakeWord.ts`: empty.
+
+**Manual smoke (ready for user QA):**
+1. Open Mark Testing on Discover → page lands with today / 2 guests / closest time / 6 pills.
+2. Bump party to 4 → fresh `get_available_slots_cached` POST, pills update.
+3. Pick a pill → contact form auto-fills date+time+party from the slot.
+4. Complete booking → confirmation_code returned; row appears on `/dashboard/reservations` within ~1 s without manual refresh.
+
+**Open follow-ups (queued separately):**
+- **Phase 3 — Deposits.** Schema (`compute_deposit_cents` SQL fn, `pending_deposit` status, `deposit_due_by` column, `pg_cron` expiry sweep) + dashboard UI for party-size thresholds + `stripe-charge-deposit` edge function + atomic SetupIntent → `book_reservation(pending_deposit)` → charge sequence. Gated by Stripe test-card round-trip in the Supabase project.
+- **PreviewModal + ModifyBookingFields visual unification** with `<AvailabilityPanel>`. Both work today with their existing TimeWheel/SeatWheel widgets; only PublicPage was painful enough to fix this round.
+
+---
+
+## Voice-shell production-config fixes — shipped 2026-05-09
+
+Three issues a customer hit on the live voice shell, all fixed in one body of work.
+
+**Issue 1 — Voice-shell map was MapLibre demo tiles.** Refactored `apps/web/src/components/cenaiva/CustomerMap.tsx` from `react-map-gl/maplibre` to Google Maps via `loadGoogleMaps()`. Centralized `CENAIVA_MAP_STYLES` to `apps/web/src/lib/google-maps.ts` (was inlined at `DiscoverPage.tsx:561`); `DiscoverPage` now imports it. Markers are imperative `new maps.Marker(...)` synced against `state.map.marker_restaurant_ids`; click → `dispatch({ type: 'highlight_restaurant', ... })`. Fallback message renders when `VITE_GOOGLE_MAPS_API_KEY` is absent. `maplibre-gl` / `react-map-gl` deps stay in `package.json` for now — separate cleanup if no other consumer is found.
+
+**Issue 2 — Two test restaurants leaked to customers (then policy clarified).** "Mark Testing" (`aaa5e3d3-d8f2-4bae-8615-dc4e6ea83d2c`, Guelph, 2026-03-18) and "Cenaiva Reservation Capacity Test" (`82277919-f810-48df-8898-84895a72c280`, Toronto, 2026-05-05) were both `is_active=true` and surfaced through `usePublicRestaurants()` and the orchestrator's `search_restaurants` tool. Initial response: `UPDATE restaurants SET is_active=false WHERE id IN (…)` via Supabase MCP. **Policy correction (same day):** user clarified self-service signup is intentionally open and the activation gate will be a future Stripe paywall — do NOT change the `is_active=true` signup default and do NOT add an admin approval flow. Reactivated "Mark Testing" (`is_active=true` again); "Cenaiva Reservation Capacity Test" stays deactivated because it's a destructive QA target referenced by `tmp-e2e/concurrent-booking.mjs` (see Incident note 2026-05-07). Open follow-up: Stripe paywall on signup.
+
+**Issue 3 — ElevenLabs disabled in `.env`.** Local `/Users/mark_habbi/Seatly-12/.env` line 61 was `VITE_ELEVENLABS_ENABLED=false`, forcing every TTS call into Web Speech. Flipped to `true`. Vite restart required to pick up. `elevenlabs-tts` v34 is ACTIVE on the Supabase project; if `voicePref.voiceId` is null (user hasn't picked a voice), the edge function falls back to server-side `ELEVENLABS_VOICE_ID` (`8vf2Pg7VZD0Piv8GA8v9` default).
+
+**Files modified:**
+- `apps/web/src/components/cenaiva/CustomerMap.tsx` — full rewrite (107→235 lines).
+- `apps/web/src/lib/google-maps.ts` — added `CENAIVA_MAP_STYLES` named export (~52 lines).
+- `apps/web/src/pages/customer/DiscoverPage.tsx` — replaced inline styles array with import.
+- `/Users/mark_habbi/Seatly-12/.env` — line 61 `VITE_ELEVENLABS_ENABLED=true`.
+- Live DB: 2 `restaurants` rows updated.
+
+**Verification:**
+- Tests: 98/98 passing (no test surface for the map; manual verification only).
+- Typecheck: clean for new code (5 pre-existing `RestaurantPublicPage.tsx` errors unchanged).
+- Lint: 127 problems = exact `main` baseline. Zero new errors or warnings.
+- `git diff -- apps/web/src/hooks/useCenaivaWakeWord.ts`: empty.
+
+**Manual test plan (after Vite restart):**
+1. `npm run dev`; sign in; open the voice orb.
+2. Map renders with Cenaiva dark theme + restaurant pins (no purple gradient).
+3. Network panel: `POST /functions/v1/elevenlabs-tts` returns 200 + `audio/mpeg`.
+4. Ask "find restaurants near me" or "find restaurants in Guelph" — neither test restaurant appears.
+5. Click a pin → marker turns gold, assistant store updates.
+
+---
+
 ## Open follow-ups
 
 **Concurrency:** ceiling work is done — see `CONCURRENCY_PLAN.md`. The only remaining lever is **compute upgrade** (Small ~$5/mo when traffic regularly hits 1,500+ concurrent; Large ~$100/mo for the 30k-user launch target). CDN was evaluated and declined for now; revisit criteria in `CONCURRENCY_PLAN.md` → "CDN deliberation".
@@ -300,6 +454,9 @@ Verified with `npx tsc --noEmit -p apps/web`. Browser smoke verified Discover an
 4. **Lazy zod in `@cenaiva/assistant`** — ~19 KB gz off first paint. ~45 min.
 5. **Phase 9 — dashboard cleanup** — TanStack Query for staff hooks + sidebar prefetch. Staff-only, lower priority. 1–2 days.
 
+**Onboarding / monetization:**
+- **Stripe paywall on `signup-restaurant-owner`** — paid tier required to flip `is_active=true` (or to show the restaurant in customer Discover / Deals / voice-shell). Today every signup lands `is_active=true` for free, which is intentional pending this work but has obvious abuse risk. Touch points: edge function (charge → activate), `/account/billing` page, webhook for renewal/cancellation that toggles `is_active`. Defer until the product team scopes pricing tiers.
+
 ---
 
 ## Lessons / gotchas worth remembering
@@ -309,6 +466,23 @@ Verified with `npx tsc --noEmit -p apps/web`. Browser smoke verified Discover an
 - **Internal helpers can break chunk strategies.** Vite's `vite/preload-helper.js` got hoisted into `vendor-map`; the entry imported the helper, transitively pulling vendor-map. Always pin `vite/(preload-helper|client|env)` and similar internals to a chunk the entry already loads.
 - **Lighthouse single-run variance.** Desktop runs can swing 800ms ↔ 2500ms LCP. Always average 3+ runs before claiming a delta.
 - **`vite preview` doesn't gzip.** Real-world numbers behind a CDN with brotli are ~3× faster on transfer. Don't take preview Lighthouse numbers as production reality.
+- **`react-refresh/only-export-components`** fires on any non-component export from a `.tsx` file. Constants → sibling `*Constants.ts`. Provider + hook + context value → split into `Provider.tsx` + `*-context.ts` (`createContext` + value type) + `useX.ts`. Mirrors the existing `auth-context*` triad. Caught when adding `NO_AUTO_RELISTEN_STATUSES` to `AssistantStore.tsx` (already a "components" file with non-component exports — adding more bumped the lint count).
+- **Refs assigned during render trigger `Cannot access refs during render`.** `voiceIdRef.current = options?.voiceId ?? null` outside `useEffect` is illegal. Wrap in `useEffect` keyed on the source dep. Caught when threading `voiceId` from `useCenaivaVoicePreference` into `useElevenLabsTTS`.
+- **Backend functions can be deployed but uncommitted.** Mobile owned `cenaiva-availability` + `cenaiva-small-prompt` — ACTIVE in the live project but absent from `supabase/functions/`. `ls supabase/functions/` alone misled the initial audit; verified live via `mcp__plugin_supabase_supabase__list_edge_functions(project_id='exbjodmnpdiayfzrdyux')`.
+- **Vitest config: explicit imports + `globals: false`.** `import { describe, it, expect } from 'vitest'` per file. Avoids needing `vitest/globals` in `tsconfig.app.json` `types`, which would force re-listing every `@types/*` we still want auto-included. Also skips the global-namespace TS noise.
+- **Pre-existing build/lint baseline.** `npm run build` was already failing on `main` due to 5 errors in `RestaurantPublicPage.tsx` (unrelated to Cenaiva). `npm run lint` had 127 problems on `main`. Always capture baseline first via `git stash --include-untracked` then re-run, so you don't conflate pre-existing breakage with new work. CI/automation that fails the whole pipeline on any lint error is misleading until the baseline is cleaned.
+- **Schema drift adapters live at parse boundaries, not in ported helpers.** Mobile's `FiltersDelta.cuisine` is `string`; web's is `string[]`. Resolved with a `firstCuisine()` helper at the parse site inside `recommendationIntent.ts`, NOT by editing the port's input shape. Keeps mobile cherry-picks clean.
+- **Restaurant-shape divergence ditto.** Mobile `Restaurant` is camelCase + `area`/`tags`; web is snake_case + neither. `apps/web/src/lib/cenaiva/restaurantAdapter.ts` maps web → mobile shape at every call site that feeds restaurants into a ported helper. Never edit `filterRestaurants.ts` / `localBookingCollector.ts` to match web.
+- **Self-service restaurant signup is intentionally open.** `signup-restaurant-owner` defaults `is_active=true`; new restaurants land customer-visible immediately. The future activation gate is a Stripe paywall (planned, not built). Don't add an admin-approval flow or change the signup default — both were considered and rejected on 2026-05-09. Caveat: destructively-named QA targets (e.g. "Cenaiva Reservation Capacity Test") are an exception — they stay deactivated to keep them out of customer search.
+- **`VITE_*` flags require a Vite restart.** Local `.env` `VITE_ELEVENLABS_ENABLED=false` forced Web Speech fallback for an unknown stretch. Editing `.env` doesn't auto-reload the dev server; always restart after env changes. Always grep the local `.env` for unexpected `=false` overrides before chasing client-side TTS / feature bugs.
+- **MapLibre demo tiles look like a designed background.** The purple/blue gradient + diagonal line is the signature of `https://demotiles.maplibre.org/style.json`. If a map area shows that pattern, the style URL is unset (or pointed at the demo) — not a styling intent. Voice shell shipped this way for an unknown stretch until 2026-05-09 because `VITE_MAPLIBRE_STYLE_URL` was never set and there was no fallback message. Switched the voice shell to Google Maps (which DOES have a "key missing" fallback message) to avoid this trap.
+- **Conflict UX should explain itself.** Silently filtering a diner's overlapping slot just makes the UI look broken — they don't know why the time they wanted is missing. Render the conflict pill as DISABLED with a tooltip naming the conflicting reservation's restaurant + window. The data is already available via `useDinerConflictWindows` + `formatConflictWindow`; the bug was the UI choice to filter instead of disabling.
+- **Risk profiles are wildly different across phases of a feature.** OpenTable-style booking has 4 phases on this codebase: widget rewrite (data-layer reuse, low risk), seat-cap hint (pure UI, trivial), deposits (Stripe + cron + migrations, medium risk), mobile-agent doc (zero risk). The first three look related but have completely different ship gates. Don't bundle the medium-risk one with the low-risk ones — split the PR.
+- **OpenTable's pattern is exactly the AvailabilityPanel design.** Their docs (Booking Policies, Availability Controls, Deposits, Resolve Table Conflicts) describe defaults + 6 pills + auto-refetch + per-restaurant deposit thresholds — and our existing data layer already supports the first three out of the box. The only NEW capability we needed for parity (besides UI polish) is the deposit flow.
+- **Partial GiST exclusions only fire when the WHERE clause matches.** Three exclusions on `reservations` (user_profile_id, guest_email, guest_phone) collectively cover every legitimate diner-identifier path BUT silently allow writes where ALL THREE are null. The book_reservation overlap pre-check had the same gap. Pair partial exclusions with a CHECK constraint that requires at least one of the keyed columns to be non-null — otherwise an all-null row is invisible to every uniqueness/overlap check.
+- **Empty-set vs null is a critical UX distinction in calendar predicates.** `fetchAvailableDateSet` returning empty Set on RPC error meant "no openings" and "fetch failed" rendered identically: a calendar full of greyed-out dates. Switched the helper to return `null` on error and made predicates treat null as permissive (don't disable). Lesson: any "loading/error/no-results" tristate must pick three distinct return values, not collapse to one of the three meanings.
+- **`source='app'` is undocumented but in production.** The reservations table has source values `'web' | 'cenaiva' | 'staff' | 'dashboard' | 'app' | 'qa-test'`. The `'app'` source is likely the mobile or voice path; it was the source of both all-null rows that bypassed identifier checks. Audit any new edge function that writes reservations to confirm it sets `source` to a known enum value AND captures at least one identifier.
+- **Imperative Marker management with React.** `react-map-gl/maplibre` has React `<Marker>` JSX; raw Google Maps JS API does not — markers are `new maps.Marker(...)` and must be tracked in a ref `Map<id, { marker, listener }>`. On marker-set diff: remove markers no longer in the visible set, update icons/labels for ones that are, create new ones for newcomers. Always copy `markersRef.current` to a local var inside the init effect so the cleanup runs against the right Map instance (caught a `react-hooks/exhaustive-deps` warning the first try).
 
 ---
 
@@ -318,8 +492,9 @@ Verified with `npx tsc --noEmit -p apps/web`. Browser smoke verified Discover an
 - Supabase CLI v2.98.1 at `/usr/local/bin/supabase`, logged in, Seatly project (`exbjodmnpdiayfzrdyux`) linked.
 - Supabase MCP connected (HTTP transport).
 - Vite 8.x with Rolldown.
-- Type-check: `npx tsc --noEmit -p apps/web` (run from repo root).
-- Build: `npm --prefix apps/web run build` (run from repo root).
+- Type-check: `npx tsc --noEmit -p apps/web/tsconfig.app.json` (run from repo root, or omit `tsconfig.app.json` if you want both app + node refs).
+- Build: `npm --prefix apps/web run build` (run from repo root). Note: 5 pre-existing errors in `RestaurantPublicPage.tsx` block `tsc -b` on `main`; track separately.
 - Dev server: `npm run dev` from repo root, or `npm --prefix apps/web run dev`. Uses port 5174 if 5173 is taken.
+- Tests: `npm --prefix apps/web run test:run` (Vitest, CI-friendly with `--passWithNoTests`). `npm --prefix apps/web test` for watch mode. 98 cenaiva tests under `apps/web/src/lib/cenaiva/__tests__/`.
 - Playwright is available locally via `npm install --no-save @playwright/test` + `npx playwright install chromium`. Smoke specs live in `tmp-e2e/`; the existing `speed-phase5-smoke.spec.cjs` and `concurrent-booking.mjs` are kept around but the latter is destructive at Nano tier (see Incident note).
 - Test login: `cenaiva.e2e.customer@test.local` / `TestPassword123!`. Visible-slot test restaurant: `Cenaiva Reservation Capacity Test`.

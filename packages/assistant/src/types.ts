@@ -109,3 +109,41 @@ export interface MapDelta {
 }
 
 export type VoiceStatus = "idle" | "listening" | "processing" | "speaking" | "interrupted" | "error";
+
+// ── Cenaiva assistant memory (sent on every orchestrator request) ────────────
+
+export type DiscoverySortMode = "distance" | "rating" | "price_asc" | "price_desc";
+
+export type RecommendationMode = "single" | "list";
+
+export interface AssistantDiscoveryMemory {
+  transcript: string;
+  recommendation_mode: RecommendationMode | null;
+  cuisine: string | null;
+  cuisine_group: string | null;
+  city: string | null;
+  query: string | null;
+  sort_by: DiscoverySortMode | null;
+  full_restaurant_ids: string[];
+  displayed_restaurant_ids: string[];
+  exhausted_restaurant_ids: string[];
+}
+
+export interface AssistantBookingProcessMemory {
+  phase: BookingState["status"];
+  restaurant_id: string | null;
+  restaurant_name: string | null;
+  party_size: number | null;
+  date: string | null;
+  time: string | null;
+  shift_id: string | null;
+  slot_iso: string | null;
+  reservation_id: string | null;
+  confirmation_code: string | null;
+  last_prompt: string | null;
+}
+
+export interface AssistantMemory {
+  discovery: AssistantDiscoveryMemory | null;
+  booking_process: AssistantBookingProcessMemory | null;
+}

@@ -33,6 +33,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useRestaurantSeatTotal } from "@/hooks/useRestaurantSeatTotal";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
@@ -503,6 +504,7 @@ export default function SettingsPage() {
   const [turnTimeMinutes, setTurnTimeMinutes] = useState(
     String(selectedRestaurant?.settings_json?.turnTimeMinutes ?? DEFAULT_TURN_TIME_MINUTES),
   );
+  const restaurantSeatTotal = useRestaurantSeatTotal(selectedRestaurant?.id ?? null);
   const [savingRestaurant, setSavingRestaurant] = useState(false);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState("");
   const [deletingRestaurant, setDeletingRestaurant] = useState(false);
@@ -1110,7 +1112,7 @@ export default function SettingsPage() {
         turn_time_minutes: normalizedTurnTime ?? templateShift?.turn_time_minutes ?? DEFAULT_TURN_TIME_MINUTES,
         min_party_size: templateShift?.min_party_size ?? 1,
         max_party_size: templateShift?.max_party_size ?? 20,
-        advance_booking_days: templateShift?.advance_booking_days ?? 30,
+        advance_booking_days: templateShift?.advance_booking_days ?? 3650,
         blackout_dates: templateShift?.blackout_dates ?? [],
         is_active: true,
       }];
@@ -1429,6 +1431,23 @@ export default function SettingsPage() {
                           min: MIN_TURN_TIME_MINUTES,
                           max: MAX_TURN_TIME_MINUTES,
                         })}
+                      </p>
+                    ) : null}
+                  </div>
+                </FieldRow>
+                <FieldRow
+                  label="Seat capacity"
+                  hint="Sum of every active table's capacity. The booking flow caps party size at the smaller of this number and any per-shift max-covers limit. To allow whole-restaurant bookings, raise per-shift max-covers to match this number."
+                >
+                  <div className="flex max-w-sm flex-col gap-2">
+                    <div className="rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-white">
+                      {restaurantSeatTotal == null
+                        ? "Loading…"
+                        : `${restaurantSeatTotal.toLocaleString()} seat${restaurantSeatTotal === 1 ? "" : "s"}`}
+                    </div>
+                    {restaurantSeatTotal === 0 ? (
+                      <p className="text-xs text-warning">
+                        No active tables yet. Add tables on the Floor Plan page so customers can book.
                       </p>
                     ) : null}
                   </div>

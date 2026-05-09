@@ -14,7 +14,6 @@ import {
   Check,
   Flame,
   CalendarDays,
-  Clock,
   Utensils,
   Users,
   ChevronDown,
@@ -42,12 +41,13 @@ import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialL
 import {
   fetchAvailabilitySlots,
   filterSlotsByConflicts,
-  formatConflictWindow,
   invalidateAvailabilityCache,
   useAvailability,
   useAvailabilityRealtimeInvalidate,
   useDinerConflictWindows,
+  type AvailabilitySlot,
 } from "@/hooks/useAvailability";
+import { AvailabilityPanel } from "@/components/booking/AvailabilityPanel";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
@@ -1120,6 +1120,9 @@ export default function RestaurantPublicPage() {
     seating_preference: "",
     name: "", email: "", phone: "", allergies: "", occasion: "",
   });
+  // Slot picked via the unified <AvailabilityPanel>. Falls back to
+  // selectedAvailabilitySlot (the legacy lookup) when not set.
+  const [pickedAvailabilitySlot, setPickedAvailabilitySlot] = useState<AvailabilitySlot | null>(null);
 
   useEffect(() => {
     if (!bookingLockedFromPreview || cameFromCenaivaPrepay) return;
@@ -1193,21 +1196,6 @@ export default function RestaurantPublicPage() {
     () => filterSlotsByConflicts(availability.slots, dinerConflictWindows),
     [availability.slots, dinerConflictWindows],
   );
-
-  // Build the diner-conflict notice strings. Only show when at least one
-  // slot was actually hidden — i.e., a server slot exists but doesn't
-  // appear in the filtered list. Otherwise the banner is noisy.
-  const dinerConflictNotices = useMemo(() => {
-    if (dinerConflictWindows.length === 0) return [] as string[];
-    if (filteredAvailabilitySlots.length === availability.slots.length) return [] as string[];
-    const seen = new Set<string>();
-    const tz = restaurant?.timezone ?? null;
-    for (const window of dinerConflictWindows) {
-      const formatted = formatConflictWindow(window, tz);
-      if (formatted) seen.add(formatted);
-    }
-    return Array.from(seen);
-  }, [dinerConflictWindows, filteredAvailabilitySlots.length, availability.slots.length, restaurant?.timezone]);
 
   // Live invalidation: when another diner's booking lands at this restaurant,
   // drop the cached availability so the next render shows fresh slots. If a
@@ -1376,14 +1364,6 @@ export default function RestaurantPublicPage() {
   const currency = restaurant?.currency ?? "cad";
   const gradient = CUISINE_GRADIENT[restaurant?.cuisine_type ?? ""] ?? "from-zinc-900 to-neutral-900";
 
-  const dineInDateTriggerId = useId();
-  const [dineInDatePopoverOpen, setDineInDatePopoverOpen] = useState(false);
-  const dineInCalendarDay = useMemo(() => {
-    if (!dineIn.date) return undefined;
-    const d = parse(dineIn.date, "yyyy-MM-dd", new Date());
-    return isValid(d) ? d : undefined;
-  }, [dineIn.date]);
-
   useEffect(() => {
     if (!restaurant?.id || !dineIn.date || typeof dineIn.party_size !== "number") return;
     const previewRevalidationKey = previewSlotRevalidationMatchesRequest && requestedIsoSlot
@@ -1428,22 +1408,8 @@ export default function RestaurantPublicPage() {
     },
     [availability.loading, bookingLockedFromPreview, dineIn.date, filteredAvailabilitySlots, requestedIsoSlot, requestedShiftId],
   );
-  const bookingFieldsLocked = bookingLockedFromPreview && lockedPreviewSlotAvailable;
   const previewSlotNoLongerAvailable =
     bookingLockedFromPreview && Boolean(requestedIsoSlot) && !availability.loading && !lockedPreviewSlotAvailable;
-  const displayedTimeOptions = useMemo(
-    () => {
-      // When the field is locked from a preview pick, render only the URL's
-      // time. Mixing in other slot labels lets a disabled <select> visually
-      // fall back to whichever option matches first if React/the browser
-      // races on `value` vs. options, which previously made every locked
-      // booking display "11am" regardless of what was picked.
-      if (bookingFieldsLocked && dineIn.time) return [dineIn.time];
-      return availableTimeOptions;
-    },
-    [availableTimeOptions, bookingFieldsLocked, dineIn.time],
-  );
-
   useEffect(() => {
     if (!dineIn.date || availability.loading || availability.slots.length === 0) return;
     if (availableTimeOptions.includes(dineIn.time)) return;
@@ -1695,9 +1661,13 @@ export default function RestaurantPublicPage() {
         // UTC ISO string, so slicing the first 10 chars of an evening EDT slot
         // returns the *next* UTC day and we'd fetch the wrong window's
         // availability — producing a false "no longer available" rejection.
-        const slotDate = (dineIn?.date && /^\d{4}-\d{2}-\d{2}$/.test(dineIn.date))
-          ? dineIn.date
-          : selectedSlot.booking_date ?? null;
+        // Slot revalidation always uses the restaurant-local date the user
+        // picked (`dineIn.date`, YYYY-MM-DD). The previous fallback on
+        // `selectedSlot.booking_date` was dead code — `dineIn.date` is
+        // populated by both the AvailabilityPanel and the preview-locked
+        // path, so the fallback never fires.
+        const slotDate =
+          dineIn?.date && /^\d{4}-\d{2}-\d{2}$/.test(dineIn.date) ? dineIn.date : null;
         if (slotDate) {
           const refreshed = await fetchAvailabilitySlots(
             restaurant.id,
@@ -1968,182 +1938,74 @@ export default function RestaurantPublicPage() {
                     That preview time is no longer available. Pick another time.
                   </p>
                 ) : null}
-                {dinerConflictNotices.length > 0 ? (
-                  <div className="mb-4 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
-                    <p className="font-semibold">Some times are hidden because you're already booked:</p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                      {dinerConflictNotices.map((notice) => (
-                        <li key={notice}>{notice}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
                 <div className="space-y-4">
-                    {/* Date + Time + Party */}
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <Label htmlFor={dineInDateTriggerId} className="mb-1.5 block text-xs text-text-muted">
-                          Date <span className="text-danger">*</span>
-                        </Label>
-                        <Popover
-                          open={bookingLockedFromPreview || availability.loading || dateAvailabilityLoading ? false : dineInDatePopoverOpen}
-                          onOpenChange={(open) => {
-                            if (!bookingLockedFromPreview && !availability.loading && !dateAvailabilityLoading) {
-                              setDineInDatePopoverOpen(open);
-                            }
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button
-                              id={dineInDateTriggerId}
-                              type="button"
-                              disabled={bookingLockedFromPreview || availability.loading || dateAvailabilityLoading}
-                              className={cn(
-                                "relative flex h-10 w-full items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base",
-                                bookingLockedFromPreview || availability.loading || dateAvailabilityLoading
-                                  ? "cursor-not-allowed opacity-55"
-                                  : "cursor-pointer hover:border-gold/30",
-                              )}
-                            >
-                              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
-                              <span
-                                className={`truncate text-xs leading-none ${
-                                  dineIn.date ? "text-text-primary" : "text-text-muted"
-                                }`}
-                              >
-                                {dineIn.date
-                                  ? new Date(`${dineIn.date}T12:00:00`).toLocaleDateString(undefined, {
-                                      weekday: "short",
-                                      month: "short",
-                                      day: "numeric",
-                                      year: "numeric",
-                                    })
-                                  : t("customerPublic.booking.selectDate")}
-                              </span>
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="start"
-                            className="w-auto border-border bg-bg-elevated p-0 text-text-primary shadow-2xl"
-                          >
-                            <Calendar
-                              mode="single"
-                              required={false}
-                              selected={dineInCalendarDay}
-                              onSelect={(d) => {
-                                setDineIn((prev) => ({
-                                  ...prev,
-                                  date: d ? format(d, "yyyy-MM-dd") : "",
-                                }));
-                                if (d) {
-                                  setDineInDatePopoverOpen(false);
-                                }
-                              }}
-                              disabled={{ before: startOfToday() }}
-                              className="rounded-md border-0 bg-transparent [--cell-size:--spacing(8)]"
-                            />
-                            {dineIn.date ? (
-                              <div className="border-t border-border p-2">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="w-full text-text-secondary hover:bg-bg-surface hover:text-text-primary"
-                                  onClick={() => {
-                                    setDineIn((d) => ({ ...d, date: "" }));
-                                    setDineInDatePopoverOpen(false);
-                                  }}
-                                >
-                                  {t("customerPublic.booking.clearDate")}
-                                </Button>
-                              </div>
-                            ) : null}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                      <div>
-                        <Label className="mb-1.5 block text-xs text-text-muted">Time</Label>
-                        <div className="relative">
-                          <Clock className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted z-10" />
-                          {bookingLockedFromPreview && dineIn.time ? (
-                            <div
-                              aria-disabled="true"
-                              className="flex h-10 w-full cursor-not-allowed items-center rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary opacity-55"
-                            >
-                              <span className="truncate">{formatCompactTimeLabel(dineIn.time)}</span>
-                            </div>
-                          ) : (
-                            <>
-                              <select
-                                value={dineIn.time}
-                                onChange={(e) => setDineIn((d) => ({ ...d, time: e.target.value }))}
-                                disabled={dineIn.date ? availability.loading || displayedTimeOptions.length === 0 : false}
-                                className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated pl-9 pr-2 text-xs text-text-primary outline-none focus:border-gold/40"
-                              >
-                                {displayedTimeOptions.length > 0 ? (
-                                  displayedTimeOptions.map((time) => (
-                                    <option key={time} value={time}>{formatCompactTimeLabel(time)}</option>
-                                  ))
-                                ) : (
-                                  <option value="">No times available</option>
-                                )}
-                              </select>
-                              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
-                            </>
-                          )}
+                    {bookingLockedFromPreview ? (
+                      // Came from the preview modal with a slot already chosen.
+                      // Show a read-only summary instead of the full panel so
+                      // the user can't change the slot from under themselves.
+                      <div className="grid grid-cols-3 gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-sm text-text-secondary">
+                        <div>
+                          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Date</p>
+                          <p className="mt-1 text-white">
+                            {dineIn.date
+                              ? new Date(`${dineIn.date}T12:00:00`).toLocaleDateString(undefined, {
+                                  weekday: "short",
+                                  month: "short",
+                                  day: "numeric",
+                                })
+                              : "—"}
+                          </p>
                         </div>
-                        {dineIn.date && availability.loading ? (
-                          <p className="mt-1.5 text-[11px] text-text-muted">Checking table availability...</p>
-                        ) : previewSlotNoLongerAvailable ? (
-                          null
-                        ) : dineIn.date && availableTimeOptions.length === 0 ? (
-                          <p className="mt-1.5 text-[11px] text-warning">
-                            {typeof dineIn.party_size === "number" && dineIn.party_size > maxBookablePartySize
-                              ? `Maximum party size is ${maxBookablePartySize}.`
-                              : "No tables fit this party on that date."}
+                        <div>
+                          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Time</p>
+                          <p className="mt-1 text-white">
+                            {dineIn.time ? formatCompactTimeLabel(dineIn.time) : "—"}
                           </p>
-                        ) : null}
-                      </div>
-                      <div>
-                        <Label htmlFor="di-party" className="mb-1.5 block text-xs text-text-muted">Guests</Label>
-                        <div className="relative">
-                          <Users className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
-                          <input
-                            id="di-party"
-                            type="number"
-                            min={1}
-                            max={maxBookablePartySize}
-                            value={dineIn.party_size}
-                            disabled={bookingFieldsLocked || availability.loading}
-                            onChange={(e) => {
-                              const raw = e.target.value;
-                              if (raw === "") {
-                                setDineIn((d) => ({ ...d, party_size: "" }));
-                                return;
-                              }
-                              const v = parseInt(raw, 10);
-                              if (!isNaN(v) && v >= 1 && v <= maxBookablePartySize) {
-                                setDineIn((d) => ({ ...d, party_size: v }));
-                              }
-                            }}
-                            className={cn(
-                              "h-10 w-full rounded-lg border border-border bg-bg-elevated pl-9 pr-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
-                              (bookingFieldsLocked || availability.loading) && "cursor-not-allowed opacity-55",
-                            )}
-                          />
                         </div>
-                        {bookingFieldsLocked ? (
-                          <p className="mt-1.5 text-[11px] text-text-muted">
-                            {t("customerPublic.booking.selectedFromPreview")}
+                        <div>
+                          <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Party</p>
+                          <p className="mt-1 text-white">
+                            {typeof dineIn.party_size === "number"
+                              ? `${dineIn.party_size} guest${dineIn.party_size === 1 ? "" : "s"}`
+                              : "—"}
                           </p>
-                        ) : null}
-                        {availability.floorCapacity != null ? (
-                          <p className="mt-1.5 text-[11px] text-text-muted">
-                            Max party size: {availability.floorCapacity}
-                          </p>
-                        ) : null}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <AvailabilityPanel
+                        restaurantId={restaurant.id}
+                        restaurantTimezone={restaurant.timezone || "America/Toronto"}
+                        userProfileId={profile?.id ?? null}
+                        initialDate={dineIn.date || undefined}
+                        initialTime={dineIn.time ? undefined : undefined}
+                        initialPartySize={typeof dineIn.party_size === "number" ? dineIn.party_size : undefined}
+                        selectedSlotIso={pickedAvailabilitySlot?.date_time ?? null}
+                        onStateChange={({ date: nextDate, partySize: nextParty }) => {
+                          setDineIn((prev) => {
+                            const dateChanged = nextDate !== prev.date;
+                            const partyChanged = nextParty !== prev.party_size;
+                            if (!dateChanged && !partyChanged) return prev;
+                            // Clear the picked slot when the inputs change so
+                            // the user re-selects from the new pill grid. The
+                            // panel emits a new onSelectSlot when they pick.
+                            if (dateChanged || partyChanged) setPickedAvailabilitySlot(null);
+                            return {
+                              ...prev,
+                              date: nextDate || prev.date,
+                              party_size: nextParty,
+                            };
+                          });
+                        }}
+                        onSelectSlot={(slot) => {
+                          setPickedAvailabilitySlot(slot);
+                          setDineIn((prev) => ({
+                            ...prev,
+                            date: slot.booking_date ?? prev.date,
+                            time: formatCompactTimeLabel(slot.display_time),
+                          }));
+                        }}
+                      />
+                    )}
 
                     <div className="h-px bg-border" />
 

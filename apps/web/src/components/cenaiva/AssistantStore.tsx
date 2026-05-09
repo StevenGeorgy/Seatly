@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AssistantMemory,
   AssistantResponseType,
   BookingState,
   CartItem,
@@ -15,6 +16,11 @@ import type {
   VoiceStatus,
 } from "@cenaiva/assistant";
 
+export {
+  NO_AUTO_RELISTEN_STATUSES,
+  RELISTEN_AFTER_RESPONSE_MS,
+} from "./assistantStoreConstants";
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 export interface AssistantState {
@@ -23,12 +29,18 @@ export interface AssistantState {
   booking: BookingState;
   map: MapState;
   filters: FiltersDelta;
+  memory: AssistantMemory;
   showExitX: boolean;
   customerAccepted: boolean;
   conversationId: string | null;
   lastSpokenText: string;
   availabilityOpen: boolean;
 }
+
+const initialMemory: AssistantMemory = {
+  discovery: null,
+  booking_process: null,
+};
 
 const initialBooking: BookingState = {
   restaurant_id: null,
@@ -70,6 +82,7 @@ export const initialState: AssistantState = {
   booking: initialBooking,
   map: initialMap,
   filters: {},
+  memory: initialMemory,
   showExitX: false,
   customerAccepted: false,
   conversationId: null,
@@ -87,6 +100,7 @@ type LocalAction =
   | { type: "SET_CONVERSATION_ID"; id: string }
   | { type: "APPLY_RESPONSE"; response: AssistantResponseType }
   | { type: "RESET_BOOKING" }
+  | { type: "RESET_ASSISTANT_CONTEXT" }
   | { type: "SET_AVAILABILITY_OPEN"; open: boolean }
   | { type: "SET_HAS_SAVED_CARD"; value: boolean }
   | { type: "SET_BOOKING_STATUS"; status: BookingState["status"] }
@@ -98,6 +112,36 @@ export type AssistantAction = UIActionType | LocalAction;
 
 function computeCartSubtotal(cart: CartItem[]): number {
   return Math.round(cart.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
+}
+
+function mergeAssistantMemory(
+  current: AssistantMemory,
+  incoming: AssistantResponseType["assistant_memory"],
+): AssistantMemory {
+  if (!incoming) return current;
+  return {
+    discovery: incoming.discovery ?? current.discovery,
+    booking_process: incoming.booking_process ?? current.booking_process,
+  };
+}
+
+function bookingProcessMemoryFromState(
+  booking: BookingState,
+  lastPrompt: string | null,
+): NonNullable<AssistantMemory["booking_process"]> {
+  return {
+    phase: booking.status,
+    restaurant_id: booking.restaurant_id,
+    restaurant_name: booking.restaurant_name,
+    party_size: booking.party_size,
+    date: booking.date,
+    time: booking.time,
+    shift_id: booking.shift_id,
+    slot_iso: booking.slot_iso,
+    reservation_id: booking.reservation_id,
+    confirmation_code: booking.confirmation_code,
+    last_prompt: lastPrompt,
+  };
 }
 
 function beginBookingForRestaurant(
@@ -458,6 +502,11 @@ export function assistantReducer(
         next = { ...next, filters: { ...next.filters, ...response.filters } };
       }
 
+      next = {
+        ...next,
+        memory: mergeAssistantMemory(next.memory, response.assistant_memory),
+      };
+
       for (const uiAction of (response.ui_actions ?? [])) {
         if (!uiAction || typeof (uiAction as { type?: unknown }).type !== "string") continue;
         try {
@@ -496,6 +545,17 @@ export function assistantReducer(
         };
       }
 
+      next = {
+        ...next,
+        memory: {
+          ...next.memory,
+          booking_process: bookingProcessMemoryFromState(
+            next.booking,
+            next.lastSpokenText || null,
+          ),
+        },
+      };
+
       return next;
     }
 
@@ -503,6 +563,31 @@ export function assistantReducer(
       return {
         ...state,
         booking: initialBooking,
+        memory: {
+          ...state.memory,
+          booking_process: null,
+        },
+        showExitX: false,
+        customerAccepted: false,
+        availabilityOpen: false,
+      };
+
+    case "RESET_ASSISTANT_CONTEXT":
+      return {
+        ...state,
+        conversationId: null,
+        booking: {
+          ...initialBooking,
+          has_saved_card: state.booking.has_saved_card,
+        },
+        map: {
+          ...initialMap,
+          visible: true,
+          center: state.map.center,
+          zoom: state.map.zoom,
+        },
+        filters: {},
+        memory: initialMemory,
         showExitX: false,
         customerAccepted: false,
         availabilityOpen: false,
