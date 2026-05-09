@@ -42,7 +42,7 @@ const RESTAURANT_FEATURES = [
   {
     icon: MapPin,
     title: "Live Floor Plan",
-    desc: "Drag-and-drop tables across multiple floors with live status, sections, and 30-step undo/redo.",
+    desc: "Drag-and-drop tables across multiple floors with live status and sections.",
   },
   {
     icon: UtensilsCrossed,
@@ -52,7 +52,7 @@ const RESTAURANT_FEATURES = [
   {
     icon: Globe,
     title: "Menu Management",
-    desc: "86 items instantly, flag allergens per dish, and surface AI-powered menu suggestions.",
+    desc: "86 items instantly and flag allergens per dish so guests see only what they can eat.",
   },
   {
     icon: Users,
@@ -62,37 +62,32 @@ const RESTAURANT_FEATURES = [
   {
     icon: BarChart3,
     title: "Analytics",
-    desc: "Revenue, average spend, covers, no-show rate, and peak-hour heatmaps across 7 or 30 days.",
+    desc: "Revenue, average spend, covers, and no-show rate across 7 or 30 days.",
   },
   {
     icon: Sparkles,
     title: "AI Insights",
-    desc: "Claude-powered no-show prediction, demand forecasting, lifetime value, auto-tagging, and shift briefings.",
-  },
-  {
-    icon: Clock,
-    title: "Waitlist",
-    desc: "Real-time queue with estimated waits, remote join from a guest's phone, and one-tap seat or notify.",
+    desc: "Smart scoring for no-show risk, demand forecasting, and lifetime value tracking — built in, not bolted on.",
   },
   {
     icon: Receipt,
     title: "Expense Tracking",
-    desc: "Scan receipts with your camera. Auto-categorised and export-ready for your accountant.",
+    desc: "Track expenses against revenue right in the dashboard.",
   },
   {
     icon: UserCircle,
     title: "Guest CRM",
-    desc: "Visit history, spend totals, dietary restrictions, VIP and blocked flags, tags, and loyalty balance.",
+    desc: "Visit history, spend totals, dietary restrictions, and loyalty balance for every guest.",
   },
   {
     icon: PartyPopper,
     title: "Events & Tickets",
-    desc: "Create events, set capacity, sell tickets — managed entirely within Cenaiva.",
+    desc: "Create events and set capacity directly inside Cenaiva.",
   },
   {
     icon: Tag,
     title: "Promotions Builder",
-    desc: "BOGO, %-off, fixed discount, free-item, and promo codes — with scheduling and usage limits.",
+    desc: "Build promotions with scheduling and usage limits.",
   },
 ];
 
@@ -115,7 +110,7 @@ const DINER_FEATURES = [
   {
     icon: Scissors,
     title: "Split the bill",
-    desc: "Divide the check between up to 10 cards without any awkward conversations.",
+    desc: "Divide the check between multiple cards without the awkward conversation.",
   },
   {
     icon: CreditCard,
@@ -125,7 +120,7 @@ const DINER_FEATURES = [
   {
     icon: Heart,
     title: "Loyalty points",
-    desc: "Earn on every order. Redeem for menu items, discounts, and event tickets.",
+    desc: "Earn on every booking and pre-order, with tier perks across every Cenaiva restaurant.",
   },
 ];
 
@@ -233,13 +228,12 @@ export default function FeaturesPage() {
                   Signature feature
                 </p>
                 <h2 className="text-2xl font-bold text-white">
-                  Cenaiva AI — concierge for diners and staff
+                  Cenaiva AI — your concierge
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-relaxed text-text-secondary">
-                  Cenaiva AI is a bilingual, voice-enabled assistant. Diners use it to
+                  Cenaiva AI is a bilingual, voice-enabled assistant for diners. Use it to
                   discover restaurants, book tables, browse allergen-filtered menus, place
-                  orders, and pay with a saved card. Restaurant staff use it to seat guests,
-                  update order status, and get a daily revenue summary — all by voice or text.
+                  pre-orders, and pay with a saved card — all by voice or text.
                 </p>
                 <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   {[

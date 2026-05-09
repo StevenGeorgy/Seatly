@@ -186,7 +186,7 @@ const FAQ = [
   },
   {
     q: 'How does "Hey Cenaiva" actually work?',
-    a: "One trigger phrase wakes the assistant. Audio is processed on-device until you confirm an action, at which point the request is encrypted and sent for booking. It works on iOS, Android, Apple Watch, CarPlay, and HomePod.",
+    a: "One trigger phrase wakes the assistant. Audio is only sent for transcription after you say \"Hey Cenaiva\" — never passively listening. Works on iOS, Android, and the web.",
   },
   {
     q: "Does it work in French?",
@@ -194,7 +194,7 @@ const FAQ = [
   },
   {
     q: "What if I cancel?",
-    a: "Cancel a booking from the app, your watch, or by saying so. Most restaurants allow free cancellation up to 2 hours before — deposit terms are shown before you confirm.",
+    a: "Cancel a booking from the app or by asking Hey Cenaiva. Cancellation policy is set by each restaurant and shown before you confirm — typically free up to a few hours before, sometimes with a deposit for prime times.",
   },
   {
     q: "Where can I use it?",
@@ -220,35 +220,20 @@ const PRICING = [
     ],
   },
   {
-    badge: "For restaurants",
-    name: "Counter",
-    tagline: "Cafés & quick-service",
-    price: "$89",
-    suffix: "/ month",
-    cta: "Start trial",
-    href: "/register",
-    highlighted: false,
-    features: [
-      "Reservations & waitlist",
-      "Single location",
-      "Email support",
-      "$1 / confirmed booking",
-    ],
-  },
-  {
     badge: "Most popular",
-    name: "Service",
-    tagline: "Full-service dining",
-    price: "$249",
+    name: "Restaurant",
+    tagline: "Everything you need to run service",
+    price: "$200",
     suffix: "/ month",
-    cta: "Start trial",
+    cta: "Start free trial",
     href: "/register",
     highlighted: true,
     features: [
-      "Everything in Counter",
-      "Floor plan + KDS",
-      "Staff scheduling",
-      "Priority chat",
+      "Free for the first 3 months",
+      "$1 per confirmed booking",
+      "5% on pre-orders",
+      "Reservations, floor plan, KDS, CRM, analytics",
+      "Cancel any month",
     ],
   },
   {
@@ -261,7 +246,7 @@ const PRICING = [
     href: "/about",
     highlighted: false,
     features: [
-      "Everything in Service",
+      "Everything in Restaurant",
       "Unlimited locations",
       "Dedicated success lead",
       "Custom integrations",
@@ -514,8 +499,8 @@ export default function HomePage() {
                 <p className="mt-2 text-sm text-text-muted">forever for diners</p>
               </div>
               <div>
-                <p className="font-serif text-4xl text-white lg:text-5xl">1.5x</p>
-                <p className="mt-2 text-sm text-text-muted">points on Tuesdays</p>
+                <p className="font-serif text-4xl text-white lg:text-5xl">EN · FR</p>
+                <p className="mt-2 text-sm text-text-muted">bilingual throughout</p>
               </div>
             </div>
           </div>
@@ -881,7 +866,7 @@ export default function HomePage() {
                 {
                   icon: Sparkles,
                   title: "Always on, never creepy",
-                  desc: "One trigger phrase. Audio is processed on-device until you confirm.",
+                  desc: "One trigger phrase wakes the assistant. Audio is only sent for transcription after you ask — never passively listening.",
                 },
                 {
                   icon: Sparkles,

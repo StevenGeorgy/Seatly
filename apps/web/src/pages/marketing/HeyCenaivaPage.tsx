@@ -4,13 +4,10 @@ import {
   ArrowRight,
   AudioLines,
   CalendarDays,
-  Car,
   Check,
-  Home,
   MessageCircle,
   Smartphone,
   Sparkles,
-  Watch,
 } from "lucide-react";
 
 import { MarketingShell } from "@/components/marketing/MarketingShell";
@@ -24,25 +21,13 @@ const SURFACES = [
     icon: Smartphone,
     title: "Phone",
     meta: "iOS + Android",
-    desc: "Long-press the side button.",
+    desc: 'Tap the mic and say "Hey Cenaiva."',
   },
   {
-    icon: Watch,
-    title: "Watch",
-    meta: "Apple Watch",
-    desc: 'Raise wrist. "Hey Cenaiva."',
-  },
-  {
-    icon: Car,
-    title: "Car",
-    meta: "CarPlay + Android Auto",
-    desc: "Hands free, eyes on the road.",
-  },
-  {
-    icon: Home,
-    title: "Home speaker",
-    meta: "HomePod + Echo",
-    desc: "Family-aware. Knows whose turn it is to pick.",
+    icon: Smartphone,
+    title: "Web",
+    meta: "Any modern browser",
+    desc: "Same assistant, on your laptop or tablet.",
   },
 ];
 
@@ -244,8 +229,8 @@ export default function HeyCenaivaPage() {
                   You
                 </span>
                 <div className="flex-1 rounded-2xl border border-border bg-bg-elevated px-4 py-3 text-sm leading-relaxed text-text-secondary">
-                  Hey Cenaiva, I have a hundred bucks for a date night Friday.
-                  Somewhere quiet, walkable from the Annex.
+                  Hey Cenaiva, book me a table for two at Bistro Lumière
+                  Friday around 7:30.
                 </div>
               </div>
               <div className="flex items-start gap-3">
@@ -253,9 +238,8 @@ export default function HeyCenaivaPage() {
                   Cenaiva
                 </span>
                 <div className="order-1 ml-auto max-w-[85%] rounded-2xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm leading-relaxed text-white">
-                  I found three tables under $50/person within a 12-minute walk.
-                  Bistro Lumiere at 7:30 has your favourite Cotes du Rhone on the
-                  list. Want me to hold it?
+                  Bistro Lumière has a 2-top open at 7:30 PM Friday. Want me to
+                  hold it?
                 </div>
               </div>
             </div>
@@ -301,21 +285,20 @@ export default function HeyCenaivaPage() {
         <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:items-start">
             <div>
-              <SectionEyebrow>Everywhere you are</SectionEyebrow>
+              <SectionEyebrow>Where you can use it</SectionEyebrow>
               <h2 className="mt-5 font-serif text-4xl leading-[1.05] text-white sm:text-5xl">
-                Four surfaces.
+                On your phone.
                 <br />
-                <span className="italic text-gold">One conversation.</span>
+                <span className="italic text-gold">Or in any browser.</span>
               </h2>
             </div>
             <p className="max-w-2xl text-base leading-relaxed text-text-secondary lg:justify-self-end">
-              Start a request on your watch on the way home, finish it on your speaker
-              while you're cooking, confirm it on your phone before you leave. The
-              thread follows you.
+              Hey Cenaiva runs on iOS, Android, and the web — same assistant,
+              same context. Open the app, say the trigger phrase, and ask away.
             </p>
           </div>
 
-          <div className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-14 grid gap-4 sm:grid-cols-2">
             {SURFACES.map((surface, index) => (
               <motion.article
                 key={surface.title}
@@ -416,7 +399,7 @@ export default function HeyCenaivaPage() {
             </Button>
           </div>
           <p className="mt-8 font-mono text-[10px] uppercase tracking-[0.28em] text-text-muted sm:text-xs">
-            Free - iOS 17+ - Android 12+ - CarPlay - Apple Watch - HomePod
+            Free - iOS - Android - Web
           </p>
         </motion.div>
       </section>

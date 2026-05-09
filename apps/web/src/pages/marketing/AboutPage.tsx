@@ -222,7 +222,7 @@ export default function AboutPage() {
               {
                 icon: Sparkles,
                 title: "AI that earns its keep",
-                desc: "Cenaiva AI books, orders, and manages service. Claude-powered insights forecast demand and reduce no-shows. No AI fluff — only features that save real time.",
+                desc: "Cenaiva AI books, orders, and manages service. Smart insights forecast demand and reduce no-shows. No AI fluff — only features that save real time.",
               },
               {
                 icon: Database,

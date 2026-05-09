@@ -112,41 +112,48 @@ const MODULES = [
 
 const VALUE_CARDS = [
   {
-    badge: "Confirmed bookings",
-    title: "Booking fee",
-    cta: "Book a demo",
+    badge: "First 3 months",
+    title: "Free trial",
+    price: "Free",
+    suffix: "for 3 months",
+    cta: "Start free trial",
     href: "/register",
     highlighted: false,
     features: [
-      "All eight modules",
-      "Staff workflows included",
-      "Email and chat support",
-      "Weekly accountant export",
+      "Full platform access",
+      "All modules included",
+      "No card on file required",
+      "Migrate from your current stack",
     ],
   },
   {
-    badge: "Restaurant friendly",
-    title: "No commission",
+    badge: "After the trial",
+    title: "Restaurant",
+    price: "$200",
+    suffix: "/ month",
     cta: "Book a demo",
     href: "/register",
     highlighted: true,
     features: [
-      "Keep your menu prices",
+      "$1 per confirmed booking",
+      "5% on pre-orders (applied at checkout)",
+      "Reservations, floor plan, KDS, CRM, analytics",
       "Unlimited staff seats",
-      "Priority support response",
-      "Custom branded confirmations",
-      "API and webhook access",
+      "Cancel any month",
     ],
   },
   {
     badge: "Multi-location",
-    title: "Tailored rollout",
+    title: "Group",
+    price: "Custom",
+    suffix: "",
     cta: "Talk to sales",
     href: "/register",
     highlighted: false,
     features: [
+      "Everything in Restaurant",
       "Cross-location reporting",
-      "Dedicated success manager",
+      "Dedicated success lead",
       "SSO and custom roles",
       "Onboarding migration",
     ],
@@ -155,12 +162,12 @@ const VALUE_CARDS = [
 
 const VALUE_NOTES = [
   {
-    title: "No setup fee",
-    desc: "Migration from your current stack is included.",
+    title: "Free for 3 months",
+    desc: "Full access from day one. No card required.",
   },
   {
-    title: "No card-rate markup",
-    desc: "You pay your processor's rate. We do not skim a cent.",
+    title: "Stripe at-cost",
+    desc: "Card processing fees pass through directly. No markup.",
   },
   {
     title: "Cancel any month",
@@ -261,8 +268,9 @@ export default function RestaurantsPage() {
             </h1>
             <p className="mt-7 max-w-2xl text-base leading-relaxed text-text-secondary sm:text-lg">
               Reservations, floor plan, kitchen display, staff scheduling, CRM,
-              analytics, payments - on one ledger, in one login. {bookingFee} per
-              confirmed booking. Zero commission, ever.
+              analytics, payments — on one ledger, in one login. Free for the
+              first 3 months. After that: $200/month + {bookingFee} per booking
+              + 5% on pre-orders.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row">
               <Button asChild className="h-11 rounded-md px-6 font-semibold">
@@ -294,8 +302,9 @@ export default function RestaurantsPage() {
             </h2>
             <p className="mt-7 max-w-md text-base leading-relaxed text-text-secondary">
               Reservations, floor plan, kitchen display, staff scheduling, CRM,
-              analytics, payments - on one ledger, in one login. {bookingFee} per
-              confirmed booking. Zero commission on orders, ever.
+              analytics, payments — on one ledger, in one login. Free for the
+              first 3 months, then $200/month + {bookingFee} per booking + 5% on
+              pre-orders.
             </p>
 
             <ul className="mt-10 space-y-5">
@@ -387,8 +396,8 @@ export default function RestaurantsPage() {
               </h2>
             </div>
             <p className="max-w-2xl text-base leading-relaxed text-text-secondary lg:justify-self-end">
-              A flat dollar per confirmed booking. No commission on your menu prices.
-              No card-network markups. Cancel any month.
+              Free for 3 months. Then $200/month + a dollar per confirmed booking
+              + 5% on pre-orders. Cancel any month.
             </p>
           </div>
 
@@ -419,10 +428,12 @@ export default function RestaurantsPage() {
                 </span>
                 <h3 className="mt-7 font-serif text-3xl text-white">{card.title}</h3>
                 <p className="mt-6 flex items-baseline gap-2 font-serif text-5xl text-gold">
-                  {card.title === "Booking fee" ? bookingFee : card.title === "No commission" ? "0%" : "Custom"}
-                  <span className="text-sm font-normal text-text-muted">
-                    {card.title === "Booking fee" ? "per booking" : ""}
-                  </span>
+                  {card.price}
+                  {card.suffix && (
+                    <span className="text-sm font-normal text-text-muted">
+                      {card.suffix}
+                    </span>
+                  )}
                 </p>
                 <Button
                   asChild
