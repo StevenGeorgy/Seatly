@@ -794,6 +794,9 @@ async function executeTool(
         if (code === "P0002") {
           return JSON.stringify({ error: "That time no longer has enough cover capacity." });
         }
+        if (code === "P0008") {
+          return JSON.stringify({ error: "That time is past the shift's close. Please pick an earlier slot." });
+        }
         return JSON.stringify({ error: `Reservation failed: ${bookingError.message}` });
       }
       const bookingRow = Array.isArray(bookingRows) ? bookingRows[0] : bookingRows;

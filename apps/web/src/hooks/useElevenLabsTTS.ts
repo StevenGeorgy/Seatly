@@ -32,6 +32,18 @@ const COMMON_TTS_CACHE_TEXTS: ReadonlyArray<string> = [
   "I could not reach live availability. Try another date and time, or ask for the restaurant hours.",
   "Something went wrong. Try again.",
   "Please sign in to continue.",
+  // Perf P10: high-frequency orchestrator replies. Each cached phrase saves
+  // the ~300-500ms ElevenLabs round-trip on its first spoken use, falling
+  // back to live fetch if the user hits a phrase outside this set.
+  "Got it.",
+  "Which restaurant?",
+  "No tables at that time.",
+  "Sorry, I didn't catch that. Try again.",
+  "Tap the mic to start when ready.",
+  "Checking availability now.",
+  "Looking that up.",
+  "Did you mean this one?",
+  "Should I book it?",
 ];
 
 function djb2Hash(str: string): string {
@@ -118,6 +130,11 @@ async function getBearerToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+// Track which non-200 status codes we've already warned about so a long
+// outage doesn't dump the same warning into the console hundreds of times
+// per minute. Reset on successful fetch (next 200 clears the set).
+const warnedStatuses = new Set<number>();
+
 async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null> {
   // Cache hit → no network. Wraps in try/catch for safety; IDB rejecting
   // (private mode, quota) just routes us to the live fetch path.
@@ -129,7 +146,13 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
   }
 
   const token = await getBearerToken();
-  if (!token) return null;
+  if (!token) {
+    if (!warnedStatuses.has(401)) {
+      console.warn("[Cenaiva TTS] no bearer token — user not signed in; skipping ElevenLabs");
+      warnedStatuses.add(401);
+    }
+    return null;
+  }
   try {
     const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/elevenlabs-tts`, {
       method: "POST",
@@ -140,14 +163,28 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
       },
       body: JSON.stringify({ text, voice_id: voiceId }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // One warn per status code — see warnedStatuses comment above.
+      if (!warnedStatuses.has(res.status)) {
+        console.warn(`[Cenaiva TTS] /elevenlabs-tts status=${res.status} (${res.statusText}) — falling back`);
+        warnedStatuses.add(res.status);
+      }
+      return null;
+    }
+    // Successful fetch clears the warn-once set so a recovered service can
+    // emit a fresh warning if it later regresses.
+    if (warnedStatuses.size > 0) warnedStatuses.clear();
     const blob = await res.blob();
     // Best-effort cache write — never block playback on it.
     if (COMMON_TTS_CACHE_TEXTS.includes(text)) {
       void writeCachedBlob(voiceId, text, blob);
     }
     return blob;
-  } catch {
+  } catch (err) {
+    if (!warnedStatuses.has(0)) {
+      console.warn("[Cenaiva TTS] /elevenlabs-tts fetch threw — network or DNS issue", err);
+      warnedStatuses.add(0);
+    }
     return null;
   }
 }

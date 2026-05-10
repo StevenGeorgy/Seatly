@@ -180,7 +180,23 @@ Atomicity guarantees:
 
 Same advisory-lock hash function as `book_reservation` so create vs modify
 serialize against each other. Releases the old `reservation_tables`
-assignments and claims new ones in the same transaction.
+assignments and claims new ones in the same transaction. As of 2026-05-09
+also reads the existing row's identifier columns and raises P0007
+`missing_identifier` if all three (`user_profile_id`, `guest_email`,
+`guest_phone`) are null/empty — defensive parity with `book_reservation`
+that protects against modifying any pre-CHECK grandfathered rows.
+
+### `create_staff_reservation(p_restaurant_id uuid, p_guest_name text, p_guest_email text, p_guest_phone text, p_party_size int, p_reserved_at timestamptz, p_special_request text default null) returns uuid`
+
+Dashboard staff-side writer (host quick-add, floor service form,
+reservation drawer). Uses the same advisory-lock keyspace as
+`book_reservation`. Has its own diner-overlap pre-check on email + phone
+(no `user_profile_id` since the staff path always creates a guest
+reservation), the cover-cap check, and `find_available_table_group`. As
+of 2026-05-09 raises P0007 `missing_identifier` early if both email and
+phone are null/empty — staff have no `user_profile_id` to fall back on,
+so at least one of the two MUST be present. The dashboard UI also
+validates this client-side before calling the RPC.
 
 ### `compute_deposit_cents(p_restaurant_id uuid, p_party_size int) returns int` — Phase 3 follow-up
 
@@ -457,6 +473,8 @@ How the OpenTable patterns map to our primitives:
 |---|---|---|---|
 | RPC | `P0001 'over_cover_cap'` | Party + existing covers > shift `max_covers` | "This time is fully booked. Pick another time." |
 | RPC | `P0006 'diner_double_book'` | Diner has overlapping reservation (any restaurant) | "This conflicts with another reservation you already have." Surface the conflicting restaurant name + window from `useDinerConflictWindows`. |
+| RPC | `P0007 'missing_identifier'` | Reservation lacks `user_profile_id`, `guest_email`, AND `guest_phone` | "Please provide a name and email or phone." Mobile customer flow shouldn't hit this if the contact form has any kind of validation; surfaces at the staff path or any future identifier-less integration. |
+| RPC | `P0008 'past_shift_close'` | `reserved_at + turn_minutes` exceeds the shift's `end_time` (or is before `start_time`) | "This time is past the shift's close. Pick an earlier slot." Edge function maps to 409 with `unavailable_reason: 'past_shift_close'`. Same-day shifts only; overnight shifts are not yet enforced (slot generator doesn't support them either). |
 | Postgres | `23P01` | Partial-exclusion backstop fired (race past pre-check) | Treat as `diner_double_book`. |
 | Edge fn | HTTP 409 `{ unavailable_reason: 'closed' }` | Restaurant closed on requested date | "Closed on this date." |
 | Edge fn | HTTP 409 `{ unavailable_reason: 'no_shifts' }` | No service hours configured | "No service hours configured." |
@@ -487,6 +505,60 @@ looks the way it does. Cenaiva's history:
   `pending` vs `confirmed`); `modify_reservation_slot` introduced; diner
   overlap pre-check returns `P0006` ahead of the exclusion.
 - **2026-05** (this PR, no DDL) — web `<AvailabilityPanel>` rebuild.
+- **2026-05-09** — `reservations_must_have_identifier` CHECK constraint
+  (NOT VALID) + `book_reservation` raises P0007 early
+  (`20260509081135_reservations_require_identifier.sql`). Closes the
+  silent-double-book gap where the partial GiST exclusions skip rows
+  whose three identifier columns are all null.
+- **2026-05-09** — `get_available_slots` close-time loop uses
+  `v_turn_mins` instead of `v_slot_inc`
+  (`20260509205914_get_available_slots_close_time_turn.sql`). Last
+  bookable start is now `close − turn` (e.g. 21:30 for 23:00 close +
+  90-min turn). Was offering 22:45 starts whose 90-min booking ran past
+  close to 00:15.
+- **2026-05-09** — `create_staff_reservation` + `modify_reservation_slot`
+  identifier-guard parity with `book_reservation`
+  (`20260509220000_reservation_writers_identifier_parity.sql`). All
+  three writers now raise P0007 with the same error shape; the staff
+  path's INSERT catches `check_violation` to surface 23514 as a friendly
+  P0007 too.
+- **2026-05-09** — voice modify/cancel routed through the safe RPCs.
+  `cenaiva-orchestrate` v169 replaces direct `reservations.update(...)`
+  writes for modify and cancel with `modify_reservation_slot` and
+  `release_reservation_tables` calls. No SQL changes; edge function
+  deploy only. Closes the bypass where voice users could move
+  reservations past close, into double-bookings, onto the wrong
+  tables, or cancel without releasing the table on the floor plan.
+- **2026-05-09** — voice search supports `business_type` + any-city
+  filtering. `cenaiva-orchestrate` v170 adds the `business_type`
+  parameter to the `search_restaurants` tool (cafe / bar / brewery /
+  bistro / coffee shop / bakery / pub / lounge), expands the system
+  prompt's city allowlist examples to smaller Canadian cities (Guelph,
+  Hamilton, Kitchener, Kingston, Saskatoon, etc.), and softens the
+  zero-result fallback so a "no exact match in {city}" search returns
+  a nearby recommendation instead of silent empty. Includes perf
+  wins P1 (compact booking-state summary in system prompt, ~50–150ms
+  saved per turn) and P2 (parallelize menu category + item fetch via
+  Promise.all, ~100–300ms saved when menu fetch runs). No SQL changes.
+- **2026-05-09** — close-time guard inside the writers + `book_reservation`
+  returns the trigger-persisted `confirmation_code`
+  (`20260509230000_booking_close_time_and_confirmation_return.sql`).
+  Bug A: a smoke test against the live edge function showed 22:45 starts
+  succeeding against an 11pm-close shift via direct `date_time` POST,
+  bypassing the slot-grid validation that lived only in
+  `get_available_slots`. Bug B: the BEFORE-INSERT trigger
+  `reservations_confirmation_code` overrode the supplied
+  `p_confirmation_code` but the RPC still emitted the input value, so
+  customers received an SMS / email / API response code that didn't
+  match the DB and couldn't be used to manage the booking. Both fixed
+  by adding a same-day shift bounds check (raises P0008) and by
+  capturing the trigger-set code via `RETURNING id, confirmation_code
+  INTO …` in `book_reservation`'s INSERT.
+- **2026-05-09** — owner-registration billing columns on `restaurants`
+  (`20260509201816_add_owner_registration_columns.sql`):
+  `owner_user_id`, `stripe_subscription_id`, `stripe_payment_method_id`,
+  `billing_card_*`, `trial_ends_at`. All nullable; existing web reads
+  ignore them.
 - **2026-?? (Phase 3 follow-up)** — `compute_deposit_cents` SQL function +
   `reservations.deposit_due_by` column + `pg_cron` expiry sweep + new
   `pending_deposit` status value + `stripe-charge-deposit` edge function.

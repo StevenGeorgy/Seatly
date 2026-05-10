@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CENAIVA_MAP_STYLES,
+  getGoogleMapsLoadError,
   hasGoogleMapsApiKey,
   loadGoogleMaps,
   type GoogleMapsMarker,
@@ -73,6 +74,19 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
   const markersRef = useRef<Map<string, CenaivaMarkerEntry>>(new Map());
 
   const googleReady = hasGoogleMapsApiKey();
+  // Surface map load + auth failures in UI instead of swallowing them. The
+  // initial value reads any error already captured by an earlier loader call
+  // (e.g. another <CustomerMap> on the page that already failed); the event
+  // listener picks up gm_authFailure errors that fire post-load.
+  const [loadError, setLoadError] = useState<string | null>(() => getGoogleMapsLoadError());
+  useEffect(() => {
+    const onError = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      setLoadError(detail ?? "Google Maps failed to load.");
+    };
+    window.addEventListener("cenaiva:google-maps-error", onError);
+    return () => window.removeEventListener("cenaiva:google-maps-error", onError);
+  }, []);
 
   // Mappable subset — Google Maps cannot place a marker without a finite
   // (lat, lng). Filter once so the marker-sync effect below is O(visible).
@@ -122,7 +136,10 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
           styles: CENAIVA_MAP_STYLES,
         }) as GoogleMapInstance;
       })
-      .catch(() => undefined);
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setLoadError(err?.message ?? "Google Maps failed to load.");
+      });
 
     return () => {
       cancelled = true;
@@ -244,6 +261,15 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
     return (
       <div className="flex size-full items-center justify-center bg-bg-elevated px-8 text-center text-sm text-text-secondary">
         Add VITE_GOOGLE_MAPS_API_KEY to the root .env and restart the dev server to enable Google Maps.
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex size-full flex-col items-center justify-center gap-2 bg-bg-elevated px-8 text-center text-sm text-text-secondary">
+        <div className="font-medium text-text-primary">Map unavailable</div>
+        <div className="text-xs">{loadError}</div>
       </div>
     );
   }

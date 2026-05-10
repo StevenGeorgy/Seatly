@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { corsHeaders } from "./cors.ts";
 
 export function jsonRes(body: unknown, status = 200): Response {

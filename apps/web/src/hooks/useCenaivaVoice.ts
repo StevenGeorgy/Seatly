@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useDeepgramTranscription } from "@/hooks/useDeepgramTranscription";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
@@ -20,11 +20,15 @@ export function useCenaivaVoice() {
   const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
   const manualStopRef = useRef(false);
-  // Same pattern for ElevenLabs: if the edge function 503s (no key / quota /
-  // misconfigured) once, skip it for the rest of the session and go straight
-  // to Web Speech. Keeps TTS responsive instead of adding 2 network round-trips
-  // of latency before every utterance.
-  const elevenDisabledRef = useRef(false);
+  // ElevenLabs cooldown: if the edge function 503s (transient 429 / quota /
+  // network blip) twice in a row, skip it for 60 seconds then retry
+  // automatically. Stored as state so isStreamingTTSAvailable can be computed
+  // purely from props/state during render (no Date.now() / ref read at render
+  // time). The cooldown self-heals — a setTimeout flips it back enabled
+  // after ELEVEN_COOLDOWN_MS so subsequent turns try ElevenLabs again.
+  const [elevenAvailable, setElevenAvailable] = useState(true);
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ELEVEN_COOLDOWN_MS = 60_000;
 
   const startListening = useCallback(async (sttHints: string[] = []): Promise<{ transcript: string; stopped: boolean }> => {
     if (listeningRef.current) return { transcript: "", stopped: false };
@@ -95,7 +99,7 @@ export function useCenaivaVoice() {
       dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
 
       let played = false;
-      if (elEnabledFlag && !elevenDisabledRef.current) {
+      if (elEnabledFlag && elevenAvailable) {
         try {
           played = await elevenlabs.speak(text);
         } catch {
@@ -111,11 +115,22 @@ export function useCenaivaVoice() {
             played = false;
           }
         }
-        // Two failures in a row → treat ElevenLabs as unavailable for the rest
-        // of the session (no API key, quota exhausted, etc.) and skip straight
-        // to Web Speech on subsequent turns.
+        // Two failures in a row → back off ElevenLabs for 60s and route this
+        // turn through Web Speech. After the cooldown window we flip back to
+        // available automatically (self-healing on transient 429s / network
+        // blips). console.warn surfaces the fallback so developers can see
+        // when ElevenLabs is temporarily disabled instead of silently
+        // wondering why the voice changed.
         if (!played) {
-          elevenDisabledRef.current = true;
+          console.warn(
+            "[Cenaiva TTS] ElevenLabs failed twice — falling back to Web Speech for 60s",
+          );
+          setElevenAvailable(false);
+          if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+          cooldownTimerRef.current = setTimeout(() => {
+            setElevenAvailable(true);
+            cooldownTimerRef.current = null;
+          }, ELEVEN_COOLDOWN_MS);
         }
       }
       if (!played) {
@@ -124,7 +139,7 @@ export function useCenaivaVoice() {
 
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
     },
-    [dispatch, elevenlabs, speech, elEnabledFlag],
+    [dispatch, elevenlabs, speech, elEnabledFlag, elevenAvailable],
   );
 
   const stopSpeaking = useCallback(() => {
@@ -137,8 +152,9 @@ export function useCenaivaVoice() {
   // Available only when ElevenLabs is enabled. Web Speech doesn't have a
   // safe queued-streaming primitive that works consistently across browsers,
   // so the fallback path skips streaming and the caller speaks the full
-  // final text in one shot.
-  const isStreamingTTSAvailable = elEnabledFlag && !elevenDisabledRef.current;
+  // final text in one shot. Mirrors the cooldown gating in speak() so that
+  // streaming chunks resume automatically after the 60s window passes.
+  const isStreamingTTSAvailable = elEnabledFlag && elevenAvailable;
 
   const speakStreamingChunk = useCallback(
     (text: string) => {

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type ConflictWindow = {
@@ -527,33 +528,68 @@ export function useDinerConflictWindows(args: {
  * Scoped to a single restaurant only — Discover / Deals must NOT use this
  * (one socket per card would explode connection counts).
  */
+// Multiplex: keep ONE postgres_changes channel per restaurant even when
+// several components subscribe (modal + AvailabilityPanel inside it, etc.).
+// Calling `.on('postgres_changes', ...)` on a channel that's already
+// `.subscribe()`-d throws — supabase-realtime's `client.channel(name)` returns
+// the same instance for the same topic, so two naive `useEffect` callers
+// collided and crashed the modal subtree.
+type AvailRealtimeEntry = {
+  channel: RealtimeChannel;
+  callbacks: Set<() => void>;
+};
+const availRealtimeRegistry = new Map<string, AvailRealtimeEntry>();
+
 export function useAvailabilityRealtimeInvalidate(
   restaurantId: string | null,
   onInvalidate?: () => void,
 ): void {
+  // Hold a ref to the latest callback so the channel registration only
+  // depends on `restaurantId` — otherwise every parent re-render that hands
+  // us a fresh closure would tear down and re-establish the socket.
+  const callbackRef = useRef<(() => void) | undefined>(onInvalidate);
+  useEffect(() => {
+    callbackRef.current = onInvalidate;
+  }, [onInvalidate]);
+
   useEffect(() => {
     if (!restaurantId || !isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
-    const channel = client
-      .channel(`avail:public:${restaurantId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "reservations",
-          filter: `restaurant_id=eq.${restaurantId}`,
-        },
-        () => {
-          invalidateAvailabilityCache(restaurantId);
-          if (typeof document === "undefined" || document.visibilityState !== "hidden") {
-            onInvalidate?.();
-          }
-        },
-      )
-      .subscribe();
+    const fire = () => callbackRef.current?.();
+
+    let entry = availRealtimeRegistry.get(restaurantId);
+    if (!entry) {
+      const callbacks = new Set<() => void>();
+      const channel = client
+        .channel(`avail:public:${restaurantId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "reservations",
+            filter: `restaurant_id=eq.${restaurantId}`,
+          },
+          () => {
+            invalidateAvailabilityCache(restaurantId);
+            if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+            for (const cb of callbacks) cb();
+          },
+        )
+        .subscribe();
+      entry = { channel, callbacks };
+      availRealtimeRegistry.set(restaurantId, entry);
+    }
+
+    entry.callbacks.add(fire);
     return () => {
-      void client.removeChannel(channel);
+      const current = availRealtimeRegistry.get(restaurantId);
+      if (!current) return;
+      current.callbacks.delete(fire);
+      if (current.callbacks.size === 0) {
+        availRealtimeRegistry.delete(restaurantId);
+        void client.removeChannel(current.channel);
+      }
     };
-  }, [restaurantId, onInvalidate]);
+  }, [restaurantId]);
 }

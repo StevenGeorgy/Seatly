@@ -10,6 +10,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import { matchesReservationSearch } from "@/lib/reservations/search";
+import { localDayBoundsUtcIso } from "@/lib/utils/time";
 
 export type ReservationRow = {
   id: string;
@@ -70,6 +71,13 @@ export type ReservationFilters = {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  /**
+   * IANA timezone the date filters should be interpreted in. Defaults to
+   * UTC if omitted — but for restaurant-facing views always pass the
+   * restaurant's timezone, otherwise late-night bookings spill onto the
+   * next day's view (Sat 22:45 Toronto = Sun 02:45 UTC).
+   */
+  timezone?: string | null;
 };
 
 export function useReservations(filters?: ReservationFilters) {
@@ -81,6 +89,7 @@ export function useReservations(filters?: ReservationFilters) {
   const filterDateFrom = filters?.dateFrom;
   const filterDateTo = filters?.dateTo;
   const filterSearch = filters?.search;
+  const filterTimezone = filters?.timezone ?? null;
   const [reservations, setReservations] = useState<ReservationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -119,14 +128,15 @@ export function useReservations(filters?: ReservationFilters) {
     }
 
     if (filterDateFrom || filterDateTo) {
-      const rangeStart = filterDateFrom ? `${filterDateFrom}T00:00:00` : undefined;
-      const rangeEnd = filterDateTo ? `${filterDateTo}T23:59:59` : undefined;
-      if (rangeStart) query = query.gte("reserved_at", rangeStart);
-      if (rangeEnd) query = query.lte("reserved_at", rangeEnd);
+      const startBounds = filterDateFrom ? localDayBoundsUtcIso(filterDateFrom, filterTimezone) : null;
+      const endBounds = filterDateTo ? localDayBoundsUtcIso(filterDateTo, filterTimezone) : null;
+      if (startBounds) query = query.gte("reserved_at", startBounds.startIso);
+      if (endBounds) query = query.lte("reserved_at", endBounds.endIso);
     } else if (filterDate) {
-      const dayStart = `${filterDate}T00:00:00`;
-      const dayEnd = `${filterDate}T23:59:59`;
-      query = query.gte("reserved_at", dayStart).lte("reserved_at", dayEnd);
+      const bounds = localDayBoundsUtcIso(filterDate, filterTimezone);
+      if (bounds) {
+        query = query.gte("reserved_at", bounds.startIso).lte("reserved_at", bounds.endIso);
+      }
     }
 
     const { data, error: qErr } = await query;
@@ -179,6 +189,7 @@ export function useReservations(filters?: ReservationFilters) {
     filterDateFrom,
     filterDateTo,
     filterSearch,
+    filterTimezone,
   ]);
 
   useEffect(() => {

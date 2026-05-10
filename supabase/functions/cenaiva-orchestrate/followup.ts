@@ -72,8 +72,11 @@ export interface FollowUpAction {
   [key: string]: unknown;
 }
 
+export type RecommendationMode = "single" | "list";
+
 export interface FollowUpContext {
   transcript: string;
+  recommendation_mode?: RecommendationMode | null;
   selected_restaurant_id: string | null;
   booking_state: {
     restaurant_id?: string | null;
@@ -216,12 +219,22 @@ function resolveOrdinalSelection(transcript: string, visibleRestaurants: Visible
   return null;
 }
 
+function isAffirmativeSelection(transcript: string): boolean {
+  return /^\s*(yes|yeah|yep|yup|sure|ok|okay|alright|sounds good|that one|this one|book it|go ahead|do it|let'?s do it|lets do it)[\s.!,]*$/i.test(
+    transcript,
+  );
+}
+
 function resolveVisibleRestaurantSelection(
   transcript: string,
   visibleRestaurants: VisibleRestaurant[],
 ): VisibleRestaurantResolution {
   if (!transcript.trim() || visibleRestaurants.length === 0) {
     return { selected: null, suggested: null };
+  }
+
+  if (visibleRestaurants.length === 1 && isAffirmativeSelection(transcript)) {
+    return { selected: visibleRestaurants[0], suggested: visibleRestaurants[0] };
   }
 
   const ordinalMatch = resolveOrdinalSelection(transcript, visibleRestaurants);
@@ -269,6 +282,34 @@ function matchesCuisinePhrase(transcript: string, cuisine: string): boolean {
   return refinement.test(normalizedTranscript);
 }
 
+function cuisineGroupFromTranscript(transcript: string): { label: string; terms: string[] } | null {
+  const normalized = normalizePhrase(transcript);
+  if (/\b(european|europeean|europian|euro)\b/i.test(normalized)) {
+    return {
+      label: "European",
+      terms: [
+        "european",
+        "modern european",
+        "italian",
+        "french",
+        "spanish",
+        "mediterranean",
+        "greek",
+        "portuguese",
+        "bistro",
+        "tapas",
+      ],
+    };
+  }
+  if (/\b(asian)\b/i.test(normalized)) {
+    return {
+      label: "Asian",
+      terms: ["asian", "chinese", "japanese", "korean", "thai", "vietnamese", "sushi", "ramen"],
+    };
+  }
+  return null;
+}
+
 function inferOccasionTone(transcript: string): "date" | "business" | "family" | "group" | "birthday" | null {
   const normalized = normalizePhrase(transcript);
   if (!normalized) return null;
@@ -301,6 +342,10 @@ function joinRecommendedNames(restaurants: VisibleRestaurant[]): string {
   return `${names[0]}, ${names[1]}, or ${names[2]}`;
 }
 
+function pick<T>(opts: T[]): T {
+  return opts[Math.floor(Math.random() * opts.length)];
+}
+
 function buildRecommendationPrompt(
   transcript: string,
   restaurants: VisibleRestaurant[],
@@ -308,22 +353,100 @@ function buildRecommendationPrompt(
   const listedNames = joinRecommendedNames(restaurants);
   switch (inferOccasionTone(transcript)) {
     case "date":
-      return `For a date spot, ${listedNames} stand out. Which one sounds best?`;
+      return pick([
+        `For date night, ${listedNames} both look great. Lean toward one?`,
+        `${listedNames} would both work for a date. Which feels right?`,
+      ]);
     case "business":
-      return `For a business dinner, ${listedNames} look strong. Which one works best?`;
+      return pick([
+        `For a business dinner, ${listedNames} fit the bill. Which one?`,
+        `${listedNames} both work for a work dinner. Pick one?`,
+      ]);
     case "family":
-      return `For a family meal, ${listedNames} look good. Which one sounds best?`;
+      return pick([
+        `${listedNames} are both family-friendly. Which one sounds good?`,
+        `For the family, ${listedNames} both work. Pick one?`,
+      ]);
     case "group":
-      return `For a group, ${listedNames} look like solid picks. Which one works best?`;
+      return pick([
+        `For a group, ${listedNames} both work. Which one?`,
+        `${listedNames} can both handle the crew. Lean either way?`,
+      ]);
     case "birthday":
-      return `For a birthday meal, ${listedNames} look fun. Which one sounds best?`;
+      return pick([
+        `${listedNames} both make for a fun birthday. Which one?`,
+        `For a birthday, ${listedNames} look right. Pick one?`,
+      ]);
     default:
-      return `${listedNames} look good. Which one sounds best?`;
+      return pick([
+        `${listedNames} both look solid. Which one's calling you?`,
+        `Got two for you — ${listedNames}. Which one?`,
+        `${listedNames} are both good picks. Lean either way?`,
+        `Two options: ${listedNames}. Which sounds better?`,
+      ]);
   }
 }
 
 function buildSingleCandidatePrompt(restaurant: VisibleRestaurant): string {
-  return `I found ${restaurant.name}. Want that one?`;
+  return pick([
+    `Found ${restaurant.name} — that the one?`,
+    `Got it: ${restaurant.name}. Want me to lock that in?`,
+    `${restaurant.name} — sound right?`,
+    `Looks like ${restaurant.name}. That's the spot?`,
+  ]);
+}
+
+function buildSingleRecommendationPrompt(
+  transcript: string,
+  restaurant: VisibleRestaurant,
+): string {
+  const name = restaurant.name.trim() || "this restaurant";
+  if (/\b(close|closest|near me|nearby|around here|walking distance)\b/i.test(transcript)) {
+    return `${name} is the closest strong match.`;
+  }
+  if (/\b(cheap|affordable|budget|not too expensive|deal|deals|special|happy hour)\b/i.test(transcript)) {
+    return `${name} is the strongest budget-friendly match.`;
+  }
+  switch (inferOccasionTone(transcript)) {
+    case "date":
+      return `For a date spot, ${name} is the best fit.`;
+    case "business":
+      return `For a business dinner, ${name} is the best fit.`;
+    case "family":
+      return `For a family meal, ${name} is the best fit.`;
+    case "group":
+      return `For a group, ${name} is the strongest fit.`;
+    case "birthday":
+      return `For a birthday meal, ${name} is the best fit.`;
+    default:
+      return `${name} is the best fit.`;
+  }
+}
+
+function buildSingleRecommendationFollowUp(
+  context: FollowUpContext,
+  restaurant: VisibleRestaurant,
+  intent: AssistantIntent,
+): DeterministicFollowUp {
+  return {
+    promoted_selected_restaurant_id: null,
+    spoken_text: buildSingleRecommendationPrompt(context.transcript, restaurant),
+    intent,
+    step: "choose_restaurant",
+    next_expected_input: "restaurant",
+    ui_actions: [
+      { type: "show_restaurant_cards", restaurant_ids: [restaurant.id] },
+      { type: "update_map_markers", restaurant_ids: [restaurant.id] },
+      { type: "highlight_restaurant", restaurant_id: restaurant.id },
+    ],
+    booking: null,
+    map: {
+      visible: true,
+      marker_restaurant_ids: [restaurant.id],
+      highlighted_restaurant_id: restaurant.id,
+    },
+    filters: null,
+  };
 }
 
 function detectCuisineRefinement(
@@ -349,7 +472,23 @@ function detectCuisineRefinement(
     .filter((bucket) => matchesCuisinePhrase(transcript, bucket.label))
     .sort((a, b) => b.label.length - a.label.length);
 
-  if (!matches.length) return null;
+  if (!matches.length) {
+    const group = cuisineGroupFromTranscript(transcript);
+    if (!group) return null;
+    const restaurantIds = visibleRestaurants
+      .filter((restaurant) => {
+        const cuisine = normalizePhrase(restaurant.cuisine_type ?? "");
+        return group.terms.some((term) => cuisine.includes(normalizePhrase(term)));
+      })
+      .map((restaurant) => restaurant.id);
+    if (restaurantIds.length === 0 || restaurantIds.length === visibleRestaurants.length) {
+      return null;
+    }
+    return {
+      cuisine: group.label,
+      restaurant_ids: restaurantIds,
+    };
+  }
   const best = matches[0];
   if (best.restaurant_ids.length === 0 || best.restaurant_ids.length === visibleRestaurants.length) {
     return null;
@@ -397,6 +536,10 @@ function defaultPhase(
   }
 }
 
+function directBookingIntent(transcript: string): boolean {
+  return /\b(book|reserve|get me a table|get me a spot|make a reservation)\b/i.test(transcript);
+}
+
 export function buildDeterministicFollowUp(context: FollowUpContext): DeterministicFollowUp {
   const selectedFromAction = firstRestaurantId(context.derivedActions, "start_booking");
   const visibleResolution = resolveVisibleRestaurantSelection(context.transcript, context.visibleRestaurants);
@@ -424,6 +567,7 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
   const recommendedRestaurants = context.lastSearchRestaurants.length > 0
     ? context.lastSearchRestaurants
     : context.visibleRestaurants;
+  const wantsSingleRecommendation = context.recommendation_mode === "single";
 
   if (!context.selected_restaurant_id && !stringOrNull(context.booking_state.restaurant_id) && visibleSelection) {
     return {
@@ -453,9 +597,28 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
         : null;
 
   if (!effectiveSelectedRestaurantId && singleSuggestedRestaurant) {
+    if (wantsSingleRecommendation) {
+      return buildSingleRecommendationFollowUp(
+        context,
+        singleSuggestedRestaurant,
+        context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      );
+    }
+    // If the LLM already produced a substantive reply (mentions the
+    // restaurant name AND something more — a city, hours, fact answer), keep
+    // it. The deterministic single-candidate template overrides anything
+    // longer than 80 chars unless the LLM gave us actual content. This is
+    // what lets factual questions ("where is Mark Testing", "is X halal")
+    // surface the row's actual data instead of being silenced by
+    // "Mark Testing — sound right?".
+    const llmReply = trimmedLastText;
+    const llmMentionsRestaurant = llmReply
+      ? llmReply.toLowerCase().includes(singleSuggestedRestaurant.name.toLowerCase().split(" ")[0] ?? "")
+      : false;
+    const llmHasSubstance = llmReply.length >= 30 && llmMentionsRestaurant;
     return {
       promoted_selected_restaurant_id: null,
-      spoken_text: buildSingleCandidatePrompt(singleSuggestedRestaurant),
+      spoken_text: llmHasSubstance ? llmReply : buildSingleCandidatePrompt(singleSuggestedRestaurant),
       intent: context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
       step: "choose_restaurant",
       next_expected_input: "confirmation",
@@ -490,6 +653,9 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
       if (refinement.restaurant_ids.length === 1) {
         const restaurantId = refinement.restaurant_ids[0];
         const matchedRestaurant = context.visibleRestaurants.find((restaurant) => restaurant.id === restaurantId);
+        if (wantsSingleRecommendation && matchedRestaurant) {
+          return buildSingleRecommendationFollowUp(context, matchedRestaurant, "refine_search");
+        }
         return {
           promoted_selected_restaurant_id: null,
           spoken_text: buildSingleCandidatePrompt(
@@ -506,6 +672,12 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
       }
 
       const highlightedRestaurantId = refinement.restaurant_ids[0];
+      if (wantsSingleRecommendation) {
+        const matchedRestaurant = context.visibleRestaurants.find((restaurant) => restaurant.id === highlightedRestaurantId);
+        if (matchedRestaurant) {
+          return buildSingleRecommendationFollowUp(context, matchedRestaurant, "refine_search");
+        }
+      }
       ui_actions.push({ type: "highlight_restaurant", restaurant_id: highlightedRestaurantId });
       map.highlighted_restaurant_id = highlightedRestaurantId;
 
@@ -527,6 +699,13 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
 
   if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1 && context.lastSearchRestaurants.length > 0) {
     const highlightedRestaurantId = context.lastSearchRestaurants[0]?.id ?? context.lastSearchIds[0];
+    if (wantsSingleRecommendation && context.lastSearchRestaurants[0]) {
+      return buildSingleRecommendationFollowUp(
+        context,
+        context.lastSearchRestaurants[0],
+        context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      );
+    }
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, context.lastSearchRestaurants),
@@ -569,6 +748,9 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
       };
     }
     const highlightedRestaurantId = visibleIds[0];
+    if (wantsSingleRecommendation && recommendedRestaurants[0]) {
+      return buildSingleRecommendationFollowUp(context, recommendedRestaurants[0], "refine_search");
+    }
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
@@ -641,6 +823,13 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
 
   if (!effectiveSelectedRestaurantId && context.lastSearchIds.length > 1) {
     const highlightedRestaurantId = recommendedRestaurants[0]?.id ?? context.lastSearchIds[0];
+    if (wantsSingleRecommendation && recommendedRestaurants[0]) {
+      return buildSingleRecommendationFollowUp(
+        context,
+        recommendedRestaurants[0],
+        context.visibleRestaurants.length > 0 ? "refine_search" : "discover_restaurants",
+      );
+    }
     return {
       promoted_selected_restaurant_id: null,
       spoken_text: buildRecommendationPrompt(context.transcript, recommendedRestaurants),
@@ -714,11 +903,23 @@ export function buildDeterministicFollowUp(context: FollowUpContext): Determinis
     const visible = context.visibleRestaurants ?? [];
     if (visible.length > 0) {
       const names = visible.slice(0, 3).map((r) => r.name);
-      if (names.length === 1) return `Found ${names[0]}. Want to book it?`;
-      if (names.length === 2) return `${names[0]} and ${names[1]} look good — which one?`;
-      return `${names[0]}, ${names[1]}, and ${names[2]} are options — which one?`;
+      if (names.length === 1) return pick([`Found ${names[0]} — want to book it?`, `Got ${names[0]}. Lock that in?`, `${names[0]} — sound good?`]);
+      if (names.length === 2) return pick([`${names[0]} and ${names[1]} both look good — which one?`, `Two for you: ${names[0]} or ${names[1]}. Lean either way?`]);
+      return pick([`${names[0]}, ${names[1]}, ${names[2]} — pick one?`, `Three options: ${names[0]}, ${names[1]}, ${names[2]}. Which sounds best?`]);
     }
-    return "What kind of restaurant are you looking for?";
+    const searched = context.lastSearchRestaurants ?? [];
+    if (searched.length > 0) {
+      const names = searched.slice(0, 3).map((r) => r.name);
+      if (names.length === 1) return pick([`Found ${names[0]} — that the one?`, `Got it: ${names[0]}. Want me to lock it in?`, `${names[0]} — sound right?`]);
+      if (names.length === 2) return pick([`${names[0]} or ${names[1]} — both look solid. Which one?`, `Two for you: ${names[0]} or ${names[1]}. Lean either way?`]);
+      return pick([`${names[0]}, ${names[1]}, ${names[2]} — pick one?`, `Three options: ${names[0]}, ${names[1]}, ${names[2]}. Which sounds better?`]);
+    }
+    if (directBookingIntent(context.transcript)) return pick(["Which restaurant?", "Got a spot in mind?", "Where should I book?"]);
+    return pick([
+      "Tell me a cuisine, vibe, or area and I'll narrow it down.",
+      "Got a cuisine, vibe, or area in mind?",
+      "What sounds good — cuisine, vibe, or area?",
+    ]);
   })();
 
   return {

@@ -53,7 +53,7 @@ export type AvailabilityPanelProps = {
   onStateChange?: (state: { date: string; time: string; partySize: number }) => void;
 };
 
-const SLOT_PILL_COUNT = 6;
+const SLOT_PILL_COUNT = 8;
 const DEFAULT_PARTY = 2;
 
 function dateKey(date: Date): string {
@@ -308,12 +308,43 @@ export function AvailabilityPanel({
     excludeReservationId: excludeReservationId ?? null,
   });
 
-  // ── Compute the 6 centered pills with conflict overlay. ──
+  // ── Compute the 8 centered pills with conflict overlay. ──
   const pillStates = useMemo<AvailabilityPanelSlotState[]>(() => {
     if (slots.length === 0 || !time) return [];
     const centered = centerSlotsAround(slots, time, SLOT_PILL_COUNT);
     return centered.map((slot) => classifySlot(slot, conflicts, restaurantTimezone));
   }, [slots, time, conflicts, restaurantTimezone]);
+
+  // ── Auto-track TIME → highlight the closest available pill. ──
+  // Without this, nudging the time control re-centers the pill row but the
+  // highlighted pill stays on whatever the user last clicked, so the
+  // picker looks disconnected from the pills. Pill clicks below also call
+  // `setTime(slot.display_time)` so this effect lands on the same slot
+  // the user just picked, which short-circuits via the `selectedSlotIso`
+  // guard instead of fighting them.
+  useEffect(() => {
+    if (!time || slots.length === 0) return;
+    const target = to24HourTime(time) ?? time;
+    const targetMinutes = timeToMinutes(target);
+    if (targetMinutes == null) return;
+
+    let closest: AvailabilitySlot | null = null;
+    let closestDist = Infinity;
+    for (const slot of slots) {
+      if (classifySlot(slot, conflicts, restaurantTimezone).kind !== "available") continue;
+      const t24 = to24HourTime(slot.display_time);
+      const mins = t24 ? timeToMinutes(t24) : null;
+      if (mins == null) continue;
+      const dist = Math.abs(mins - targetMinutes);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = slot;
+      }
+    }
+    if (!closest) return;
+    if (selectedSlotIso === closest.date_time) return;
+    onSelectSlot(closest);
+  }, [time, slots, conflicts, restaurantTimezone, selectedSlotIso, onSelectSlot]);
 
   // ── Aggregated conflict notices for the day. ──
   const conflictNotices = useMemo<string[]>(() => {
@@ -512,7 +543,12 @@ export function AvailabilityPanel({
                   key={slot.date_time}
                   type="button"
                   disabled={isConflict}
-                  onClick={() => !isConflict && onSelectSlot(slot)}
+                  onClick={() => {
+                    if (isConflict) return;
+                    const t24 = to24HourTime(slot.display_time);
+                    if (t24) setTime(t24);
+                    onSelectSlot(slot);
+                  }}
                   title={isConflict ? state.reason : `Book ${slot.display_time}`}
                   aria-disabled={isConflict}
                   className={cn(

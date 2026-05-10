@@ -17,8 +17,13 @@ export function RestaurantPriceMeter({
   inactiveClassName,
 }: RestaurantPriceMeterProps) {
   const normalizedLevel = normalizeRestaurantPriceLevel(level);
-
-  if (normalizedLevel == null) return null;
+  // When the restaurant has no price_range set, render the meter as a
+  // 3-slot placeholder (all outlined, none filled) instead of returning
+  // null. The visible-but-empty state lets the UI element keep its
+  // position in the metadata row and signals "price not set" without
+  // inventing a value. Owners can populate price_range from the
+  // dashboard to fill the meter.
+  const filledCount = normalizedLevel ?? 0;
 
   return (
     <span className={cn("inline-flex items-center gap-0.5 font-semibold", className)}>
@@ -26,8 +31,8 @@ export function RestaurantPriceMeter({
         <span
           key={slot}
           className={cn(
-            slot <= normalizedLevel ? "text-gold" : "text-transparent [-webkit-text-stroke:1px_var(--text-muted)]",
-            slot <= normalizedLevel ? activeClassName : inactiveClassName,
+            slot <= filledCount ? "text-gold" : "text-transparent [-webkit-text-stroke:1px_var(--text-muted)]",
+            slot <= filledCount ? activeClassName : inactiveClassName,
           )}
         >
           $

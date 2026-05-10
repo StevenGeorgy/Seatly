@@ -77,6 +77,58 @@ export function dateInTz(date: Date, timeZone: string | null | undefined): strin
 }
 
 /**
+ * Returns UTC-ISO bounds for one local-date day in `timeZone`.
+ * `localDate` is `YYYY-MM-DD`. Without this, naive `T00:00:00` strings
+ * in PostgREST queries get interpreted as UTC by the server, so a
+ * Saturday-night reservation in Toronto shows up under Sunday's view
+ * (Sat 22:45 local = Sun 02:45 UTC).
+ */
+export function localDayBoundsUtcIso(
+  localDate: string,
+  timeZone: string | null | undefined,
+): { startIso: string; endIso: string } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
+  if (!match) return null;
+  const [, yyyy, mm, dd] = match;
+  if (!timeZone) {
+    return {
+      startIso: `${yyyy}-${mm}-${dd}T00:00:00.000Z`,
+      endIso: `${yyyy}-${mm}-${dd}T23:59:59.999Z`,
+    };
+  }
+  // Pick noon UTC of the requested date as a stable probe — every IANA
+  // zone is offset less than 24h from UTC, so noon UTC always falls on
+  // the same calendar day in the target zone, dodging DST midnight edges.
+  const noonUtc = new Date(`${yyyy}-${mm}-${dd}T12:00:00Z`);
+  const tzParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(noonUtc);
+  const get = (t: string) => tzParts.find((p) => p.type === t)?.value ?? "";
+  const localAsUtc = Date.UTC(
+    Number(get("year")),
+    Number(get("month")) - 1,
+    Number(get("day")),
+    Number(get("hour")),
+    Number(get("minute")),
+    Number(get("second")),
+  );
+  const offsetMs = localAsUtc - noonUtc.getTime();
+  const startUtc = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), 0, 0, 0) - offsetMs;
+  const endUtc = startUtc + 24 * 60 * 60 * 1000 - 1;
+  return {
+    startIso: new Date(startUtc).toISOString(),
+    endIso: new Date(endUtc).toISOString(),
+  };
+}
+
+/**
  * Returns the HH:mm time for the given instant in the supplied IANA timezone.
  * Falls back to the browser's local time when no timezone is given.
  */

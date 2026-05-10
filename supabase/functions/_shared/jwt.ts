@@ -1,3 +1,4 @@
+// @ts-nocheck
 // verify_jwt is false in Supabase config so the raw Authorization header
 // reaches edge functions. We decode the JWT payload manually because
 // auth.getUser() fails on ES256-signed tokens in some Deno versions.

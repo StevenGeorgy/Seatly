@@ -297,6 +297,7 @@ export default function ReservationsPage() {
     dateFrom: rangeStart,
     dateTo: rangeEnd,
     search: search || undefined,
+    timezone: selectedRestaurant?.timezone ?? null,
   };
 
   const {
@@ -382,6 +383,10 @@ export default function ReservationsPage() {
   const handleCreate = async () => {
     if (!guestName.trim()) {
       toast.error("Guest name is required.");
+      return;
+    }
+    if (!guestEmail.trim() && !guestPhone.trim()) {
+      toast.error("Email or phone is required.");
       return;
     }
     if (!reservationDate) {
@@ -836,12 +841,25 @@ function ReservationDetailsDialog({
 }) {
   const { t } = useTranslation();
   const source = reservation?.source;
+  // Dedupe by normalized value: when a reservation has a linked guest
+  // record AND inline guest_phone/guest_email (the common case for diner
+  // self-bookings), the values are identical and would render as
+  // "2894000883 · 2894000883 · email · email" without this.
+  const seenContact = new Set<string>();
   const contact = [
     source?.guest_phone,
     source?.guests?.phone,
     source?.guest_email,
     source?.guests?.email,
-  ].filter(Boolean).join(" · ");
+  ]
+    .filter((value): value is string => Boolean(value))
+    .filter((value) => {
+      const key = value.trim().toLowerCase();
+      if (!key || seenContact.has(key)) return false;
+      seenContact.add(key);
+      return true;
+    })
+    .join(" · ");
 
   return (
     <Dialog open={reservation !== null} onOpenChange={onOpenChange}>

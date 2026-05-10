@@ -84,12 +84,21 @@ export function medianMainEntreePrice(items: RestaurantPriceMenuItem[]): number 
 
 export function deriveRestaurantPriceLevel(
   items: RestaurantPriceMenuItem[],
-  fallbackRange?: number | null,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _fallbackRange?: number | null,
 ): RestaurantPriceLevel | null {
-  // Owner-set value in the DB is authoritative. Only fall back to menu-derived
-  // when no value is recorded.
-  const explicit = normalizeRestaurantPriceLevel(fallbackRange);
-  if (explicit != null) return explicit;
+  // Menu data is the SOLE source of truth for the customer-facing price
+  // meter — the median price of items in a "Mains/Entrées" category is what
+  // diners will actually pay. The owner-set `price_range` column on
+  // `restaurants` is intentionally NOT consulted here: it was previously
+  // authoritative, which let stale or accidentally-set values override the
+  // actual menu-derived signal. (Owner-set value is still used by the voice
+  // orchestrator for `price_range_max` filtering and by promotions/events
+  // metadata — it just doesn't drive the customer meter.) When the menu has
+  // no items in a "Mains/Entrées" category, the meter returns null and the
+  // component renders an empty 3-slot placeholder so customers see "price
+  // not set" without an invented value. Owners can populate the meter by
+  // categorizing menu items under "Mains" or "Entrées".
   const median = medianMainEntreePrice(items);
   if (median != null) return restaurantPriceLevelFromAverage(median);
   return null;

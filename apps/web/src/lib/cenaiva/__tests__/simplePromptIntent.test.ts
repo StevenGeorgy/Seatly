@@ -17,6 +17,26 @@ describe("simplePromptIntent", () => {
       "book it",
       "cancel that",
       "tomorrow at 7 pm",
+      // Regression: city name alone should route to orchestrator
+      "i want to find a restaurant in guelph",
+      "anywhere in guelph",
+      "show me toronto",
+      "places in hamilton",
+      // Regression: plural venue forms
+      "is there any cafes",
+      "are there any bars",
+      "any coffee shops nearby",
+      "find me a brewery",
+      // Regression: specific-restaurant lookup by name
+      "is mark testing in guelph",
+      "is la piazza open",
+      // Regression (2026-05-09): "is X in Y" lookups for cities not yet listed
+      // in CITY_LOOKUP_PATTERN must still route to orchestrator via the
+      // SPECIFIC_PLACE_LOOKUP_PATTERN. The orchestrator's v172 system prompt
+      // handles factual restaurant questions and answers from the row data.
+      "is mark testing in milton",
+      "is georgy inc in guelph",
+      "is georgy inc in milton",
     ])("matches dining-process prompt %s", (input) => {
       expect(isCenaivaProcessPrompt(input)).toBe(true);
     });

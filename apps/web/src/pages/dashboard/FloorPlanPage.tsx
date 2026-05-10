@@ -2658,6 +2658,10 @@ export default function FloorPlanPage() {
       toast.error("Guest name is required.");
       return;
     }
+    if (!hostQuickGuestEmail.trim() && !hostQuickGuestPhone.trim()) {
+      toast.error("Email or phone is required.");
+      return;
+    }
     const partySize = Math.max(1, Math.floor(hostQuickPartySize) || 1);
     if (partySize > maxBookableSeats) {
       toast.error(`Party size cannot exceed ${maxBookableSeats} seats.`);
@@ -3073,6 +3077,9 @@ export default function FloorPlanPage() {
     if (!reservedAt || Number.isNaN(reservedAt.getTime())) throw new Error("Choose a valid reservation time.");
     const guestName = values.guestName.trim();
     if (!guestName) throw new Error("Guest name is required.");
+    if (!values.guestEmail.trim() && !values.guestPhone.trim()) {
+      throw new Error("Email or phone is required.");
+    }
     await ensureTableAvailableForReservation(tableId, reservedAt, values.partySize);
     const client = getSupabaseBrowserClient();
     const { data: reservationId, error } = await client.rpc("create_staff_reservation", {

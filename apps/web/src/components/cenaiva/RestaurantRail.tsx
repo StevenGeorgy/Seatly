@@ -30,7 +30,25 @@ export function RestaurantRail({ restaurants }: RestaurantRailProps) {
       .filter((restaurant): restaurant is Restaurant => !!restaurant)
     : restaurants;
 
-  if (!visible.length) return null;
+  // Empty-state hint: when the orchestrator's search returned zero matches AND
+  // didn't surface a fallback restaurant, the rail used to silently render
+  // nothing. Showing a small placeholder gives the user something visual to
+  // anchor on while Cenaiva's spoken response explains the empty result.
+  if (!visible.length) {
+    if (booking.status === "idle" || booking.status === "post_booking") return null;
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 max-w-md px-4"
+      >
+        <div className="rounded-2xl border border-white/10 bg-black/60 backdrop-blur-md px-5 py-3 text-center">
+          <p className="text-white/90 text-sm font-medium">No matches found</p>
+          <p className="text-white/60 text-xs mt-1">Try a different city, cuisine, or venue style.</p>
+        </div>
+      </motion.div>
+    );
+  }
 
   const handleSelect = (r: Restaurant) => {
     // Guard: ignore taps while the orchestrator is already processing a request.

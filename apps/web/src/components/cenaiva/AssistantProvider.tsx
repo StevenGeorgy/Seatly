@@ -274,7 +274,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
           : undefined;
 
       // ── STAGE 1 — local booking collector ───────────────────────────────────
-      if (FAST_PATH_ENABLED) {
+      // Skip Stage 1 for clear greetings / chit-chat / off-topic that contain
+      // a stray date/time word ("how are you doing today", "good morning",
+      // "what's up tonight"). Without this guard the local collector parses
+      // "today"/"tonight"/etc. out of the greeting, treats it as a booking
+      // detail, and asks "what restaurant or area should I book?" — which
+      // sounds robotic and ignores the actual greeting.
+      const isPureGreeting = /^\s*(hey|hi|hello|yo|yoo+|sup|what'?s\s+up|good\s+(?:morning|afternoon|evening|night)|howdy|wassup|how\s+(?:are\s+you|is\s+it\s+going|you\s+doing))\b/i
+        .test(transcript) && !/\b(book|reserve|table|reservation|find|show|search|recommend|hungry|starving|eat|food)\b/i.test(transcript);
+      if (FAST_PATH_ENABLED && !isPureGreeting) {
         const decision = planLocalBookingTurn({
           transcript,
           booking: current.booking,
@@ -348,8 +356,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // ── STAGE 3 — small-prompt fast-path ─────────────────────────────────────
       // Skip when the user is replying yes/no to a confirmation prompt or when
       // the transcript is clearly a process/booking prompt (those go to the
-      // orchestrator so the booking flow proceeds correctly).
-      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt) {
+      // orchestrator so the booking flow proceeds correctly). Also skip when a
+      // pending_action (modify/cancel/save_preference) is queued — the user's
+      // next reply is a yes/no on THAT action and must reach the orchestrator's
+      // confirmPendingAction handler, not the small-prompt LLM (which would
+      // emit a fresh booking-flow prompt and silently drop the pending action).
+      const hasPendingAction = !!current.booking.pending_action;
+      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction) {
         const controller = new AbortController();
         const timer = window.setTimeout(() => controller.abort(), 8_000);
         try {
@@ -417,6 +430,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           payment_status: current.booking.payment_status,
           cart_subtotal: current.booking.cart_subtotal,
           cart: current.booking.cart,
+          pending_action: current.booking.pending_action,
         },
         map_state: {
           visible: current.map.visible,
@@ -742,14 +756,41 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
       // Greet first, listen second — the wake-word path passes a personalized
       // greeting; bare orb taps don't pass one and just go straight to listen.
+      // After the greeting plays, the mic should auto-open so the user can
+      // speak their request without tapping anything. Two safety nets that
+      // matter here:
+      //   1. Defensive `stopListening()` before `startListening()` clears any
+      //      half-released recognition session that the wake recognizer's
+      //      tear-down might have left dangling. Without this, Chrome's
+      //      "one SpeechRecognition holds the mic" rule can leave the new
+      //      session stuck in idle.
+      //   2. 200ms yield between greeting-end and `startListening()` lets
+      //      Chrome reclaim the mic from the wake recognizer fully. Without
+      //      it, the new session can race the wake recognizer's release and
+      //      silently fail to open.
+      // useCenaivaWakeWord.ts is off-limits per CLAUDE.md, so we work around
+      // it here.
       if (opts?.autoListen && opts?.greetingText) {
         void (async () => {
           try {
             await voice.speak(opts.greetingText!);
-          } finally {
+            voice.stopListening();
+            await new Promise((resolve) => setTimeout(resolve, 200));
             if (isOpenRef.current && !textModeRef.current) {
-              void startListeningRef.current();
+              try {
+                await startListeningRef.current();
+              } catch (err) {
+                // Surface failures (Deepgram unavailable, permission denied,
+                // mic still locked) instead of swallowing them — without this,
+                // users see the orb and assume they need to tap to start.
+                console.warn("[Cenaiva] startListening after wake greeting failed", err);
+                if (isOpenRef.current && !textModeRef.current) {
+                  await voice.speak("Tap the mic to start when ready.");
+                }
+              }
             }
+          } catch (err) {
+            console.warn("[Cenaiva] wake-greeting flow failed", err);
           }
         })();
       }

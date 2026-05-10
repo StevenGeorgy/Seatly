@@ -467,6 +467,15 @@ Deno.serve(async (req: Request) => {
           400,
         );
       }
+      if (code === "P0008") {
+        return jsonResponse(
+          {
+            error: "This time is past the shift's close. Pick an earlier slot.",
+            unavailable_reason: "past_shift_close",
+          },
+          409,
+        );
+      }
       return jsonResponse({ error: `Reservation: ${bookingError.message}` }, 400);
     }
 

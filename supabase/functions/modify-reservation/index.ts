@@ -385,6 +385,24 @@ Deno.serve(async (req: Request) => {
           409,
         );
       }
+      if (code === "P0007") {
+        return json(
+          {
+            error: "This reservation is missing contact info; please contact the restaurant to update it before modifying.",
+            unavailable_reason: "missing_identifier",
+          },
+          400,
+        );
+      }
+      if (code === "P0008") {
+        return json(
+          {
+            error: "This time is past the shift's close. Pick an earlier slot.",
+            unavailable_reason: "past_shift_close",
+          },
+          409,
+        );
+      }
       return json({ error: modifyError.message }, 400);
     }
 

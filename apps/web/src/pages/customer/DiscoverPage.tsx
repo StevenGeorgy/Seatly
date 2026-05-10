@@ -1010,6 +1010,30 @@ export default function DiscoverPage() {
   const selectedPartySize = normalizePartySize(partySize);
   const listingLoading = loading || availabilityLoading;
 
+  // Auto-roll to the next available date when the user is on the default
+  // date selection ("today", no manual pick) and every active restaurant
+  // has zero remaining slots — most often because we're past the last
+  // bookable time of day. Without this, Discover renders an empty page
+  // with no signal that anything exists. Capped at 14 attempts so a
+  // fully-closed catalog doesn't loop forever; reset to 0 whenever the
+  // user picks a different date manually so we never override their
+  // explicit choice.
+  const [autoRollOffsetDays, setAutoRollOffsetDays] = useState(0);
+  const isOnDefaultDate = dateId === "today" && customDate === undefined;
+  const effectiveBookingDate = useMemo(() => {
+    if (autoRollOffsetDays === 0) return selectedBookingDate;
+    const base = new Date(`${selectedBookingDate}T00:00:00`);
+    return format(addDays(base, autoRollOffsetDays), "yyyy-MM-dd");
+  }, [selectedBookingDate, autoRollOffsetDays]);
+  useEffect(() => {
+    // User changed their date selection — drop any prior auto-roll so we
+    // don't silently advance off the date they just picked. setState-in-
+    // effect is intentional: the user's pick is a state change that should
+    // trigger a single reset, not a derived value.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isOnDefaultDate && autoRollOffsetDays !== 0) setAutoRollOffsetDays(0);
+  }, [isOnDefaultDate, autoRollOffsetDays]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -1023,7 +1047,7 @@ export default function DiscoverPage() {
       setAvailabilityLoading(true);
       const map = await fetchDisplayAvailabilitySlotsForRestaurants(
         restaurantIds,
-        selectedBookingDate,
+        effectiveBookingDate,
         selectedPartySize,
         time,
       );
@@ -1034,7 +1058,7 @@ export default function DiscoverPage() {
     return () => {
       cancelled = true;
     };
-  }, [restaurantIds, selectedBookingDate, selectedPartySize, time]);
+  }, [restaurantIds, effectiveBookingDate, selectedPartySize, time]);
 
   const cards: RestaurantCard[] = useMemo(() => {
     return restaurants.map((restaurant) => adaptRestaurant(
@@ -1043,6 +1067,38 @@ export default function DiscoverPage() {
       availabilityByRestaurantId[restaurant.id] ?? [],
     ));
   }, [availabilityByRestaurantId, restaurants, statsByRestaurantId]);
+
+  // Trigger auto-roll: when every active restaurant has zero slots AND the
+  // user hasn't manually picked a date, advance the effective date by 1
+  // day and re-fetch. Capped at 14 attempts (server-side dates also cap
+  // at advance_booking_days). Only fires when no filter is active so we
+  // don't roll past dates the user is actively narrowing.
+  const cardsWithSlotsCount = useMemo(
+    () => cards.filter((c) => c.availableSlots.length > 0).length,
+    [cards],
+  );
+  const noFiltersActive =
+    !search.trim() && activePrices.size === 0 && activeFeatures.size === 0;
+  useEffect(() => {
+    if (!isOnDefaultDate || !noFiltersActive) return;
+    if (availabilityLoading || cards.length === 0) return;
+    if (cardsWithSlotsCount > 0) return;
+    if (autoRollOffsetDays >= 14) return;
+    // setState-in-effect is intentional here: we need to advance the date
+    // AFTER the availability fetch settles. Computing this synchronously in
+    // a useMemo would create a stale closure on the loading flag and re-fire
+    // before the new fetch completes. Same pattern as
+    // CenaivaVoicePreferenceProvider's refresh effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAutoRollOffsetDays((prev) => prev + 1);
+  }, [
+    isOnDefaultDate,
+    noFiltersActive,
+    availabilityLoading,
+    cards.length,
+    cardsWithSlotsCount,
+    autoRollOffsetDays,
+  ]);
 
   const filtered = useMemo(() => {
     let list = cards.filter((r) => r.availableSlots.length > 0);
@@ -1809,6 +1865,19 @@ export default function DiscoverPage() {
             </motion.section>
           )}
         </AnimatePresence>
+
+        {/* Auto-rolled date banner: shows when we advanced past a fully-booked
+            "today" because nothing had availability. Only renders when there's
+            actually a non-empty list to display — avoids stacking with the
+            empty-state card below when even auto-roll exhausted. */}
+        {autoRollOffsetDays > 0 && !listingLoading && filtered.length > 0 && (
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-gold/30 bg-gold/5 px-4 py-3 text-center text-sm text-text-secondary">
+            <span>
+              No availability for {format(new Date(`${selectedBookingDate}T00:00:00`), "EEE, MMM d")}.
+              Showing <span className="font-medium text-white">{format(new Date(`${effectiveBookingDate}T00:00:00`), "EEE, MMM d")}</span> instead.
+            </span>
+          </div>
+        )}
 
         {/* Loading */}
         {listingLoading && (

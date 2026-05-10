@@ -76,7 +76,34 @@ export type GoogleMapsNamespace = {
 type GoogleMapsWindow = Window & {
   google?: { maps?: GoogleMapsNamespace };
   __cenaivaGoogleMapsPromise?: Promise<GoogleMapsNamespace>;
+  // Google's standard global hook for auth failures (invalid key, referrer
+  // restriction, billing not configured, Maps JS API not enabled). Without
+  // this, auth errors only surface in the browser console — the app sees
+  // an "empty map" with no UI feedback.
+  gm_authFailure?: () => void;
 };
+
+// Module-scoped error state so consumers (e.g. <CustomerMap>) can surface a
+// clear "Map unavailable" message instead of a silent empty div. Set by:
+// 1. window.gm_authFailure callback (auth/quota/restriction errors)
+// 2. The Promise reject paths in loadGoogleMaps() (script load failures)
+let cenaivaMapsLoadError: string | null = null;
+
+export function getGoogleMapsLoadError(): string | null {
+  return cenaivaMapsLoadError;
+}
+
+function setGoogleMapsLoadError(reason: string) {
+  cenaivaMapsLoadError = reason;
+  console.error("[Cenaiva Map]", reason);
+  // Notify any subscribed consumers so they can re-render. Map-error UI
+  // tends to be conditional on `loadGoogleMaps()` rejecting, but the
+  // gm_authFailure path doesn't reject — it fires post-resolve when the
+  // SDK rejects the API key at runtime — so consumers need a live signal.
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("cenaiva:google-maps-error", { detail: reason }));
+  }
+}
 
 export function getGoogleMapsApiKey(): string {
   return import.meta.env.VITE_GOOGLE_MAPS_API_KEY?.trim() ?? "";
@@ -89,10 +116,23 @@ export function hasGoogleMapsApiKey(): boolean {
 export function loadGoogleMaps(): Promise<GoogleMapsNamespace> {
   const apiKey = getGoogleMapsApiKey();
   if (!apiKey) {
-    return Promise.reject(new Error("Google Maps API key is not configured."));
+    const err = "Google Maps API key is not configured.";
+    setGoogleMapsLoadError(err);
+    return Promise.reject(new Error(err));
   }
 
   const win = window as GoogleMapsWindow;
+
+  // Install the global gm_authFailure handler once. Idempotent — re-installs
+  // are no-ops because the SDK only invokes whatever's currently set.
+  if (typeof window !== "undefined" && !win.gm_authFailure) {
+    win.gm_authFailure = () => {
+      setGoogleMapsLoadError(
+        "Google Maps auth failed. Check the API key, HTTP-referrer restrictions in Google Cloud Console, and that the Maps JavaScript API + Places API are enabled with billing.",
+      );
+    };
+  }
+
   if (win.google?.maps) {
     return Promise.resolve(win.google.maps);
   }
@@ -101,13 +141,18 @@ export function loadGoogleMaps(): Promise<GoogleMapsNamespace> {
   }
 
   win.__cenaivaGoogleMapsPromise = new Promise((resolve, reject) => {
+    const onLoadError = (reason: string) => {
+      setGoogleMapsLoadError(reason);
+      reject(new Error(reason));
+    };
+
     const existing = document.getElementById(GOOGLE_MAPS_SCRIPT_ID) as HTMLScriptElement | null;
     if (existing) {
       existing.addEventListener("load", () => {
         if (win.google?.maps) resolve(win.google.maps);
-        else reject(new Error("Google Maps did not initialize."));
+        else onLoadError("Google Maps script loaded but did not initialize.");
       });
-      existing.addEventListener("error", () => reject(new Error("Failed to load Google Maps.")));
+      existing.addEventListener("error", () => onLoadError("Failed to load Google Maps script."));
       return;
     }
 
@@ -118,9 +163,9 @@ export function loadGoogleMaps(): Promise<GoogleMapsNamespace> {
     script.defer = true;
     script.addEventListener("load", () => {
       if (win.google?.maps) resolve(win.google.maps);
-      else reject(new Error("Google Maps did not initialize."));
+      else onLoadError("Google Maps script loaded but did not initialize.");
     });
-    script.addEventListener("error", () => reject(new Error("Failed to load Google Maps.")));
+    script.addEventListener("error", () => onLoadError("Failed to load Google Maps script."));
     document.head.appendChild(script);
   });
 

@@ -361,7 +361,10 @@ export default function OverviewPage() {
   const today = isoDate(now);
   const statsRange = useMemo(() => dayRange(now), [now]);
   const { stats: orderStats, loading: statsLoading, error: statsError } = useOverviewStats(statsRange);
-  const { reservations, loading: reservationsLoading } = useReservations({ date: today });
+  const { reservations, loading: reservationsLoading } = useReservations({
+    date: today,
+    timezone: selectedRestaurant?.timezone ?? null,
+  });
 
   const loading = statsLoading || reservationsLoading;
 
