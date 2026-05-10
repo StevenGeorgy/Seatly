@@ -487,7 +487,39 @@ export function assistantReducer(
         const bookingPatch = Object.fromEntries(
           Object.entries(response.booking).filter(([, v]) => v != null),
         ) as Partial<typeof next.booking>;
-        next = { ...next, booking: { ...next.booking, ...bookingPatch } };
+        // When the new patch transitions back to "idle" (a fact-lookup
+        // answer about a different restaurant, or a global question), the
+        // prior reservation_id / confirmation_code / slot_iso must NOT
+        // carry forward — otherwise the UI keeps showing the post_booking
+        // success card and never transitions to the question response. The
+        // post_booking state is only meaningful when the response itself
+        // affirms it (singleReservationKind / list / book).
+        const transitioningToIdle = bookingPatch.status === "idle" &&
+          (state.booking.status === "post_booking" || state.booking.status === "paid" || state.booking.status === "confirmed");
+        if (transitioningToIdle) {
+          // Full reset: a transition to idle from a post-booking state means
+          // the user finished with that reservation (cancel / done). Don't
+          // carry forward time / date / party / restaurant / etc — otherwise
+          // the next booking turn inherits stale fields ("book mark testing
+          // for 2 thursday at 6pm" after canceling a 4PM reservation would
+          // reuse the 4PM time and ignore the new "6pm").
+          next = {
+            ...next,
+            booking: {
+              ...initialBooking,
+              ...bookingPatch,
+              // Preserve restaurant context only if the patch explicitly
+              // set it (fact-lookup like "what is X about" sends the restaurant).
+              ...(bookingPatch.restaurant_id ? {
+                restaurant_id: bookingPatch.restaurant_id,
+                restaurant_name: bookingPatch.restaurant_name ?? null,
+              } : {}),
+            },
+            customerAccepted: false,
+          };
+        } else {
+          next = { ...next, booking: { ...next.booking, ...bookingPatch } };
+        }
       }
 
       if (response.map) {

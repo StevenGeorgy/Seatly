@@ -492,6 +492,27 @@ Deno.serve(async (req: Request) => {
       ? (bookingRow.table_ids as unknown[]).filter((id): id is string => typeof id === "string")
       : [];
 
+    // Deposit policy: if the party crosses any tier, mark the reservation as
+    // 'pending' until the customer settles the deposit. The trigger on
+    // reservation_deposit_payments flips it to 'confirmed' once every payment
+    // row is 'charged'. STRIPE STUB — replace with real charge once Stripe is wired.
+    let depositAmountCents = 0;
+    {
+      const { data: depositCents, error: depositError } = await supabase.rpc(
+        "compute_deposit_for_party",
+        { p_restaurant_id: restaurantId, p_party_size: partySize },
+      );
+      if (depositError) {
+        console.error("compute_deposit_for_party failed", depositError);
+      } else if (typeof depositCents === "number" && depositCents > 0) {
+        depositAmountCents = depositCents;
+        await supabase
+          .from("reservations")
+          .update({ deposit_amount_cents: depositCents, deposit_status: "pending" })
+          .eq("id", reservationId);
+      }
+    }
+
     let orderId: string | null = null;
     const cartItems = normalizeCartItems(payload.cart_items);
     if (cartItems.length > 0) {
@@ -617,6 +638,8 @@ Deno.serve(async (req: Request) => {
       duration_minutes: turnMinutes,
       confirmation_delivery: confirmationStatus,
       confirmation_delivery_channel: confirmationChannel,
+      deposit_amount_cents: depositAmountCents,
+      deposit_required: depositAmountCents > 0,
     });
   } catch (err) {
     return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);

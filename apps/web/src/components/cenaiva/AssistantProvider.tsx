@@ -282,7 +282,29 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // sounds robotic and ignores the actual greeting.
       const isPureGreeting = /^\s*(hey|hi|hello|yo|yoo+|sup|what'?s\s+up|good\s+(?:morning|afternoon|evening|night)|howdy|wassup|how\s+(?:are\s+you|is\s+it\s+going|you\s+doing))\b/i
         .test(transcript) && !/\b(book|reserve|table|reservation|find|show|search|recommend|hungry|starving|eat|food)\b/i.test(transcript);
-      if (FAST_PATH_ENABLED && !isPureGreeting) {
+      // Skip Stage 1 for fact-lookup / global discovery questions like "what
+      // is X about", "any deals tonight", "best cuisines", "closest spots".
+      // Without this guard, planLocalBookingTurn parses "tonight"/"today" as
+      // a date and routes to the availability check (Stage 2) — which then
+      // returns the restaurant's HOURS instead of the orchestrator's
+      // deterministic deals/about/etc handler.
+      const isFactOrGlobalQuery = /\b(?:reviews?|ratings?|expensive|cheap|pricey|popular|best|top|favorite|favourite|deals?|promotions?|discounts?|specials?|offers?|coupons?|happy hour|closest|nearest|near me|nearby|close by|around me|walking distance|tell me about|known for|famous for|all about)\b/i.test(transcript) ||
+        /\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like)\b/i.test(transcript) ||
+        /\b(?:what|how)\s+(?:kind|type|sort)\s+of\b/i.test(transcript) ||
+        /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a\s+(?:cafe|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse)|fancy|romantic|casual|quiet|loud|trendy|hip|cozy|kid|family|good\s+for)\b/i.test(transcript);
+      // Skip Stage 1 for modify/cancel referencing prior context ("modify it",
+      // "cancel that", "change the booking"). Otherwise the local booking
+      // collector parses "5pm" as a new booking time and asks "What restaurant
+      // or area should I book?" — confusing because the user clearly meant to
+      // act on an existing reservation. Orchestrator's modify/cancel branches
+      // handle the right responses (including the "no active reservations"
+      // case for cancelled-only history).
+      const isModifyOrCancelRef = /\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript) &&
+        /\b(it|that|that one|the booking|the reservation|my booking|my reservation)\b/i.test(transcript);
+      // Also skip when user references "my reservation" / "my booking" — the
+      // orchestrator owns those flows.
+      const isReservationListQuery = /\b(my\s+(?:most\s+recent|latest|newest|last|next|upcoming|first|current|active)\s+(?:reservation|booking|table)|show\s+me\s+my\s+(?:reservation|booking|past|upcoming|cancelled)|list\s+my\s+(?:reservation|booking)|(?:do|did)\s+i\s+(?:have|book))\b/i.test(transcript);
+      if (FAST_PATH_ENABLED && !isPureGreeting && !isFactOrGlobalQuery && !isModifyOrCancelRef && !isReservationListQuery) {
         const decision = planLocalBookingTurn({
           transcript,
           booking: current.booking,

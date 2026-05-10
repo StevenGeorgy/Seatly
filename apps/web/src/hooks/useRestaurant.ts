@@ -29,6 +29,7 @@ export type Restaurant = {
   currency: string;
   tax_rate: number;
   deposit_policy_json: Record<string, unknown> | null;
+  deposit_tiers: Array<{ min_party_size: number; amount_per_person_cents: number }> | null;
   loyalty_config_json: Record<string, unknown> | null;
   stripe_account_id: string | null;
   stripe_onboarding_complete: boolean | null;

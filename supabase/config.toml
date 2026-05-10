@@ -67,3 +67,9 @@ verify_jwt = false
 
 [functions.modify-reservation]
 verify_jwt = false
+
+[functions.prepare-deposit]
+verify_jwt = false
+
+[functions.confirm-deposit-stub]
+verify_jwt = false

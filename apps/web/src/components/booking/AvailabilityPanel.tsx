@@ -183,7 +183,7 @@ export function AvailabilityPanel({
   userProfileId,
   onSelectSlot,
   selectedSlotIso,
-  maxPartySize = 50,
+  maxPartySize = 200,
   onStateChange,
 }: AvailabilityPanelProps) {
   const [date, setDate] = useState<string>(initialDate ?? "");

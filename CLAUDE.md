@@ -29,6 +29,351 @@ edits here propagate to both agents in one step.
 
 - **Concurrent-user ceiling: ~2,250** active Discover/Deals browsers on
   Micro compute (Supabase ca-central-1), p95 < 1 s, 0 failures.
+- **SMS confirmations wired into voice book/modify/cancel
+  (2026-05-10).** The voice flow bypasses the public edge functions
+  (`create-public-booking`, `modify-reservation`,
+  `cancel-reservation`) where SMS sending lived, so users got SMS
+  for web bookings but NOT for voice-assistant bookings. Fixed:
+  - `_shared/reservation-notifications.ts`'s
+    `sendReservationNotification` now also accepts
+    `type: "reservation_confirmation"` (was modify/cancel only).
+  - `_shared/booking.ts` `completeBooking` calls
+    `sendReservationNotification` after the `book_reservation` RPC
+    succeeds. Builds the SMS body inline (mirrors create-public-
+    booking's wording) including manage link.
+  - `cenaiva-orchestrate/index.ts` `confirmPendingAction` now
+    sends SMS in BOTH the cancel branch (after
+    `release_reservation_tables`) and the modify branch (after
+    `modify_reservation_slot` + optional special_request update).
+    Each fetches the latest reservation row + guest record and
+    builds a body with the new/updated/cancelled time.
+  All three calls wrapped in try/catch — notification failure
+  must NOT block the booking response. Verified end-to-end via
+  computer-use: book → SMS, modify → SMS, cancel → SMS, all
+  visible in `communication_log` with `channel='sms'`,
+  `status='sent'`. Twilio env vars (`TWILIO_ACCOUNT_SID`,
+  `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`) already configured;
+  user phone is normalized to `+1<10 digits>` before sending.
+- **Stale `reservation_tables` cleanup pattern.** When a cancel
+  fails to call `release_reservation_tables` (orphaned by an old
+  bug, manual SQL update, etc.), `reservation_tables.released_at`
+  stays NULL and the partial-exclusion `reservation_tables_no_overlap`
+  blocks new bookings at that slot — surfacing as 23P01. Recovery
+  query (safe — only releases tables for already-cancelled rows):
+  ```sql
+  UPDATE reservation_tables SET released_at = now()
+  WHERE released_at IS NULL
+    AND reservation_id IN (
+      SELECT id FROM reservations WHERE status = 'cancelled'
+    );
+  ```
+- **Cancelled-only reservation history → safe state (2026-05-10).**
+  When `singleReservationKind` / list handlers picked a CANCELLED row
+  (no active rows exist), they used to promote
+  `reservation_id` + `status="post_booking"` into booking_state. Result:
+  the UI rendered "You're booked!" for a cancelled row, AND a follow-up
+  "modify it" / "cancel it" tried to act on the cancelled rid, surfacing
+  errors. Both handlers now check `isActive = status !== "cancelled"
+  && !isPastActive(row)` and return `booking: { status: "idle" }` for
+  cancelled/past picks. The spoken text still describes the cancelled
+  reservation ("Most recent on file: X — but it's cancelled") so the
+  user knows what happened.
+- **Modify/cancel referencing prior context with no rid → helpful
+  fallback (2026-05-10).** When the user says "modify it" / "cancel
+  it" / "change that" but `booking_state` has NO active reservation
+  (because the most-recent was cancelled), the orchestrator now runs
+  a deterministic check that:
+  1. Queries the user's active future reservations.
+  2. Returns "You don't have any active reservations to change. Want
+     to book a new one?" if none.
+  3. Promotes the only active row + asks for confirmation if exactly
+     one exists.
+  4. Asks the user to pick if multiple.
+  Without this, the request fell through to the LLM tool flow which
+  responded with the generic "What restaurant or area should I book?"
+  — confusing because the user clearly meant to act on an existing
+  reservation.
+- **AssistantProvider Stage 1 skip for modify/cancel/list intents
+  (2026-05-10).** `planLocalBookingTurn` was parsing "5pm" out of
+  "modify it to 5pm" as a new booking time and emitting the local
+  collector's "What restaurant or area should I book?" prompt. Added
+  `isModifyOrCancelRef` and `isReservationListQuery` regex guards so
+  these requests skip Stage 1 entirely and reach the orchestrator's
+  modify / cancel / list handlers (which know how to look up the
+  reservation).
+- **Mic auto-resumes on `post_booking` (2026-05-10).** Removed
+  `post_booking` from `NO_AUTO_RELISTEN_STATUSES`. After the assistant
+  shows a reservation card (whether from "what's my next reservation"
+  or after a fresh book), the mic auto-reopens so the user can say
+  "modify it" / "cancel it" / "show me my next one" hands-free. The
+  previous gate forced the user to click the mic — broke the
+  voice-first flow. Checkout / payment / menu statuses still gate the
+  mic because button taps are faster there and the mic could pick up
+  card-entry chatter.
+- **Party-size parsing — colloquial coverage (2026-05-10).** Added
+  patterns for "the both of us" / "both of us" / "us two" → 2;
+  "myself and one other" / "me and another" → 2; "a couple" /
+  "a duo" / "a pair" → 2; "half a dozen" → 6; "dozen" → 12;
+  "me and N others/friends/people" → 1+N; "just the (two|three|four)
+  of us" → that number. Added validation: `peopleMatch` rejects 0 or
+  >99 (so "0 people" / "200 people" route back to "How many guests?"
+  instead of accepting nonsense). Reordered "couple" check to run
+  BEFORE the older `(party of|table for|for|...)\s+(...|a|couple|...)`
+  pattern so "for a couple" doesn't get captured as bare "a" → 1.
+- **Modify-verb expansion + parser robustness pass (2026-05-10).**
+  The orchestrator's deterministic modify branch and the upstream
+  routing both failed on "modify it to 5pm" because **`modify`
+  itself wasn't in the verb regex** (only `change|move|switch|update|
+  make it|add|reschedule`). Added `modify|push|bump|shift|adjust|
+  edit` everywhere a modify-verb regex appears (modify branch first
+  test, `bookingProcessIntent` fallback, client `simplePromptIntent`).
+  Same pass also extended:
+  - **`parsePartySize`**: catches `2 ppl` / `party 2` / `couple of us` /
+    `two of us` / `me and a friend` / `me and 2 others`. Reordered so
+    "me and a friend" wins over "just me" — was returning party=1 for
+    "just me and a friend" before.
+  - **`parseDateInTimeZone`**: catches abbreviations `weds`/`wed`/
+    `thurs`/`fri`/etc (table maps each weekday to its short forms).
+  - **`parseTime`**: catches "saturday eight pm" / "tomorrow nine pm"
+    (DAY-name as preposition before bare-word time), and bare-word
+    time `eight pm` anywhere when followed by explicit am/pm.
+- **AssistantStore reducer full-reset on transition to idle from
+  cancel (2026-05-10).** The reducer used to keep `time`/`date`/
+  `party_size`/`restaurant_id` after cancel-success transitioned
+  `status=post_booking → idle`. Result: "book mark testing for 2
+  thursday at 6pm" right after a cancel inherited the cancelled
+  reservation's 4PM time. Now resets the booking to `initialBooking`
+  with only the patch overlaid (and preserves `restaurant_id` only
+  if the patch explicitly set it — fact-lookup still highlights
+  the Q'd restaurant). Verified end-to-end via UI: cancel → "book
+  X for N day at TIME" picks up the new TIME correctly.
+- **Mic auto-resume already wired (Option A).** After a turn,
+  `voice.startListening` is called via `setTimeout` (260ms delay,
+  `RELISTEN_AFTER_RESPONSE_MS`) **unless** booking_state.status is
+  in `NO_AUTO_RELISTEN_STATUSES` (offering_preorder, browsing_menu,
+  reviewing_cart, choosing_tip_*, charging, paid, post_booking) OR
+  the user is in text input mode. Voice mode → mic auto-reopens
+  after AI speaks. Text mode → mic stays off (user is typing).
+  Don't change this; matches mobile behavior + the user's
+  preference.
+- **Voice-assistant fact/global question routing — 4-stage skip
+  (2026-05-10).** The `simplePromptIntent` client classifier now catches
+  the wider fact-lookup vocabulary (`about`, `like`, `kind`, `type`,
+  `sort`, `reviews?`, `rating`, plus vibe words: `quiet`, `loud`,
+  `trendy`, `hip`, `cozy`, `kid-friendly`, `family-friendly`) AND a
+  new `GLOBAL_DISCOVERY_QUERY_PATTERN` for `closest`/`nearest`/
+  `near me`/`nearby`/`best cuisines`/`promotions`/`deals`/`events`.
+  Without these, "what is X about" / "any deals tonight" / "best
+  cuisines" routed to Stage 3 small-prompt LLM (no DB access) and
+  the user got generic "I'm not sure" replies instead of the
+  orchestrator's deterministic answers. **AssistantProvider Stage 1
+  also skips `planLocalBookingTurn` for these queries via
+  `isFactOrGlobalQuery` regex** — otherwise the local collector
+  parses "tonight" as a date in "any deals tonight" and routes to
+  Stage 2 availability check, which returns the restaurant's HOURS
+  instead of the deals message. The guard is in
+  `AssistantProvider.tsx` right next to `isPureGreeting`. Don't
+  remove it.
+- **AssistantStore reducer auto-clears post_booking on transition
+  to idle (2026-05-10).** When a fact-lookup or global-question
+  response patches `booking.status === "idle"` AND the prior state
+  was `post_booking` / `paid` / `confirmed`, the reducer now
+  explicitly nulls `reservation_id`, `confirmation_code`,
+  `slot_iso`, `shift_id`, `pending_action`, `special_request`, and
+  resets `customerAccepted = false`. Without this, the previous
+  reservation's "You're booked!" success card stayed on screen
+  even after the user asked an unrelated question — the new
+  patch only added new fields, never cleared the rid that drove
+  the card. The check is in `AssistantStore.tsx:497-525`. Apply
+  it any time the new orchestrator response intent is
+  question-shaped (general_question, answer_restaurant_question)
+  rather than booking-progressing.
+- **Cancel success response now sets `status: "idle"` (2026-05-10).**
+  Was setting `status: "confirmed"` after a successful cancel,
+  which kept the cancelled reservation visible as "You're booked!"
+  on the post_booking card. Changed to `"idle"` so the new reducer
+  trigger above clears the card. The cancelled DB row still has
+  `status="cancelled"`; this is just the client-side booking_state
+  status the orchestrator reports back.
+- **Global question handlers in orchestrator return
+  `booking: { status: "idle" }` (2026-05-10).** Without an explicit
+  booking patch, the orchestrator's globalAnswerCandidate response
+  left booking_state untouched — so the prior reservation_id and
+  status="post_booking" persisted through fact-lookup turns. Now
+  every global-question return path includes `booking: { status:
+  "idle" }` to trigger the AssistantStore's transition-to-idle
+  cleanup.
+- **Live deposit flow verified end-to-end (2026-05-10).** Browser-
+  tested party of 8 at Mark Testing → /echoria-3 public page →
+  party picker → 5:30PM slot → details → menu step shows
+  "Continue to checkout · Deposit CA$80.00" → checkout step shows
+  `Deposit (8 × CA$10.00) CA$80.00` line item + total CA$80.00 →
+  Place Order (test card 4242…) → Table Booked + confirmation code
+  0DB9423E. DB verified: `reservations.deposit_amount_cents=8000`,
+  `deposit_status='charged'`, `status='confirmed'`. The Stripe stub
+  (`confirm-deposit-stub`) flips deposit rows to 'charged' on click,
+  and the `reservation_deposit_payments` settle trigger flips the
+  parent reservation to 'confirmed' once all rows hit 'charged'.
+- **Booking caps removed (2026-05-10).** Per-shift `max_covers` cap is now
+  optional: when `shifts.max_covers IS NULL`, the cover-cap check is
+  skipped entirely. The only ceiling is `restaurant_floor_capacity()`
+  (sum of active table capacities), enforced via the multi-table combiner
+  early-return. All four booking RPCs (`book_reservation`,
+  `modify_reservation_slot`, `create_staff_reservation`,
+  `get_available_slots`) gate the cover-cap check on `IS NOT NULL`. A
+  one-time `UPDATE shifts SET max_covers = NULL` ran on 2026-05-10 so
+  every existing shift benefits. `SettingsPage.tsx:1111` no longer seeds
+  `max_covers: 100` on new shifts (NULL instead). Owners who want a
+  kitchen/staff throttle can set a number directly on `shifts.max_covers`
+  until a future dashboard control exposes it. Migration:
+  `20260510000200_remove_max_covers_cap.sql`. Don't reintroduce the
+  `COALESCE(s.max_covers, 100)` pattern — NULL means "no cap" now.
+- **Multi-table combiner captured as a migration (2026-05-10).** The
+  deployed `find_available_table_group` was a sophisticated multi-table
+  combiner (recursive CTE up to 16 tables, two strategies: adjacent
+  same-section first, then any-combo fallback) but the local migration
+  at `20260503000001_add_reservation_table_assignments.sql` was the OLD
+  1-2-3-table version. Migration drift was caught while debugging "47
+  people fails at Georgy Inc". Captured as
+  `20260510000100_capture_find_available_table_group.sql` along with
+  the `restaurant_floor_capacity(uuid)` and
+  `restaurant_turn_time_minutes(uuid, uuid)` helpers. CREATE OR REPLACE
+  → no-op for prod; restores parity for fresh local DBs. Lesson: when
+  investigating "this should be broken but seems to work", grab
+  `pg_get_functiondef(p.oid)` from prod before assuming the local file
+  represents the live state. Local migration files can lag behind prod.
+- **Deposit policy with Stripe-stubbed UI (2026-05-10).** Owners can set
+  per-tier deposits keyed on party-size threshold via the new
+  `<DepositPolicyEditor>` card on Settings → Restaurant info. Schema:
+  `restaurants.deposit_tiers JSONB` (array of
+  `{min_party_size, amount_per_person_cents}`),
+  `reservations.deposit_amount_cents` + `deposit_status`
+  (`none|pending|charged|waived|failed`), and
+  `reservation_deposit_payments` (split-tender support, RLS-protected).
+  `compute_deposit_for_party(uuid, integer) RETURNS integer` computes
+  the deposit using the **highest applicable tier × party size** — NOT
+  additive (a party of 25 at the 20+ tier of $20/person pays $500, not
+  $750). **Deposit is collected on the existing checkout step (Step 3
+  Payment)** as a line item alongside the preorder cart and tip — there
+  is no separate "deposit" step. The single/split-tender card UI in
+  `RestaurantPublicPage.tsx` handles the combined total. Client-side
+  `previewDepositDollars` is computed from `restaurant.deposit_tiers` ×
+  party size for display before the booking is created; the server
+  re-computes and writes the canonical value via
+  `compute_deposit_for_party()` inside `create-public-booking`. The
+  menu step's "Continue" button reads "Continue to checkout · Deposit
+  $X" instead of "Skip preorder · Confirm booking" when a deposit
+  applies, so the customer always reaches the checkout step. Two new
+  edge functions: `prepare-deposit` (creates payment rows in 'pending')
+  and `confirm-deposit-stub` (STRIPE STUB — flips rows to 'charged' on
+  click; **gated behind `DEPOSIT_STRIPE_STUB_MODE` env, default true,
+  set to `false` in prod once Stripe is wired**). After booking
+  creation, `handlePlaceOrder` calls both functions sequentially when
+  `deposit_required`; the settle trigger on
+  `reservation_deposit_payments` flips the parent reservation to
+  `confirmed` once every row hits 'charged'. Migration:
+  `20260510000400_deposit_policy.sql`. End-to-end verified in browser
+  on 2026-05-10: party of 8 at Mark Testing → menu shows "Continue to
+  checkout · Deposit CA$80.00" → checkout shows deposit line item +
+  total CA$80.00 → Place Order → confirmation code 51063919,
+  status='confirmed', deposit_status='charged'. Search `// STRIPE STUB`
+  to find every spot the future Stripe wiring needs to touch. Don't
+  re-introduce a separate "deposit" step or a `<DepositStep>` component
+  — the user explicitly asked for the deposit to live inside checkout
+  using the existing single/split-tender UI (2026-05-10).
+- **Turn-time consistency fix (2026-05-10).** `get_available_slots` was
+  reading `v_shift.turn_time_minutes` directly while every other booking
+  RPC used `restaurant_turn_time_minutes()` (which prefers
+  `settings_json.turnTimeMinutes`). Fixed in
+  `20260510000300_get_available_slots_canonical_turn_time.sql` —
+  `get_available_slots` now also calls the helper. SettingsPage's save
+  handler (line ~820) additionally syncs `turn_time_minutes` to every
+  active shift on save, so the column stays aligned with
+  `settings_json.turnTimeMinutes`. Caught at Georgy Inc lunch where
+  dashboard said 90 but the lunch shift's column was a stale 60.
+- **Single Cherry Inc → service shift (2026-05-10, data fix).** Georgy
+  Inc had a manually-created lunch (12-3) + dinner (5-9) two-shift
+  setup, with a dead 3-5pm gap and 11am hours_json open never reaching
+  the booking grid. Collapsed to a single `service` shift covering
+  11:00-22:00 (matches `restaurants.hours_json`), turn=90. The
+  SettingsPage "Save Hours" flow already creates one shift per day
+  matching hours_json — only existing manual setups drift. If a future
+  agent finds another restaurant with the same drift, the fix is the
+  same: deactivate extra shifts and broaden one to cover the
+  hours_json window.
+- **Single-reservation-lookup deterministic handler (2026-05-10).** Added
+  to `cenaiva-orchestrate/index.ts` `buildPreflightResponse` BEFORE the
+  list handler. Catches "what's my most recent / latest / newest / last
+  / next / first / current / active reservation" — singular queries
+  expecting ONE row, not a list. Distinguishes 4 kinds: `most_recent`
+  (prefer future-active, then past-active, then most recent cancelled);
+  `next` (future-active only); `last_past` (past-active or past-cancelled);
+  `first` (oldest non-cancelled). Sub-1s, no LLM round-trip. Without
+  this, "what's my most recent reservation" hit the list handler and
+  returned 3 rows + "And N more" — burying the answer. Promotes the
+  picked row's `reservation_id` / `restaurant_id` / etc. into
+  `booking_state` so the next turn ("change to 8pm" / "cancel it")
+  works without re-naming the booking.
+- **Restaurant fact-lookup widened to about/kind/type/drinks/reviews/
+  events/price/vibe (2026-05-10).** The deterministic fact-lookup
+  handler now covers:
+  - "tell me about X" / "what is X about" / "what's X like" — describes
+    the row using cuisine + business_type + price tier
+  - "what kind/type/sort of food/place is X" — answers from `cuisine_type`
+    + `business_type`
+  - "what drinks does X serve" — answers if `business_type` is bar /
+    brewery / pub / lounge / izakaya, otherwise defers to menu
+  - "is X expensive / cheap / pricey / how much" — uses `price_range`
+    column (1-4 → budget-friendly / moderate / upscale / fine dining)
+  - "is X a cafe / bar / brewery / pub / bistro / lounge" — yes/no on
+    `business_type` match
+  - "is X fancy / romantic / quiet / cozy / casual / kid-friendly /
+    family / good for a date" — defers to vibe-judgment; surfaces
+    cuisine + price tier as context
+  - "any reviews of X" — gracefully says reviews aren't surfaced
+  - "any events at X" — defers to restaurant phone
+  Pattern order matters: specific patterns FIRST, catch-all
+  `what {city|state|...} {of|...} X` LAST. Otherwise the catch-all
+  swallows "what kind of place is X" with name="place is X" — bad
+  fuzzy match → falls through to LLM. Same for "what type of food
+  does X serve". Restaurant SELECT now includes `price_range` (was
+  missing earlier so price answers always returned "no tier on file").
+- **Global-question handlers — closest / best / promotions / events
+  (2026-05-10).** New `globalAnswerCandidate` block in
+  `buildPreflightResponse` (after fact-lookup, before small-prompt
+  short-circuit) catches questions NOT tied to a specific restaurant:
+  - "closest / nearest / near me / nearby / walking distance" → asks
+    for city/area
+  - "best / top / popular / favorite cuisines / foods" → asks for
+    mood instead
+  - "best / top / popular restaurants" → asks for city + cuisine
+  - "promotions / deals / discounts / specials / offers / coupons"
+    → routes to `/deals` page
+  - "events / live music / trivia (without a restaurant name)" → says
+    not tracked, redirects to booking
+  All sub-1s, no LLM. Without these, the LLM either declined ("I'm
+  not sure...") or wandered into a tool loop.
+- **Cancel + modify deterministic verbs widened (2026-05-10).** The
+  deterministic cancel branch now matches `(cancel|scrap|drop|kill|
+  nuke|trash|abort|nix|delete|remove)` + a noun, OR "I need/want/
+  wanna/gotta to cancel" without a noun, OR bare "cancel". The modify
+  branch first regex matches `(change|move|switch|update|make it|add|
+  reschedule)` and the time keyword regex was rewritten as
+  `\b\d{1,2}(:\d{2})?\s*(am|pm|...)?\b` (the old `\d{1,2}:?\d{0,2}`
+  required a `\b` after digits and so didn't match "7pm" — `\b`
+  doesn't fire between a digit and a letter). `bookingProcessIntent`
+  fallback regex was extended to include `switch|update|reschedule|
+  make it|drop|scrap|kill` and a standalone `\d+(am|pm)` pattern so
+  these phrases reach the orchestrator preflight instead of the
+  small-prompt LLM. `parseTime` now also accepts `to/for/by` as a
+  preposition before `noon`/`midnight`/etc, and matches bare
+  `noon`/`midnight` anywhere — so "change it to noon" works.
+- **`reservation_tables_no_overlap`-aware modify routing.** Modify
+  flows route through `modify_reservation_slot` (not direct UPDATE)
+  per the existing CLAUDE.md hard rule. The deterministic handler
+  sets up `pending_action.type = "modify_reservation"` with the new
+  slot, and `confirmPendingAction` calls the RPC on user "yes". Same
+  pattern as cancel.
 - **Cenaiva voice persona is now warm + varied (2026-05-10).** The
   small-prompt edge function and the orchestrator's internal small-prompt
   path were both rewritten with a human persona ("You are Cenaiva — a warm,
@@ -412,6 +757,22 @@ edits here propagate to both agents in one step.
   through the RPCs so users see `P0006 / diner_double_book` instead.
 - Never cache booking writes. The atomic RPC + exclusion constraint own
   correctness; cached writes break that.
+- Never re-introduce `COALESCE(s.max_covers, 100)` in any reservation
+  RPC. NULL means "no cap" (2026-05-10 cover-cap removal). Gate the
+  cover-cap check on `IF v_max_covers IS NOT NULL THEN ...`. The
+  default-to-100 pattern silently throttled real restaurants; reverting
+  it would re-introduce that bug.
+- Never insert into `reservation_deposit_payments` outside of the
+  `prepare-deposit` edge function. The table has RLS that allows only
+  service-role writes — direct client inserts will be rejected. The
+  settle trigger that flips reservations to 'confirmed' fires only on
+  rows it manages, so writing rows from random places breaks the state
+  machine.
+- Never deploy `confirm-deposit-stub` to production without flipping
+  `DEPOSIT_STRIPE_STUB_MODE=false`. The stub flips deposits to 'charged'
+  with no real money movement — leaving it on in prod would mean every
+  customer gets a free deposit waive. Search `// STRIPE STUB` to find
+  every spot the future real-Stripe wiring must replace.
 - Never create migrations or run `DROP` / `DELETE` on the live project
   without explicit instruction.
 - Never run `tmp-e2e/concurrent-booking.mjs` unmodified — it jams the DB
@@ -471,6 +832,33 @@ problems came back into the codebase.
 
 ## Existing patterns to reuse
 
+- **Multi-table combiner:** `find_available_table_group(uuid, timestamptz,
+  integer, integer, uuid, double precision)` — recursive CTE up to 16
+  tables. Strategy: (1) smallest single table that fits, (2) adjacent
+  same-section combo, (3) any-combo fallback. Early-returns
+  `ARRAY[]::uuid[]` when party_size > `restaurant_floor_capacity()`.
+  Captured in `20260510000100_capture_find_available_table_group.sql`.
+  Helpers: `restaurant_floor_capacity(uuid)` (sum of active table
+  capacities) and `restaurant_turn_time_minutes(uuid, uuid)`
+  (settings_json.turnTimeMinutes → shift.turn_time_minutes → 90,
+  clamped [15, 480]).
+- **Deposit policy:** `restaurants.deposit_tiers` JSONB array of
+  `{min_party_size, amount_per_person_cents}` + `compute_deposit_for_party
+  (uuid, integer) RETURNS integer` (highest tier wins, NOT additive).
+  `reservation_deposit_payments` (RLS: owner-staff + diner read; service-
+  role write). Settle trigger flips reservation to 'confirmed' once
+  every payment row is 'charged'. Owner UI:
+  `<DepositPolicyEditor>` at
+  `apps/web/src/components/dashboard/DepositPolicyEditor.tsx`. Customer
+  UI: deposit appears as a line item on the existing checkout step in
+  `RestaurantPublicPage.tsx` (no separate step) — `previewDepositDollars`
+  is added to `totalNow` and surfaced in the order summary as
+  `Deposit (N × $X.XX)`. The menu step's "Continue" button label
+  becomes "Continue to checkout · Deposit $X" when a deposit applies,
+  so deposit-required parties always reach checkout. After
+  `create-public-booking` returns `deposit_required`,
+  `handlePlaceOrder` calls `prepare-deposit` then `confirm-deposit-stub`
+  before transitioning to `step === "confirmed"`.
 - **Read cache:** `availability_cache` UNLOGGED table +
   `get_available_slots_cached` (20 s TTL, opportunistic 5 min prune).
 - **Batched listing:** `get_available_slots_for_restaurants_compact` —

@@ -16,9 +16,11 @@ const CITY_LOOKUP_PATTERN =
 // by name. The orchestrator can resolve these via search; the small-prompt
 // classifier shouldn't claim them as off-topic.
 const SPECIFIC_PLACE_LOOKUP_PATTERN =
-  /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a|an|the|in|on|at|near|open|closed|booked|busy|expensive|cheap|good|bad|nice|popular|halal|vegan|kosher)\b/i;
+  /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a|an|the|in|on|at|near|open|closed|booked|busy|expensive|cheap|pricey|good|bad|nice|popular|halal|vegan|kosher|fancy|casual|romantic|kid|family|quiet|loud|trendy|hip|cozy|date|kid-friendly|family-friendly|wheelchair|accessible|outdoor|indoor|patio|booth)\b/i;
 const SPECIFIC_PLACE_FACT_PATTERN =
-  /\bwhere(?:'?s|\s+(?:is|are|can\s+(?:i|we)\s+find))\b|\bwhat\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|time|price)\b|\bhow\s+(?:much|expensive|busy|popular|far|late|early|long|good)\b|\bdoes\s+\w+(?:\s+\w+){0,3}\s+(?:have|serve|allow|take|do|offer)\b|\btell\s+me\s+about\b/i;
+  /\bwhere(?:'?s|\s+(?:is|are|can\s+(?:i|we)\s+find))\b|\bwhat\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|time|price|menu|drinks?|about|kind|type|sort|reviews?|rating)\b|\bhow\s+(?:much|expensive|cheap|pricey|busy|popular|far|late|early|long|good|fancy|casual)\b|\bdoes\s+\w+(?:\s+\w+){0,3}\s+(?:have|serve|allow|take|do|offer)\b|\btell\s+me\s+about\b|\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like|known for|famous for|all about)\b|\b(?:reviews?|ratings?)\s+(?:for|of|on|about|at)\s+\w+/i;
+const GLOBAL_DISCOVERY_QUERY_PATTERN =
+  /\b(?:closest|nearest|near me|nearby|close by|around me|around here|walking distance)\b|\b(?:best|top|popular|favorite|favourite)\s+(?:cuisines?|foods?|restaurants?|spots?|places?|dishes?)\b|\b(?:promotions?|deals?|discounts?|specials?|offers?|coupons?|happy hour)\b|\b(?:events?|happenings?|live music|trivia)\b/i;
 
 const RESTAURANT_POLICY_PATTERN =
   /\b(bring (?:a )?(?:dog|pet)|allow kids|kids allowed|parking|vegan|wheelchair|accessible|accessibility|outdoor seating|sit at the bar|birthday cake|split bills?|dress code|halal|gluten[- ]free|booth|allerg(?:y|ies)|high chairs?|loud inside|bring balloons?|no[- ]shows?|deposit|change the booking later|request outdoor|request a booth)\b/i;
@@ -27,7 +29,7 @@ const BOOKING_ADJACENT_PATTERN =
   /\b(somewhere|something nice|usual|you know what i mean|make it good|whatever works|surprise me|you choose|for us|few people|vibes?|main character|lighting|outfit|bread|fries|mocktails?|cocktails?|healthy|spicy|dessert|burgers?|pasta|seafood|vegetarian|steak|family|parents|proposal|anniversary|birthday|date|work dinner|team|party|private|quiet|calm|romantic|cheap|budget|budget friendly|fancy|downtown|takeout|tonight|tomorrow|friday|saturday|sunday|next weekend|after work|before the movie|sunset|in an hour|late|early|earlier|later|indoors?|closest|near me)\b/i;
 
 const BOOKING_PROCESS_DETAIL_PATTERN =
-  /\b(reservations?|bookings?|booked|confirm|confirmed|confirmation|details|cancel|change|edit|move|table|guests?|people|party size|slot|availability|available|openings?|upcoming|past|cancelled|menu|pre[- ]?order|prepay|order|checkout|pay|payment|card|deposit|refund|fee|tax|tip|directions?|address|phone|contact|hours?|parking|dress code|outdoor|indoor|booth|bar seating|birthday cake|high chair|no show|no-show|show up|are we good|show them this|need id|arrive early|hold the table|confirmation number|booking summary|where is it|remind me)\b/i;
+  /\b(reservations?|bookings?|booked|confirm|confirmed|confirmation|details|cancel|change|modify|edit|move|switch|update|reschedule|push|bump|shift|adjust|make it|drop|scrap|kill|table|guests?|people|party size|slot|availability|available|openings?|upcoming|past|cancelled|menu|pre[- ]?order|prepay|order|checkout|pay|payment|card|deposit|refund|fee|tax|tip|directions?|address|phone|contact|hours?|parking|dress code|outdoor|indoor|booth|bar seating|birthday cake|high chair|no show|no-show|show up|are we good|show them this|need id|arrive early|hold the table|confirmation number|booking summary|where is it|remind me)\b/i;
 
 const CUISINE_OR_FOOD_PATTERN =
   /\b(italian|french|european|europeean|europian|japanese|sushi|thai|spanish|greek|mediterranean|steakhouse|egyptian|asian|burgers?|mocktails?|cocktails?|vegetarian|seafood|steak|healthy|spicy|dessert)\b/i;
@@ -75,6 +77,9 @@ export function isCenaivaProcessPrompt(transcript: string): boolean {
     SPECIFIC_PLACE_LOOKUP_PATTERN.test(normalized) ||
     // "where is X", "what city/cuisine/hours", "does X have/serve" — restaurant fact lookups.
     SPECIFIC_PLACE_FACT_PATTERN.test(normalized) ||
+    // "closest restaurants", "best cuisines", "promotions", "events" — global discovery questions
+    // that need the orchestrator's deterministic global-question handlers.
+    GLOBAL_DISCOVERY_QUERY_PATTERN.test(normalized) ||
     /\b(can you handle it|not too late|for a few people|for us|i don'?t know yet|changed my mind|start over|cancel that|different restaurant|switch to|closer|earlier|later|make it cheaper|make it fancier)\b/i.test(
       normalized,
     )

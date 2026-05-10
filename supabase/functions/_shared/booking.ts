@@ -10,6 +10,10 @@ import {
   DEFAULT_TAX_RATE_FALLBACK,
 } from "./booking-defaults.ts";
 import { makeConfirmationCode } from "./confirmation-code.ts";
+import {
+  formatReservationDate,
+  sendReservationNotification,
+} from "./reservation-notifications.ts";
 
 export interface BookingItem {
   menu_item_id: string;
@@ -367,6 +371,47 @@ export async function completeBooking(
       }));
       await supabaseAdmin.from("order_items").insert(orderItems);
     }
+  }
+
+  // Send SMS/email confirmation. Mirrors create-public-booking's notify
+  // behavior so voice bookings (which call completeBooking via the
+  // orchestrator) reach the user the same way as web/public bookings did.
+  // Without this, voice bookings silently skipped notification because
+  // create-public-booking's inline Twilio call was never reached.
+  try {
+    const { data: restaurantForNotify } = await supabaseAdmin
+      .from("restaurants")
+      .select("name, slug, timezone")
+      .eq("id", restaurant_id)
+      .single();
+    const restaurantName = restaurantForNotify?.name ?? "your restaurant";
+    const restaurantSlug = restaurantForNotify?.slug ?? null;
+    const tz = restaurantForNotify?.timezone || DEFAULT_TIMEZONE;
+    const reservationDateLabel = formatReservationDate(new Date(date_time), tz);
+    const manageLink = restaurantSlug && persistedConfirmationCode
+      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(persistedConfirmationCode)}`
+      : null;
+    const guestNameForBody = guestFields.full_name || "there";
+    const confirmationBody =
+      `Hi ${guestNameForBody}, your table at ${restaurantName} is booked for ${party_size} ` +
+      `${party_size === 1 ? "guest" : "guests"} on ${reservationDateLabel}. ` +
+      `Confirmation code: ${persistedConfirmationCode}.` +
+      (manageLink ? ` Manage: ${manageLink}` : "");
+    await sendReservationNotification({
+      supabase: supabaseAdmin,
+      guestId: guestId!,
+      restaurantId: restaurant_id,
+      reservationId: reservationId,
+      type: "reservation_confirmation",
+      email: guestFields.email || null,
+      phone: guestFields.phone || null,
+      subject: `Your reservation at ${restaurantName}`,
+      body: confirmationBody,
+    });
+  } catch (notifyErr) {
+    // Notification failure must NOT block the booking response. The
+    // reservation is already persisted; we just log the failure.
+    console.error("[completeBooking] SMS/email notify failed:", notifyErr);
   }
 
   return {

@@ -70,7 +70,7 @@ export function ModifyBookingFields({
 
   // Pull floor capacity to cap the party-size picker.
   const { floorCapacity } = useAvailability();
-  const maxPartySize = Math.max(1, floorCapacity ?? 50);
+  const maxPartySize = Math.max(1, floorCapacity ?? 200);
 
   // Mirror local state up to the parent on every change.
   useEffect(() => {

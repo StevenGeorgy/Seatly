@@ -30,6 +30,10 @@ import { haversineKm as sharedHaversineKm } from "../_shared/geo.ts";
 import { UUID_RE as SHARED_UUID_RE } from "../_shared/uuid.ts";
 import { DEFAULT_CURRENCY, DEFAULT_TAX_RATE_FALLBACK } from "../_shared/booking-defaults.ts";
 import { makeConfirmationCode } from "../_shared/confirmation-code.ts";
+import {
+  formatReservationDate,
+  sendReservationNotification,
+} from "../_shared/reservation-notifications.ts";
 import { STRIPE_API_VERSION } from "../_shared/stripe.ts";
 import { USER_AGENT } from "../_shared/brand.ts";
 import {
@@ -665,22 +669,52 @@ function parsePartySize(raw: string): number | null {
     const adults = numberTokenToInt(kidsAdults[2]);
     if (adults != null && kids != null) return adults + kids;
   }
+  // "me and a friend" / "me and my wife" — must check BEFORE "just me" so
+  // "just me and a friend" doesn't fall into the solo branch.
+  if (/\b(me\s+and\s+(?:a|my)\s+(wife|husband|partner|boyfriend|girlfriend|girl|friend|kid|date|coworker|colleague|brother|sister|mom|dad|son|daughter))\b/.test(t)) return 2;
+  // "myself and one other (person)" / "me and one other"
+  if (/\b(myself|me)\s+and\s+(one|1|a|another)\s+(other|more)\b/.test(t)) return 2;
+  // "the both of us" / "both of us" / "us two"
+  if (/\b((?:the\s+)?both\s+of\s+us|us\s+two)\b/.test(t)) return 2;
+  // "me and N (others|friends|people)" → 1 + N
+  const meAndN = t.match(/\bme\s+and\s+(\d{1,3}|two|three|four|five|six|seven|eight|nine|ten)\s+(others?|friends?|people|guests?|of\s+them|of\s+my|more)\b/);
+  if (meAndN) {
+    const n = numberTokenToInt(meAndN[1]);
+    if (n != null) return n + 1;
+  }
+  // "a couple" / "couple of" / "duo" / "pair" — colloquial 2
+  if (/\b(?:a\s+)?couple(?:\s+of)?\b/.test(t) && !/\bcouple\s+of\s+(weeks?|months?|days?|hours?|years?|minutes?|times)\b/.test(t)) return 2;
+  if (/\b(a\s+(?:duo|pair)|just\s+the\s+(?:two|three|four)\s+of\s+us)\b/.test(t)) {
+    const m = t.match(/just\s+the\s+(two|three|four)/);
+    if (m) return numberTokenToInt(m[1]) ?? 2;
+    return 2;
+  }
+  // "half a dozen" / "dozen" — 6 / 12
+  if (/\bhalf\s+a\s+dozen\b/.test(t)) return 6;
+  if (/\bdozen\b/.test(t) && !/\bhalf\s+a\s+dozen\b/.test(t)) return 12;
   // "just me" / "solo" / "for one"
-  if (/\b(just\s+me|solo|alone|by\s+myself)\b/.test(t)) return 1;
-  if (/\b(me\s+and\s+my\s+(wife|husband|partner|boyfriend|girlfriend|girl|friend|kid|date))\b/.test(t)) return 2;
-  // "party of N" / "table for N" / "N people" / "N of us"
+  if (/\b(just\s+me|solo|alone|by\s+myself|for\s+one|table\s+for\s+1)\b/.test(t)) return 1;
+  // "two of us" / "couple of us" — bare "of us" without leading verb.
+  const ofUsMatch = t.match(/\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|couple|duo|pair)\s+of\s+us\b/);
+  if (ofUsMatch) {
+    const n = numberTokenToInt(ofUsMatch[1]);
+    if (n != null) return n;
+  }
+  // "party of N" / "table for N" / "N people" / "N of us" — also accept
+  // "party N" / "for N people now"
   const numMatch = t.match(
-    /\b(?:party of|table for|for|just|group of|we are|we're|make it)\s+(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|couple|duo|pair)\b/,
+    /\b(?:party of|party|table for|for|just|group of|we are|we're|make it|book for|reservation for)\s+(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a|couple|duo|pair)\b/,
   );
   if (numMatch) {
     const n = numberTokenToInt(numMatch[1]);
     if (n != null) return n;
   }
-  // "N people" / "N guests"
-  const peopleMatch = t.match(/\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(people|guests|adults|pax|persons?|of us)\b/);
+  // "N people" / "N guests" / "N ppl" / "N pax" / "N persons" — informal abbrevs
+  const peopleMatch = t.match(/\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(people|ppl|guests?|adults|pax|persons?|heads?|of us)\b/);
   if (peopleMatch) {
     const n = numberTokenToInt(peopleMatch[1]);
-    if (n != null) return n;
+    // Validate: 1-99 only. "0 people" / "100 people" → null so booking flow asks again.
+    if (n != null && n >= 1 && n <= 99) return n;
   }
   // Bare "two" / "3" when the assistant just asked party size — last resort.
   const bare = t.trim().match(/^(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/);
@@ -731,9 +765,20 @@ function parseDateInTimeZone(raw: string, timezone: string): string | null {
     return addDaysToISODate(todayIso, 1);
   }
   const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  // Common abbreviations + 3-letter forms users type/say. Mon/Tues/Wed/Weds/Thur/Thurs/Fri/Sat/Sun
+  const weekdayAliases: Record<string, string[]> = {
+    sunday: ["sun"],
+    monday: ["mon"],
+    tuesday: ["tue", "tues"],
+    wednesday: ["wed", "weds"],
+    thursday: ["thu", "thur", "thurs"],
+    friday: ["fri"],
+    saturday: ["sat"],
+  };
   const todayDow = localDayOfWeek(todayIso, timezone);
   for (let i = 0; i < 7; i++) {
-    const re = new RegExp(`\\b(?:this|next|on)?\\s*${weekdays[i]}\\b`);
+    const allForms = [weekdays[i], ...(weekdayAliases[weekdays[i]] ?? [])];
+    const re = new RegExp(`\\b(?:this|next|on)?\\s*(?:${allForms.join("|")})\\b`);
     if (re.test(t)) {
       const diff = (i - todayDow + 7) % 7 || 7;
       return addDaysToISODate(todayIso, diff);
@@ -881,11 +926,15 @@ function parseTime(raw: string): string | null {
   // "nine pm" / "seven thirty" / "noon" / "midnight"
   const word =
     t.match(
-      /\b(?:at|around|maybe|like|about|how about)\s+(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?/,
+      /\b(?:at|around|maybe|like|about|how about|to|for|by|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|today|tonight|tomorrow)\s+(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?/,
     ) ??
     t.trim().match(
       /^(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven|noon|midnight)\b\s*(thirty|fifteen|forty.?five|am|pm)?\s*(am|pm)?$/,
-    );
+    ) ??
+    // "eight pm" / "nine pm" — bare word time WITH explicit am/pm, anywhere.
+    t.match(/\b(twelve|one|two|three|four|five|six|seven|eight|nine|ten|eleven)\b\s*(thirty|fifteen|forty.?five)?\s*(am|pm)\b/) ??
+    // Bare "noon" / "midnight" anywhere — unambiguous time.
+    t.match(/\b(noon|midnight)\b/);
   if (word) {
     const h0 = TIME_WORDS[word[1]];
     if (h0 != null) {
@@ -2173,34 +2222,46 @@ function noPreferenceDiscoveryIntent(transcript: string): boolean {
 // "if personal identity/self-judgment, say you can't determine that for
 // them" rule the LLM over-generalizes to restaurant facts.
 function restaurantFactLookupIntent(transcript: string): boolean {
-  // "is X in/at/near/open/halal …" — the original v174 form.
+  // "is X in/at/near/open/halal/quiet/cozy/etc …" — restaurant-attribute Q.
   if (
-    /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a|an|the|in|on|at|near|open|closed|booked|busy|expensive|cheap|good|bad|nice|popular|halal|vegan|kosher)\b/i
+    /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a|an|the|in|on|at|near|open|closed|booked|busy|expensive|cheap|good|bad|nice|popular|halal|vegan|kosher|fancy|casual|romantic|kid|family|pricey|quiet|loud|trendy|hip|cozy|date|kid-friendly|kid friendly|family-friendly|family friendly|wheelchair|accessible|outdoor|indoor|patio|booth)\b/i
       .test(transcript)
   ) return true;
+  // "is X good for a date / for kids / for a group"
+  if (/\bis\s+\w+(?:\s+\w+){0,3}\s+good\s+for\s+(a|an|the|kids?|date|group|family|business|romantic|quiet|drinks|brunch)\b/i.test(transcript)) return true;
   // "where is X / where's X / where can I find X" — location asks.
   if (/\bwhere(?:'?s|\s+(?:is|are|can\s+(?:i|we)\s+find))\b/i.test(transcript)) return true;
-  // "what city/state/area/neighborhood/address is X in/at/located"
+  // "what city/state/area/neighborhood/address/cuisine/food/hours/price/menu/drinks/about/kind/type is X"
   if (
-    /\bwhat\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|time|price)\b/i
+    /\bwhat\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|time|price|menu|drinks?|about|kind|type|sort|reviews?|rating)\b/i
       .test(transcript)
   ) return true;
-  // "how (much|expensive|busy|popular|far) is X"
-  if (/\bhow\s+(?:much|expensive|busy|popular|far|late|early|long|good)\b/i.test(transcript)) return true;
-  // "does X (have|serve|allow|take) Y" — capability questions.
+  // "how (much|expensive|cheap|pricey|busy|popular|far|good) is X"
+  if (/\bhow\s+(?:much|expensive|cheap|pricey|busy|popular|far|late|early|long|good|fancy|casual)\b/i.test(transcript)) return true;
+  // "does X (have|serve|allow|take|offer) Y" — capability questions.
   if (/\bdoes\s+\w+(?:\s+\w+){0,3}\s+(?:have|serve|allow|take|do|offer)\b/i.test(transcript)) return true;
-  // "tell me about X / show me X's hours" — info asks tied to a restaurant context.
-  if (/\btell\s+me\s+about\b/i.test(transcript) && /\b(restaurant|cafe|bar|bistro|spot|place)\b/i.test(transcript)) return true;
+  // "tell me about X" — info asks. Used to require a category word but that
+  // dropped legitimate "tell me about georgy inc" / "tell me about mark
+  // testing" — the LLM would then say "I haven't heard of it". Now route
+  // any "tell me about X" to the deterministic handler which will resolve
+  // X against the restaurants table.
+  if (/\btell\s+me\s+about\b/i.test(transcript)) return true;
+  // "what is X about" / "what's X like" — general description asks.
+  if (/\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like|known for|famous for|all about)\b/i.test(transcript)) return true;
+  // "X reviews" / "any reviews of X" / "reviews for X"
+  if (/\b(?:reviews?|ratings?)\b/i.test(transcript) && /\b(?:for|of|on|about|at)\s+\w+/i.test(transcript)) return true;
+  // "X events" / "events at X" / "events tonight at X"
+  if (/\b(?:events?|happenings?|live music|trivia|happy hour)\b/i.test(transcript) && /\b(?:at|in|near)\s+\w+/i.test(transcript)) return true;
+  // "what's the closest restaurant" / "what's near me" / "anything close by"
+  if (/\b(?:closest|nearest|near me|nearby|close by|around me|around here|walking distance)\b/i.test(transcript)) return true;
+  // "best cuisines" / "popular cuisines" — discovery-shaped questions.
+  if (/\b(?:best|top|popular|favorite|favourite)\s+(?:cuisines?|foods?|restaurants?|spots?|places?|dishes?)\b/i.test(transcript)) return true;
+  // "promotions" / "deals" / "discounts" / "specials"
+  if (/\b(?:promotions?|deals?|discounts?|specials?|offers?|coupons?)\b/i.test(transcript)) return true;
   return false;
 }
 
 function bookingProcessIntent(transcript: string): boolean {
-  // Restaurant fact-lookup questions ("what city is X in", "where is X",
-  // "is X halal") MUST short-circuit the small-prompt classifier so they
-  // reach the FULL orchestrator system prompt and call search_restaurants.
-  // Without this early-return, "what city is X in" matches
-  // clearlySmallPromptIntent (^what... + no booking keyword) and gets
-  // rejected before restaurantFactLookupIntent below ever runs.
   if (restaurantFactLookupIntent(transcript)) return true;
   if (clearlySmallPromptIntent(transcript)) return false;
   return directBookingIntent(transcript) ||
@@ -2210,7 +2271,9 @@ function bookingProcessIntent(transcript: string): boolean {
     allergyIntent(transcript) ||
     accessibilityIntent(transcript) ||
     restaurantFactLookupIntent(transcript) ||
-    /\b(reservations?|bookings?|booked|confirm|confirmed|confirmation|details|cancel|change|edit|move|table|guests?|people|party size|date|time|slot|availability|available|openings?|upcoming|past|cancelled|menu|pre[- ]?order|prepay|order|checkout|pay|payment|card|deposit|refund|fee|tax|tip|directions?|address|phone|contact|hours?|parking|dress code|outdoor|indoor|booth|bar seating|birthday cake|high chair|no show|no-show|show up|are we good|show them this|need id|arrive early|hold the table|confirmation number|booking summary|where is it|remind me)\b/i.test(transcript);
+    /\b(reservations?|bookings?|booked|confirm|confirmed|confirmation|details|cancel|cancelled|change|modify|edit|move|switch|update|reschedule|push|bump|shift|adjust|make it|drop|scrap|kill|table|guests?|people|party size|date|time|slot|availability|available|openings?|upcoming|past|menu|pre[- ]?order|prepay|order|checkout|pay|payment|card|deposit|refund|fee|tax|tip|directions?|address|phone|contact|hours?|parking|dress code|outdoor|indoor|booth|bar seating|birthday cake|high chair|no show|no-show|show up|are we good|show them this|need id|arrive early|hold the table|confirmation number|booking summary|where is it|remind me)\b/i.test(transcript) ||
+    // Time-of-day mention with modify-friendly verbs around (switch/move/etc.)
+    /\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)\b/i.test(transcript);
 }
 
 function bookingFieldReplyIntent(
@@ -2748,6 +2811,45 @@ async function confirmPendingAction(
       });
     }
     await supabaseAdmin.rpc("release_reservation_tables", { p_reservation_id: reservationId });
+    // SMS/email cancel notification — mirrors cancel-reservation edge
+    // function. Voice cancels were silently skipping notification because
+    // the orchestrator updated reservations directly instead of going
+    // through the cancel-reservation function.
+    try {
+      const { data: cancelledRow } = await supabaseAdmin
+        .from("reservations")
+        .select(`
+          id, restaurant_id, guest_id, reserved_at, party_size, confirmation_code,
+          guests(full_name, email, phone),
+          restaurants(name, timezone)
+        `)
+        .eq("id", reservationId)
+        .maybeSingle();
+      if (cancelledRow) {
+        const guestData = (cancelledRow.guests as { full_name?: string; email?: string; phone?: string } | null) ?? {};
+        const restData = (cancelledRow.restaurants as { name?: string; timezone?: string } | null) ?? {};
+        const tz = restData.timezone || "America/Toronto";
+        const dateLabel = formatReservationDate(new Date(cancelledRow.reserved_at as string), tz);
+        const restName = restData.name || "the restaurant";
+        const cancelBody =
+          `Hi ${guestData.full_name || "there"}, your reservation at ${restName} on ${dateLabel} ` +
+          `for ${cancelledRow.party_size} ${cancelledRow.party_size === 1 ? "guest" : "guests"} ` +
+          `has been cancelled. Confirmation code: ${cancelledRow.confirmation_code}.`;
+        await sendReservationNotification({
+          supabase: supabaseAdmin,
+          guestId: (cancelledRow.guest_id as string) || "",
+          restaurantId: cancelledRow.restaurant_id as string,
+          reservationId: reservationId,
+          type: "reservation_cancellation",
+          email: guestData.email || null,
+          phone: guestData.phone || null,
+          subject: `Your reservation at ${restName} has been cancelled`,
+          body: cancelBody,
+        });
+      }
+    } catch (notifyErr) {
+      console.error("[orchestrator] cancel notify failed:", notifyErr);
+    }
     const cancelMsgs = [
       "Done — your reservation is cancelled.",
       "Cancelled. You're all set.",
@@ -2760,7 +2862,10 @@ async function confirmPendingAction(
       intent: "reservation_cancel",
       step: "done",
       nextExpectedInput: "none",
-      booking: { pending_action: null, status: "confirmed" },
+      // Reset to idle so the AssistantStore reducer clears the post_booking
+      // success card the user was looking at (the cancelled reservation
+      // shouldn't keep showing as "You're booked!").
+      booking: { pending_action: null, status: "idle" },
     });
   }
 
@@ -2849,6 +2954,47 @@ async function confirmPendingAction(
       await supabaseAdmin.from("reservations").update({ special_request: specialRequest }).eq("id", reservationId);
     }
 
+    // SMS/email modify notification — mirrors modify-reservation edge
+    // function. Voice modify was silently skipping notification because
+    // the orchestrator called modify_reservation_slot directly instead of
+    // going through the modify-reservation function.
+    try {
+      const { data: modifiedRow } = await supabaseAdmin
+        .from("reservations")
+        .select(`
+          id, restaurant_id, guest_id, reserved_at, party_size, confirmation_code,
+          guests(full_name, email, phone),
+          restaurants(name, timezone)
+        `)
+        .eq("id", reservationId)
+        .maybeSingle();
+      if (modifiedRow) {
+        const guestData = (modifiedRow.guests as { full_name?: string; email?: string; phone?: string } | null) ?? {};
+        const restData = (modifiedRow.restaurants as { name?: string; timezone?: string } | null) ?? {};
+        const tz = restData.timezone || "America/Toronto";
+        const dateLabel = formatReservationDate(new Date(modifiedRow.reserved_at as string), tz);
+        const restName = restData.name || "the restaurant";
+        const modifyBody =
+          `Hi ${guestData.full_name || "there"}, your reservation at ${restName} has been updated. ` +
+          `New time: ${dateLabel} for ${modifiedRow.party_size} ` +
+          `${modifiedRow.party_size === 1 ? "guest" : "guests"}. ` +
+          `Confirmation code: ${modifiedRow.confirmation_code}.`;
+        await sendReservationNotification({
+          supabase: supabaseAdmin,
+          guestId: (modifiedRow.guest_id as string) || "",
+          restaurantId: modifiedRow.restaurant_id as string,
+          reservationId: reservationId,
+          type: "reservation_modification",
+          email: guestData.email || null,
+          phone: guestData.phone || null,
+          subject: `Your reservation at ${restName} has been updated`,
+          body: modifyBody,
+        });
+      }
+    } catch (notifyErr) {
+      console.error("[orchestrator] modify notify failed:", notifyErr);
+    }
+
     const modifyMsgs = [
       "All set — your booking's updated.",
       "Done, the change is in.",
@@ -2911,6 +3057,128 @@ async function buildPreflightResponse(opts: {
     bookingState,
   });
   if (pendingResponse) return pendingResponse;
+
+  // Single-reservation deterministic handler — "what's my most recent
+  // reservation", "my latest booking", "my next reservation", "my last
+  // booking", "my first reservation". These are SINGULAR queries that
+  // expect ONE row, not a list. Without this they fall through to the list
+  // handler and dump up to 3 rows + "And N more" — which buries the answer
+  // and confuses the user. Sub-1s, no LLM round-trip.
+  const singleReservationKind = (() => {
+    const t = transcript.toLowerCase();
+    // Must be a question about MY reservation, singular.
+    const hasMyReservationSingular =
+      /\bmy\s+(?:most\s+recent|latest|newest|last|next|upcoming|first|earliest|oldest|current|active)\s+(?:reservation|booking|table|dinner|sitting)\b/.test(t) ||
+      /\b(?:what(?:'?s| is)|when(?:'?s| is)|where(?:'?s| is)|tell me about|show me|give me|pull up|read out)\s+my\s+(?:most\s+recent|latest|newest|last|next|upcoming|first|current|active)\s+(?:reservation|booking|table)\b/.test(t) ||
+      /\b(?:do i have|have i got)\s+(?:an?\s+)?(?:upcoming|next|active)\s+(?:reservation|booking|table)\b/.test(t);
+    if (!hasMyReservationSingular) return null;
+    if (/\b(latest|most recent|newest|recent)\b/.test(t)) return "most_recent";
+    if (/\b(next|upcoming|coming up|active|current)\b/.test(t)) return "next";
+    if (/\b(last|previous|prior|former)\b/.test(t)) return "last_past";
+    if (/\b(first|earliest|oldest)\b/.test(t)) return "first";
+    return null;
+  })();
+  if (singleReservationKind) {
+    const nowIso = new Date().toISOString();
+    const order = singleReservationKind === "first"
+      ? { col: "reserved_at", asc: true }
+      : { col: "reserved_at", asc: false };
+    let q = supabaseAdmin
+      .from("reservations")
+      .select("id, reserved_at, party_size, status, confirmation_code, restaurant_id, restaurants(id, name, city, timezone)")
+      .eq("user_profile_id", opts.userProfileId)
+      .order(order.col, { ascending: order.asc })
+      .limit(20);
+    const { data: rows } = await q;
+    const all = (rows ?? []) as Array<Record<string, unknown>>;
+    const isFutureActive = (r: Record<string, unknown>) =>
+      (r.status as string) !== "cancelled" && (r.reserved_at as string) >= nowIso;
+    const isPastActive = (r: Record<string, unknown>) =>
+      (r.status as string) !== "cancelled" && (r.reserved_at as string) < nowIso;
+    const isCancelled = (r: Record<string, unknown>) => (r.status as string) === "cancelled";
+    const pick =
+      singleReservationKind === "next"
+        ? all.filter(isFutureActive).sort((a, b) => (a.reserved_at as string).localeCompare(b.reserved_at as string))[0]
+        : singleReservationKind === "last_past"
+          ? (all.filter(isPastActive)[0] ?? all.filter((r) => isCancelled(r) && (r.reserved_at as string) < nowIso)[0])
+          : singleReservationKind === "first"
+            ? (all.filter((r) => !isCancelled(r))[0] ?? all[0])
+            : // "most_recent" / "latest" / "newest" — prefer an upcoming non-cancelled,
+              // then most-recent past non-cancelled, then most-recent cancelled (so the
+              // user still hears about a row they made even if it's cancelled).
+              (all.filter(isFutureActive).sort((a, b) => (a.reserved_at as string).localeCompare(b.reserved_at as string))[0]
+                ?? all.filter((r) => !isCancelled(r))[0]
+                ?? all[0]);
+    if (!pick) {
+      const empty =
+        singleReservationKind === "next"
+          ? "You don't have any upcoming reservations. Want to book one?"
+          : singleReservationKind === "last_past"
+            ? "I don't see any past reservations on your account."
+            : singleReservationKind === "first"
+              ? "I don't see any reservations on your account yet."
+              : "No reservations on your account yet. Want to book one?";
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: empty,
+        intent: "general_question",
+        step: "done",
+        nextExpectedInput: "none",
+      });
+    }
+    const rest = (pick.restaurants as { id?: string; name?: string; city?: string; timezone?: string } | null) ?? {};
+    const tz = rest.timezone || "UTC";
+    const dt = new Date(pick.reserved_at as string);
+    const monthDay = dt.toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" });
+    const timeLabel = dt.toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true });
+    const partyN = Number(pick.party_size as number) || null;
+    const partyLabel = partyN ? ` for ${partyN}` : "";
+    const cityLabel = rest.city ? ` in ${rest.city}` : "";
+    const statusLabel = (pick.status as string) === "cancelled"
+      ? " — but it's cancelled"
+      : isPastActive(pick) ? " — that one's already passed" : "";
+    const followups = (pick.status as string) === "cancelled" || isPastActive(pick)
+      ? [" Want to book another?", " Need to plan a new one?", " Anything I can book for you?"]
+      : [" Want to change it or cancel?", " Need to tweak anything?", " Anything you want to update?"];
+    const followup = followups[Math.floor(Math.random() * followups.length)];
+    const labelByKind: Record<string, string[]> = {
+      most_recent: ["Your most recent:", "Latest one:", "Most recent on file:"],
+      next: ["Coming up:", "Next on the books:", "You've got"],
+      last_past: ["Last past one:", "Most recent past:", "Recently you had"],
+      first: ["Your first:", "Earliest on file:"],
+    };
+    const intros = labelByKind[singleReservationKind] ?? labelByKind.most_recent;
+    const intro = intros[Math.floor(Math.random() * intros.length)];
+    const sentence = `${intro} ${rest.name ?? "a restaurant"}${cityLabel} on ${monthDay} at ${timeLabel}${partyLabel}${statusLabel}.`;
+    const firstActiveTz = tz;
+    const firstReservedAt = new Date(pick.reserved_at as string);
+    const firstDateLocal = firstReservedAt.toLocaleDateString("en-CA", { timeZone: firstActiveTz });
+    const firstTimeLocal = firstReservedAt.toLocaleTimeString("en-US", { timeZone: firstActiveTz, hour: "numeric", minute: "2-digit", hour12: true });
+    // Only promote a reservation_id into booking_state if the picked row is
+    // actually ACTIVE — promoting a cancelled rid lets the user "modify it"
+    // or "cancel it" against a row that's already cancelled, which surfaces
+    // confusing errors. For cancelled/past rows, the assistant speaks the
+    // info but leaves booking_state idle.
+    const isActive = (pick.status as string) !== "cancelled" && !isPastActive(pick);
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: sentence + followup,
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "free_text",
+      booking: isActive ? {
+        reservation_id: pick.id as string,
+        confirmation_code: pick.confirmation_code as string,
+        restaurant_id: rest.id as string,
+        restaurant_name: rest.name as string,
+        party_size: partyN,
+        date: firstDateLocal,
+        time: firstTimeLocal,
+        slot_iso: pick.reserved_at as string,
+        status: "post_booking",
+      } : { status: "idle" },
+    });
+  }
 
   // Reservation history — deterministic handler that bypasses the LLM.
   // The LLM was treating "show my reservations" as a generic discovery intent
@@ -3010,14 +3278,17 @@ async function buildPreflightResponse(opts: {
     const sentence = top.length === 1
       ? `${intro} ${top[0]}.`
       : `${intro} ${top.slice(0, -1).join(", ")} and ${top[top.length - 1]}.${more}`;
-    // Promote the first active reservation into client booking_state so the
-    // user can immediately say "modify it" / "cancel it" without naming it.
-    const firstActive = bucket.find(isFutureActive) ?? bucket[0];
-    const promotedRest = (firstActive.restaurants as { id?: string; name?: string } | null) ?? {};
-    // Project the first active reservation's date+time into client booking_state
-    // so a follow-up "change to 8:30 PM" has the existing date/shift to anchor
-    // against. Without this the modify handler asks "what date and time?".
-    const firstActiveTz = ((firstActive?.restaurants as { timezone?: string } | null) ?? {}).timezone || "UTC";
+    // Promote ONLY a future-active reservation into client booking_state so
+    // the user can say "modify it" / "cancel it" without naming it. Cancelled
+    // or past rows are NOT promoted — promoting them lets the user "modify"
+    // a cancelled rid and surfaces 23P01 / no-row errors.
+    const firstActive = bucket.find(isFutureActive) ?? null;
+    const promotedRest = firstActive
+      ? ((firstActive.restaurants as { id?: string; name?: string } | null) ?? {})
+      : {};
+    const firstActiveTz = firstActive
+      ? ((firstActive.restaurants as { timezone?: string } | null) ?? {}).timezone || "UTC"
+      : "UTC";
     const firstReservedAt = firstActive ? new Date(firstActive.reserved_at as string) : null;
     const firstDateLocal = firstReservedAt
       ? firstReservedAt.toLocaleDateString("en-CA", { timeZone: firstActiveTz })
@@ -3027,14 +3298,14 @@ async function buildPreflightResponse(opts: {
       : null;
     const followupOptions = firstActive
       ? [" Want to change it or cancel?", " Need to tweak anything?", " Want to modify or cancel?", " Anything you want to change?"]
-      : [""];
+      : [" Want to book a new one?", " Anything I can book for you?", ""];
     const followup = followupOptions[Math.floor(Math.random() * followupOptions.length)];
     return makeAssistantPayload({
       conversationId,
       spokenText: sentence + followup,
       intent: "general_question",
       step: "done",
-      nextExpectedInput: firstActive ? "free_text" : "none",
+      nextExpectedInput: firstActive ? "free_text" : "free_text",
       booking: firstActive
         ? {
             reservation_id: firstActive.id as string,
@@ -3047,7 +3318,7 @@ async function buildPreflightResponse(opts: {
             slot_iso: firstActive.reserved_at as string,
             status: "post_booking",
           }
-        : null,
+        : { status: "idle" },
     });
   }
 
@@ -3064,14 +3335,25 @@ async function buildPreflightResponse(opts: {
     //   "what city is mark testing in"        → "mark testing"
     //   "is mark testing halal"               → "mark testing"
     //   "does mark testing have outdoor"      → "mark testing"
+    // Order matters — most specific first. The catch-all "what X of/is Y"
+    // pattern is LAST so it doesn't swallow "what kind of place is X" or
+    // "what type of food does X serve" with name="place is X" / "food does X".
     const patterns: Array<RegExp> = [
-      /\bis\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:in|at|near|on|open|closed|halal|vegan|kosher|a|an|the)\b/i,
+      // Specific patterns first
+      /\bis\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:in|at|near|on|open|closed|halal|vegan|kosher|a|an|the|expensive|cheap|pricey|good|popular|busy|fancy|casual|romantic|kid|family|quiet|loud|trendy|hip|cozy|date|kid-friendly|family-friendly|wheelchair|accessible|outdoor|indoor|patio|booth)\b/i,
+      // "is X good for {kids|date|group|...}"
+      /\bis\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+good\s+for\b/i,
       /\bwhere(?:'?s|\s+is|\s+are)\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s+located)?\s*\??\s*$/i,
-      /\bwhat(?:'?s)?\s+(?:city|state|area|neighborhood|address|cuisine|food|type|kind|hours|phone|number|price|menu)(?:\s+(?:of|at|for|is|are|does))?\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s+(?:in|at|have|serve|of|like))?\s*\??\s*$/i,
-      /\b(?:what|how)\s+(?:kind|type)\s+of\s+(?:food|cuisine|place)\s+is\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      /\b(?:what|how)\s+(?:kind|type|sort)\s+of\s+(?:food|cuisine|place|spot|drinks?|menu|vibe)\s+(?:is|does)\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s+(?:serve|offer|have))?\s*\??\s*$/i,
       /\bdoes\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:have|serve|allow|take|offer)\b/i,
       /\bcuisine\s+(?:does|is)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:serve|offer|do)\b/i,
-      /\btell\s+me\s+about\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s|$)/i,
+      /\btell\s+me\s+about\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      /\bwhat(?:'?s| is)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:about|like|known for|famous for|all about)\b/i,
+      /\b(?:reviews?|ratings?)\s+(?:for|of|on|about|at)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      /\bhow\s+(?:expensive|cheap|pricey|busy|popular|good|fancy|casual)\s+is\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      /\bevents?\s+(?:at|in|near)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // CATCH-ALL last
+      /\bwhat(?:'?s)?\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating)(?:\s+(?:of|at|for|is|are|does))?\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s+(?:in|at|have|serve|of|like))?\s*\??\s*$/i,
     ];
     for (const re of patterns) {
       const m = transcript.match(re);
@@ -3086,7 +3368,7 @@ async function buildPreflightResponse(opts: {
     // for the common phonetic mishears ("mark testing" / "marc tessting").
     const { data: matches } = await supabaseAdmin
       .from("restaurants")
-      .select("id, name, city, business_type, cuisine_type, hours_json, address, phone")
+      .select("id, name, city, business_type, cuisine_type, hours_json, address, phone, price_range")
       .eq("is_active", true)
       .ilike("name", `%${cleanName.split(" ")[0]}%`)
       .limit(8);
@@ -3103,9 +3385,28 @@ async function buildPreflightResponse(opts: {
       const restCuisine = (best.cuisine_type as string | null) ?? "";
       const restType = (best.business_type as string | null) ?? "";
       const restAddr = (best.address as string | null) ?? "";
+      const restPhone = (best.phone as string | null) ?? "";
+      const restPriceRaw = (best as Record<string, unknown>).price_range;
+      const restPrice = typeof restPriceRaw === "number" ? restPriceRaw : null;
+      const priceLabel = restPrice === 1
+        ? "budget-friendly ($)"
+        : restPrice === 2
+          ? "moderate ($$)"
+          : restPrice === 3
+            ? "upscale ($$$)"
+            : restPrice === 4
+              ? "fine dining ($$$$)"
+              : null;
       let answer = "";
       // "is X in {city}" — yes/no on city match
       const cityAskMatch = transcript.match(/\bis\s+[a-z][a-z0-9'’\s&]{1,40}?\s+in\s+([a-z][a-z0-9\-\s]{2,30}?)\??\s*$/i);
+      const askingPrice = /\b(expensive|cheap|pricey|price|cost|how much|affordable|budget)\b/i.test(transcript);
+      const askingDrinks = /\b(drinks?|alcohol|wine|beer|cocktail|bar)\b/i.test(transcript) && !/\bbar\s+seating\b/i.test(transcript);
+      const askingMenu = /\b(menu|dishes?|what do they serve|what can i (?:eat|get|order))\b/i.test(transcript);
+      const askingReviews = /\b(reviews?|ratings?|stars?|how (?:many )?stars)\b/i.test(transcript);
+      const askingEvents = /\b(events?|happenings?|live music|trivia|happy hour|specials? tonight)\b/i.test(transcript);
+      const askingAbout = /\b(?:tell me about|what(?:'?s| is) it about|what(?:'?s| is) \w+(?:\s+\w+){0,3} about|what(?:'?s| is) \w+(?:\s+\w+){0,3} like|known for|famous for|all about)\b/i.test(transcript);
+      const askingKindOfPlace = /\b(?:what|how)\s+(?:kind|type|sort)\s+of\s+(?:food|cuisine|place|spot|vibe)\b/i.test(transcript);
       if (cityAskMatch && cityAskMatch[1]) {
         const askedCity = cityAskMatch[1].trim().toLowerCase();
         const actualCity = restCity.toLowerCase();
@@ -3117,11 +3418,56 @@ async function buildPreflightResponse(opts: {
           answer = `I don't have a city on file for ${restName}. Want me to check availability anyway?`;
         }
       } else if (/\bhalal\b/i.test(transcript)) {
-        // halal certification not in DB — be honest
-        answer = `I don't have halal certification details on file for ${restName}. You'd want to call ahead${best.phone ? ` — they're at ${best.phone}` : ""}. Want to book anyway?`;
+        answer = `I don't have halal certification details on file for ${restName}. You'd want to call ahead${restPhone ? ` — they're at ${restPhone}` : ""}. Want to book anyway?`;
       } else if (/\bvegan\b/i.test(transcript)) {
         answer = `Vegan options aren't tracked on the row for ${restName}. Worth a call to confirm. Want to book anyway?`;
-      } else if (/\bwhere(?:'?s|\s+is)\b|\bwhat\s+city\s+is\b/i.test(transcript)) {
+      } else if (/\bkosher\b/i.test(transcript)) {
+        answer = `I don't have kosher certification on file for ${restName}. Worth a call${restPhone ? ` — ${restPhone}` : ""}. Want to book anyway?`;
+      } else if (askingReviews) {
+        answer = `Reviews aren't surfaced in our system yet — I focus on availability and bookings. Want me to grab you a table at ${restName}?`;
+      } else if (askingEvents) {
+        answer = `Live events aren't in the row for ${restName}. The restaurant's their best source — ${restPhone || "give them a call"}. Want a table?`;
+      } else if (/\bis\s+\w+(?:\s+\w+){0,3}\s+a\s+(cafe|coffee shop|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse|diner)\b/i.test(transcript)) {
+        // "is X a {type}" — venue-style yes/no. Runs BEFORE drinks check so
+        // "is georgy inc a bar" doesn't get hijacked by `bar` matching the
+        // drinks regex.
+        const askedType = transcript.match(/\bis\s+\w+(?:\s+\w+){0,3}\s+a\s+(cafe|coffee shop|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse|diner)\b/i)![1].toLowerCase();
+        const actualType = (restType || "").toLowerCase();
+        if (actualType && actualType.includes(askedType)) {
+          answer = `Yep, ${restName} is a ${restType.toLowerCase()}${restCuisine ? ` — ${restCuisine}` : ""}. Want a seat?`;
+        } else if (actualType) {
+          answer = `Actually, ${restName} is a ${restType.toLowerCase()}${restCuisine ? ` (${restCuisine})` : ""}, not a ${askedType}. Want a table anyway?`;
+        } else {
+          answer = `I don't have a venue-style tagged on ${restName}. ${restCuisine ? `Cuisine is ${restCuisine}. ` : ""}Want to book?`;
+        }
+      } else if (/\bis\s+\w+(?:\s+\w+){0,3}\s+good\s+for\s+(a|an|the|kids?|date|group|family|business|romantic|quiet|drinks|brunch)\b/i.test(transcript)) {
+        // "is X good for a date / for kids / for a group" — recommendation question
+        const askedFor = transcript.match(/\bis\s+\w+(?:\s+\w+){0,3}\s+good\s+for\s+(?:a |an |the )?(\w+)/i)![1].toLowerCase();
+        answer = `${restName} is ${restCuisine || "on the list"}${restType ? ` (${restType})` : ""}${priceLabel ? `, ${priceLabel}` : ""} — whether it's right for ${askedFor === "a" ? "that" : askedFor} is a judgment call. Want a table?`;
+      } else if (/\bis\s+\w+(?:\s+\w+){0,3}\s+(quiet|loud|trendy|hip|cozy|fancy|romantic|casual|busy|popular|kid|family|date)\b/i.test(transcript) && !/\bdate\s+(?:and|or)\s+time\b/i.test(transcript)) {
+        // "is X fancy/romantic/quiet/etc" — vibe Q
+        const askedVibe = transcript.match(/\bis\s+\w+(?:\s+\w+){0,3}\s+(quiet|loud|trendy|hip|cozy|fancy|romantic|casual|busy|popular|kid|family|date)\b/i)![1].toLowerCase();
+        const cuisineBit = restCuisine ? ` (${restCuisine})` : "";
+        if (priceLabel) {
+          answer = `${restName} is ${priceLabel}${cuisineBit} — vibe is yours to judge once you're there. Want a table?`;
+        } else {
+          answer = `Vibe-wise I don't have ${askedVibe} tagged on ${restName} — worth a peek at photos. Want a table?`;
+        }
+      } else if (askingPrice) {
+        if (priceLabel) {
+          answer = `${restName} is ${priceLabel}${restCuisine ? ` — ${restCuisine}` : ""}. Want a table?`;
+        } else {
+          answer = `I don't have a price tier on file for ${restName} — the menu's the best source. Want to peek at it or just book?`;
+        }
+      } else if (askingDrinks) {
+        if (restType && /bar|brewery|brewpub|pub|lounge|izakaya/i.test(restType)) {
+          answer = `${restName} is a ${restType.toLowerCase()} — full bar. Want a seat?`;
+        } else {
+          answer = `Drinks-wise I don't have the menu pulled up for ${restName}. Want to peek at the menu or just book?`;
+        }
+      } else if (askingMenu) {
+        answer = `I can pull up the menu for ${restName} — want me to or just book a table?`;
+      } else if (/\bwhere(?:'?s|\s+is)\b|\bwhat\s+(?:city|state|area|address|neighborhood)\s+is\b/i.test(transcript)) {
         if (restCity) {
           answer = restAddr
             ? `${restName} is in ${restCity} — ${restAddr}. Want to book?`
@@ -3131,13 +3477,27 @@ async function buildPreflightResponse(opts: {
         }
       } else if (/\bopen\b|\bhours\b/i.test(transcript)) {
         answer = `I'd need to pull up live hours for ${restName} — want me to check availability for a specific date?`;
-      } else if (/\bcuisine\b|\bfood\b|\bwhat (?:kind|type)\b/i.test(transcript)) {
-        answer = restCuisine
-          ? `${restName} is ${restCuisine}${restType ? ` (${restType})` : ""}. Want a table?`
-          : `I don't have a cuisine tag for ${restName}. Want to book anyway?`;
+      } else if (askingAbout) {
+        // Generic "tell me about X" / "what's X about" / "what's X like" — describe the row.
+        const bits: string[] = [];
+        if (restCuisine) bits.push(restCuisine);
+        if (restType) bits.push(`(${restType})`);
+        const cityBit = restCity ? ` in ${restCity}` : "";
+        const desc = bits.length ? bits.join(" ") : "a restaurant";
+        answer = `${restName}${cityBit} is ${desc}${priceLabel ? `, ${priceLabel}` : ""}. Want me to check availability?`;
+      } else if (askingKindOfPlace || /\bcuisine\b|\bfood\b|\bwhat (?:kind|type|sort)\b/i.test(transcript)) {
+        if (restCuisine || restType) {
+          answer = restCuisine && restType
+            ? `${restName} is ${restCuisine} (${restType}). Want a table?`
+            : restCuisine
+              ? `${restName} is ${restCuisine}. Want a table?`
+              : `${restName} is a ${restType.toLowerCase()}. Want a table?`;
+        } else {
+          answer = `I don't have a cuisine tag for ${restName}. Want to book anyway?`;
+        }
       } else if (/\bdoes\s+\w+(?:\s+\w+){0,3}\s+(?:have|serve|offer|take)\b/i.test(transcript)) {
         // generic "does X have/serve" — defer
-        answer = `I don't have that detail on the row for ${restName}. You'd want to call to confirm. Want to book anyway?`;
+        answer = `I don't have that detail on the row for ${restName}. You'd want to call to confirm${restPhone ? ` — they're at ${restPhone}` : ""}. Want to book anyway?`;
       }
       if (answer) {
         return makeAssistantPayload({
@@ -3163,6 +3523,54 @@ async function buildPreflightResponse(opts: {
         });
       }
     }
+  }
+
+  // Global question handlers — questions NOT tied to a specific restaurant.
+  // Promotions, deals, closest-to-me, best cuisines, etc. Sub-1s, no LLM.
+  // These short-circuit before the small-prompt would catch them and return
+  // a vague "I'm not sure" answer.
+  const globalAnswerCandidate = (() => {
+    const t = transcript.toLowerCase();
+    // "what's the closest restaurant to me" / "anything nearby" / "near me"
+    if (/\b(closest|nearest|near me|nearby|close by|around me|around here|walking distance)\b/.test(t) &&
+        !/\b(yes|no|book|cancel|change|modify)\b/.test(t)) {
+      const pickFrom = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)];
+      return pickFrom([
+        "I can show you what's close once I know your area — what city or neighborhood are you in?",
+        "Tell me a city or neighborhood and I'll surface the closest spots.",
+        "Drop me a city or area name and I'll pull what's near you.",
+      ]);
+    }
+    // "best cuisines" / "what cuisines are popular" / "best food in toronto"
+    if (/\b(best|top|popular|favorite|favourite)\s+(?:cuisines?|foods?)\b/.test(t)) {
+      return "I don't rank cuisines globally — what kind of food are you in the mood for? I can surface options.";
+    }
+    // "what restaurants are popular" / "best restaurants" / "top restaurants"
+    if (/\b(best|top|popular|trending|hottest|hyped)\s+(?:restaurants?|spots?|places?)\b/.test(t)) {
+      return "I can surface popular spots — what city, and any cuisine in mind?";
+    }
+    // "promotions / deals / discounts / specials / offers"
+    if (/\b(promotions?|deals?|discounts?|specials?|offers?|coupons?|happy hour)\b/.test(t)) {
+      return "Deals are on the Deals page in the app — I can also book you straight in. What spot are you eyeing?";
+    }
+    // "any events tonight" / "what's happening" — general events
+    if (/\b(events?|happenings?|live music|trivia)\b/.test(t) && !/\b(at|in|near)\s+\w+/.test(t)) {
+      return "Events aren't tracked centrally yet. I focus on getting you a great table — anywhere on your mind?";
+    }
+    return null;
+  })();
+  if (globalAnswerCandidate) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: globalAnswerCandidate,
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "free_text",
+      // Reset booking back to idle so the prior post_booking success card
+      // doesn't stick around for unrelated questions ("what's the closest
+      // restaurant" after just viewing your latest reservation).
+      booking: { status: "idle" },
+    });
   }
 
   if (clearlySmallPromptIntent(transcript)) return null;
@@ -3563,7 +3971,12 @@ async function buildPreflightResponse(opts: {
     });
   }
 
-  if (/\bcancel\b/i.test(transcript) && /\b(booking|reservation|table|it)\b/i.test(transcript)) {
+  if (
+    (/\b(cancel|scrap|drop|kill|nuke|trash|abort|nix|delete|remove)\b/i.test(transcript) &&
+      /\b(booking|reservation|table|it|that|one)\b/i.test(transcript)) ||
+    /\bi (?:need|want|wanna|gotta|have)\s+to\s+cancel\b/i.test(transcript) ||
+    /^cancel\.?$/i.test(transcript.trim())
+  ) {
     const summary = reservationId
       ? `Just confirming: cancel your reservation at ${currentRestaurantName}?`
       : "I can help cancel, but I need the reservation details first.";
@@ -3583,8 +3996,73 @@ async function buildPreflightResponse(opts: {
     });
   }
 
-  if (/\b(change|move|switch|update|make it|add)\b/i.test(transcript) &&
-    /\b(time|tomorrow|today|friday|saturday|sunday|monday|tuesday|wednesday|thursday|\d{1,2}:?\d{0,2}|people|guests?|outdoor|patio|note|birthday)\b/i.test(transcript) &&
+  // Modify/cancel verb with NO active reservation in booking_state — happens
+  // when the user just heard "Most recent on file: X — but it's cancelled"
+  // and says "modify it". Without this guard, the request falls through to
+  // the LLM tool flow which responds with the generic "What restaurant or
+  // area should I book?" — confusing because the user clearly meant to act
+  // on the (cancelled) reservation they just heard about.
+  if (
+    !reservationId && !currentRestaurantId &&
+    /\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript) &&
+    /\b(it|that|that one|the booking|the reservation)\b/i.test(transcript)
+  ) {
+    // Check if the user has any active future reservation we can offer.
+    const { data: activeRows } = await supabaseAdmin
+      .from("reservations")
+      .select("id, reserved_at, restaurant_id, restaurants(name)")
+      .eq("user_profile_id", opts.userProfileId)
+      .neq("status", "cancelled")
+      .neq("status", "no_show")
+      .gte("reserved_at", new Date().toISOString())
+      .order("reserved_at", { ascending: true })
+      .limit(3);
+    const active = (activeRows ?? []) as Array<Record<string, unknown>>;
+    if (active.length === 0) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "You don't have any active reservations to change. Want to book a new one?",
+        intent: "general_question",
+        step: "done",
+        nextExpectedInput: "free_text",
+        booking: { status: "idle" },
+      });
+    }
+    if (active.length === 1) {
+      // Promote the only active row so the next turn can work.
+      const r = active[0];
+      const rest = (r.restaurants as { name?: string } | null) ?? {};
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `Did you mean your ${rest.name ?? "upcoming"} booking? Just say "modify" or "cancel" again.`,
+        intent: "general_question",
+        step: "done",
+        nextExpectedInput: "free_text",
+        booking: {
+          reservation_id: r.id as string,
+          restaurant_id: r.restaurant_id as string,
+          restaurant_name: rest.name as string,
+          status: "post_booking",
+        },
+      });
+    }
+    // Multiple active — ask user to pick.
+    const names = active.map((r) => ((r.restaurants as { name?: string } | null) ?? {}).name).filter(Boolean);
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `You've got ${active.length} upcoming bookings — at ${names.slice(0, 2).join(" and ")}. Which one?`,
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "free_text",
+      booking: { status: "idle" },
+    });
+  }
+
+  if (/\b(change|modify|move|switch|update|make it|add|reschedule|push|bump|shift|adjust|edit)\b/i.test(transcript) &&
+    (
+      /\b(time|tomorrow|today|tonight|friday|saturday|sunday|monday|tuesday|wednesday|thursday|noon|midnight|morning|afternoon|evening|night|earlier|later|sooner|people|guests?|outdoor|patio|booth|note|birthday|anniversary|date)\b/i.test(transcript) ||
+      /\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)?\b/i.test(transcript)
+    ) &&
     (reservationId || currentRestaurantId)
   ) {
     const newDate = parseDateInTimeZone(transcript, opts.timezone) ?? date;

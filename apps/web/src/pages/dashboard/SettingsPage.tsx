@@ -20,6 +20,7 @@ import { motion } from "framer-motion";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { DashboardTimeWheelPicker } from "@/components/dashboard/DashboardTimeWheelPicker";
+import { DepositPolicyEditor } from "@/components/dashboard/DepositPolicyEditor";
 import { BusinessTypeSelect } from "@/components/restaurant/BusinessTypeSelect";
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
 import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
@@ -817,6 +818,17 @@ export default function SettingsPage() {
         ...mediaUpdates,
       })
       .eq("id", selectedRestaurant.id);
+    if (!error && normalizedTurnTime != null) {
+      // Sync turn time to every active shift so booking RPCs that read
+      // shift.turn_time_minutes directly stay aligned with the dashboard.
+      // Without this, settings_json.turnTimeMinutes would drift from
+      // shifts.turn_time_minutes (caught at Georgy Inc lunch on 2026-05-10).
+      await client
+        .from("shifts")
+        .update({ turn_time_minutes: normalizedTurnTime })
+        .eq("restaurant_id", selectedRestaurant.id)
+        .eq("is_active", true);
+    }
     setSavingRestaurant(false);
     if (error) { toast.error(t("dashboard.settings.saveFailed")); return; }
 
@@ -1108,7 +1120,7 @@ export default function SettingsPage() {
         start_time: minutesToPostgresTime(startMinutes),
         end_time: minutesToPostgresTime(endMinutes),
         slot_duration_minutes: templateShift?.slot_duration_minutes ?? 30,
-        max_covers: templateShift?.max_covers ?? 100,
+        max_covers: templateShift?.max_covers ?? null,
         turn_time_minutes: normalizedTurnTime ?? templateShift?.turn_time_minutes ?? DEFAULT_TURN_TIME_MINUTES,
         min_party_size: templateShift?.min_party_size ?? 1,
         max_party_size: templateShift?.max_party_size ?? 20,
@@ -1644,6 +1656,12 @@ export default function SettingsPage() {
                   {savingRestaurant ? t("routes.loading") : "Save changes"}
                 </Button>
               </div>
+              <DepositPolicyEditor
+                restaurantId={selectedRestaurant?.id ?? null}
+                initialTiers={selectedRestaurant?.deposit_tiers ?? null}
+                ceilingHint={restaurantSeatTotal}
+                onSaved={() => refreshRestaurants()}
+              />
               <Card>
                 <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] sm:px-7">
                   <div>

@@ -227,7 +227,7 @@ export function RestaurantPreviewModal({
     floorCapacity,
   } = useAvailability();
   const { profile } = useUser();
-  const maxPreviewPartySize = Math.max(1, floorCapacity ?? 50);
+  const maxPreviewPartySize = Math.max(1, floorCapacity ?? 200);
   // Slot used for the "Continue with X" button — sourced from AvailabilityPanel's
   // onSelectSlot callback, falling back to the parent's `preferredTime` when the
   // panel hasn't bootstrapped yet.

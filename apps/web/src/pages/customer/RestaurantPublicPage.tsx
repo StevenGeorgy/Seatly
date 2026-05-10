@@ -114,6 +114,8 @@ type PublicBookingResponse = {
   confirmation_code?: string;
   confirmation_delivery?: "sent" | "skipped" | "failed";
   confirmation_delivery_channel?: "email" | "sms" | null;
+  deposit_required?: boolean;
+  deposit_amount_cents?: number;
   error?: string;
   unavailable_reason?:
     | "slot_taken"
@@ -519,7 +521,7 @@ function RestaurantStaffPreview({
   const dietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
   const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
   const selectedAvailabilitySlot = availableSlots.find((slot) => slot.display_time === selectedTime);
-  const maxPreviewPartySize = Math.max(1, availability.floorCapacity ?? 50);
+  const maxPreviewPartySize = Math.max(1, availability.floorCapacity ?? 200);
   const reserveSelectedPreviewSlot = async () => {
     if (!selectedAvailabilitySlot || previewReserving) return;
     setPreviewReserving(true);
@@ -1534,12 +1536,27 @@ export default function RestaurantPublicPage() {
   const { discount }       = activePromo ? computePromoDiscount(cart, activePromo) : { discount: 0 };
   const discountedSubtotal = Math.max(0, cartTotal - discount);
   const tax                = discountedSubtotal * taxRate;
-  const total              = discountedSubtotal + tax;
   // Tip preference UI removed; tip is no longer collected at checkout. Keeping
   // the variable wired through downstream calls so existing call sites that
   // record `tip_amount: 0` don't need to change.
   const tipAmount = 0;
-  const totalNow = total;
+  // Deposit preview: highest applicable tier × party size, computed client-side
+  // from restaurant.deposit_tiers so the checkout total reflects the deposit
+  // BEFORE the booking row is created. The server still recomputes via
+  // compute_deposit_for_party() and writes the canonical value to the
+  // reservation; this is just for display.
+  const previewDepositDollars = useMemo(() => {
+    const tiers = Array.isArray(restaurant?.deposit_tiers) ? restaurant.deposit_tiers : [];
+    if (tiers.length === 0) return 0;
+    const partySize = Number(dineIn.party_size) || 1;
+    const applicable = tiers
+      .filter((t) => partySize >= t.min_party_size)
+      .sort((a, b) => b.min_party_size - a.min_party_size)[0];
+    if (!applicable) return 0;
+    return (applicable.amount_per_person_cents * partySize) / 100;
+  }, [restaurant?.deposit_tiers, dineIn.party_size]);
+  const total              = discountedSubtotal + tax;
+  const totalNow = total + previewDepositDollars;
 
   const splitEachShare = useMemo(() => {
     if (paymentSplitMode !== "split") return NaN;
@@ -1601,7 +1618,7 @@ export default function RestaurantPublicPage() {
       : null;
   const selectedBookingSlot = selectedAvailabilitySlot ?? selectedPreviewSlot;
   const maxBookablePartySize = availability.floorCapacity ?? (
-    typeof dineIn.party_size === "number" ? Math.max(50, dineIn.party_size) : 50
+    typeof dineIn.party_size === "number" ? Math.max(200, dineIn.party_size) : 200
   );
 
   const canProceedDetails = () => {
@@ -1624,6 +1641,13 @@ export default function RestaurantPublicPage() {
       setOrderError(t("auth.errors.supabaseNotConfigured"));
       return;
     }
+
+    // Local mirrors of the deposit-related response fields. We can't read the
+    // matching React state right after the setter inside the same function
+    // turn (state updates aren't flushed yet), so track here for the routing
+    // decision below.
+    let depositCentsLocal = 0;
+    let depositReservationLocal: string | null = null;
 
     placingRef.current = true;
     setPlacing(true);
@@ -1747,6 +1771,10 @@ export default function RestaurantPublicPage() {
           status: body.confirmation_delivery ?? "skipped",
           channel: body.confirmation_delivery_channel ?? null,
         });
+        if (body.deposit_required && (body.deposit_amount_cents ?? 0) > 0) {
+          depositCentsLocal = body.deposit_amount_cents ?? 0;
+          depositReservationLocal = body.reservation_id ?? null;
+        }
       }
 
       // 2. Update an existing Cenaiva preorder, if this page was opened from a
@@ -1783,6 +1811,53 @@ export default function RestaurantPublicPage() {
       // Drop cached availability so this device sees the new state on the
       // next view without waiting for the realtime channel to fire.
       if (restaurant?.id) invalidateAvailabilityCache(restaurant.id);
+
+      // Deposit auto-collection. We're now on the checkout step (where the
+      // customer entered single/split tender card info). The split-tender
+      // card inputs are STRIPE STUB — no real card processing — so we just
+      // record one reservation_deposit_payments row for the full deposit
+      // amount and immediately mark it 'charged'. The settle trigger flips
+      // the reservation to 'confirmed'. When real Stripe is wired, the
+      // split-tender will create N PaymentIntents, one per card row.
+      if (depositReservationLocal && depositCentsLocal > 0) {
+        try {
+          const prepRes = await fetch(
+            `${getSupabaseProjectUrl()}/functions/v1/prepare-deposit`,
+            {
+              method: "POST",
+              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+              body: JSON.stringify({
+                reservation_id: depositReservationLocal,
+                payers: [{
+                  email: dineIn.email ?? "",
+                  full_name: dineIn.name ?? "",
+                  amount_cents: depositCentsLocal,
+                }],
+              }),
+            },
+          );
+          const prepBody = (await prepRes.json().catch(() => ({}))) as {
+            payments?: Array<{ id: string }>;
+            error?: string;
+          };
+          if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
+            throw new Error(prepBody.error ?? "Couldn't prepare deposit");
+          }
+          await fetch(
+            `${getSupabaseProjectUrl()}/functions/v1/confirm-deposit-stub`,
+            {
+              method: "POST",
+              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+              body: JSON.stringify({ payment_id: prepBody.payments[0].id }),
+            },
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Deposit failed";
+          setOrderError(message);
+          toast.error(message);
+          return;
+        }
+      }
 
       setStep("confirmed");
     } catch (err) {
@@ -2306,16 +2381,22 @@ export default function RestaurantPublicPage() {
                   disabled={placing}
                   onClick={() => {
                     if (placing) return;
-                    if (cartCount === 0) {
+                    // Deposit-required parties always go through checkout so
+                    // the deposit can be collected via the same single/split
+                    // tender UI as the preorder cart. No-deposit, no-cart
+                    // bookings keep today's "skip straight to confirmed" flow.
+                    if (cartCount === 0 && previewDepositDollars <= 0) {
                       void handlePlaceOrder();
                     } else {
                       setStep("checkout");
                     }
                   }}
                 >
-                  {cartCount === 0
+                  {cartCount === 0 && previewDepositDollars <= 0
                     ? placing ? t("customerPublic.booking.confirmingBooking") : "Skip preorder · Confirm booking"
-                    : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
+                    : cartCount === 0
+                      ? `Continue to checkout · Deposit ${formatCurrency(previewDepositDollars, currency)}`
+                      : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
                   <ChevronRight className="size-4 ml-1" />
                 </Button>
               </div>
@@ -2375,6 +2456,14 @@ export default function RestaurantPublicPage() {
                     <span className="text-text-secondary">Tax ({(taxRate * 100).toFixed(0)}%)</span>
                     <span className="text-text-primary">{formatCurrency(tax, currency)}</span>
                   </div>
+                  {previewDepositDollars > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gold">
+                        Deposit ({Number(dineIn.party_size) || 0} × {formatCurrency(previewDepositDollars / (Number(dineIn.party_size) || 1), currency)})
+                      </span>
+                      <span className="text-gold">{formatCurrency(previewDepositDollars, currency)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t border-border pt-2 text-base font-bold">
                     <span className="text-text-primary">Total due now</span>
                     <span className="text-gold">{formatCurrency(totalNow, currency)}</span>

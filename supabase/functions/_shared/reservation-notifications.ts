@@ -15,7 +15,7 @@ type SendReservationNotificationParams = {
   guestId: string;
   restaurantId: string;
   reservationId: string;
-  type: "reservation_cancellation" | "reservation_modification";
+  type: "reservation_confirmation" | "reservation_cancellation" | "reservation_modification";
   email: string | null;
   phone: string | null;
   subject: string;
