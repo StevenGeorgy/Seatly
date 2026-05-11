@@ -297,11 +297,12 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
       };
 
     case "show_confirmation":
-      // Land directly in `offering_preorder` so the BookingSheet renders the
-      // "Would you like to pre-order from the menu?" prompt next to the
-      // confirmation card. Previously the LLM was expected to emit
-      // `offer_preorder` in the same response, which was unreliable — this
-      // makes the preorder question deterministic after every booking.
+      // Land in `post_booking` (the orchestrator will set pending_action to
+      // session_end_check on the same turn). Voice no longer offers preorder
+      // here — preorder is a hand-off to the public restaurant page (see
+      // cenaiva-orchestrate Change 6). The BookingSheet renders the
+      // confirmation card for `post_booking`; the "Anything else?" follow-up
+      // comes from the orchestrator's spoken_text.
       //
       // Fall back to the value already on `state.booking.confirmation_code`
       // when the orchestrator emits a bare `{type:"show_confirmation"}`
@@ -312,7 +313,7 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
         ...state,
         booking: {
           ...state.booking,
-          status: "offering_preorder",
+          status: "post_booking",
           confirmation_code:
             action.confirmation_code ?? state.booking.confirmation_code,
         },
@@ -494,8 +495,20 @@ export function assistantReducer(
         // success card and never transitions to the question response. The
         // post_booking state is only meaningful when the response itself
         // affirms it (singleReservationKind / list / book).
+        // Hard-reset intents — the orchestrator's "different restaurant" /
+        // bail-out / flow-reset handlers signal a fresh start. Trigger the
+        // full reset regardless of prior status so stale reservation_id /
+        // confirmation_code / slot_iso from a just-completed modify/cancel
+        // don't leak into the next booking attempt.
+        const intent = (response.intent ?? "") as string;
+        const isHardResetIntent =
+          intent === "discover_restaurants" ||
+          intent === "fallback_unknown";
         const transitioningToIdle = bookingPatch.status === "idle" &&
-          (state.booking.status === "post_booking" || state.booking.status === "paid" || state.booking.status === "confirmed");
+          (isHardResetIntent ||
+            state.booking.status === "post_booking" ||
+            state.booking.status === "paid" ||
+            state.booking.status === "confirmed");
         if (transitioningToIdle) {
           // Full reset: a transition to idle from a post-booking state means
           // the user finished with that reservation (cancel / done). Don't
@@ -548,13 +561,14 @@ export function assistantReducer(
         }
       }
 
-      // ── Safety net: a reservation was just created but the LLM didn't emit
-      // show_confirmation (or emitted something that skipped straight past the
-      // preorder offer). Force the booking into `offering_preorder` so the
-      // Y/N preorder prompt always appears after a successful booking.
+      // ── Safety net: a reservation was just created but the orchestrator's
+      // post-booking status update didn't reach the booking patch. Force into
+      // `post_booking` so the BookingSheet renders the confirmation card.
+      // Voice no longer offers preorder — that's a hand-off path on the
+      // public page (see cenaiva-orchestrate Change 6).
       const wasNotBooked = !state.booking.reservation_id;
       const isNowBooked = !!next.booking.reservation_id;
-      const alreadyPastPreorder: BookingState["status"][] = [
+      const alreadyPastBooking: BookingState["status"][] = [
         "browsing_menu",
         "reviewing_cart",
         "choosing_tip_timing",
@@ -567,12 +581,11 @@ export function assistantReducer(
       if (
         wasNotBooked &&
         isNowBooked &&
-        !alreadyPastPreorder.includes(next.booking.status) &&
-        next.booking.status !== "offering_preorder"
+        !alreadyPastBooking.includes(next.booking.status)
       ) {
         next = {
           ...next,
-          booking: { ...next.booking, status: "offering_preorder" },
+          booking: { ...next.booking, status: "post_booking" },
           customerAccepted: true,
         };
       }

@@ -9,6 +9,20 @@ export default defineConfig({
   envDir: repoRoot,
   envPrefix: ["VITE_", "NEXT_PUBLIC_"],
   plugins: [react(), tailwindcss()],
+  // Exclude harness/test output paths from chokidar so a running
+  // `cenaiva-test-harness.mjs` doesn't trigger HMR full-reloads when it
+  // rewrites `apps/web/scripts/test-results.json` after every test (root
+  // cause of the reload-loop the user hit on 2026-05-11 while inspecting
+  // newly-added restaurants in /dashboard).
+  server: {
+    watch: {
+      ignored: [
+        "**/scripts/test-results.json",
+        "**/scripts/*.log",
+        "**/test-results/**",
+      ],
+    },
+  },
   build: {
     chunkSizeWarningLimit: 900,
     modulePreload: {

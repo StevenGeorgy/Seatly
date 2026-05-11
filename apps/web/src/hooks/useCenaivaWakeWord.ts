@@ -119,10 +119,12 @@ export function useCenaivaWakeWord(onWake: () => void, lang: string = "en-CA") {
       recognition.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript.toLowerCase().trim();
+          const matched = isWakePhrase(transcript);
           if (import.meta.env.DEV) {
-            console.log("[WakeWord] heard:", transcript);
+            console.log(`[WakeWord] heard: "${transcript}" — match=${matched} enabled=${enabledRef.current}`);
           }
-          if (isWakePhrase(transcript)) {
+          if (matched) {
+            if (import.meta.env.DEV) console.log("[WakeWord] 🚀 firing onWake");
             enabledRef.current = false;
             consecutiveErrorsRef.current = 0;
             restartDelayRef.current = RESTART_BASE_MS;

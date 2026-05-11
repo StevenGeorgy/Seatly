@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { X, Keyboard } from "lucide-react";
+import { X, Keyboard, Mic, MicOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
@@ -248,6 +248,22 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
               <X className="size-6" />
             </button>
           )}
+
+          {/* Mute toggle — always visible. When muted, mic stays off across
+              turns (even after AI speaks) until user toggles it back on. */}
+          <button
+            onClick={voice.toggleMute}
+            className={cn(
+              "absolute right-4 top-4 z-50 flex size-12 items-center justify-center rounded-full border shadow-lg shadow-black/30 backdrop-blur-sm transition-colors",
+              voice.isMuted
+                ? "border-red-500/40 bg-red-500/15 text-red-400 hover:bg-red-500/25"
+                : "border-gold/40 bg-gold/15 text-gold hover:bg-gold/25",
+            )}
+            aria-label={voice.isMuted ? "Unmute microphone" : "Mute microphone"}
+            title={voice.isMuted ? "Unmute microphone" : "Mute microphone"}
+          >
+            {voice.isMuted ? <MicOff className="size-5" /> : <Mic className="size-5" />}
+          </button>
 
           {/* Map layer — hidden while the user is driving the manual menu
               flow so the menu can fill the screen. */}

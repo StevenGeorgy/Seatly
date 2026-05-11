@@ -27,6 +27,79 @@ edits here propagate to both agents in one step.
 
 ## Headline state (2026-05-10)
 
+- **Voice mic always-on + manual mute (2026-05-10).** Mic now auto-resumes
+  in EVERY booking status except `paid` (which auto-closes 1.5s later).
+  Previously gated 8 statuses (preorder/menu/checkout/tip/charging) — those
+  paths are now hand-offs to the public restaurant page, so the mic
+  never enters them via voice. Added a manual mute toggle on
+  `<CenaivaVoiceShell>` (top-right, next to close X). When muted: mic
+  off across turns, AI TTS still plays. `useCenaivaVoice.toggleMute`
+  flips `isMuted` state; `AssistantProvider.muteRef` mirrors it for
+  setTimeout-based auto-resume callbacks. Files:
+  `assistantStoreConstants.ts` (set reduced to `{paid}`),
+  `useCenaivaVoice.ts` (isMuted + toggleMute), `AssistantProvider.tsx`
+  (muteRef + every auto-resume gate), `CenaivaVoiceShell.tsx` (mic
+  toggle button using lucide Mic/MicOff icons).
+- **Post-action "Anything else?" close prompt (2026-05-10).** After
+  every successful book / modify / cancel, the orchestrator appends a
+  randomized "Anything else?" pool to the spoken_text and queues
+  `pending_action: { type: "session_end_check" }`. On the next turn,
+  `confirmPendingAction` checks `session_end_check` BEFORE the standard
+  affirmative/negative classifier (semantics flipped: "no" = end session).
+  - "no" / "nope" / "I'm good" / "that's it" / "nothing else" / "all done"
+    / "no thanks" → emit `ui_actions: [{ type: "close_assistant" }]` +
+    goodbye line ("Anytime — talk soon!" / "Take care!" / etc.), pendingaction null, status idle.
+  - Anything else → mutate `bookingState.pending_action = null` and
+    return null so the caller falls through to the normal preflight/LLM
+    flow. This lets pivots ("show me deals", "different restaurant")
+    or new requests work without manually clearing the pending action.
+- **Session-pivot intents — map / deals / different-restaurant
+  (2026-05-10).** New block at the top of `buildPreflightResponse`,
+  gated on `status in {idle, confirmed, post_booking}` so it only fires
+  AFTER a successful action. Patterns:
+  - `\b(?:show me|take me to|go to|back to|see)\s+(?:the\s+)?map\b` or
+    `\b(?:back to|return to)\s+discover\b` → `ui_actions: [{ navigate
+    "/discover" }, { close_assistant }]`.
+  - `\b(?:show me|any|see|got)\s+(?:the\s+)?deals?\b` or `\b(?:are
+    there|do you have)\s+any\s+deals?\b` → `navigate "/deals" + close`.
+  - `\b(?:different|another|new)\s+restaurant\b` → resets booking,
+    keeps assistant open, prompts "Sure — where to?".
+  Client-side `simplePromptIntent.ts` adds `SESSION_PIVOT_PATTERN` so
+  these phrases also short-circuit Stage 3 small-prompt and route to
+  the orchestrator.
+- **Voice declines preorder + deposit (hand-off pattern, 2026-05-10).**
+  Voice no longer enters `offering_preorder` / `browsing_menu` /
+  `reviewing_cart` / checkout / tipping / payment statuses. Those are
+  HAND-OFFS to the public restaurant page (`/{slug}?...`).
+  - **Preorder hand-off** (`buildPreflightResponse`, after session
+    pivot, before `confirmPendingAction`): catches
+    `pre[- ]?order|prepay|order ahead|skip the line|order now|menu|
+    appetizers?|entrees?|mains?|kids?\s+menu|drink list|wine list|beer
+    list` AND requires `bookingState.reservation_id` + `restaurant_id`.
+    Looks up the slug, navigates to `/{slug}?confirmation={code}` and
+    emits `close_assistant`. Spoken: "Pre-orders need the menu screen
+    — I'll take you there to finish." (3 random variants).
+  - **Deposit hand-off**: in the LLM-tool `complete_booking` branch
+    (~line 6470) AND the post-loop auto-finalize path (~line 7103),
+    BEFORE `completeBooking` runs, query `compute_deposit_for_party
+    (restaurant_id, party_size)`. If > 0: don't book, push `navigate`
+    + `close_assistant`, set `bookingDelta.handoff_reason =
+    "deposit_required"`. The hard-override (~line 7270) replaces
+    spoken_text with "This booking needs a $X-per-guest deposit — I
+    can't process card details by voice. Sending you to the page with
+    everything pre-filled.". URL prefill uses the existing public-page
+    params: `?date=YYYY-MM-DD&time=HH:mm&people=N&shift_id=...`.
+  - **System prompt updated** to tell the LLM: do NOT call
+    `offer_preorder`, `get_menu`, `create_preorder_order`,
+    `set_tip_choice`, `set_tip`, `set_payment_split`, or
+    `charge_saved_card`. The orchestrator's preflight handles all
+    those flows via hand-off.
+  - **Client-side**: `AssistantStore.applyUIAction("show_confirmation")`
+    now sets `status: "post_booking"` (was `offering_preorder`). The
+    safety-net at line 567 (in `APPLY_RESPONSE`) also forces
+    `post_booking` instead of `offering_preorder`. **Removed** the
+    `AssistantProvider.tsx:572-579` preorder-prompt appender — the
+    "Anything else?" block in the orchestrator owns the follow-up now.
 - **Concurrent-user ceiling: ~2,250** active Discover/Deals browsers on
   Micro compute (Supabase ca-central-1), p95 < 1 s, 0 failures.
 - **SMS confirmations wired into voice book/modify/cancel
@@ -795,11 +868,12 @@ edits here propagate to both agents in one step.
 - `voice_id` goes only to `/elevenlabs-tts` and `/cenaiva-small-prompt`.
   NEVER include `voice_id` on `/cenaiva-orchestrate` requests — the
   orchestrator returns text and the client picks the voice timbre.
-- `NO_AUTO_RELISTEN_STATUSES` covers 9 booking statuses
-  (`offering_preorder`, `browsing_menu`, `reviewing_cart`,
-  `choosing_tip_timing`, `choosing_tip_amount`, `choosing_payment_split`,
-  `charging`, `paid`, `post_booking`). Don't reduce — the mic must NOT
-  auto-reopen during checkout / tip / payment flows.
+- `NO_AUTO_RELISTEN_STATUSES` covers ONLY `paid` (since 2026-05-10).
+  Voice never enters preorder/menu/checkout statuses — those are now
+  hand-offs to the public restaurant page. Don't add other statuses
+  back in unless you also revert the hand-off pattern. The mic also
+  blocks when AI TTS is active (`voice.speak()` stops the recognizer)
+  and when the user manually mutes via `voice.toggleMute()`.
 - Mobile-shaped helpers under `apps/web/src/lib/cenaiva/` stay verbatim
   against mobile. Bridge schema drift at the call site (e.g.
   `toCollectorRestaurant` in `restaurantAdapter.ts`); editing helper

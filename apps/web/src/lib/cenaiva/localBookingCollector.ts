@@ -593,9 +593,33 @@ function isRestaurantHoursQuestion(raw: string): boolean {
 
 function hasNamedBookingRequest(raw: string): boolean {
   const t = normalize(raw);
-  return /\b(book|reserve)\s+(?!it\b|anything\b|a table\b|table\b|me\b|somewhere\b|something\b|the usual\b)(?:[a-z0-9']{3,}|[a-z0-9']{1,2}\s+[a-z0-9']{3,})/.test(
-    t,
-  );
+  // "Book X..." / "Reserve X..." (where X is not a generic placeholder)
+  if (
+    /\b(book|reserve)\s+(?!it\b|anything\b|a table\b|table\b|me\b|somewhere\b|something\b|the usual\b|the closest\b|the nearest\b)(?:[a-z0-9']{3,}|[a-z0-9']{1,2}\s+[a-z0-9']{3,})/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // "... at <name>" — e.g. "Get me a table at Mark Testing", "Table for 2 at X",
+  // "Anyone available at X tonight", "Book me at X", "I want sushi at X".
+  // The name must be at least 3 chars and not a generic word like "home/work".
+  if (
+    /\bat\s+(?!home\b|work\b|noon\b|midnight\b|night\b|the\s+(?:bar|restaurant|place|spot)\b|\d)(?:[a-z0-9']{3,}|[a-z0-9']{1,2}\s+[a-z0-9']{3,})/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // "I want to book/reserve X", "Need a/the reservation at X", etc.
+  if (
+    /\b(want|wanna|need|gotta|trying)\s+(?:to\s+)?(?:book|reserve|get|grab|hit|try)\s+(?!it\b|anything\b|a table\b|table\b|me\b|somewhere\b|something\b|the usual\b)(?:[a-z0-9']{3,}|[a-z0-9']{1,2}\s+[a-z0-9']{3,})/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isVagueBookingStart(raw: string): boolean {
@@ -922,6 +946,15 @@ export function planLocalBookingTurn(ctx: LocalBookingContext): LocalBookingDeci
   }
   if (shouldUseBackendProcess(transcript)) return { kind: "pass" };
   if (!hasRestaurant && hasNamedBookingRequest(transcript)) return { kind: "pass" };
+  // When the user names a NEW restaurant ("book me at X") but the booking
+  // already has a DIFFERENT restaurant_id (from a prior fact-lookup /
+  // promotions / events turn), the local collector would otherwise treat
+  // the existing restaurant as confirmed and skip routing to the orchestrator.
+  // That meant "book me at nobu" would silently confirm a booking at the
+  // previously-fact-looked-up restaurant. Force a pass-through so the
+  // orchestrator can check whether the named restaurant exists OR decline
+  // with the unknown-restaurant handler.
+  if (hasRestaurant && hasNamedBookingRequest(transcript)) return { kind: "pass" };
   if (wantsBackendDiscovery(transcript, hasRestaurant)) return { kind: "pass" };
 
   const nextBooking = withPatch(booking, patch);

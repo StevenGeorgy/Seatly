@@ -57,9 +57,30 @@ function normalize(value: string): string {
     .trim();
 }
 
+// Session-pivot intents: post-action phrases that need the orchestrator's
+// session_end_check / session-pivot handlers. "Show me the map", "back to
+// map", "show me deals", "different restaurant" — none of these contain
+// dining-process keywords, so without an explicit pattern they'd fall
+// through to the small-prompt LLM (which has no idea how to navigate).
+const SESSION_PIVOT_PATTERN =
+  /\b(?:show me|take me to|go to|back to|see|return to)\s+(?:the\s+)?(?:map|discover)\b|\b(?:show me|any|see|got|are there|do you have)\s+(?:the\s+)?deals?\b|\bany\s+deals?\b|\b(?:different|another|new)\s+restaurant\b|\b(?:show me|find me)\s+(?:another|other|different)\s+(?:place|restaurant|spot)\b/i;
+
+// Session-end affirmatives: "no", "no thanks", "I'm good", "that's it",
+// "nothing else", "all done". When the assistant has just asked
+// "Anything else?", these need to reach the orchestrator's session_end_check
+// handler to fire close_assistant. Without this, "no thanks" falls through
+// to the small-prompt LLM which gives a confused reply.
+const SESSION_END_PATTERN =
+  /^(?:no|nope|nah|i'?m good|i'?m done|we'?re done|that'?s it|nothing else|all done|all good|that'?s all|no\s+thanks|no thank you|nothing|nope thanks)\.?$/i;
+
 export function isCenaivaProcessPrompt(transcript: string): boolean {
   const normalized = normalize(transcript);
   if (!normalized) return false;
+  // Session-end affirmatives ("no thanks", "I'm good") must reach the
+  // orchestrator BEFORE the clear-small-prompt filter rejects them. This is
+  // checked early because CLEAR_SMALL_PROMPT_PATTERN doesn't know about the
+  // session_end_check pending action.
+  if (SESSION_END_PATTERN.test(normalized.trim())) return true;
   if (CLEAR_SMALL_PROMPT_PATTERN.test(normalized)) return false;
   if (PURE_IMPATIENCE_PATTERN.test(normalized)) return false;
   return (
@@ -80,6 +101,9 @@ export function isCenaivaProcessPrompt(transcript: string): boolean {
     // "closest restaurants", "best cuisines", "promotions", "events" — global discovery questions
     // that need the orchestrator's deterministic global-question handlers.
     GLOBAL_DISCOVERY_QUERY_PATTERN.test(normalized) ||
+    // "show me the map", "back to map", "show me deals", "different restaurant"
+    // — post-action session pivots routed to the orchestrator's pivot handlers.
+    SESSION_PIVOT_PATTERN.test(normalized) ||
     /\b(can you handle it|not too late|for a few people|for us|i don'?t know yet|changed my mind|start over|cancel that|different restaurant|switch to|closer|earlier|later|make it cheaper|make it fancier)\b/i.test(
       normalized,
     )

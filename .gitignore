@@ -162,3 +162,10 @@ vite.config.ts.timestamp-*
 
 # Testing
 coverage/
+
+# Cenaiva test harness — runtime results regenerated on every run
+apps/web/scripts/test-results.json
+apps/web/scripts/*.log
+
+# Claude Code local state
+.claude/

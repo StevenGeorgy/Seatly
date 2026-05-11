@@ -238,6 +238,12 @@ export async function completeBooking(
       p_guest_full_name: guestFields.full_name,
       p_guest_email: guestFields.email,
       p_guest_phone: guestFields.phone,
+      // Voice (Cenaiva) bookings are confirmed immediately — the
+      // orchestrator's preflight rejects deposit-required parties via
+      // the public-page hand-off, so any booking that reaches this point
+      // is a no-deposit booking. Without this, book_reservation defaults
+      // to 'pending' and the UI shows the booking as not-yet-confirmed.
+      p_status: "confirmed",
     },
   );
   if (resvErr) {

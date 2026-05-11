@@ -124,7 +124,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const micGrantedRef = useRef(false);
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
+  // Mirror voice.isMuted into a ref so the auto-resume timer (set inside
+  // setTimeout callbacks) reads the latest mute state, not the value captured
+  // when the timer was scheduled.
+  const muteRef = useRef(false);
   const startListeningRef = useRef<() => Promise<void>>(async () => {});
+  // Forward-reference: sayGoodbyeAndClose is declared further down in this
+  // component, but sendTranscript (declared earlier) needs to invoke it when
+  // the orchestrator emits a `close_assistant` ui_action. Bridge via a ref.
+  const sayGoodbyeAndCloseRef = useRef<
+    (message?: string, redirectAfter?: string) => Promise<void>
+  >(async () => {});
   const speechHintsRef = useRef<string[]>([]);
   const autoListenOnOpenRef = useRef(false);
   const turnIdRef = useRef(0);
@@ -160,6 +170,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   useEffect(() => {
     isOpenRef.current = state.isOpen;
   }, [state.isOpen]);
+
+  // Sync voice.isMuted into the ref. Renders happen on toggle, and the
+  // setTimeout auto-resume reads via the ref.
+  useEffect(() => {
+    muteRef.current = voice.isMuted;
+  }, [voice.isMuted]);
 
   // Prime the Web Speech audio pipeline on the FIRST user gesture anywhere on
   // the page. Chrome's autoplay policy blocks speechSynthesis until there's
@@ -222,10 +238,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
         opts?.schedule_relisten &&
         isOpenRef.current &&
         !textModeRef.current &&
+        !muteRef.current &&
         !NO_AUTO_RELISTEN_STATUSES.has(next.booking.status)
       ) {
         setTimeout(() => {
-          if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+          if (isOpenRef.current && !textModeRef.current && !muteRef.current) void startListeningRef.current();
         }, RELISTEN_AFTER_RESPONSE_MS);
       }
     },
@@ -299,7 +316,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // act on an existing reservation. Orchestrator's modify/cancel branches
       // handle the right responses (including the "no active reservations"
       // case for cancelled-only history).
-      const isModifyOrCancelRef = /\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript) &&
+      const isModifyOrCancelRef = (/\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|shift|cancel|drop|scrap|kill|nuke|abort|nix|delete|remove|forget|nevermind)\b/i.test(transcript) ||
+        /\bmake\s+it\b/i.test(transcript)) &&
         /\b(it|that|that one|the booking|the reservation|my booking|my reservation)\b/i.test(transcript);
       // Also skip when user references "my reservation" / "my booking" — the
       // orchestrator owns those flows.
@@ -525,9 +543,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
             await voice.speak("Sorry, I didn't catch that. Try again.");
           }
           dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
-          if (isOpenRef.current && !textModeRef.current) {
+          if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
             setTimeout(() => {
-              if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+              if (isOpenRef.current && !textModeRef.current && !muteRef.current) void startListeningRef.current();
             }, RELISTEN_AFTER_ERROR_MS);
           }
           latency.summarize(turnId);
@@ -548,10 +566,29 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
         dispatch({ type: "APPLY_RESPONSE", response });
 
+        // Scan ui_actions: collect navigate target + detect close_assistant.
+        // close_assistant triggers a graceful sayGoodbyeAndClose AFTER the
+        // spoken_text plays, with the captured navigate path (if any) as the
+        // post-close redirect. The other handlers (toast, navigate_to_checkout)
+        // run inline as before.
+        let pendingClose = false;
+        let pendingNavigatePath: string | null = null;
         for (const action of (response.ui_actions ?? [])) {
           if (!action || typeof action.type !== "string") continue;
           if (action.type === "toast") toast(action.message, { duration: 3000 });
-          if (action.type === "navigate") navigate(action.path);
+          if (action.type === "navigate") {
+            // If close_assistant is also queued, defer the navigate to the
+            // sayGoodbyeAndClose redirect so the goodbye plays cleanly.
+            const otherActions = response.ui_actions ?? [];
+            const hasClose = otherActions.some(
+              (a) => (a as { type?: string } | null)?.type === "close_assistant",
+            );
+            if (hasClose) {
+              pendingNavigatePath = action.path;
+            } else {
+              navigate(action.path);
+            }
+          }
           if (action.type === "navigate_to_checkout") {
             isOpenRef.current = false;
             voice.stopSpeaking();
@@ -559,26 +596,26 @@ function AssistantInner({ children }: { children: ReactNode }) {
             dispatch({ type: "CLOSE" });
             navigate(action.path);
           }
+          if (action.type === "close_assistant") {
+            pendingClose = true;
+          }
         }
 
-        // Guarantee the preorder question gets spoken after a successful
-        // booking. The LLM sometimes emits show_confirmation without the
-        // "Want to pre-order?" follow-up — when that happens we append it so
-        // the user flow never stalls at the confirmation card.
-        let spokenText = response.spoken_text ?? "";
-        const uiTypes = (response.ui_actions ?? [])
-          .map((a) => (a as { type?: string } | null)?.type)
-          .filter((t): t is string => typeof t === "string");
-        const freshlyBooked =
-          uiTypes.includes("show_confirmation") ||
-          (!!response.booking?.reservation_id && !stateRef.current.booking.reservation_id);
-        const asksPreorder = /pre-?order|menu/i.test(spokenText);
-        if (freshlyBooked && !asksPreorder) {
-          const base = spokenText.trim().replace(/[.!?]*$/, "");
-          spokenText = `${base ? base + ". " : ""}Would you like to pre-order from the menu?`;
-        }
+        const spokenText = response.spoken_text ?? "";
 
         latency.mark(turnId, "playbackRequestedAt");
+
+        // close_assistant from the orchestrator: speak the orchestrator's
+        // farewell as the goodbye message and tear down the shell. Skips the
+        // normal speak path (sayGoodbyeAndClose plays + closes + redirects).
+        if (pendingClose) {
+          if (streamingActive) voice.discardStreamingSpeech();
+          await sayGoodbyeAndCloseRef.current(spokenText || undefined, pendingNavigatePath ?? undefined);
+          processingRef.current = false;
+          latency.summarize(turnId);
+          return;
+        }
+
         if (spokenText && !opts?.silent) {
           // Normalize for comparison — strip trailing punctuation/whitespace
           // and collapse internal whitespace so minor formatting differences
@@ -603,17 +640,16 @@ function AssistantInner({ children }: { children: ReactNode }) {
           voice.discardStreamingSpeech();
         }
 
-        // Skip auto-relisten in checkout/menu/payment flows (button-driven UI).
-        // Mirrors mobile: status set is broader than web's old `manualMenuActive`
-        // and includes paid/post_booking/charging so the mic doesn't reopen
-        // mid-payment-success.
+        // Auto-resume the mic UNLESS: assistant closed, user typing,
+        // user manually muted, OR status is in the (now narrow) gated set.
         const next = stateRef.current;
         if (
           isOpenRef.current &&
           !textModeRef.current &&
+          !muteRef.current &&
           !NO_AUTO_RELISTEN_STATUSES.has(next.booking.status)
         ) {
-          if (isOpenRef.current && !textModeRef.current) {
+          if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
             void startListeningRef.current();
           }
         } else {
@@ -634,9 +670,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
           await voice.speak("Sorry, I didn't catch that. Try again.");
         }
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
-        if (isOpenRef.current && !textModeRef.current) {
+        if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
           setTimeout(() => {
-            if (isOpenRef.current && !textModeRef.current) void startListeningRef.current();
+            if (isOpenRef.current && !textModeRef.current && !muteRef.current) void startListeningRef.current();
           }, RELISTEN_AFTER_ERROR_MS);
         }
         latency.summarize(turnId);
@@ -668,7 +704,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (transcript.trim()) {
         emptyRelistenStreakRef.current = 0;
         await sendTranscript(transcript);
-      } else if (isOpenRef.current && !textModeRef.current) {
+      } else if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
         // Empty transcript → relisten, but ALWAYS via setTimeout and capped
         // at MAX_EMPTY_RELISTENS. A sync `void startListeningRef.current()`
         // recursion here starves the microtask queue and hangs the tab when
@@ -680,7 +716,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
           return;
         }
         setTimeout(() => {
-          if (isOpenRef.current && !textModeRef.current) {
+          if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
             void startListeningRef.current();
           }
         }, RELISTEN_AFTER_EMPTY_TURN_MS);
@@ -709,10 +745,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         return;
       }
-      if (isOpenRef.current && !textModeRef.current) {
+      if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         setTimeout(() => {
-          if (isOpenRef.current && !textModeRef.current) {
+          if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
             void startListeningRef.current();
           }
         }, RELISTEN_AFTER_ERROR_MS);
@@ -798,7 +834,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
             await voice.speak(opts.greetingText!);
             voice.stopListening();
             await new Promise((resolve) => setTimeout(resolve, 200));
-            if (isOpenRef.current && !textModeRef.current) {
+            if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
               try {
                 await startListeningRef.current();
               } catch (err) {
@@ -806,7 +842,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
                 // mic still locked) instead of swallowing them — without this,
                 // users see the orb and assume they need to tap to start.
                 console.warn("[Cenaiva] startListening after wake greeting failed", err);
-                if (isOpenRef.current && !textModeRef.current) {
+                if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
                   await voice.speak("Tap the mic to start when ready.");
                 }
               }
@@ -850,7 +886,8 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [dispatch, navigate]);
 
   const sayGoodbyeAndClose = useCallback(
-    async (message = "Enjoy your meal. Bye!", redirectAfter?: string) => {
+    async (message?: string, redirectAfter?: string) => {
+      const finalMessage = message ?? "Enjoy your meal. Bye!";
       // Stop the mic so the farewell actually plays without fighting the
       // recognizer for the audio stream.
       isOpenRef.current = false;
@@ -858,9 +895,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
       emptyRelistenStreakRef.current = 0;
       autoListenOnOpenRef.current = false;
       voiceRef.current.stopListening();
-      dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: message });
+      dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: finalMessage });
       try {
-        await voiceRef.current.speak(message);
+        await voiceRef.current.speak(finalMessage);
       } catch {
         // Speech can fail (autoplay policy, no voices) — we still close.
       }
@@ -873,6 +910,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
     },
     [dispatch, navigate],
   );
+
+  // Bridge: sendTranscript (defined earlier) calls sayGoodbyeAndClose via
+  // sayGoodbyeAndCloseRef when the orchestrator emits a `close_assistant`
+  // ui_action. Refresh the ref whenever the callback identity changes.
+  useEffect(() => {
+    sayGoodbyeAndCloseRef.current = sayGoodbyeAndClose;
+  }, [sayGoodbyeAndClose]);
 
   const setTextMode = useCallback((active: boolean) => {
     textModeRef.current = active;
@@ -907,7 +951,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [state.booking.status, sayGoodbyeAndClose]);
 
   const onWake = useCallback(() => {
+    if (import.meta.env.DEV) console.log(`[WakeWord] onWake fired — user=${!!user} isCustomerRoute=${isCustomerRoute} isOpen=${isOpenRef.current}`);
     if (!user) return;
+    if (isOpenRef.current) {
+      if (import.meta.env.DEV) console.log("[WakeWord] skipped — assistant already open");
+      return;
+    }
     // Prime the audio pipeline again on wake so the greeting reliably plays.
     try { voice.primeTTS(); } catch { /* noop */ }
     const greetingText = buildWakeGreeting(user);

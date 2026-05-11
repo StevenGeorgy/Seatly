@@ -164,8 +164,12 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
       body: JSON.stringify({ text, voice_id: voiceId }),
     });
     if (!res.ok) {
-      // One warn per status code — see warnedStatuses comment above.
-      if (!warnedStatuses.has(res.status)) {
+      // In dev: ALWAYS log every failure with the body so we can debug
+      // intermittent failures. In prod: dedupe per-status to avoid spam.
+      if (import.meta.env.DEV) {
+        const body = await res.text().catch(() => "<no body>");
+        console.warn(`[Cenaiva TTS] /elevenlabs-tts status=${res.status} (${res.statusText}) — body: ${body.slice(0, 200)}`);
+      } else if (!warnedStatuses.has(res.status)) {
         console.warn(`[Cenaiva TTS] /elevenlabs-tts status=${res.status} (${res.statusText}) — falling back`);
         warnedStatuses.add(res.status);
       }

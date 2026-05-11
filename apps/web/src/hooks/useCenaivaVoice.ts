@@ -20,18 +20,61 @@ export function useCenaivaVoice() {
   const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
   const manualStopRef = useRef(false);
-  // ElevenLabs cooldown: if the edge function 503s (transient 429 / quota /
-  // network blip) twice in a row, skip it for 60 seconds then retry
-  // automatically. Stored as state so isStreamingTTSAvailable can be computed
-  // purely from props/state during render (no Date.now() / ref read at render
-  // time). The cooldown self-heals — a setTimeout flips it back enabled
-  // after ELEVEN_COOLDOWN_MS so subsequent turns try ElevenLabs again.
+  // ElevenLabs cooldown: if the edge function 503s / 429s / network blips
+  // twice in a row, skip it briefly then retry. Stored as state so
+  // isStreamingTTSAvailable can be computed purely from props/state during
+  // render (no Date.now() / ref read at render time). The cooldown
+  // self-heals — a setTimeout flips it back enabled after ELEVEN_COOLDOWN_MS.
+  //
+  // Reduced from 60 s → 15 s on 2026-05-10 because the longer window made the
+  // voice feel "stuck on Web Speech" any time the user accidentally
+  // double-fired a turn (e.g. wake-greeting StrictMode remount in dev).
+  // 15 s is enough to dodge sustained quota / outage but recovers fast on
+  // transient blips.
   const [elevenAvailable, setElevenAvailable] = useState(true);
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ELEVEN_COOLDOWN_MS = 60_000;
+  const ELEVEN_COOLDOWN_MS = 5_000;
+  // Single-flight guard. If two speak() calls fire in the same render cycle
+  // (e.g. wake-greeting + initialGreeting both speaking on open), the second
+  // one waits for the first instead of hitting ElevenLabs in parallel and
+  // tripping their per-key concurrency limit. Tracks the in-flight promise.
+  const inFlightSpeakRef = useRef<Promise<void> | null>(null);
+  // What's currently playing (or just played within the dedup window). If a
+  // speak() call comes in with the same text while the prior is still in
+  // flight OR within DEDUP_WINDOW_MS of finishing, drop the duplicate. This
+  // is what the user hears as the "voice repeats itself" — same text fires
+  // from two effects that both think they own the greeting.
+  const inFlightTextRef = useRef<string | null>(null);
+  const lastSpokenAtRef = useRef<{ text: string; at: number } | null>(null);
+  const DEDUP_WINDOW_MS = 2_000;
+
+  // Manual mute. When true, `startListening` no-ops and `isMuted` is exposed
+  // so the AssistantProvider's auto-resume gate can skip reopening the mic
+  // after the AI finishes speaking. The mute persists across turns until the
+  // user explicitly toggles it off. AI TTS still plays when muted — this
+  // controls the user's input only, not the assistant's output.
+  const [isMuted, setIsMuted] = useState(false);
+  const toggleMute = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      // Stop any active recognition the moment we mute, so the user doesn't
+      // see the orb in "listening" state for a beat after tapping mute.
+      if (next) {
+        manualStopRef.current = true;
+        listeningRef.current = false;
+        speech.stopRecognition();
+        deepgram.stopRecognition();
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+      }
+      return next;
+    });
+  }, [dispatch, speech, deepgram]);
 
   const startListening = useCallback(async (sttHints: string[] = []): Promise<{ transcript: string; stopped: boolean }> => {
     if (listeningRef.current) return { transcript: "", stopped: false };
+    // Manual mute short-circuits: report `stopped: true` so callers don't
+    // mistake this for an empty-transcript retry loop.
+    if (isMuted) return { transcript: "", stopped: true };
     listeningRef.current = true;
     manualStopRef.current = false;
 
@@ -81,7 +124,7 @@ export function useCenaivaVoice() {
     } finally {
       listeningRef.current = false;
     }
-  }, [dispatch, speech, deepgram, elevenlabs]);
+  }, [dispatch, speech, deepgram, elevenlabs, isMuted]);
 
   const stopListening = useCallback(() => {
     manualStopRef.current = true;
@@ -96,48 +139,92 @@ export function useCenaivaVoice() {
   const speak = useCallback(
     async (text: string) => {
       if (!text) return;
-      dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
+      const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+      const normalized = normalize(text);
+      // Dedup: drop a duplicate of the in-flight text outright.
+      if (inFlightTextRef.current && normalize(inFlightTextRef.current) === normalized) {
+        if (import.meta.env.DEV) console.log(`[Cenaiva TTS] dropped duplicate (in-flight): "${text.slice(0, 60)}…"`);
+        return;
+      }
+      // Dedup: drop a duplicate of the last-spoken text within the recent
+      // window (covers StrictMode double-mounts where the second call lands
+      // just after the first finishes).
+      const last = lastSpokenAtRef.current;
+      if (last && normalize(last.text) === normalized && (Date.now() - last.at) < DEDUP_WINDOW_MS) {
+        if (import.meta.env.DEV) console.log(`[Cenaiva TTS] dropped duplicate (recent): "${text.slice(0, 60)}…"`);
+        return;
+      }
+      // Single-flight: wait for any in-flight speak() to finish before
+      // starting a new one. Prevents ElevenLabs concurrent-call 429s when
+      // two distinct turns try to speak in parallel.
+      if (inFlightSpeakRef.current) {
+        try { await inFlightSpeakRef.current; } catch { /* prior call's error */ }
+      }
+      // Recheck the dedup window after waiting — the in-flight call we just
+      // awaited may have spoken THIS text, in which case skip.
+      const last2 = lastSpokenAtRef.current;
+      if (last2 && normalize(last2.text) === normalized && (Date.now() - last2.at) < DEDUP_WINDOW_MS) {
+        if (import.meta.env.DEV) console.log(`[Cenaiva TTS] dropped duplicate (post-await): "${text.slice(0, 60)}…"`);
+        return;
+      }
+      inFlightTextRef.current = text;
+      const speakPromise = (async () => {
+        dispatch({ type: "SET_VOICE_STATUS", status: "speaking" });
 
-      let played = false;
-      if (elEnabledFlag && elevenAvailable) {
-        try {
-          played = await elevenlabs.speak(text);
-        } catch {
-          played = false;
-        }
-        // Retry ElevenLabs once on transient failure before falling back to
-        // Web Speech — keeps the voice consistent across turns instead of
-        // randomly swapping to the OS voice when a single request blips.
-        if (!played) {
+        let played = false;
+        if (elEnabledFlag && elevenAvailable) {
+          if (import.meta.env.DEV) console.log(`[Cenaiva TTS] attempting ElevenLabs: "${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"`);
           try {
             played = await elevenlabs.speak(text);
           } catch {
             played = false;
           }
+          // Retry ElevenLabs once on transient failure before falling back to
+          // Web Speech — keeps the voice consistent across turns instead of
+          // randomly swapping to the OS voice when a single request blips.
+          if (!played) {
+            try {
+              played = await elevenlabs.speak(text);
+            } catch {
+              played = false;
+            }
+          }
+          // Two failures in a row → cooldown ElevenLabs for ELEVEN_COOLDOWN_MS
+          // (15 s as of 2026-05-10) and route this turn through Web Speech.
+          // The cooldown self-heals.
+          if (!played) {
+            console.warn(
+              `[Cenaiva TTS] ElevenLabs failed twice — falling back to Web Speech for ${ELEVEN_COOLDOWN_MS / 1000}s`,
+            );
+            setElevenAvailable(false);
+            if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+            cooldownTimerRef.current = setTimeout(() => {
+              setElevenAvailable(true);
+              cooldownTimerRef.current = null;
+            }, ELEVEN_COOLDOWN_MS);
+          }
         }
-        // Two failures in a row → back off ElevenLabs for 60s and route this
-        // turn through Web Speech. After the cooldown window we flip back to
-        // available automatically (self-healing on transient 429s / network
-        // blips). console.warn surfaces the fallback so developers can see
-        // when ElevenLabs is temporarily disabled instead of silently
-        // wondering why the voice changed.
         if (!played) {
-          console.warn(
-            "[Cenaiva TTS] ElevenLabs failed twice — falling back to Web Speech for 60s",
-          );
-          setElevenAvailable(false);
-          if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
-          cooldownTimerRef.current = setTimeout(() => {
-            setElevenAvailable(true);
-            cooldownTimerRef.current = null;
-          }, ELEVEN_COOLDOWN_MS);
+          if (import.meta.env.DEV) console.log(`[Cenaiva TTS] using Web Speech fallback (browser voice): "${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"`);
+          await speech.speak(text);
+        } else if (import.meta.env.DEV) {
+          console.log(`[Cenaiva TTS] played via ElevenLabs ✓`);
+        }
+
+        dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+      })();
+      inFlightSpeakRef.current = speakPromise;
+      try {
+        await speakPromise;
+        lastSpokenAtRef.current = { text, at: Date.now() };
+      } finally {
+        if (inFlightSpeakRef.current === speakPromise) {
+          inFlightSpeakRef.current = null;
+        }
+        if (inFlightTextRef.current === text) {
+          inFlightTextRef.current = null;
         }
       }
-      if (!played) {
-        await speech.speak(text);
-      }
-
-      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
     },
     [dispatch, elevenlabs, speech, elEnabledFlag, elevenAvailable],
   );
@@ -192,6 +279,8 @@ export function useCenaivaVoice() {
     isStreamingTTSAvailable,
     stopSpeaking,
     primeTTS,
+    isMuted,
+    toggleMute,
     voiceStatus: state.voiceStatus,
     isRecognitionSupported: DEEPGRAM_ENABLED && deepgram.isSupported,
     isSpeaking: elevenlabs.isSpeaking || speech.isSpeaking,

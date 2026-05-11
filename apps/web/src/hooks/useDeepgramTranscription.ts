@@ -39,8 +39,13 @@ const TRANSCRIBE_QUERY: Record<string, string> = {
 };
 
 const TOKEN_TTL_BUFFER_MS = 5_000;
-const SILENCE_TIMEOUT_MS = 700;
-const NO_SPEECH_TIMEOUT_MS = 4_000;
+// Silence threshold before ending the user's turn. 700 ms was aggressive —
+// natural pauses mid-sentence ("I would like to book… for me and my boy")
+// crossed it and Deepgram split the utterance into two turns. 1.5 s is more
+// forgiving without making turn-taking feel laggy. If you bump this further,
+// also bump TURN_TIMEOUT_MS so a stuck recognizer doesn't loop forever.
+const SILENCE_TIMEOUT_MS = 1_500;
+const NO_SPEECH_TIMEOUT_MS = 5_000;
 const TURN_TIMEOUT_MS = 30_000;
 const STREAM_KEEP_WARM_MS = 12_000;
 const SPEECH_RMS_THRESHOLD = 0.015;
@@ -275,7 +280,11 @@ export function useDeepgramTranscription() {
     resolveRef.current = null;
     rejectRef.current = null;
     cleanupMedia({ keepWarm: true });
-    resolve?.(transcript.trim());
+    const final = transcript.trim();
+    if (import.meta.env.DEV) {
+      console.log(`[Cenaiva STT] heard: "${final}"`);
+    }
+    resolve?.(final);
   }, [cleanupMedia]);
 
   const fail = useCallback((error: Error) => {
