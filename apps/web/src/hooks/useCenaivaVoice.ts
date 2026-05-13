@@ -20,6 +20,13 @@ export function useCenaivaVoice() {
   const elEnabledFlag = import.meta.env.VITE_ELEVENLABS_ENABLED !== "false";
   const listeningRef = useRef(false);
   const manualStopRef = useRef(false);
+  // Timestamp of the last stopListening() call. startListening() waits up to
+  // 250 ms past this so Chrome has time to release the MediaStream / close
+  // the AudioContext before we re-acquire the mic. Without this, a quick
+  // user double-tap (turn ends, user clicks again ~50 ms later) raced into
+  // an "AudioContext not available" error.
+  const prevSessionEndedAtRef = useRef(0);
+  const MIN_SESSION_GAP_MS = 250;
   // ElevenLabs cooldown: if the edge function 503s / 429s / network blips
   // twice in a row, skip it briefly then retry. Stored as state so
   // isStreamingTTSAvailable can be computed purely from props/state during
@@ -75,6 +82,13 @@ export function useCenaivaVoice() {
     // Manual mute short-circuits: report `stopped: true` so callers don't
     // mistake this for an empty-transcript retry loop.
     if (isMuted) return { transcript: "", stopped: true };
+    // Wait for the prior session's teardown to finish if we're inside the
+    // post-stop gap. Eliminates a Chrome race where re-acquiring the mic
+    // before the previous stream was fully released errors out.
+    const sinceLastStop = Date.now() - prevSessionEndedAtRef.current;
+    if (prevSessionEndedAtRef.current > 0 && sinceLastStop < MIN_SESSION_GAP_MS) {
+      await new Promise((r) => setTimeout(r, MIN_SESSION_GAP_MS - sinceLastStop));
+    }
     listeningRef.current = true;
     manualStopRef.current = false;
 
@@ -123,12 +137,17 @@ export function useCenaivaVoice() {
       throw err;
     } finally {
       listeningRef.current = false;
+      // Record the natural end-of-turn time too, so a fast user
+      // double-click after the recognizer settled gets the same race-safety
+      // gap as a manual stopListening().
+      prevSessionEndedAtRef.current = Date.now();
     }
   }, [dispatch, speech, deepgram, elevenlabs, isMuted]);
 
   const stopListening = useCallback(() => {
     manualStopRef.current = true;
     listeningRef.current = false;
+    prevSessionEndedAtRef.current = Date.now();
     // Always stop both backends — stopping an idle one is a no-op and this
     // avoids any race where we disabled the wrong recognizer.
     speech.stopRecognition();
@@ -291,5 +310,10 @@ export function useCenaivaVoice() {
     isRecognitionSupported: DEEPGRAM_ENABLED && deepgram.isSupported,
     isSpeaking: elevenlabs.isSpeaking || speech.isSpeaking,
     isRecording: speech.isRecording || deepgram.isRecording,
+    // Audio-level external store for the orb pulse. Consumers should call
+    // `useSyncExternalStore(voice.subscribeAudioLevel, voice.getAudioLevel)`
+    // — direct render-time reads bypass the no-rerender contract.
+    subscribeAudioLevel: deepgram.subscribeAudioLevel,
+    getAudioLevel: deepgram.getAudioLevel,
   };
 }

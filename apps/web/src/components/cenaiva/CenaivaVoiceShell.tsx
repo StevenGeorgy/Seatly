@@ -171,17 +171,49 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inManualMenu]);
 
+  // Guard against rapid re-clicks while a permission prompt is open. Without
+  // this, two clicks in a row spawn two getUserMedia prompts (the second
+  // immediately rejects). Cleared on success or failure.
+  const permissionRequestInFlightRef = useRef(false);
+
   const handleOrbClick = () => {
     if (state.voiceStatus === "listening") {
       voice.stopListening();
-    } else if (state.voiceStatus === "speaking") {
-      voice.stopSpeaking();
-    } else {
-      // Prime the Web Speech audio pipeline inside this user-gesture callback
-      // so the browser unlocks audio output before the first greeting/TTS call.
-      voice.primeTTS();
-      void assistant?.startListening();
+      return;
     }
+    if (state.voiceStatus === "speaking") {
+      voice.stopSpeaking();
+      return;
+    }
+    if (state.voiceStatus === "error") {
+      // Permission was previously denied. Re-trigger the browser prompt
+      // here so a user-gesture click can recover instead of leaving the
+      // orb permanently red. The getUserMedia call also serves to "warm"
+      // the mic so the subsequent startListening() doesn't double-acquire.
+      if (permissionRequestInFlightRef.current) return;
+      permissionRequestInFlightRef.current = true;
+      void (async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: NOISE_ROBUST_AUDIO_CONSTRAINTS,
+          });
+          stream.getTracks().forEach((track) => track.stop());
+          dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+          voice.primeTTS();
+          void assistant?.startListening();
+        } catch {
+          // User denied again — leave the error state; the inline
+          // "Grant microphone access" button still offers a recovery path.
+        } finally {
+          permissionRequestInFlightRef.current = false;
+        }
+      })();
+      return;
+    }
+    // Prime the Web Speech audio pipeline inside this user-gesture callback
+    // so the browser unlocks audio output before the first greeting/TTS call.
+    voice.primeTTS();
+    void assistant?.startListening();
   };
 
   const [sendError, setSendError] = useState<string | null>(null);
@@ -367,6 +399,8 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
             <VoiceOrb
               status={state.voiceStatus}
               onClick={handleOrbClick}
+              subscribeAudioLevel={voice.subscribeAudioLevel}
+              getAudioLevel={voice.getAudioLevel}
             />
 
             {showTextInput ? (

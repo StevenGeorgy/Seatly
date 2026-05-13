@@ -148,23 +148,22 @@ edits here propagate to both agents in one step.
   - "cancel my reservation" → "Just confirming: cancel your reservation
     at Mark Testing?" → "yes" → "Got it, that booking's cancelled." DB
     status=cancelled, reason="Cancelled via Cenaiva". ✓
-- **CRITICAL — harness uses Mark's real account (2026-05-13).** The
-  `harness_cleanup_test_user` RPC (defined in production) hardcodes
-  `user_profile_id = 'de3fbe5e-0c7f-4d35-93f5-eaa2e0910209'`. That UUID
-  is Mark Habbi's actual user_profiles.id (auth_user_id is
-  `513676ec-...` but profile.id is `de3fbe5e-...` — they're not the
-  same). So every harness run cancels Mark's real future
-  reservations — 368 of them just from tonight's overnight cycles.
-  **Do not run the harness against the live project** until this is
-  fixed. The Plan agent's "B7 passes / B8 fails is a concurrency-race"
-  diagnosis was correct in principle but the specific cancel pattern
-  came from this cleanup RPC nuking the just-booked reservation 15–100
-  ms after creation. Fix path: change `cleanupReservations()` in
-  `apps/web/scripts/cenaiva-test-harness.mjs` to call a new
-  `harness_cancel_by_ids(p_ids uuid[])` RPC scoped to the
-  `CREATED_RESERVATIONS` map (already tracked client-side). Add the
-  RPC with `WHERE id = ANY(p_ids) AND user_profile_id = 'de3fbe5e-...'`
-  for safety. Until that lands, no harness runs.
+- **Harness safety — FIXED (2026-05-13 late evening).** The dangerous
+  `harness_cleanup_test_user()` RPC was dropped (migration
+  `20260513213000_drop_dangerous_harness_cleanup.sql`). It was
+  SECURITY DEFINER, anon-callable, and unconditionally cancelled every
+  confirmed / pending / seated / arriving reservation for Mark's
+  `user_profile_id = 'de3fbe5e-...'` — 368 of them got nuked in one
+  overnight cycle before this was caught. The harness now calls
+  `harness_cancel_by_ids(p_ids uuid[])` which is scoped:
+  `WHERE id = ANY(p_ids) AND user_profile_id = 'de3fbe5e-...'` (only
+  the explicit ids the harness itself created, AND only on Mark's
+  profile). The Plan agent's "B7 passes / B8 fails is a concurrency-
+  race" diagnosis was actually the cleanup RPC nuking just-booked
+  reservations 15–100 ms after creation. Harness is now safe to run.
+  Companion RPCs `harness_cancel_by_code` (single-reservation, gated
+  on test user profile) and `harness_cleanup_my_reservations` (uses
+  `auth.uid()`, only touches caller's own rows) stay.
 - **Voice-side flows verified working in real browser (2026-05-13).**
   Beyond book/modify/cancel above:
   - **Promos query** — "any deals at harbour sixty" → "Harbour Sixty

@@ -73,8 +73,10 @@ const IDLE_AUTO_CLOSE_MS = 120_000;
 // Suppress repeat wake-word fires within this window. The wake recognizer
 // occasionally bursts multiple onWake calls from fuzzy phrase matches
 // ("hey sanibel" / "hey soniva" / etc.) — without a debounce each call
-// re-runs the open-greeting flow.
-const WAKE_DEBOUNCE_MS = 3_000;
+// re-runs the open-greeting flow. 1.2 s is enough to swallow burst-fires
+// (which arrive within ~300 ms of each other) while still letting a user
+// say "Hey Cenaiva" twice in a row to retry a missed wake.
+const WAKE_DEBOUNCE_MS = 1_200;
 
 export function useAssistant(): AssistantContextValue | null {
   return useContext(AssistantCtx);
@@ -182,7 +184,12 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // their mic closed mid-thought. The IDLE_AUTO_CLOSE_MS timer (120s) is
   // the real "user gave up" signal; this cap is just a safety net so a
   // stuck recognizer can't loop forever.
-  const MAX_EMPTY_RELISTENS = 20;
+  // 3 empty turns in a row → surface an honest "didn't catch that" prompt
+  // instead of silent-looping for ~30 s. Combined with the 15 s no-speech
+  // window in useDeepgramTranscription, that's ~45 s of patience before
+  // we admit we missed it — well past anyone's natural attention span on
+  // a single utterance.
+  const MAX_EMPTY_RELISTENS = 3;
 
   // Sync hasCard into booking state so components and orchestrator requests can use it
   useEffect(() => {
@@ -1130,7 +1137,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
     if (state.isOpen) {
       forceStopWakeWord();
     } else {
-      const t = setTimeout(() => enableWakeWord(), 500);
+      // 200 ms re-arm — long enough for the close animation to start, short
+      // enough that a user saying "Hey Cenaiva" right after closing the
+      // assistant doesn't hit a dead window where the wake recognizer is
+      // neither active nor armed.
+      const t = setTimeout(() => enableWakeWord(), 200);
       return () => clearTimeout(t);
     }
   }, [isCustomerRoute, state.isOpen, forceStopWakeWord, enableWakeWord]);

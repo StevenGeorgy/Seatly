@@ -39,14 +39,22 @@ const TRANSCRIBE_QUERY: Record<string, string> = {
 };
 
 const TOKEN_TTL_BUFFER_MS = 5_000;
-// Silence threshold before ending the user's turn. 700 ms was aggressive —
-// natural pauses mid-sentence ("I would like to book… for me and my boy")
-// crossed it and Deepgram split the utterance into two turns. 1.5 s is more
-// forgiving without making turn-taking feel laggy. If you bump this further,
-// also bump TURN_TIMEOUT_MS so a stuck recognizer doesn't loop forever.
+// Silence threshold before ending the user's turn. 1.5 s is the snappy
+// baseline — the assistant starts replying ~500 ms sooner than the prior
+// 2 s value, which felt too long in live testing. Mid-sentence pauses
+// shorter than 1.5 s still ride through the RMS detection (any audible
+// hesitation re-arms the timer). The orb's RMS-driven pulse gives visual
+// feedback that the mic is still hot, so users can keep their voice
+// going through brief pauses instead of relying on the timer alone. If
+// you bump this further, also bump TURN_TIMEOUT_MS so a stuck recognizer
+// doesn't loop forever.
 const SILENCE_TIMEOUT_MS = 1_500;
-const NO_SPEECH_TIMEOUT_MS = 5_000;
-const TURN_TIMEOUT_MS = 30_000;
+// 15 s of patience after the user clicks the mic with nothing said.
+// Generous enough to think; short enough that an accidental click doesn't
+// hold the mic open for a minute.
+const NO_SPEECH_TIMEOUT_MS = 15_000;
+// Hard cap on a single utterance. 60 s covers genuinely long thoughts.
+const TURN_TIMEOUT_MS = 60_000;
 const STREAM_KEEP_WARM_MS = 12_000;
 const SPEECH_RMS_THRESHOLD = 0.015;
 const MAX_KEYTERMS = 12;
@@ -213,6 +221,19 @@ export function useDeepgramTranscription() {
   const recordingStartedAtRef = useRef(0);
   const keytermsRef = useRef<string[]>([]);
   const stoppingRef = useRef(false);
+  // Live mic loudness in [0, 1], updated ~60 Hz inside monitorLevels().
+  // Consumed by the voice orb to drive a "still listening" pulse. Stored in a
+  // ref + external-store subscribers (NOT useState) — a re-render 60×/sec on a
+  // hook this high in the tree would crater framerate.
+  const audioLevelRef = useRef(0);
+  const audioLevelSubscribersRef = useRef<Set<() => void>>(new Set());
+  const subscribeAudioLevel = useCallback((cb: () => void) => {
+    audioLevelSubscribersRef.current.add(cb);
+    return () => {
+      audioLevelSubscribersRef.current.delete(cb);
+    };
+  }, []);
+  const getAudioLevel = useCallback(() => audioLevelRef.current, []);
 
   const clearTurnTimer = useCallback(() => {
     if (turnTimerRef.current) {
@@ -246,6 +267,12 @@ export function useDeepgramTranscription() {
   const cleanupMedia = useCallback((opts?: { keepWarm?: boolean }) => {
     cancelLevelMonitor();
     clearTurnTimer();
+
+    // Reset the audio-level so the orb stops pulsing once the mic is no
+    // longer active. Notify subscribers so the orb re-reads via
+    // useSyncExternalStore.
+    audioLevelRef.current = 0;
+    audioLevelSubscribersRef.current.forEach((cb) => cb());
 
     if (sourceRef.current) {
       try { sourceRef.current.disconnect(); } catch { /* ignore */ }
@@ -337,6 +364,12 @@ export function useDeepgramTranscription() {
       }
       const rms = Math.sqrt(sumSquares / samples.length);
       const now = Date.now();
+
+      // Push RMS into the audio-level store so the orb can pulse with the
+      // user's voice. Scale: speech threshold (~0.015) maps to ~0.12;
+      // shouted-into-mic (~0.125) maps to 1.0. Clamped to [0, 1].
+      audioLevelRef.current = Math.min(1, rms * 8);
+      audioLevelSubscribersRef.current.forEach((cb) => cb());
 
       if (rms >= SPEECH_RMS_THRESHOLD) {
         speechDetectedRef.current = true;
@@ -499,6 +532,8 @@ export function useDeepgramTranscription() {
     isRecording,
     startRecognition,
     stopRecognition,
+    subscribeAudioLevel,
+    getAudioLevel,
     isSupported:
       typeof window !== "undefined" &&
       typeof MediaRecorder !== "undefined" &&

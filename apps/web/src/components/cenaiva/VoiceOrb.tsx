@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { Mic, MicOff, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -7,7 +8,13 @@ interface VoiceOrbProps {
   status: VoiceStatus;
   onClick: () => void;
   className?: string;
+  /** External store of live mic loudness [0, 1]; used to pulse the orb. */
+  subscribeAudioLevel?: (cb: () => void) => () => void;
+  getAudioLevel?: () => number;
 }
+
+const NOOP_SUBSCRIBE = () => () => {};
+const ZERO_LEVEL = () => 0;
 
 const STATUS_STYLES: Record<VoiceStatus, string> = {
   idle: "bg-gradient-to-br from-[#C8A951] to-[#A68B3E] shadow-[0_0_20px_rgba(200,169,81,0.3)]",
@@ -18,7 +25,20 @@ const STATUS_STYLES: Record<VoiceStatus, string> = {
   error: "bg-gradient-to-br from-red-500 to-red-700 shadow-[0_0_20px_rgba(239,68,68,0.4)]",
 };
 
-export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
+export function VoiceOrb({ status, onClick, className, subscribeAudioLevel, getAudioLevel }: VoiceOrbProps) {
+  // Subscribe to mic-loudness from useDeepgramTranscription via external
+  // store — never useState. RMS updates ~60 Hz; routing through React state
+  // here would re-render the orb (and any parent reading the level prop)
+  // on every audio frame, tanking framerate. useSyncExternalStore is the
+  // intended primitive for "rapid external mutable state".
+  const audioLevel = useSyncExternalStore(
+    subscribeAudioLevel ?? NOOP_SUBSCRIBE,
+    getAudioLevel ?? ZERO_LEVEL,
+    ZERO_LEVEL,
+  );
+  const isPulsing = status === "listening";
+  const pulseScale = isPulsing ? 1 + audioLevel * 0.18 : 1;
+  const pulseOpacity = isPulsing ? 0.35 + audioLevel * 0.55 : 0.5;
   return (
     <motion.button
       onClick={onClick}
@@ -32,9 +52,17 @@ export function VoiceOrb({ status, onClick, className }: VoiceOrbProps) {
       whileTap={{ scale: 0.95 }}
       aria-label={status === "listening" ? "Stop listening" : "Start listening"}
     >
-      {/* Pulse ring when listening */}
-      {status === "listening" && (
-        <span className="pointer-events-none absolute inset-0 rounded-full border-2 border-[#C8A951]/50" />
+      {/* RMS-driven pulse ring when listening — gives the user visual proof
+          the mic is still hot, replacing any countdown/timer affordance. */}
+      {isPulsing && (
+        <span
+          className="pointer-events-none absolute inset-0 rounded-full border-2 border-[#C8A951]"
+          style={{
+            transform: `scale(${pulseScale})`,
+            opacity: pulseOpacity,
+            transition: "transform 80ms linear, opacity 80ms linear",
+          }}
+        />
       )}
 
       {/* Speaking wave rings */}

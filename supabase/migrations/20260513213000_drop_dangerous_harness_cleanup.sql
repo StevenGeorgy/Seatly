@@ -1,0 +1,13 @@
+-- Drop the unscoped harness_cleanup_test_user() RPC. It was SECURITY DEFINER,
+-- anon-callable, and unconditionally cancelled every confirmed / pending /
+-- seated / arriving reservation belonging to Mark Habbi's user_profile_id
+-- (hardcoded in the function body). Since the anon key is exposed in the
+-- public JS bundle, any caller could wipe Mark's bookings.
+--
+-- The harness was updated to call harness_cancel_by_ids(p_ids uuid[]) — which
+-- is properly scoped: it only cancels rows whose ids are explicitly passed in
+-- AND whose user_profile_id matches the test profile. That function stays.
+--
+-- Pre-beta hardening; safe to drop because no caller remains
+-- (verified via repo-wide grep prior to applying this migration).
+DROP FUNCTION IF EXISTS public.harness_cleanup_test_user();
