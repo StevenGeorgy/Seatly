@@ -696,12 +696,17 @@ function makeResponse(opts: {
   };
 }
 
-function questionForMissing(booking: BookingState): {
+// DIVERGED FROM MOBILE 2026-05-13 — added restaurantName param so Stage 1 responses include restaurant context. Backward-compatible (optional).
+function questionForMissing(
+  booking: BookingState,
+  restaurantName?: string | null,
+): {
   text: string;
   intent: AssistantResponseType["intent"];
   step: AssistantResponseType["step"];
   next: AssistantResponseType["next_expected_input"];
 } {
+  const name = restaurantName?.trim() || null;
   if (!booking.restaurant_id) {
     return {
       text: "What restaurant or area should I book?",
@@ -712,7 +717,7 @@ function questionForMissing(booking: BookingState): {
   }
   if (booking.party_size == null) {
     return {
-      text: "How many guests?",
+      text: name ? `How many guests at ${name}?` : "How many guests?",
       intent: "choose_party_size",
       step: "choose_party",
       next: "party_size",
@@ -720,7 +725,7 @@ function questionForMissing(booking: BookingState): {
   }
   if (!booking.date && !booking.time) {
     return {
-      text: "What date and time should I book?",
+      text: name ? `What date and time for ${name}?` : "What date and time should I book?",
       intent: "choose_date",
       step: "choose_date",
       next: "date",
@@ -728,14 +733,14 @@ function questionForMissing(booking: BookingState): {
   }
   if (!booking.date) {
     return {
-      text: "What date should I book?",
+      text: name ? `What date for ${name}?` : "What date should I book?",
       intent: "choose_date",
       step: "choose_date",
       next: "date",
     };
   }
   return {
-    text: "What time should I book?",
+    text: name ? `What time at ${name}?` : "What time should I book?",
     intent: "choose_time",
     step: "choose_time",
     next: "time",
@@ -854,6 +859,26 @@ export function planLocalBookingTurn(ctx: LocalBookingContext): LocalBookingDeci
 
   if (BACKEND_STATUSES.has(booking.status)) return { kind: "pass" };
   if (booking.status === "confirming" && isAffirmative(transcript)) return { kind: "pass" };
+  // Pending modify-disambig — the prior orchestrator turn asked "which one?"
+  // and stashed candidates. The next utterance (restaurant name, weekday,
+  // date) is a disambig answer; must reach the orchestrator's follow-up
+  // handler, not Stage 1's missing-fields prompt.
+  if ((booking as unknown as { pending_modify_disambig?: unknown }).pending_modify_disambig) {
+    return { kind: "pass" };
+  }
+  // Modify/cancel intent — these must go to the orchestrator's modify handler,
+  // not the booking collector. Without this, transcripts like "change my
+  // jacobs reservation to 7pm" parse a time (7pm) and trigger the
+  // missing-fields branch ("What restaurant or area should I book?") instead
+  // of routing to the orchestrator's reservation-lookup + modify handler.
+  // Verb regex matches modify/cancel intent words; target regex allows an
+  // optional 0-3 word restaurant adjective between "my/the" and the noun.
+  if (
+    /\b(?:modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript) &&
+    /\b(?:it|that|that one|my\s+(?:[\w'’&-]+\s+){0,3}(?:booking|reservation|table|rez|res|dinner|date|time|party|spot|sitting)|the\s+(?:[\w'’&-]+\s+){0,3}(?:booking|reservation|table|rez|res|date|time|party))\b/i.test(transcript)
+  ) {
+    return { kind: "pass" };
+  }
 
   const pendingChoice = choosePendingOption(transcript, ctx.pendingOptions);
   if (pendingChoice) {
@@ -997,7 +1022,7 @@ export function planLocalBookingTurn(ctx: LocalBookingContext): LocalBookingDeci
     nextPartySize == null ||
     (!availabilityIntent && (!nextBooking.date || !nextBooking.time))
   ) {
-    const missing = questionForMissing(nextBooking);
+    const missing = questionForMissing(nextBooking, nextBooking.restaurant_name ?? restaurantName);
     return {
       kind: "local_response",
       clearPendingOptions: true,

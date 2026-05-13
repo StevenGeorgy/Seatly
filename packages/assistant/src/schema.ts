@@ -165,6 +165,33 @@ export const BookingDeltaSchema = z.object({
     unit_price: z.number(),
     note: z.string().nullable().optional(),
   })).optional(),
+  // Event/promo auto-attach context. Set by the orchestrator's event-
+  // search or direct book-by-event handlers; read by the booking flow's
+  // resolveEventAttachment so the user's "yes confirm" wires up the right
+  // event_id / promotion_id. Must round-trip client → orchestrator on
+  // every turn so multi-turn confirmations work.
+  offered_events: z.array(z.object({
+    id: z.string(),
+    name: z.string().nullable().optional(),
+    date: z.string().nullable().optional(),
+    start_time: z.string().nullable().optional(),
+    end_time: z.string().nullable().optional(),
+  })).nullable().optional(),
+  offered_promotion: z.object({
+    id: z.string(),
+    promo_code: z.string().nullable().optional(),
+    title: z.string().nullable().optional(),
+  }).nullable().optional(),
+  // Multi-turn modify scratch — when the user says "change my reservation to
+  // 8pm" on turn 1, the orchestrator stashes whatever fields it parsed
+  // (date / time / party) into these slots and asks for the missing piece(s).
+  // Turn 2 ("thursday at 8pm") then resolves the full new slot. These MUST
+  // round-trip client ↔ orchestrator on every turn or the modify continuation
+  // detector (isContinuingModify) misses the prior turn's data and the standard
+  // booking-collection flow hijacks the turn instead. 2026-05-13 fix.
+  modify_date: z.string().nullable().optional(),
+  modify_time: z.string().nullable().optional(),
+  modify_party: z.number().nullable().optional(),
 });
 
 export const MapDeltaSchema = z.object({

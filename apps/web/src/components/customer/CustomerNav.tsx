@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useUser } from "@/hooks/useUser";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
+import { buildWakeGreeting } from "@/lib/cenaiva/buildWakeGreeting";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
@@ -21,7 +22,7 @@ type NavItem = {
 export function CustomerNav() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isStaff, canUseCustomerView, switchToCustomerView } = useUser();
+  const { user, isStaff, canUseCustomerView, switchToCustomerView } = useUser();
   const assistant = useAssistant();
 
   const goCustomer = useCallback(
@@ -102,13 +103,21 @@ export function CustomerNav() {
           </Link>
         );
       })}
-      <button
-        type="button"
-        onClick={() => assistant?.open(undefined, undefined, { autoListen: false })}
-        className="rounded-md px-4 py-2.5 text-base font-medium text-text-secondary transition-colors hover:text-white md:px-5 md:py-3"
-      >
-        Concierge
-      </button>
+      {import.meta.env.VITE_CENAIVA_AI_DISABLED !== "true" && (
+        <button
+          type="button"
+          onClick={() => {
+            // Same flow as the wake-word path: play a friendly greeting via
+            // TTS, then auto-start the mic so the user can speak immediately
+            // without tapping the orb. Per user 2026-05-11.
+            const greetingText = buildWakeGreeting(user ?? null);
+            assistant?.open(undefined, undefined, { autoListen: true, greetingText });
+          }}
+          className="rounded-md px-4 py-2.5 text-base font-medium text-text-secondary transition-colors hover:text-white md:px-5 md:py-3"
+        >
+          Concierge
+        </button>
+      )}
     </nav>
   );
 }

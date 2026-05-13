@@ -71,11 +71,22 @@ function createLatencyTimer(label: string) {
       return value;
     },
     done(extra: Record<string, unknown> = {}) {
+      const total_ms = Math.round(performance.now() - start);
+      // Always emit a lightweight summary line for production observability.
+      // Searchable in Supabase function logs as `kind=cenaiva_turn`.
+      console.log(JSON.stringify({
+        kind: "cenaiva_turn",
+        label,
+        total_ms,
+        ts: new Date().toISOString(),
+        ...extra,
+      }));
+      // Detailed mark breakdown only when CENAIVA_LATENCY_DEBUG=1.
       if (!LATENCY_DEBUG) return;
       console.log(JSON.stringify({
         kind: "latency",
         label,
-        total_ms: Math.round(performance.now() - start),
+        total_ms,
         marks,
         ...extra,
       }));
@@ -530,8 +541,8 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           },
           sort_by: {
             type: "string",
-            enum: ["rating", "distance", "price_asc", "price_desc"],
-            description: "rating=top-rated request; distance=proximity request (pair with near_user); price_asc=cheapest first; price_desc=fanciest first.",
+            enum: ["rating", "popularity", "distance", "price_asc", "price_desc"],
+            description: "rating=top-rated request; popularity=most-booked-recently request (use for 'popular', 'trending', 'most booked', 'hot spots'); distance=proximity request (pair with near_user); price_asc=cheapest first; price_desc=fanciest first.",
           },
           with_active_promotion: {
             type: "boolean",
@@ -766,6 +777,11 @@ function parsePartySizeRange(raw: string): { min: number; max: number } | null {
 function parsePartySize(raw: string): number | null {
   const t = normalizeSpokenDigits(stripFiller(raw));
   if (hasUncertainPartySize(raw)) return null;
+  // Reject explicit negatives — "book for -2 people" → don't book for 2.
+  // Edge-probe finding 2026-05-13. The peopleMatch regex used \b\d which
+  // matches the digit even when preceded by a minus (word boundary lies
+  // between "-" and "2").
+  if (/(?:^|\s|\bfor|\bwith|\bof)\s*-\s*\d/.test(t)) return null;
   const adultsKids = t.match(
     /\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s+adults?\b[\s\S]{0,30}\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:kids?|children)\b/,
   );
@@ -824,7 +840,11 @@ function parsePartySize(raw: string): number | null {
     if (n != null) return n;
   }
   // "N people" / "N guests" / "N ppl" / "N pax" / "N persons" — informal abbrevs
-  const peopleMatch = t.match(/\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(people|ppl|guests?|adults|pax|persons?|heads?|of us)\b/);
+  // Also colloquial group words: amigos / pals / peeps / mates / buddies / friends /
+  // dudes / guys / chicas. Judge-finding 2026-05-12: "book mark testing for two
+  // amigos thursday at 7pm" — party=2 not extracted because "amigos" wasn't in
+  // the noun list.
+  const peopleMatch = t.match(/\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(people|ppl|guests?|adults|pax|persons?|heads?|of us|amigos|pals|peeps|mates|buddies|friends|dudes|guys|chicas|gals|gents|fellas)\b/);
   if (peopleMatch) {
     const n = numberTokenToInt(peopleMatch[1]);
     // Validate: 1-99 only. "0 people" / "100 people" → null so booking flow asks again.
@@ -874,6 +894,13 @@ function formatPromptNow(timezone: string): string {
 function parseDateInTimeZone(raw: string, timezone: string): string | null {
   const t = stripFiller(raw);
   const todayIso = formatISODateInTimeZone(new Date(), timezone);
+  // Reject explicit past references — "last friday" is in the past, can't
+  // be booked. Also "yesterday", "last week", "last month", etc. Returning
+  // null lets the upstream handler ask the user for a future date.
+  // Edge-probe finding 2026-05-13.
+  if (/\b(yesterday|last\s+(?:week|month|year|sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat))\b/i.test(t)) {
+    return null;
+  }
   if (/\b(today|tonight|this\s+evening)\b/.test(t)) return todayIso;
   if (/\btomorrow\b/.test(t)) {
     return addDaysToISODate(todayIso, 1);
@@ -1238,10 +1265,12 @@ function formatBookingDateForSpeech(dateStr: string): string {
   const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
   if (!year || !month || !day) return dateStr;
   const localNoon = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  // Full weekday + full month for human readability — "Monday, May 13" not
+  // "Mon, May 13". Audit caught 2026-05-11.
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "UTC",
-    weekday: "short",
-    month: "short",
+    weekday: "long",
+    month: "long",
     day: "numeric",
   }).format(localNoon);
 }
@@ -1665,7 +1694,7 @@ type SearchMenuCategoryRow = {
   name?: string | null;
 };
 
-type DiscoverySortMode = "distance" | "rating" | "price_asc" | "price_desc" | "fit";
+type DiscoverySortMode = "distance" | "rating" | "popularity" | "price_asc" | "price_desc" | "fit";
 
 type DiscoveryMemory = {
   transcript: string | null;
@@ -1955,7 +1984,7 @@ function parseStringArray(value: unknown): string[] {
 }
 
 function parseDiscoverySortMode(value: unknown): DiscoverySortMode | null {
-  return value === "distance" || value === "rating" || value === "price_asc" || value === "price_desc" || value === "fit"
+  return value === "distance" || value === "rating" || value === "popularity" || value === "price_asc" || value === "price_desc" || value === "fit"
     ? value
     : null;
 }
@@ -2275,6 +2304,99 @@ function formatDateForSpeech(dateStr: string): string {
   }).format(localNoon);
 }
 
+// Event auto-attachment: if the prior turn's events handler stashed
+// `offered_events` in booking_state (a list of {id, date, start_time, end_time}),
+// and the user's chosen reserved_at falls within EXACTLY ONE of those event
+// time windows in the restaurant's timezone, return that event's id so the
+// reservation gets tagged with it. The dashboard's "Wine Pairing Dinner
+// attendees" view then lists this booking. Returns null when zero or 2+
+// events match (ambiguous — user must say which event explicitly).
+function resolveEventAttachment(
+  bookingState: Record<string, unknown>,
+  reservedAtIso: string,
+  timezone: string | null,
+): string | null {
+  const offered = bookingState.offered_events;
+  if (!Array.isArray(offered) || offered.length === 0) return null;
+  const tz = timezone || "UTC";
+  let when: Date;
+  try { when = new Date(reservedAtIso); if (Number.isNaN(when.getTime())) return null; } catch { return null; }
+  const localDate = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "numeric" }).format(when); // yyyy-mm-dd
+  const localTime = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(when); // HH:MM
+  // Compute the weekday of the reservation in restaurant's tz for recurring-event match.
+  // Intl returns "Monday".."Sunday" — we just need stable comparison vs the event's weekday.
+  const localWeekday = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(when);
+  // Collect candidates with start_time so we can tie-break by proximity when
+  // multiple events overlap the reservation time (e.g. a recurring 8pm Live
+  // Music event AND a one-off noon-to-late Rib Festival both match an 8pm
+  // booking date+window).
+  const candidates: Array<{ id: string; start: string }> = [];
+  for (const raw of offered) {
+    const ev = raw as Record<string, unknown>;
+    const id = typeof ev.id === "string" ? ev.id : null;
+    const date = typeof ev.date === "string" ? ev.date.slice(0, 10) : null;
+    const start = typeof ev.start_time === "string" ? ev.start_time.slice(0, 5) : null;
+    const end = typeof ev.end_time === "string" ? ev.end_time.slice(0, 5) : "23:59";
+    const isRecurring = ev.is_recurring === true;
+    const endDate = typeof ev.end_date === "string" ? ev.end_date.slice(0, 10) : null;
+    if (!id || !date || !start) continue;
+    const wraps = end < start;
+    const inWindow = wraps
+      ? (localTime >= start || localTime < end)
+      : (localTime >= start && localTime < end);
+    if (!inWindow) continue;
+    if (isRecurring) {
+      const eventWeekday = (() => {
+        const evDate = new Date(`${date}T12:00:00Z`);
+        return new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(evDate);
+      })();
+      if (eventWeekday !== localWeekday) continue;
+      if (localDate < date) continue;
+      if (endDate && localDate > endDate) continue;
+      candidates.push({ id, start });
+    } else {
+      if (date !== localDate) continue;
+      candidates.push({ id, start });
+    }
+  }
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0].id;
+  // Tie-break: pick the event whose start_time is closest (in absolute minutes)
+  // to the reservation's localTime. A booking at 20:00 vs candidates starting
+  // at 20:00 (delta 0) and 12:00 (delta 480) → pick 20:00.
+  const toMin = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map((v) => parseInt(v, 10));
+    return (h || 0) * 60 + (m || 0);
+  };
+  const localMin = toMin(localTime);
+  let best = candidates[0];
+  let bestDelta = Math.abs(toMin(best.start) - localMin);
+  for (let i = 1; i < candidates.length; i++) {
+    const delta = Math.abs(toMin(candidates[i].start) - localMin);
+    if (delta < bestDelta) {
+      best = candidates[i];
+      bestDelta = delta;
+    }
+  }
+  return best.id;
+}
+
+// Promotion auto-attachment: if the prior turn's promotions handler stashed
+// `offered_promotion` (a single {id, code, title}) in booking_state, attach
+// that promo to the booking. Promos don't have a strict date/time window the
+// way events do, so we just attach the most-recently-offered one.
+function resolvePromotionAttachment(
+  bookingState: Record<string, unknown>,
+): { id: string; code: string | null } | null {
+  const offered = bookingState.offered_promotion;
+  if (!offered || typeof offered !== "object") return null;
+  const o = offered as Record<string, unknown>;
+  const id = typeof o.id === "string" ? o.id : null;
+  if (!id) return null;
+  const code = typeof o.code === "string" ? o.code : (typeof o.promo_code === "string" ? o.promo_code : null);
+  return { id, code };
+}
+
 function restaurantHoursQuestionIntent(transcript: string): boolean {
   // Skip when the user is talking about a relative time delta ("an hour later",
   // "push it back an hour", "30 minutes earlier") — that's a modify intent,
@@ -2366,7 +2488,43 @@ function insufficientCapacityAvailabilityText(
 }
 
 function directBookingIntent(transcript: string): boolean {
-  return /\b(book|reserve|get me a table|get me a spot|make a reservation|lock in|set up|set me up|hold a table|grab|snag)\b/i.test(transcript);
+  if (/\b(book|reserve|get me a table|get me a spot|make a reservation|lock in|set up|set me up|hold a table|grab|snag)\b/i.test(transcript)) return true;
+  // Casual booking phrasings — "I want to go to X" / "I'd like to try X" /
+  // "let's go to X" / "take my girlfriend to X" / "hit up X". Note the
+  // apostrophe variants — "I'd" doesn't have a space between "I" and "'d",
+  // so we match the apostrophe form separately. Without recognizing these
+  // as booking intents, the small-prompt classifier intercepts and the
+  // LLM occasionally responds with misclassified menu / discovery
+  // questions. User-reported bug 2026-05-11: "I want to go to harbour
+  // sixty because a friend recommended me it" was being answered as a
+  // menu question.
+  if (
+    /\b(?:i\s+(?:want|wanna|need|would\s+like|just\s+want)|i'?d\s+like|let'?s|gonna|i'?m\s+going|wanna)\s+(?:to\s+)?(?:go|head|grab\s+(?:a\s+)?(?:bite|seat|meal|table|drink)|eat|dine|hit\s+up|check\s+out|try|visit)\s+(?:to\s+|at\s+|the\s+)?[a-z]/i.test(transcript)
+  ) return true;
+  if (
+    /\b(?:take|bring|treat)\s+(?:my\s+|the\s+|our\s+)?(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|friends|buddy|buddies|mate|mates|family|parents|kids|kid|child|children|mom|mum|dad|son|daughter|sister|brother|cousin|coworker|colleague|team|guests?)\s+(?:to|at|out\s+to|for\s+dinner\s+at|for\s+lunch\s+at)\s+(?:the\s+)?[a-z]/i.test(transcript)
+  ) return true;
+  // Indirect / tentative phrasings — "what about X", "how about X",
+  // "can you get me into X", "any chance of a table at X", "thinking of
+  // going to X", "feel like X". Smoke-test regression 2026-05-11:
+  // "Can you get me into Baton Rouge for 2 tonight around 7-ish?" and
+  // "What about Baton Rouge tomorrow?" were both bouncing to the
+  // small-prompt collector ("What restaurant or area should I book?").
+  if (
+    /\b(?:what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)\s+(?:in\s+at|into|in|a\s+table\s+at|at)|any\s+chance\s+(?:of|i\s+can\s+get|to\s+get)\s+(?:a\s+table\s+at|in(?:to)?|us\s+(?:in(?:to)?|at))|thinking\s+(?:of|about)\s+(?:going\s+to|trying)|feel\s+like)\s+(?:the\s+)?[a-z]/i.test(transcript)
+  ) return true;
+  // Recommendation / companion phrasings — "my boy recommended X", "X
+  // recommended me to go to Y", "I heard about Z", "want to take my
+  // girlfriend out". User bug 2026-05-12: "my boy recommended me to go to
+  // harbour 60 and I want to take my girlfriend out" was being routed to
+  // the small-prompt LLM and answered with a goodbye line.
+  if (
+    /\b(?:(?:my|a)\s+(?:friend|buddy|boy|girl|coworker|colleague|sister|brother|mom|mum|dad|wife|husband|partner|date|sis|bro|son|daughter|cousin)\s+(?:recommended|said|told\s+me\s+about|mentioned|raved\s+about|loves)|recommended\s+(?:me\s+)?(?:to\s+go\s+to|to\s+try|me\s+to\s+try)|i\s+(?:heard|read)\s+about|i'?ve\s+heard\s+(?:great\s+things\s+)?about|been\s+meaning\s+to\s+(?:try|go\s+to|check\s+out))\b/i.test(transcript)
+  ) return true;
+  if (
+    /\b(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|friends|buddy|buddies|mate|mates|family|parents|kids?|child|children|mom|mum|dad|son|daughter|sister|brother|cousin|coworker|colleague|team)\s+(?:out|for\s+dinner|for\s+lunch|for\s+drinks|for\s+a\s+date|for\s+an?\s+anniversary|for\s+a\s+birthday)\b/i.test(transcript)
+  ) return true;
+  return false;
 }
 
 function normalizedIntentText(transcript: string): string {
@@ -2415,7 +2573,7 @@ function clearlySmallPromptIntent(transcript: string): boolean {
       !/\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)\b/i.test(normalized) &&
       !/\b(?:noon|midnight|morning|afternoon|evening|tonight|tomorrow|today|earlier|later|sooner|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(normalized) &&
       !/\b(?:instead|change|switch|move|update|reschedule|push|bump|shift|adjust|edit|modify)\b/i.test(normalized) &&
-      !/\b(restaurant|restaurants|reservation|reserve|book|booking|table|seat|seating|dine|dining|menu|cuisine|preorder|order|takeout|directions|rewards|bar|cafe|coffee|near me|nearby|closest|open|patio|booth|outdoor|indoor|dinner|lunch|breakfast|brunch|food|eat|hungry)\b/i
+      !/\b(restaurant|restaurants|reservation|reserve|book|booking|table|seat|seating|dine|dining|menu|cuisine|preorder|order|takeout|directions|rewards|bar|cafe|coffee|near me|nearby|closest|open|patio|booth|outdoor|indoor|dinner|lunch|breakfast|brunch|food|eat|hungry|confirmation|reference)\b/i
         .test(normalized));
 }
 
@@ -2452,8 +2610,13 @@ function restaurantFactLookupIntent(transcript: string): boolean {
     /\bwhat\s+(?:city|state|area|neighborhood|address|phone|number|cuisine|food|hours|time|price|menu|drinks?|about|kind|type|sort|reviews?|rating)\b/i
       .test(transcript)
   ) return true;
-  // "what's the/their phone (number)"
-  if (/\bwhat(?:'?s| is)\s+(?:the|their|its)\s+(?:phone|number|address|location|hours|cuisine|menu|price|contact)\b/i.test(transcript)) return true;
+  // "what's the/their phone (number)" / "what are your hours" — also catches
+  // "your" possessive and "are/were" verb forms so "what are your hours"
+  // routes to preflight instead of small-prompt. Wide-probe finding 2026-05-13.
+  if (/\bwhat(?:'?s| is| are| were)\s+(?:the|their|its|your)\s+(?:phone|number|address|location|hours|cuisine|menu|price|contact)\b/i.test(transcript)) return true;
+  if (/\bwhat\s+time\s+(?:do|does)\s+(?:they|it|you)\s+(?:open|close|opens|closes)\b/i.test(transcript)) return true;
+  if (/\b(?:are|is)\s+(?:they|it|you)\s+(?:open|closed)\b/i.test(transcript)) return true;
+  if (/\bis\s+it\s+(?:fancy|expensive|cheap|pricey|good|busy|popular|quiet|loud|trendy|hip|cozy|romantic|casual|kid[-\s]?friendly|family[-\s]?friendly|dog[-\s]?friendly)\b/i.test(transcript)) return true;
   // "how (much|expensive|cheap|pricey|busy|popular|far|good) is X"
   if (/\bhow\s+(?:much|expensive|cheap|pricey|busy|popular|far|late|early|long|good|fancy|casual)\b/i.test(transcript)) return true;
   // "does X (have|serve|allow|take|offer) Y" — capability questions.
@@ -2537,8 +2700,29 @@ function bookingFieldReplyIntent(
 }
 
 function menuQuestionIntent(transcript: string): boolean {
-  return /\b(menu|have|serve|preorder|kids meals?|vegan|gluten[- ]free|steak|pasta|pizza|spicy|alcohol|tiramisu|no onions|onions)\b/i.test(transcript) &&
-    /\b(does|do|can|what|which|is|are)\b/i.test(transcript);
+  // Q-shape: "do they serve X" / "what's on the menu" / etc.
+  if (
+    /\b(menu|have|serve|preorder|kids meals?|vegan|gluten[- ]free|steak|pasta|pizza|spicy|alcohol|tiramisu|no onions|onions)\b/i.test(transcript) &&
+    /\b(does|do|can|what|which|is|are)\b/i.test(transcript)
+  ) return true;
+  // Category-only noun + restaurant — "appetizers at X" / "starters at X" /
+  // "wine list at X" / "kids menu at X" / "X's drinks". These read as
+  // implicit menu questions; voice should answer rather than route to the
+  // small-prompt LLM. Added 2026-05-11 for menu Q&A always-answer rule.
+  if (
+    /\b(?:appetizers?|entrees?|mains?|starters?|sides?|desserts?|kids?\s+menu|drink\s+(?:list|menu)|wine\s+(?:list|menu)|beer\s+(?:list|menu)|cocktail\s+(?:list|menu)|menu)\s+(?:at|for|from)\s+[a-z]/i.test(transcript)
+  ) return true;
+  if (
+    /\b[a-z][a-z0-9'’\s&]{1,40}?(?:'?s)\s+(?:menu|appetizers?|entrees?|mains?|starters?|desserts?|drinks?)\b/i.test(transcript)
+  ) return true;
+  // "any vegan|vegetarian|gluten-free|halal|kosher options" — without an
+  // explicit question word, treat as a menu/dietary inquiry. Extended to
+  // also catch bare food-category asks ("any desserts", "got starters",
+  // "have any appetizers"). 2026-05-11.
+  if (
+    /\b(?:any|got|have|got\s+any|do\s+(?:you|they)\s+have)\s+(?:vegan|vegetarian|gluten[- ]?free|halal|kosher|dairy[- ]?free|nut[- ]?free|appetizers?|entrees?|mains?|starters?|sides?|desserts?)\s*(?:options?|items?|dishes?|food)?\b/i.test(transcript)
+  ) return true;
+  return false;
 }
 
 function allergyIntent(transcript: string): boolean {
@@ -2681,7 +2865,8 @@ function inferDiscoverySortMode(transcript: string, explicit?: unknown): Discove
   const parsed = parseDiscoverySortMode(explicit);
   if (parsed) return parsed;
   if (/\b(close|closest|near me|nearby|around here|walking distance|nearest)\b/i.test(transcript)) return "distance";
-  if (/\b(rating|rated|best reviewed|reviews)\b/i.test(transcript)) return "rating";
+  if (/\b(rating|rated|best reviewed|reviews|top[\s-]?rated)\b/i.test(transcript)) return "rating";
+  if (/\b(popular|trending|hot|most[\s-]?booked|busy|in[\s-]?demand|hottest|hot[\s-]?spots?)\b/i.test(transcript)) return "popularity";
   if (/\b(cheap|affordable|budget|not too expensive|deal|deals|special|happy hour)\b/i.test(transcript)) return "price_asc";
   if (inferRecommendationOccasion(transcript)) return "fit";
   return null;
@@ -2790,7 +2975,7 @@ async function fetchActiveRestaurants(): Promise<SearchRestaurantRow[]> {
   activeRestaurantsInFlight = (async () => {
     const { data, error } = await supabaseAdmin
       .from("restaurants")
-      .select("id, name, cuisine_type, city, address, description, lat, lng, price_range, avg_rating, business_type, hours_json, phone")
+      .select("id, name, cuisine_type, city, address, description, lat, lng, price_range, avg_rating, bookings_last_30d, business_type, hours_json, phone")
       .eq("is_active", true)
       .limit(120);
     if (error) {
@@ -2810,6 +2995,22 @@ function restaurantNameMatchesTranscript(row: SearchRestaurantRow, normalizedTra
   const name = normalizeSearchText(row.name ?? "");
   if (!name || name.length < 3) return false;
   if (normalizedTranscript.includes(name)) return true;
+  // Filter to "significant" tokens: skip common generic suffixes that don't
+  // distinguish the restaurant (steakhouse, restaurant, inc, & co, etc.).
+  // Without this, "book at harbour sixty" can't match "Harbour Sixty Steakhouse"
+  // because the user didn't say "steakhouse" — but the distinctive "harbour"
+  // and "sixty" ARE in the transcript. Match if all NON-GENERIC tokens appear.
+  const GENERIC_TOKENS = new Set([
+    "the", "restaurant", "steakhouse", "bar", "grill", "kitchen", "cafe",
+    "bistro", "house", "lounge", "co", "inc", "ltd", "and", "eatery", "tavern",
+  ]);
+  const significant = name
+    .split(" ")
+    .filter((token) => token.length > 2 && !GENERIC_TOKENS.has(token));
+  if (significant.length >= 1 && significant.every((token) => normalizedTranscript.includes(token))) {
+    return true;
+  }
+  // Fallback to original behaviour: all tokens >= 3 chars (incl. generic) match.
   const tokens = name.split(" ").filter((token) => token.length > 2 && token !== "the");
   return tokens.length >= 2 && tokens.every((token) => normalizedTranscript.includes(token));
 }
@@ -2969,6 +3170,17 @@ function topRecommendationRows(
       if (sortMode === "distance") {
         return (a.distance_km ?? Infinity) - (b.distance_km ?? Infinity) ||
           (b.avg_rating ?? 0) - (a.avg_rating ?? 0);
+      }
+      if (sortMode === "popularity") {
+        // popularity = bookings_last_30d. Tiebreak by avg_rating.
+        const aPop = typeof (a as Record<string, unknown>).bookings_last_30d === "number"
+          ? ((a as Record<string, unknown>).bookings_last_30d as number) : 0;
+        const bPop = typeof (b as Record<string, unknown>).bookings_last_30d === "number"
+          ? ((b as Record<string, unknown>).bookings_last_30d as number) : 0;
+        return bPop - aPop || (b.avg_rating ?? 0) - (a.avg_rating ?? 0);
+      }
+      if (sortMode === "rating") {
+        return (b.avg_rating ?? 0) - (a.avg_rating ?? 0);
       }
       return scoreRecommendationFit(b, occasion, transcript) - scoreRecommendationFit(a, occasion, transcript) ||
         (b.avg_rating ?? 0) - (a.avg_rating ?? 0);
@@ -3185,16 +3397,54 @@ async function confirmPendingAction(
     });
   }
 
-  const reservationId = String(pending.payload.reservation_id ?? opts.bookingState.reservation_id ?? "");
+  let reservationId = String(pending.payload.reservation_id ?? opts.bookingState.reservation_id ?? "");
   if (!UUID_RE.test(reservationId)) {
-    return makeAssistantPayload({
-      conversationId: opts.conversationId,
-      spokenText: "I can't update that reservation from here yet. Please open the reservation details.",
-      intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
-      step: "done",
-      nextExpectedInput: "none",
-      booking: { pending_action: null },
-    });
+    // Fallback: pending_action was queued without a valid rid (orchestrator
+    // glitch or stale state). Look up the user's most recent ACTIVE future
+    // reservation. If exactly one exists, use it. Otherwise ask the user
+    // to pick. Judge finding 2026-05-12: bare "yes" landed here with no rid
+    // and the dismissive "I can't update from here yet" reply confused users.
+    if (opts.userProfileId && UUID_RE.test(opts.userProfileId)) {
+      const nowIso = new Date().toISOString();
+      const { data: active } = await supabaseAdmin
+        .from("reservations")
+        .select("id, restaurant_id, reserved_at")
+        .eq("user_profile_id", opts.userProfileId)
+        .neq("status", "cancelled")
+        .gte("reserved_at", nowIso)
+        .order("reserved_at", { ascending: true })
+        .limit(2);
+      if (active && active.length === 1 && UUID_RE.test(active[0].id as string)) {
+        reservationId = active[0].id as string;
+      } else if (active && active.length > 1) {
+        return makeAssistantPayload({
+          conversationId: opts.conversationId,
+          spokenText: "You have a few active bookings — which one should I update? Tell me the date or restaurant.",
+          intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
+          step: "choose_reservation",
+          nextExpectedInput: "free_text",
+          booking: { pending_action: null },
+        });
+      } else {
+        return makeAssistantPayload({
+          conversationId: opts.conversationId,
+          spokenText: "You don't have any active reservations to change right now. Want to book a new one?",
+          intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: { pending_action: null, status: "idle" },
+        });
+      }
+    } else {
+      return makeAssistantPayload({
+        conversationId: opts.conversationId,
+        spokenText: "I can't find your reservation from here — try opening Bookings to manage it.",
+        intent: pending.type === "cancel_reservation" ? "reservation_cancel" : "reservation_modify",
+        step: "done",
+        nextExpectedInput: "none",
+        booking: { pending_action: null },
+      });
+    }
   }
 
   if (pending.type === "cancel_reservation") {
@@ -3220,7 +3470,17 @@ async function confirmPendingAction(
         booking: { pending_action: null },
       });
     }
-    await supabaseAdmin.rpc("release_reservation_tables", { p_reservation_id: reservationId });
+    // release_reservation_tables RPC has a require_staff_role guard that
+    // rejects service_role callers, so the RPC call from the orchestrator was
+    // silently no-op'ing — leaving reservation_tables.released_at = NULL after
+    // voice cancels. That re-blocked the slot via reservation_tables_no_overlap
+    // and made re-bookings at the same slot fail with "That time was just
+    // taken". Direct UPDATE matches the path cancel-reservation/index.ts uses.
+    await supabaseAdmin
+      .from("reservation_tables")
+      .update({ released_at: new Date().toISOString() })
+      .eq("reservation_id", reservationId)
+      .is("released_at", null);
     // SMS/email cancel notification — mirrors cancel-reservation edge
     // function. Voice cancels were silently skipping notification because
     // the orchestrator updated reservations directly instead of going
@@ -3230,6 +3490,7 @@ async function confirmPendingAction(
         .from("reservations")
         .select(`
           id, restaurant_id, guest_id, reserved_at, party_size, confirmation_code,
+          event_id, promotion_id, applied_promo_code,
           guests(full_name, email, phone),
           restaurants(name, timezone)
         `)
@@ -3241,10 +3502,39 @@ async function confirmPendingAction(
         const tz = restData.timezone || "America/Toronto";
         const dateLabel = formatReservationDate(new Date(cancelledRow.reserved_at as string), tz);
         const restName = restData.name || "the restaurant";
+        // Event/promo enrichment so the SMS identifies which booking was
+        // cancelled when the diner had a tagged reservation.
+        let eventLine = "";
+        let promoLine = "";
+        const evId = cancelledRow.event_id as string | null;
+        const prId = cancelledRow.promotion_id as string | null;
+        const prCode = cancelledRow.applied_promo_code as string | null;
+        if (evId) {
+          const { data: ev } = await supabaseAdmin
+            .from("events")
+            .select("name")
+            .eq("id", evId)
+            .maybeSingle<{ name: string | null }>();
+          if (ev?.name) eventLine = ` Event: ${ev.name}.`;
+        }
+        if (prId) {
+          const { data: pr } = await supabaseAdmin
+            .from("promotions")
+            .select("title, promo_code")
+            .eq("id", prId)
+            .maybeSingle<{ title: string | null; promo_code: string | null }>();
+          if (pr?.title) {
+            const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+            promoLine = ` Promo: ${pr.title}${codePart}.`;
+          }
+        } else if (prCode) {
+          promoLine = ` Promo code: ${prCode}.`;
+        }
         const cancelBody =
           `Hi ${guestData.full_name || "there"}, your reservation at ${restName} on ${dateLabel} ` +
           `for ${cancelledRow.party_size} ${cancelledRow.party_size === 1 ? "guest" : "guests"} ` +
-          `has been cancelled. Confirmation code: ${cancelledRow.confirmation_code}.`;
+          `has been cancelled. Confirmation code: ${cancelledRow.confirmation_code}.` +
+          eventLine + promoLine;
         await sendReservationNotification({
           supabase: supabaseAdmin,
           guestId: (cancelledRow.guest_id as string) || "",
@@ -3379,6 +3669,7 @@ async function confirmPendingAction(
         .from("reservations")
         .select(`
           id, restaurant_id, guest_id, reserved_at, party_size, confirmation_code,
+          event_id, promotion_id, applied_promo_code,
           guests(full_name, email, phone),
           restaurants(name, timezone)
         `)
@@ -3390,11 +3681,40 @@ async function confirmPendingAction(
         const tz = restData.timezone || "America/Toronto";
         const dateLabel = formatReservationDate(new Date(modifiedRow.reserved_at as string), tz);
         const restName = restData.name || "the restaurant";
+        // Event/promo enrichment so the SMS identifies which booking the
+        // modification applied to.
+        let eventLine = "";
+        let promoLine = "";
+        const evId = modifiedRow.event_id as string | null;
+        const prId = modifiedRow.promotion_id as string | null;
+        const prCode = modifiedRow.applied_promo_code as string | null;
+        if (evId) {
+          const { data: ev } = await supabaseAdmin
+            .from("events")
+            .select("name")
+            .eq("id", evId)
+            .maybeSingle<{ name: string | null }>();
+          if (ev?.name) eventLine = ` Event: ${ev.name}.`;
+        }
+        if (prId) {
+          const { data: pr } = await supabaseAdmin
+            .from("promotions")
+            .select("title, promo_code")
+            .eq("id", prId)
+            .maybeSingle<{ title: string | null; promo_code: string | null }>();
+          if (pr?.title) {
+            const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+            promoLine = ` Promo: ${pr.title}${codePart}.`;
+          }
+        } else if (prCode) {
+          promoLine = ` Promo code: ${prCode}.`;
+        }
         const modifyBody =
           `Hi ${guestData.full_name || "there"}, your reservation at ${restName} has been updated. ` +
           `New time: ${dateLabel} for ${modifiedRow.party_size} ` +
           `${modifiedRow.party_size === 1 ? "guest" : "guests"}. ` +
-          `Confirmation code: ${modifiedRow.confirmation_code}.`;
+          `Confirmation code: ${modifiedRow.confirmation_code}.` +
+          eventLine + promoLine;
         await sendReservationNotification({
           supabase: supabaseAdmin,
           guestId: (modifiedRow.guest_id as string) || "",
@@ -3832,9 +4152,111 @@ async function buildPreflightResponse(opts: {
   assistantMemory: AssistantMemory | null;
   userLocation: { lat: number; lng: number } | null;
 }): Promise<AssistantPayload | null> {
-  const { conversationId, transcript, bookingState, selectedRestaurantId } = opts;
+  // Self-correction preprocessing: when the user changes their mind
+  // mid-utterance ("book me at X, actually show me events" / "find me italian,
+  // wait scratch that, japanese instead"), take only the LATTER clause as the
+  // active intent. User bug 2026-05-12.
+  //
+  // Covered pivot phrases:
+  //   - "actually" / "actually wait"
+  //   - "wait" / "wait no" / "wait scratch that" / "hold on" / "hold up"
+  //   - "scratch that" / "scrap that"
+  //   - "never mind" / "nvm" / "nm"
+  //   - "on second thought" / "second thought"
+  //   - "forget that" / "forget it"
+  //   - "instead"
+  //   - "I meant" / "I mean" / "what I meant"
+  //   - "sorry" / "sorry let me" / "sorry I meant"
+  //   - "let me rephrase" / "let me restart" / "let me redo"
+  //   - "do over" / "redo" / "start over"
+  //   - "change of plans" / "change that"
+  //   - "you know what" / "ya know what"
+  //   - "no wait" / "no actually" / "no I mean"
+  //   - "rethink" / "rethinking"
+  //   - "different idea" / "different plan"
+  //
+  // Conservative: requires ≥4 chars of follow-up content so we don't strip
+  // accidentally on bare "actually" / "wait" tail words.
+  const rawTranscript = opts.transcript;
+  const pivotMatch = rawTranscript.match(
+    /(?:^|[\s,.;!?])\s*(?:actually(?:\s+wait)?|wait(?:[,.]|\s+(?:no|scratch|hold|hang|i\s+mean))?|hold\s+(?:on|up)|scratch\s+that|scrap\s+that|never\s+mind|nvm|on\s+second\s+thought|second\s+thought|forget\s+(?:that|it)|instead[,.]?|i\s+meant|i\s+mean(?:t)?|what\s+i\s+(?:meant|mean)|sorry(?:[,.]|\s+(?:let\s+me|i\s+(?:meant|mean)))|let\s+me\s+(?:rephrase|restart|redo|try\s+again|change\s+that)|do\s+over|redo|start\s+over|change\s+of\s+plans|change\s+that|you\s+know\s+what|ya\s+know\s+what|no(?:\s+wait|\s+actually|[,]\s+actually|[,]\s+i\s+(?:meant|mean))|rethink(?:ing)?|different\s+(?:idea|plan))[\s,:.\-]+(.{4,})$/i,
+  );
+  const opts2 = pivotMatch && pivotMatch[1]
+    ? { ...opts, transcript: pivotMatch[1].trim() }
+    : opts;
+  const { conversationId, transcript, bookingState, selectedRestaurantId } = opts2;
   const normalized = normalizeSearchText(transcript);
   if (!normalized) return null;
+
+  // ── Confirmation-code lookup (deterministic, before small-prompt) ─────
+  // User bug 2026-05-12: "what's my confirmation code" was being routed to
+  // small-prompt which hallucinated "I can't see confirmation codes" — even
+  // though the orchestrator promotes confirmation_code into booking_state on
+  // book/list/most_recent paths.
+  if (
+    /\b(?:what'?s|whats|tell\s+me|read|what\s+is|give\s+me|repeat|share|remind\s+me\s+of)\s+(?:my|the|that|our|me\s+my)?\s*(?:confirmation|booking|reservation)\s+(?:code|number|id|reference)\b/i.test(transcript) ||
+    /\bconfirmation\s+(?:code|number|id|reference)\??\s*$/i.test(transcript)
+  ) {
+    const code = typeof bookingState.confirmation_code === "string" ? bookingState.confirmation_code : null;
+    if (code) {
+      const spaced = code.toUpperCase().split("").join(" ");
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `Your confirmation code is ${spaced}.`,
+        intent: "answer_restaurant_question",
+        step: "done",
+        nextExpectedInput: "none",
+        booking: { confirmation_code: code },
+      });
+    }
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "I don't have a confirmation code on file. Want me to look up your most recent reservation?",
+      intent: "answer_restaurant_question",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: null,
+    });
+  }
+
+  // ── Post-booking cancel intent (FIRST, before everything else) ────────
+  // Smoke regression 2026-05-12 harness cluster C5-C10. After a successful
+  // booking (status="confirmed" or "post_booking"), the user saying
+  // "kill that reservation" / "scrap my booking" / "cancel that" used to
+  // fall through to booking-flow finalization (because booking_state still
+  // had party/date/time from the just-completed reservation). The cancel
+  // verb was lost.
+  //
+  // This early handler runs FIRST: if status is confirmed/post_booking AND
+  // transcript has cancel verb + noun, route directly to cancel confirmation.
+  {
+    const flowStatus = (bookingState.status || "idle") as string;
+    const isPostBooking = flowStatus === "confirmed" || flowStatus === "post_booking";
+    const reservationIdInState =
+      typeof bookingState.reservation_id === "string" ? bookingState.reservation_id : null;
+    const isCancelVerb =
+      /\b(cancel|scrap|drop|kill|nuke|trash|abort|nix|delete|remove)\b/i.test(transcript) &&
+      /\b(booking|reservation|table|it|that|one|this)\b/i.test(transcript);
+    if (isPostBooking && reservationIdInState && isCancelVerb) {
+      const restaurantName =
+        typeof bookingState.restaurant_name === "string" ? bookingState.restaurant_name : "your reservation";
+      const summary = `Just confirming: cancel your reservation at ${restaurantName}?`;
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: summary,
+        intent: "reservation_cancel",
+        step: "confirm",
+        nextExpectedInput: "confirmation",
+        booking: {
+          pending_action: {
+            type: "cancel_reservation",
+            payload: { reservation_id: reservationIdInState },
+            confirmation_text: summary,
+          },
+        },
+      });
+    }
+  }
 
   // ── Mid-booking flow-reset (bail-out) ────────────────────────────────
   // While we're collecting fields / loading availability / waiting on the
@@ -3956,15 +4378,31 @@ async function buildPreflightResponse(opts: {
       // a specific restaurant. "any deals at mark testing" must fall through
       // to the per-restaurant fact-lookup handler which queries the
       // promotions table for that restaurant_id.
-      const dealsHasAtRestaurant = /\b(?:at|in|near|for|from)\s+[a-z][a-z0-9'’\s&]{1,40}\b/i.test(transcript);
+      // Also catches "does <name> have any specials" / "<name>'s specials" /
+      // "promo code for <name>" — phrasings without leading at/in/near. Harness
+      // V8 regression 2026-05-12: "does georgy inc have any specials" was
+      // hijacked by the global deals nav.
+      const dealsHasAtRestaurant =
+        /\b(?:at|in|near|for|from)\s+[a-z][a-z0-9'’\s&]{1,40}\b/i.test(transcript) ||
+        /\bdoes\s+[a-z][a-z0-9'’\s&]{1,40}\s+have\b/i.test(transcript) ||
+        /\b[a-z][a-z0-9'’&]{2,40}(?:'s|s')\s+(?:deals?|promos?|promotions?|specials?|offers?|discounts?|coupons?)\b/i.test(transcript) ||
+        /\bpromo\s+code\b/i.test(transcript);
       if (
         !dealsHasAtRestaurant &&
-        (/\b(?:show me|any|see|got)\s+(?:the\s+)?deals?\b/i.test(transcript) ||
-          /\b(?:are there|do you have)\s+any\s+deals?\b/i.test(transcript))
+        (/\b(?:show me|any|see|got|got\s+any)\s+(?:the\s+)?deals?\b/i.test(transcript) ||
+          /\b(?:are there|do you have|what)\s+(?:any\s+)?deals?\b/i.test(transcript) ||
+          /\bany\s+(?:deals?|promos?|promotions?|specials?|offers?|discounts?|coupons?)\b/i.test(transcript) ||
+          /\b(?:show me|see)\s+(?:the\s+)?(?:promos?|promotions?|specials?|offers?|discounts?|coupons?)\b/i.test(transcript))
       ) {
+        const dealsPhrasings = [
+          "Opening the deals page now.",
+          "Sure — pulling up active deals.",
+          "Here come the deals.",
+          "Taking you to the deals page.",
+        ];
         return makeAssistantPayload({
           conversationId,
-          spokenText: "Sure — checking deals.",
+          spokenText: dealsPhrasings[Math.floor(Math.random() * dealsPhrasings.length)],
           intent: "general_question",
           step: "done",
           nextExpectedInput: "none",
@@ -4003,16 +4441,21 @@ async function buildPreflightResponse(opts: {
     }
   }
 
-  // ── Preorder / menu hand-off ─────────────────────────────────────────
-  // Voice can't render the menu / cart UI. When the user has an active
-  // reservation and asks to pre-order or browse the menu, redirect to
-  // the restaurant page with their confirmation code so they pick up
-  // where they left off. (Pure discovery queries like "show me the menu"
-  // without an active booking fall through to the LLM's restaurant-search
-  // flow — that's the right UX for ambiguous input.)
+  // ── Preorder + deposit hand-off ──────────────────────────────────────
+  // Voice can't process the menu/cart UI or take card details. When the
+  // user has an active reservation and asks for an ACTION that needs
+  // those — pre-order, prepay, add-to-cart, checkout — redirect to the
+  // restaurant page with their confirmation code so they pick up where
+  // they left off.
+  //
+  // NOTE: bare "menu" / "appetizers" / "what's on the menu" are
+  // INFORMATION queries, not actions. They fall through to the menu Q&A
+  // handler below which answers from the menu_items table directly. The
+  // user explicitly asked for voice to always answer menu questions,
+  // 2026-05-11.
   {
     const preorderRequestPattern =
-      /\b(pre[- ]?order|prepay|order ahead|skip the line|order now|menu|appetizers?|entrees?|mains?|kids?\s+menu|what'?s?\s+on\s+the\s+menu|drink list|wine list|beer list)\b/i;
+      /\b(pre[- ]?order|prepay|order ahead|skip the line|order now|add (?:it )?to (?:my )?(?:cart|order)|checkout|pay (?:now|for)|charge my card)\b/i;
     const ridForMenu =
       typeof bookingState.reservation_id === "string" ? (bookingState.reservation_id as string) : undefined;
     const restaurantIdForMenu =
@@ -4031,9 +4474,9 @@ async function buildPreflightResponse(opts: {
           : null;
       if (slug) {
         const phrasings = [
-          "Pre-orders need the menu screen — I'll take you there to finish.",
-          "I can't add a pre-order here — sending you to the menu so you can pick.",
-          "For the menu, you'll want the booking page — opening it now.",
+          "Pre-orders need the order screen — I'll take you there to finish.",
+          "I can't take card details by voice — sending you to the booking page to pre-pay.",
+          "Pre-orders go through the booking page — opening it now.",
         ];
         const code =
           typeof bookingState.confirmation_code === "string"
@@ -4054,6 +4497,858 @@ async function buildPreflightResponse(opts: {
             { type: "close_assistant" },
           ],
         });
+      }
+    }
+  }
+
+  // ── Menu Q&A handler ────────────────────────────────────────────────
+  // The user explicitly wants voice to ALWAYS answer menu questions
+  // (2026-05-11). Pre-orders + card payments hand off to the web page
+  // above, but "what's on the menu" / "any vegan options" / "drink list"
+  // are read-only questions the orchestrator can answer directly from
+  // `menu_items`.
+  //
+  // Resolution order for which restaurant to look at:
+  //   1. Explicit "menu at <name>" in transcript → fuzzy-match restaurants
+  //   2. bookingState.restaurant_id (mid-booking or post_booking)
+  //   3. otherwise, fall through to LLM (ambiguous discovery)
+  {
+    const menuQuestionPattern =
+      /\b(?:what'?s?\s+(?:on|in|good\s+on)\s+(?:the\s+)?menu|menu\s+(?:items?|like|got|have)|appetizers?|entrees?|mains?|starters?|sides?|desserts?|kids?\s+menu|drink\s+(?:list|menu)|wine\s+(?:list|menu)|beer\s+(?:list|menu)|cocktail\s+(?:list|menu)|specials?\b(?!\s+tonight)|do\s+they\s+(?:have|serve)\s+(?:vegan|vegetarian|gluten|halal|kosher|fish|seafood|steak|pasta|burger|pizza|salad|brunch)|(?:any|got|have|got\s+any|do\s+(?:you|they)\s+have)\s+(?:vegan|vegetarian|gluten[- ]?free|halal|kosher|dairy[- ]?free|nut[- ]?free|appetizers?|entrees?|mains?|starters?|sides?|desserts?)\s*(?:options?|items?|dishes?|food)?)\b/i;
+    // Guard against booking utterances that mention a menu-shaped word
+    // (e.g. "book me for chef tasting menu at mark testing") — those are
+    // booking intents, not menu questions.
+    const isBookingUtterance =
+      /\b(?:book|reserve|reservation|table|seat|booking)\b/i.test(transcript) &&
+      /\b(?:me|us|a\s+(?:table|seat|reservation|booking|spot))\b/i.test(transcript);
+    // Also defer to fact-lookup when the transcript asks about
+    // specials/deals/promos for a NAMED restaurant — "does X have any
+    // specials" is a promotions query, not a menu query. Without this,
+    // bare "specials" matched the menu pattern and surfaced the menu of
+    // a stateRestaurantName from a prior turn instead of querying the
+    // named restaurant's promotions. UI regression 2026-05-12: with
+    // Jacobs in state, "does georgy inc have any specials" returned
+    // Jacobs's menu instead of Georgy's promotions.
+    const isExplicitPromoAsk =
+      /\b(?:does|do)\s+[a-z][a-z0-9'’&\s]{0,40}?\s+have\s+(?:any\s+)?(?:specials?|deals?|promotions?|offers?|discounts?|promos?|coupons?|happy\s+hour|promo\s+code)\b/i.test(transcript) ||
+      /\b(?:any|got|have)\s+(?:promotions?|deals?|discounts?|offers?|promos?|coupons?|happy\s+hour|promo\s+code)\s+(?:at|in|near|for|from)\s+[a-z]/i.test(transcript) ||
+      /\b[a-z][a-z0-9'’&]{2,40}(?:'s|s')\s+(?:specials?|deals?|promotions?|offers?|discounts?|promos?)\b/i.test(transcript);
+    if (menuQuestionPattern.test(transcript) && !isBookingUtterance && !isExplicitPromoAsk) {
+      // Step 1: try to extract "menu at <restaurant>" / "<restaurant>'s menu"
+      let candidateName: string | null = null;
+      const atMatch =
+        transcript.match(/\b(?:menu|appetizers?|entrees?|mains?|drinks?|wine|beer|cocktails?|kids?\s+menu)\s+(?:at|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i) ||
+        transcript.match(/\b(?:menu|appetizers?|entrees?|mains?|drinks?|wine|beer|cocktails?|kids?\s+menu)\s+(?:at|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+/i);
+      if (atMatch && atMatch[1]) candidateName = atMatch[1].trim();
+      const possessiveMatch = transcript.match(/\b([a-z][a-z0-9'’\s&]{1,40}?)(?:'?s)\s+menu\b/i);
+      if (!candidateName && possessiveMatch && possessiveMatch[1]) candidateName = possessiveMatch[1].trim();
+
+      // Step 2: resolve to restaurant_id
+      let menuRestaurantId: string | null = null;
+      let menuRestaurantName: string | null = null;
+      if (candidateName) {
+        const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+        const cleanLower = stripAccents(candidateName.toLowerCase());
+        const tokens = cleanLower.split(/\s+/).filter((t) => t.length >= 2);
+        const all = await fetchActiveRestaurants();
+        const scored = all.map((row) => {
+          const lname = stripAccents((row.name ?? "").toLowerCase());
+          const score = tokens.reduce((s, t) => s + (lname.includes(t) ? 1 : 0), 0);
+          return { row, score };
+        }).sort((a, b) => b.score - a.score);
+        if (scored[0]?.score) {
+          menuRestaurantId = scored[0].row.id as string;
+          menuRestaurantName = scored[0].row.name as string;
+        }
+      }
+      if (!menuRestaurantId && typeof bookingState.restaurant_id === "string") {
+        menuRestaurantId = bookingState.restaurant_id as string;
+        menuRestaurantName = typeof bookingState.restaurant_name === "string"
+          ? (bookingState.restaurant_name as string)
+          : null;
+        // Resolve name from the cached restaurants list when booking_state
+        // only carries the id (common after a prior search handler stashed
+        // restaurant_id but not restaurant_name).
+        if (!menuRestaurantName) {
+          const all = await fetchActiveRestaurants();
+          const row = all.find((r) => r.id === menuRestaurantId);
+          menuRestaurantName = (row?.name as string) ?? null;
+        }
+      }
+
+      if (menuRestaurantId) {
+        // Filter by category keyword in the transcript when present.
+        const wantsVegan = /\bvegan\b/i.test(transcript);
+        const wantsVegetarian = /\bvegetarian\b/i.test(transcript);
+        const wantsGluten = /\bgluten[- ]?free\b/i.test(transcript);
+        const wantsDrinks = /\b(?:drink|wine|beer|cocktail|bar)\b/i.test(transcript);
+        const wantsAppetizer = /\b(?:appetizer|starter|small\s+plate)\b/i.test(transcript);
+        const wantsMain = /\b(?:entree|main|main\s+course|mains)\b/i.test(transcript);
+        const wantsDessert = /\bdessert\b/i.test(transcript);
+        const wantsKids = /\bkids?\s+menu\b/i.test(transcript);
+
+        const { data: items } = await supabaseAdmin
+          .from("menu_items")
+          .select("name, price, category, dietary_flags, allergens, is_featured")
+          .eq("restaurant_id", menuRestaurantId)
+          .eq("is_active", true)
+          .eq("is_available", true)
+          .order("is_featured", { ascending: false })
+          .order("sort_order", { ascending: true })
+          .limit(60);
+
+        let filtered = items ?? [];
+        if (wantsVegan) {
+          filtered = filtered.filter((it) =>
+            Array.isArray(it.dietary_flags) && it.dietary_flags.some((f: string) =>
+              typeof f === "string" && /vegan/i.test(f)));
+        } else if (wantsVegetarian) {
+          filtered = filtered.filter((it) =>
+            Array.isArray(it.dietary_flags) && it.dietary_flags.some((f: string) =>
+              typeof f === "string" && /veget/i.test(f)));
+        } else if (wantsGluten) {
+          filtered = filtered.filter((it) =>
+            Array.isArray(it.dietary_flags) && it.dietary_flags.some((f: string) =>
+              typeof f === "string" && /gluten/i.test(f)));
+        } else if (wantsDrinks) {
+          filtered = filtered.filter((it) =>
+            typeof it.category === "string" && /drink|wine|beer|cocktail|bar/i.test(it.category));
+        } else if (wantsAppetizer) {
+          filtered = filtered.filter((it) =>
+            typeof it.category === "string" && /appetizer|starter|small/i.test(it.category));
+        } else if (wantsMain) {
+          filtered = filtered.filter((it) =>
+            typeof it.category === "string" && /main|entree/i.test(it.category));
+        } else if (wantsDessert) {
+          filtered = filtered.filter((it) =>
+            typeof it.category === "string" && /dessert/i.test(it.category));
+        } else if (wantsKids) {
+          filtered = filtered.filter((it) =>
+            typeof it.category === "string" && /kid/i.test(it.category));
+        }
+
+        const restLabel = menuRestaurantName || "the restaurant";
+        if (!filtered || filtered.length === 0) {
+          let spokenText: string;
+          if (wantsVegan || wantsVegetarian || wantsGluten) {
+            const kind = wantsVegan ? "vegan" : wantsVegetarian ? "vegetarian" : "gluten-free";
+            spokenText = `I don't see any ${kind} options tagged on the menu at ${restLabel}. Want me to book a table so you can ask the staff?`;
+          } else if (items && items.length > 0) {
+            spokenText = `Nothing matching that on the menu at ${restLabel}. Want to hear what's on offer or book a table?`;
+          } else {
+            spokenText = `I don't have a menu loaded for ${restLabel} yet. Worth a call to confirm what's available. Want me to book a table?`;
+          }
+          return makeAssistantPayload({
+            conversationId,
+            spokenText,
+            intent: "menu_question",
+            step: "done",
+            nextExpectedInput: "confirmation",
+            booking: {},
+          });
+        }
+
+        // Build a spoken-friendly summary: 3-5 items with prices.
+        const topItems = filtered.slice(0, 4);
+        const itemLabels = topItems.map((it) => {
+          const priceLabel = typeof it.price === "number" && it.price > 0
+            ? ` ($${Number(it.price).toFixed(0)})`
+            : "";
+          return `${it.name}${priceLabel}`;
+        });
+        const remaining = filtered.length - topItems.length;
+        const lead = wantsVegan
+          ? `Vegan picks at ${restLabel}`
+          : wantsVegetarian
+            ? `Vegetarian picks at ${restLabel}`
+            : wantsGluten
+              ? `Gluten-free picks at ${restLabel}`
+              : wantsDrinks
+                ? `Drinks at ${restLabel}`
+                : wantsAppetizer
+                  ? `Starters at ${restLabel}`
+                  : wantsMain
+                    ? `Mains at ${restLabel}`
+                    : wantsDessert
+                      ? `Desserts at ${restLabel}`
+                      : wantsKids
+                        ? `Kids menu at ${restLabel}`
+                        : `On the menu at ${restLabel}`;
+        const tail = remaining > 0
+          ? `, and ${remaining} more`
+          : "";
+        const spokenText = `${lead}: ${itemLabels.join(", ")}${tail}. Want a table?`;
+        return makeAssistantPayload({
+          conversationId,
+          spokenText,
+          intent: "menu_question",
+          step: "done",
+          nextExpectedInput: "confirmation",
+          booking: {},
+        });
+      }
+    }
+  }
+
+  // ── Vibe / price-tier search ─────────────────────────────────────────
+  // "show me high-end restaurants" / "fancy restaurants" / "cheap eats" —
+  // deterministic price-range filter. The LLM tool flow was returning two
+  // random restaurants without applying the price filter, regardless of
+  // the vibe word. Now we resolve and respond directly.
+  {
+    const tlc = transcript.toLowerCase();
+    const wantsHighEnd = /\b(high[\s-]?end|fancy|fine\s+dining|upscale|expensive|premium|splurge|posh|luxury|luxe|swanky)\b/.test(tlc);
+    const wantsBudget = /\b(cheap|cheap\s+eats?|affordable|budget|inexpensive|low[\s-]?cost|wallet[\s-]?friendly|on\s+a\s+budget|not\s+too\s+expensive)\b/.test(tlc);
+    const askingForList =
+      /\b(?:show|list|tell|give|find|recommend|suggest)\s+(?:me\s+)?(?:some\s+|any\s+|the\s+)?(?:restaurants?|spots?|places?|options?|eats?|food|dining|joints?)\b/.test(tlc) ||
+      /\b(?:restaurants?|spots?|places?|eats?|joints?)\s+(?:in|near|around)\s+\w+\b/.test(tlc) ||
+      /\bwhat\s+(?:are\s+)?(?:the\s+)?\w+\s+(?:restaurants?|spots?|places?|eats?|joints?)\b/.test(tlc) ||
+      // Bare vibe phrasing without "restaurants": "high-end in toronto", "cheap eats", "fancy spots"
+      (wantsHighEnd || wantsBudget);
+    if ((wantsHighEnd || wantsBudget) && askingForList) {
+      // Query restaurants DB directly with strict price_range filter — do NOT
+      // use fetchActiveRestaurants, which can return a derived/menu-computed
+      // price_range for rows with DB price_range=NULL (e.g. Qoop). The goal
+      // requires strict DB-column match so high-end returns only price_range>=3
+      // and cheap returns only price_range<=2, never restaurants with null.
+      let strictQuery = supabaseAdmin
+        .from("restaurants")
+        .select("id, name, slug, price_range, city, cuisine_type, business_type")
+        .eq("is_active", true)
+        .not("price_range", "is", null);
+      if (wantsHighEnd) {
+        strictQuery = strictQuery.gte("price_range", 3);
+      } else if (wantsBudget) {
+        strictQuery = strictQuery.lte("price_range", 2);
+      }
+      const { data: strictRows } = await strictQuery.order("price_range", { ascending: !wantsHighEnd }).limit(8);
+      const filtered = (strictRows ?? []) as Array<Record<string, unknown>>;
+      if (filtered.length === 0) {
+        const label = wantsHighEnd ? "high-end" : "budget-friendly";
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `I don't have any ${label} restaurants on file right now. Want to broaden the search?`,
+          intent: "discover_restaurants",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: { status: "idle" },
+        });
+      }
+      const top = filtered.slice(0, 5);
+      const names = top.map((r) => r.name as string);
+      const ids = top.map((r) => r.id as string);
+      const label = wantsHighEnd ? "upscale" : "budget-friendly";
+      const head = top.length === 1
+        ? `Got one ${label} spot: ${names[0]}`
+        : top.length === 2
+          ? `Two ${label} options: ${names.join(" and ")}`
+          : `${top.length} ${label} spots: ${names.slice(0, 3).join(", ")}${top.length > 3 ? `, and ${top.length - 3} more` : ""}`;
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `${head}. Which one?`,
+        intent: "discover_restaurants",
+        step: "done",
+        nextExpectedInput: "free_text",
+        uiActions: [
+          { type: "update_map_markers", restaurant_ids: ids },
+          { type: "show_restaurant_cards", restaurant_ids: ids },
+        ],
+        map: {
+          visible: true,
+          marker_restaurant_ids: ids,
+          highlighted_restaurant_id: ids[0] ?? null,
+        },
+        booking: { status: "idle" },
+      });
+    }
+  }
+
+  // ── Dietary search (honest-decline) ──────────────────────────────────
+  // "show me halal restaurants" / "vegan restaurants" / "gluten free places"
+  // — DB has no dietary certification columns. Return an honest "I don't
+  // have certified X listings yet" instead of the silent two-random-result
+  // fallback the LLM was producing.
+  {
+    const tlc2 = transcript.toLowerCase();
+    const dietary = tlc2.match(/\b(halal|kosher|vegan|vegetarian|gluten[\s-]?free|nut[\s-]?free|dairy[\s-]?free|pescatarian)\b/);
+    const askingDietaryList =
+      /\b(?:show|list|tell|give|find|recommend|suggest)\s+(?:me\s+)?(?:some\s+|any\s+|the\s+)?(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\b/.test(tlc2) ||
+      /\b(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\s+(?:restaurants?|spots?|places?|food|options?|eats?)\b/.test(tlc2) ||
+      /\bwhat\s+(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\s+(?:restaurants?|spots?|places?|food|options?)\b/.test(tlc2);
+    if (dietary && askingDietaryList) {
+      const tag = dietary[1].replace(/[\s-]+/g, "-");
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: `I don't have certified ${tag} listings on file right now. Want me to show all restaurants and you can ask the place directly?`,
+        intent: "discover_restaurants",
+        step: "done",
+        nextExpectedInput: "free_text",
+        booking: { status: "idle" },
+      });
+    }
+  }
+
+  // ── Rating search (honest-decline) ───────────────────────────────────
+  // "highest rated" / "best reviewed" / "top rated" — reviews/ratings are
+  // not surfaced in our system yet. Return an honest "I don't surface
+  // ratings yet" instead of the silent fallback.
+  {
+    const tlc3 = transcript.toLowerCase();
+    const ratingIntent =
+      /\b(?:highest|top|best)\s+rated\b/.test(tlc3) ||
+      /\bbest\s+reviewed\b/.test(tlc3) ||
+      /\btop\s+(?:reviewed|rated)\b/.test(tlc3) ||
+      /\b(?:5|five)[\s-]?star\b/.test(tlc3) ||
+      /\bmost\s+(?:loved|popular|reviewed)\s+restaurants?\b/.test(tlc3);
+    if (ratingIntent) {
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: "I don't surface ratings yet — I focus on availability and bookings. Want me to show what's open tonight instead?",
+        intent: "discover_restaurants",
+        step: "done",
+        nextExpectedInput: "free_text",
+        booking: { status: "idle" },
+      });
+    }
+  }
+
+  // ── Pre-order intent hand-off ────────────────────────────────────────
+  // Voice can't process pre-orders, so when the user explicitly asks to
+  // pre-order food, route them to the restaurant page's menu step with
+  // any known slot params prefilled. Mirrors the deposit hand-off (close
+  // the assistant + navigate). Triggers are specific phrases that signal
+  // explicit pre-order intent — ordinary "book me at X" doesn't match.
+  if (
+    /\b(?:pre[\s-]?order|order\s+(?:food\s+)?(?:ahead|in\s+advance|now\s+for|to\s+pickup|for\s+(?:tonight|tomorrow|the\s+table))|preordering|menu\s+(?:ahead|in\s+advance)|food\s+(?:before|ahead))\b/i.test(transcript)
+  ) {
+    const stripAccentsLocal = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+    const tNorm = stripAccentsLocal(transcript);
+    const bsRestaurantId = typeof bookingState.restaurant_id === "string" ? (bookingState.restaurant_id as string) : null;
+    const bsRestaurantName = typeof bookingState.restaurant_name === "string" ? (bookingState.restaurant_name as string) : null;
+    let resolvedRestId: string | null = bsRestaurantId ?? selectedRestaurantId;
+    let resolvedSlug: string | null = null;
+    let resolvedName: string | null = bsRestaurantName;
+    if (!resolvedRestId) {
+      const allRest = await fetchActiveRestaurants();
+      const scored = allRest.map((r) => {
+        const name = stripAccentsLocal((r.name ?? "").toString());
+        const tokens = name.split(/\s+/).filter((t) => t.length >= 3);
+        const score = tokens.reduce((s, t) => s + (tNorm.includes(t) ? 1 : 0), 0);
+        return { r, score };
+      }).sort((a, b) => b.score - a.score);
+      if (scored[0]?.score && scored[0].score >= 1) {
+        resolvedRestId = scored[0].r.id as string;
+        resolvedSlug = ((scored[0].r as Record<string, unknown>).slug as string) ?? null;
+        resolvedName = (scored[0].r.name as string) ?? null;
+      }
+    }
+    if (resolvedRestId && !resolvedSlug) {
+      const { data: rRow } = await supabaseAdmin
+        .from("restaurants")
+        .select("slug, name")
+        .eq("id", resolvedRestId)
+        .maybeSingle();
+      resolvedSlug = (rRow as { slug?: string } | null)?.slug ?? null;
+      resolvedName = (rRow as { name?: string } | null)?.name ?? resolvedName;
+    }
+    const params = new URLSearchParams();
+    const dateForUrl = parseDateInTimeZone(transcript, opts.timezone) ?? (typeof bookingState.date === "string" ? (bookingState.date as string) : "");
+    const timeForUrl = parseTime(transcript) ?? (typeof bookingState.time === "string" ? (bookingState.time as string) : "");
+    const partyForUrl = parsePartySize(transcript) ?? (typeof bookingState.party_size === "number" ? (bookingState.party_size as number) : null);
+    if (dateForUrl) params.set("date", dateForUrl);
+    if (timeForUrl) params.set("time", timeForUrl);
+    if (partyForUrl != null) params.set("people", String(partyForUrl));
+    params.set("step", "menu");
+    const path = resolvedSlug ? `/${resolvedSlug}?${params.toString()}` : "/discover";
+    const nameLabel = resolvedName ? ` at ${resolvedName}` : "";
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: `Pre-orders need the menu page${nameLabel}. Opening it now so you can pick dishes.`,
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "none",
+      uiActions: [
+        { type: "navigate", path },
+        { type: "close_assistant" },
+      ],
+      booking: { status: "idle", pending_action: null },
+    });
+  }
+
+  // ── Casual restaurant booking intent handler ─────────────────────────
+  // Catches conversational booking phrasings like:
+  //   "I want to go to Harbour Sixty because a friend recommended it"
+  //   "let's go to Mark Testing tonight"
+  //   "take my girlfriend to Bâton Rouge"
+  //   "I'd like to try Georgy Inc this weekend"
+  //   "hit up Harbour 60 for two on Friday"
+  // Without this, the LLM occasionally misclassifies these as menu /
+  // discovery / planning questions and replies with "Which menu do you
+  // want to see?" or similar — instead of starting a booking. User-
+  // reported bug 2026-05-11: "I want to go to harbour sixty because a
+  // friend recommended..." returned a menu question.
+  //
+  // This handler must run BEFORE the menu Q&A handler + LLM tool loop so
+  // a clear booking intent never gets re-interpreted.
+  {
+    // Two pattern shapes — each captures the restaurant name in group 1.
+    // 1. First-person intent: "i want/wanna/let's/would like to (go|head|
+    //    grab|eat|dine|visit|hit up|check out|try|book) (to|at) <name>"
+    // 2. Take-with-companion: "take my <companion> to <name>" /
+    //    "bring (my) <companion> to <name>"
+    const wantToGoPattern =
+      /\b(?:i\s+(?:want|wanna|need|would\s+like|just\s+want)|i'?d\s+like|let'?s|wanna|i'?m\s+going|gonna)\s+(?:to\s+)?(?:go|head|grab\s+(?:a\s+)?(?:bite|seat|meal|table|drink)|eat|dine|hit\s+up|check\s+out|try|visit|book\s+(?:a\s+table\s+)?at)\s+(?:to\s+|at\s+|the\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:tonight|tomorrow|today|this\s+(?:weekend|week|friday|saturday|sunday|monday|tuesday|wednesday|thursday|evening|night|morning|afternoon)|next\s+\w+|on\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|because|for\s+\w|cuz|cause|since|when|with|to\s+take|to\s+celebrate|to\s+treat|with\s+my|is\s+great|is\s+amazing|is\s+the\s+best|looks\s+great|seems\s+nice|would\s+be|sounds\s+(?:great|amazing|good))|\s*[?,.!]|\s*$)/i;
+    // Plain imperative "Book/Reserve <name>" / "Hit up <name>" / "Grab us a
+    // table at <name>" — no leading "I want to". Smoke regression 2026-05-12:
+    // "Reserve Baton Rouge for 4 on Saturday at 8", "Hit up Harbour Sixty
+    // Friday at 7", "Book Mark Testing for 2 tomorrow at 7pm" all fell
+    // through because the existing patterns required a first-person preamble.
+    const bookReservePattern =
+      /\b(?:book|reserve|grab|snag|hold|set\s+up|set\s+me\s+up|hit\s+up|check\s+out)\s+(?:(?:me|us|a|the)\s+)*(?:(?:table|spot|seat|reservation|booking)\s+(?:at|for)\s+)?(?:(?:a|the)\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:for|with|on\s+\w+|this|next|tomorrow|tonight|today|saturday|sunday|monday|tuesday|wednesday|thursday|friday|weekend|at\s+\d|\d{1,2}(?::\d{2})?\s*(?:am|pm)|is\s+great|sounds\s+(?:great|good))|\s*[?,.!]|\s*$)/i;
+    // "Dinner for N at X" / "Lunch for 4 at Y" — no booking verb, just meal +
+    // party + restaurant. Common phrasing that didn't match any prior pattern.
+    const dinnerForPattern =
+      /\b(?:dinner|lunch|brunch|breakfast|drinks?|coffee|dessert)\s+for\s+(?:\d+|two|three|four|five|six|seven|eight|nine|ten|the\s+\w+)\s+(?:at|in)\s+(?:the\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:tonight|tomorrow|today|this\s+\w+|next\s+\w+|on\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|at\s+\d|\d{1,2}(?::\d{2})?\s*(?:am|pm))|\s*[?,.!]|\s*$)/i;
+    const takeToPattern =
+      /\b(?:take|bring|treat)\s+(?:my\s+|the\s+|our\s+)?(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|friends|buddy|buddies|mate|mates|family|parents|kids|kid|child|children|mom|mum|dad|son|daughter|sister|brother|cousin|coworker|colleague|team|guests?)\s+(?:to|at|for\s+dinner\s+at|for\s+lunch\s+at|out\s+to)\s+(?:the\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:tonight|tomorrow|today|this\s+\w+|next\s+\w+|on\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|because|for\s+\w+|with\s+\w+|to\s+|cuz|cause|since|when|with\s+my)|\s*[?,.!]|\s*$)/i;
+    // Indirect / tentative phrasings — "what about X", "how about X",
+    // "can you get me into X for 2 tonight", "any chance of a table at X",
+    // "thinking of going to X", "feel like X". Smoke-test regression
+    // 2026-05-11.
+    // Note prefix-alternation order: "in at" / "into" / "in" / "a table at" /
+    // "at" — "in at" must come first so "fit us in at X" consumes both words
+    // (otherwise JS regex's leftmost-first picks "in" alone, leaving "at"
+    // captured as part of the restaurant name and the fuzzy match fails).
+    // Smoke regression 2026-05-12 (Gen #15: "Can you fit us in at Mark
+    // Testing Saturday").
+    // Also: lookahead now includes bare weekday names (saturday|sunday|...)
+    // so "Mark Testing Saturday" lazily captures "Mark Testing" only.
+    const whatAboutPattern =
+      /\b(?:what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)\s+(?:in\s+at|into|in|a\s+table\s+at|at)|any\s+chance\s+(?:of|i\s+can\s+get|to\s+get)\s+(?:a\s+table\s+at|in(?:to)?|us\s+(?:in(?:to)?|at))|thinking\s+(?:of|about)\s+(?:going\s+to|trying)|feel\s+like)\s+(?:the\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:tonight|tomorrow|today|this\s+\w+|next\s+\w+|on\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|because|for\s+(?:my|us|me|\d|\w+\s+(?:guest|people|pax|of\s+us))|cuz|cause|since|when|with\s+my|maybe|around|at\s+\d)|\s*[?,.!]|\s*$)/i;
+    // Recommendation phrasings — "my boy recommended me to go to X",
+    // "X recommended Y", "I heard about Z", "been meaning to try W". User
+    // bug 2026-05-12. Captures the restaurant in group 1.
+    const recommendedPattern =
+      /\b(?:(?:my|a)\s+\w+\s+(?:recommended|said\s+i\s+should\s+(?:go|try|check\s+out)|told\s+me\s+about|mentioned|raved\s+about|loves|swears\s+by|said)|recommended\s+(?:me\s+)?(?:to\s+go\s+to|to\s+try|me\s+to\s+go\s+to|me\s+to\s+try)|i\s+(?:heard|read)\s+about|i'?ve\s+heard\s+(?:great\s+things\s+)?about|been\s+meaning\s+to\s+(?:try|go\s+to|check\s+out))\s+(?:me\s+to\s+(?:go\s+to|try|check\s+out)\s+|to\s+go\s+to\s+|to\s+try\s+|to\s+check\s+out\s+|the\s+|going\s+to\s+)?([a-z][\w\s'’&\-]{1,50}?)(?=\s+(?:tonight|tomorrow|today|this\s+\w+|next\s+\w+|on\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|because|for\s+\w+|with\s+|to\s+(?:take|bring|treat)|and\s+(?:i|we|my)|so\s+(?:i|we)|since|when|maybe|around|at\s+\d|is\s+great|is\s+amazing|is\s+(?:the\s+)?best|looks\s+great|seems\s+(?:nice|great)|would\s+be|sounds\s+(?:great|amazing|good))|\s*[?,.!]|\s*$)/i;
+    const mA = transcript.match(wantToGoPattern);
+    const mB = transcript.match(takeToPattern);
+    const mC = transcript.match(whatAboutPattern);
+    const mD = transcript.match(recommendedPattern);
+    const mE = transcript.match(bookReservePattern);
+    const mF = transcript.match(dinnerForPattern);
+    const candidate = (mA?.[1] ?? mB?.[1] ?? mC?.[1] ?? mD?.[1] ?? mE?.[1] ?? mF?.[1] ?? "").trim();
+    // Skip when candidate is just a pronoun / placeholder / time word —
+    // those mean "go there" / "go tonight" not a named restaurant.
+    const looksLikeRestaurantName =
+      candidate.length >= 3 &&
+      /[a-z]{3,}/i.test(candidate) &&
+      !/^(?:there|it|here|home|now|later|somewhere|anywhere|nowhere|some\s*place|dinner|lunch|brunch|breakfast|drinks?|food|tonight|tomorrow|today|this|next)\b/i.test(candidate);
+    if (candidate && looksLikeRestaurantName) {
+      // Resolve via accent-strip fuzzy token-score against the active
+      // restaurants list. Also expand each token to its spelling variants
+      // (harbor↔harbour) and number-word variants (60↔sixty) so the
+      // match catches Deepgram transcription quirks.
+      const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+      const SPELLING_VARIANTS_BOOKING: Record<string, string[]> = {
+        harbor: ["harbour"], harbour: ["harbor"],
+        center: ["centre"], centre: ["center"],
+        theater: ["theatre"], theatre: ["theater"],
+        flavor: ["flavour"], flavour: ["flavor"],
+        color: ["colour"], colour: ["color"],
+      };
+      const NUMBER_WORDS_BOOKING: Record<string, string[]> = {
+        "10": ["ten"], "20": ["twenty"], "30": ["thirty"],
+        "40": ["forty"], "50": ["fifty"], "60": ["sixty"],
+        "70": ["seventy"], "80": ["eighty"], "90": ["ninety"], "100": ["hundred"],
+        ten: ["10"], twenty: ["20"], thirty: ["30"], forty: ["40"],
+        fifty: ["50"], sixty: ["60"], seventy: ["70"], eighty: ["80"],
+        ninety: ["90"], hundred: ["100"],
+      };
+      const expandVariantsBooking = (w: string): string[] => {
+        const v = new Set<string>([w]);
+        for (const x of SPELLING_VARIANTS_BOOKING[w] ?? []) v.add(x);
+        for (const x of NUMBER_WORDS_BOOKING[w] ?? []) v.add(x);
+        return Array.from(v);
+      };
+      const baseTokens = stripAccents(candidate.toLowerCase()).split(/\s+/).filter((t) => t.length >= 2);
+      const tokens = baseTokens; // for threshold calc
+      const all = await fetchActiveRestaurants();
+      const scored = all.map((row) => {
+        const lname = stripAccents((row.name ?? "").toLowerCase());
+        // For each base token, score 1 if ANY of its variants is in the
+        // restaurant name. Avoids double-counting variants of the same
+        // input token.
+        const score = baseTokens.reduce((s, t) => {
+          const hit = expandVariantsBooking(t).some((v) => lname.includes(v));
+          return s + (hit ? 1 : 0);
+        }, 0);
+        return { row, score };
+      }).sort((a, b) => b.score - a.score);
+
+      // Require a STRONG match (every token of the candidate found in the
+      // restaurant name) to avoid false positives. "I want to go to dinner"
+      // → candidate="dinner" → wouldn't match any restaurant strongly.
+      const best = scored[0]?.score && scored[0].score >= Math.max(1, Math.ceil(tokens.length * 0.6))
+        ? scored[0].row
+        : null;
+      if (best) {
+        const restName = best.name as string;
+        const restId = best.id as string;
+        // Infer party_size by delegating to parsePartySize — picks up
+        // colloquial phrasings ("two amigos", "couple of friends", "half a
+        // dozen", "me and 3 others") that the previous inline digit-only
+        // regex missed. Range 1-99 enforced inside parsePartySize for the
+        // peopleMatch branch; bare numbers still pass through (validate here).
+        let inferredParty: number | null = (() => {
+          const n = parsePartySize(transcript);
+          if (n != null && Number.isInteger(n) && n >= 1 && n <= 99) return n;
+          return null;
+        })();
+        if (inferredParty == null && mB) {
+          // "take my girlfriend to X" / "take my wife to Y" → party of 2.
+          inferredParty = 2;
+        }
+        // Even when the restaurant comes from a recommendation clause
+        // (mD) not the take clause, "take my <companion>" anywhere in the
+        // transcript implies party of 2. User bug 2026-05-12: "boy
+        // recommended me to go to harbour 60 and I want to take my
+        // girlfriend out" — restaurant from mD, party from take clause.
+        if (
+          inferredParty == null &&
+          /\b(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|buddy|mate|mom|mum|dad|sister|brother|cousin|coworker|colleague)\b/i.test(transcript)
+        ) {
+          inferredParty = 2;
+        }
+        const partyBit = inferredParty != null ? ` for ${inferredParty}` : "";
+        // Phrasings — friendly + booking-forward.
+        const phrasings = [
+          `Got it — ${restName}${partyBit}. ${inferredParty != null ? "What date and time?" : "How many guests?"}`,
+          `${restName} it is${partyBit}. ${inferredParty != null ? "When?" : "How many of you?"}`,
+          `Booking at ${restName}${partyBit} — ${inferredParty != null ? "what day and time?" : "how many guests?"}`,
+        ];
+        // Also parse date and time from the same transcript so the casual
+        // handler doesn't lose them — without this, "book mark testing for
+        // 2 tomorrow at 7pm" set party but not date/time, and turn 2 "yes
+        // confirm" lost the date/time. Fixes harness Group A/G failures.
+        const inferredDate = parseDateInTimeZone(transcript, opts.timezone) ?? null;
+        const inferredTime = parseTime(transcript) ?? null;
+        // Gate confirming status on having ALL three fields. Without a party,
+        // we still need to ask for it before booking. Smoke regression
+        // 2026-05-12: "book mark testing for 0 people" had party=0 stripped
+        // (correct) but flow still advanced to "Confirming?" with party=undefined.
+        const hasAllFields = inferredParty != null && inferredDate && inferredTime;
+        // When all booking fields are present in a single utterance, resolve
+        // shift_id + slot_iso via getAvailability so the next turn ("yes
+        // confirm") can finalize the booking. Without this, the confirmation
+        // handler at line 5886 bails with "I need the reservation details
+        // again. What date and time?" — harness regression A1/A2 2026-05-12.
+        let resolvedShiftId: string | null = null;
+        let resolvedSlotIso: string | null = null;
+        if (hasAllFields && inferredParty != null && inferredDate && inferredTime) {
+          try {
+            const avail = await getAvailability(restId, inferredDate, inferredParty);
+            // Match by display_time (formatted 12-hour) ≈ inferredTime (24-hour).
+            // Convert inferredTime "19:00" → match slot with "7:00 PM".
+            const [hh, mm] = inferredTime.split(":").map((s) => parseInt(s, 10));
+            const period = hh >= 12 ? "PM" : "AM";
+            const h12 = ((hh % 12) || 12);
+            const targetDisplay = `${h12}:${String(mm ?? 0).padStart(2, "0")} ${period}`;
+            const targetDisplayAlt = mm === 0 ? `${h12}:00 ${period}` : null;
+            const targetSlot = (avail.slots ?? []).find((slot) => {
+              const dt = typeof slot.display_time === "string" ? slot.display_time : "";
+              return dt === targetDisplay || (targetDisplayAlt && dt === targetDisplayAlt);
+            });
+            if (targetSlot) {
+              resolvedShiftId = typeof targetSlot.shift_id === "string" ? targetSlot.shift_id : null;
+              resolvedSlotIso = typeof targetSlot.date_time === "string" ? targetSlot.date_time : null;
+            }
+          } catch {
+            // Availability call failed — fall back to collecting_minimum_fields
+            // so the next turn re-checks via the standard flow.
+          }
+        }
+        const canConfirm = hasAllFields && resolvedShiftId != null && resolvedSlotIso != null;
+        // Granular missing-field prompt — ask only for what's still missing.
+        // When all fields resolve to a real slot, prompt for confirmation.
+        const phrasingTail = canConfirm
+          ? "Confirming?"
+          : hasAllFields
+            ? "Let me check availability."
+            : inferredParty == null && !inferredDate && !inferredTime
+              ? "How many, and when?"
+              : inferredParty == null
+                ? "How many guests?"
+                : !inferredDate && !inferredTime
+                  ? "What date and time?"
+                  : !inferredDate
+                    ? "What date?"
+                    : "What time?";
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `Got it — ${restName}${inferredParty != null ? ` for ${inferredParty}` : ""}${inferredDate ? ` on ${inferredDate}` : ""}${inferredTime ? ` at ${inferredTime}` : ""}. ${phrasingTail}`,
+          intent: "reservation_create",
+          step: canConfirm ? "confirm" : "collecting_minimum_fields",
+          nextExpectedInput: canConfirm ? "confirmation" : (inferredParty != null ? "date_time" : "party_size"),
+          booking: {
+            status: canConfirm ? "confirming" : "collecting_minimum_fields",
+            restaurant_id: restId,
+            restaurant_name: restName,
+            ...(inferredParty != null ? { party_size: inferredParty } : {}),
+            ...(inferredDate ? { date: inferredDate } : {}),
+            ...(inferredTime ? { time: inferredTime } : {}),
+            ...(resolvedShiftId ? { shift_id: resolvedShiftId } : {}),
+            ...(resolvedSlotIso ? { slot_iso: resolvedSlotIso } : {}),
+          },
+          uiActions: [
+            { type: "highlight_restaurant", restaurant_id: restId },
+            { type: "start_booking", restaurant_id: restId },
+          ],
+        });
+      }
+    }
+  }
+
+  // ── Direct book-by-event-name handler ────────────────────────────────
+  // Catches "book me for <event-name> at <restaurant> for <N>" and
+  // pre-attaches the matched event's id + date + start_time + restaurant
+  // into booking_state so the standard booking flow doesn't need to ask
+  // again. Without this, "book me for chef tasting menu at mark testing"
+  // falls through to the LLM which can't disambiguate "menu" in the event
+  // name and routes to menu Q&A. Added 2026-05-11.
+  {
+    const bookEventPattern =
+      /\b(?:book|reserve|grab|get)\s+(?:me|us|a\s+(?:table|seat|spot|booking|reservation))\s+(?:for|at)\s+(?:the\s+)?(.+?)(?:\s+at\s+([a-z][\w\s'’&]{1,40}?))?(?:\s+for\s+(\d+)(?:\s*(?:people|guests?|persons?))?)?(?:\s+(?:on\s+\w+|tomorrow|tonight|today|next\s+\w+|\d{1,2}(?::\d{2})?\s*(?:am|pm)))?\s*\??\s*$/i;
+    const bm = transcript.match(bookEventPattern);
+    if (bm) {
+      const eventCandidate = bm[1]?.trim() ?? "";
+      const restaurantCandidate = bm[2]?.trim() ?? "";
+      const partyHint = bm[3] ? Math.max(1, Math.min(99, parseInt(bm[3], 10))) : null;
+      // Skip when the candidate is just a number (party-only "for 2"), bare
+      // pronoun ("us"/"me"), or pure date/time phrase. Event-name candidates
+      // must contain letters and be at least 4 chars.
+      //
+      // ALSO reject common occasion / generic-meal words that look like event
+      // names but are just casual descriptions of a normal table booking:
+      // "business dinner", "anniversary", "birthday", "date night", bare meal
+      // words ("dinner", "lunch", "drinks"), and "for my <relation>" /
+      // "a table for N" patterns. Without this filter the handler fuzzy-
+      // matches them against rows like "Bordeaux Wine Pairing Dinner" (shares
+      // the token "dinner") and books the wrong event. Added 2026-05-12.
+      const GENERIC_OCCASION_PATTERN =
+        /^(?:(?:my|our|a|an|the)\s+)?(?:(?:kid'?s?|kids|child(?:'s|ren'?s)?|son'?s?|daughter'?s?|wife'?s?|husband'?s?|partner'?s?|girlfriend'?s?|boyfriend'?s?|mom'?s?|dad'?s?|mother'?s?|father'?s?|friend'?s?|date'?s?|family'?s?)\s+)?(?:business\s+(?:dinner|meeting|meal|lunch|breakfast|brunch)|anniversary(?:\s+(?:dinner|lunch|celebration|party|meal))?|birthday(?:\s+(?:dinner|lunch|party|celebration|meal|bash))?|date(?:\s+night)?|(?:romantic\s+)?(?:dinner|lunch|brunch|breakfast|drinks|meal|night\s+out|night)|meeting|gathering|party|celebration|reunion|get[-\s]?together|hangout|catch[-\s]?up|night\s+out)\s*$/i;
+      // Trailing-clause check: a candidate that ENDS with a generic meal
+      // word ("...for dinner", "...for lunch") is also not an event name.
+      const TRAILING_GENERIC_MEAL_PATTERN =
+        /\bfor\s+(?:dinner|lunch|brunch|breakfast|drinks|a\s+meal)\s*$/i;
+      const TABLE_FOR_N_PATTERN =
+        /^(?:a\s+)?(?:table|seat|spot|booking|reservation)\s+for\s+\w+/i;
+      const FOR_MY_RELATION_PATTERN =
+        /(?:^|\s)(?:my|our)\s+(?:anniversary|birthday|wedding|engagement|graduation|promotion|wife|husband|partner|girlfriend|boyfriend|kid'?s?|kids|child(?:'s|ren'?s)?|son'?s?|daughter'?s?|mom'?s?|dad'?s?|mother'?s?|father'?s?|friend'?s?|date'?s?|family'?s?)\b/i;
+      // Reject candidates that lead with a party-size phrase ("two", "2",
+      // "four people") — they are not event names.
+      const PARTY_SIZE_PREFIX_PATTERN =
+        /^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s+(?:people|guests?|persons?|of\s+us|for))?\b/i;
+      const looksLikeEventName =
+        eventCandidate.length >= 4 &&
+        /[a-z]{3,}/i.test(eventCandidate) &&
+        !/^(?:\d+\s*(?:people|guests?|persons?)?|us|me|a\s+table|tonight|tomorrow|today|now|later|some|something|anything|that|this|the|it|them)$/i.test(eventCandidate) &&
+        !/^(?:tonight|tomorrow|today)\s+at\s+/i.test(eventCandidate) &&
+        !GENERIC_OCCASION_PATTERN.test(eventCandidate) &&
+        !TRAILING_GENERIC_MEAL_PATTERN.test(eventCandidate) &&
+        !TABLE_FOR_N_PATTERN.test(eventCandidate) &&
+        !FOR_MY_RELATION_PATTERN.test(eventCandidate) &&
+        !PARTY_SIZE_PREFIX_PATTERN.test(eventCandidate);
+      if (looksLikeEventName) {
+        const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+        // Resolve restaurant_id when an "at <name>" clause is present.
+        let restaurantId: string | null = null;
+        let restaurantName: string | null = null;
+        if (restaurantCandidate) {
+          const rTokens = stripAccents(restaurantCandidate.toLowerCase()).split(/\s+/).filter((t) => t.length >= 2);
+          const all = await fetchActiveRestaurants();
+          const scored = all.map((row) => {
+            const lname = stripAccents((row.name ?? "").toLowerCase());
+            const score = rTokens.reduce((s, t) => s + (lname.includes(t) ? 1 : 0), 0);
+            return { row, score };
+          }).sort((a, b) => b.score - a.score);
+          if (scored[0]?.score) {
+            restaurantId = scored[0].row.id as string;
+            restaurantName = scored[0].row.name as string;
+          }
+        }
+        // Fall back to booking_state restaurant when no explicit "at <name>"
+        if (!restaurantId && typeof bookingState.restaurant_id === "string") {
+          restaurantId = bookingState.restaurant_id as string;
+          restaurantName = typeof bookingState.restaurant_name === "string"
+            ? (bookingState.restaurant_name as string)
+            : null;
+        }
+
+        // Query events. Scope to restaurant_id when known; otherwise search
+        // globally. is_active + future-or-today + non-private.
+        const todayIso = new Date().toISOString().slice(0, 10);
+        let evQuery = supabaseAdmin
+          .from("events")
+          .select("id, name, date, start_time, end_time, restaurant_id, capacity, tickets_sold, price_per_person, fixed_arrival_time")
+          .eq("is_active", true)
+          .eq("is_private", false)
+          .gte("date", todayIso);
+        if (restaurantId) evQuery = evQuery.eq("restaurant_id", restaurantId);
+        const { data: events } = await evQuery.order("date", { ascending: true }).limit(30);
+
+        const eTokens = stripAccents(eventCandidate.toLowerCase()).split(/\s+/).filter((t) => t.length >= 3);
+        const scoredEvents = (events ?? []).map((ev) => {
+          const lname = stripAccents((ev.name ?? "").toLowerCase());
+          const score = eTokens.reduce((s, t) => s + (lname.includes(t) ? 1 : 0), 0);
+          return { ev, score };
+        }).filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+
+        const bestEvent = scoredEvents[0]?.score && scoredEvents[0].score >= Math.max(1, Math.floor(eTokens.length / 2))
+          ? scoredEvents[0].ev
+          : null;
+
+        if (bestEvent) {
+          // Resolve restaurant from event row if we still don't have it.
+          if (!restaurantId) {
+            restaurantId = bestEvent.restaurant_id as string;
+            const all = await fetchActiveRestaurants();
+            restaurantName = (all.find((r) => r.id === restaurantId)?.name as string) ?? null;
+          }
+          // Event capacity sanity check — if obviously full, say so.
+          const seatsLeft = bestEvent.capacity == null
+            ? null
+            : Math.max(0, (bestEvent.capacity as number) - ((bestEvent.tickets_sold as number) ?? 0));
+          if (seatsLeft != null && partyHint != null && partyHint > seatsLeft) {
+            return makeAssistantPayload({
+              conversationId,
+              spokenText: `${bestEvent.name} only has ${seatsLeft} ${seatsLeft === 1 ? "seat" : "seats"} left at ${restaurantName ?? "that restaurant"} — too few for ${partyHint}. Want a smaller party or a different date?`,
+              intent: "reservation_create",
+              step: "collecting_minimum_fields",
+              nextExpectedInput: "party_size",
+              booking: {
+                status: "collecting_minimum_fields",
+                restaurant_id: restaurantId,
+                restaurant_name: restaurantName,
+                offered_events: [{
+                  id: bestEvent.id,
+                  name: bestEvent.name,
+                  date: bestEvent.date,
+                  start_time: bestEvent.start_time,
+                  end_time: bestEvent.end_time,
+                }],
+              },
+            });
+          }
+          const eventDate = bestEvent.date as string;
+          const eventStart = (bestEvent.start_time as string ?? "").slice(0, 5);
+          const dateLabel = eventDate
+            ? new Date(`${eventDate}T00:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+            : "TBD";
+          const timeLabel = eventStart
+            ? formatTimeForSpeech(eventStart)
+            : "TBD";
+          // Resolve shift_id + slot_iso by calling getAvailability so the
+          // standard confirmation handler (which requires both) can finalize
+          // the booking on a follow-up "yes confirm" turn. Without this, the
+          // turn-2 handler bounces back to "I need the reservation details
+          // again. What date and time?".
+          let resolvedShiftId: string | null = null;
+          let resolvedSlotIso: string | null = null;
+          if (partyHint != null && eventDate && eventStart) {
+            try {
+              const avail = await getAvailability(restaurantId, eventDate, partyHint);
+              // Pick the slot whose display_time matches the event's start
+              // (12-hour formatted). Fall back to the slot whose ISO time
+              // matches the event_date + start_time pair when the formatter
+              // differs.
+              const targetSlot = (avail.slots ?? []).find((slot) => {
+                const iso = slot.date_time;
+                if (typeof iso !== "string") return false;
+                // ISO date prefix must match the event date.
+                if (!iso.startsWith(eventDate)) return false;
+                // The slot's 'HH:MM' portion (UTC) should map back to the
+                // event's start_time in the restaurant's tz. The slot's
+                // display_time is also a candidate.
+                if (typeof slot.display_time === "string") {
+                  // Common shape: "6:00 PM" or "18:00"
+                  const dt = slot.display_time.trim().toLowerCase();
+                  const hhmmFromDisplay = (() => {
+                    const m = dt.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+                    if (!m) return null;
+                    let h = parseInt(m[1], 10);
+                    const min = m[2] ? parseInt(m[2], 10) : 0;
+                    const period = (m[3] || "").toLowerCase();
+                    if (period === "pm" && h < 12) h += 12;
+                    if (period === "am" && h === 12) h = 0;
+                    return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+                  })();
+                  if (hhmmFromDisplay === eventStart) return true;
+                }
+                return false;
+              });
+              if (targetSlot) {
+                resolvedSlotIso = targetSlot.date_time as string;
+                resolvedShiftId = targetSlot.shift_id as string;
+              }
+            } catch (e) {
+              console.error("[book-by-event] availability lookup failed:", e);
+            }
+          }
+
+          // Patch booking_state with everything we resolved. The standard
+          // booking flow (or confirmPendingAction) will pick up these
+          // fields. Mark status as confirming when we have all 3 (party +
+          // date + time) AND the availability lookup gave us shift+slot;
+          // otherwise collecting_minimum_fields.
+          const haveAll = partyHint != null && resolvedShiftId != null && resolvedSlotIso != null;
+          const bookingPatch: Record<string, unknown> = {
+            status: haveAll ? "confirming" : "collecting_minimum_fields",
+            restaurant_id: restaurantId,
+            restaurant_name: restaurantName,
+            date: eventDate,
+            time: eventStart,
+            offered_events: [{
+              id: bestEvent.id,
+              name: bestEvent.name,
+              date: bestEvent.date,
+              start_time: bestEvent.start_time,
+              end_time: bestEvent.end_time,
+            }],
+          };
+          if (partyHint != null) bookingPatch.party_size = partyHint;
+          if (resolvedShiftId) bookingPatch.shift_id = resolvedShiftId;
+          if (resolvedSlotIso) bookingPatch.slot_iso = resolvedSlotIso;
+          const partyBit = partyHint != null ? ` for ${partyHint} ${partyHint === 1 ? "guest" : "guests"}` : "";
+          const followUp = haveAll
+            ? `Confirming?`
+            : `How many guests?`;
+          return makeAssistantPayload({
+            conversationId,
+            spokenText: `Got it — ${bestEvent.name} at ${restaurantName ?? "the restaurant"} on ${dateLabel}${timeLabel !== "TBD" ? ` at ${timeLabel}` : ""}${partyBit}. ${followUp}`,
+            intent: "reservation_create",
+            step: haveAll ? "confirm" : "collecting_minimum_fields",
+            nextExpectedInput: haveAll ? "confirmation" : "party_size",
+            booking: bookingPatch,
+          });
+        }
+        // No matching event found. When the user clearly named a restaurant
+        // and event_candidate that didn't match, say so. Otherwise fall
+        // through to the LLM tool loop.
+        if (restaurantCandidate && restaurantId && eventCandidate.length >= 6) {
+          return makeAssistantPayload({
+            conversationId,
+            spokenText: `I don't see "${eventCandidate}" on the events list at ${restaurantName}. Want me to grab a regular table instead?`,
+            intent: "reservation_create",
+            step: "choose_restaurant",
+            nextExpectedInput: "confirmation",
+            booking: {
+              status: "idle",
+              restaurant_id: restaurantId,
+              restaurant_name: restaurantName,
+            },
+          });
+        }
       }
     }
   }
@@ -4265,7 +5560,11 @@ async function buildPreflightResponse(opts: {
       const rest = (r.restaurants as { name?: string; timezone?: string } | null) ?? {};
       const tz = rest.timezone || "UTC";
       const date = new Date(r.reserved_at as string);
-      const monthDay = date.toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" });
+      // Full weekday + full month for human readability — "Wednesday, May 13"
+      // not "May 13" without weekday context. Audit caught 2026-05-11.
+      const monthDay = date.toLocaleDateString("en-US", {
+        timeZone: tz, weekday: "long", month: "long", day: "numeric",
+      });
       const time = date.toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true });
       const statusLabel = (r.status as string) === "cancelled"
         ? " (cancelled)"
@@ -4346,7 +5645,10 @@ async function buildPreflightResponse(opts: {
       : "";
     if (
       stateRestaurantName &&
-      /\bwhat(?:'?s)?\s+(?:the|their|its)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating|contact|location)\b/i.test(transcript)
+      (/\bwhat(?:'?s)?\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating|contact|location)\b/i.test(transcript) ||
+        /\bwhat\s+(?:are|were)\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|price|menu|drinks?|reviews?)\b/i.test(transcript) ||
+        /\bwhat\s+time\s+(?:do|does)\s+(?:they|it|you)\s+(?:open|close|opens|closes)\b/i.test(transcript) ||
+        /\b(?:are|is)\s+(?:they|it|you)\s+(?:open|closed)\b/i.test(transcript))
     ) {
       return stateRestaurantName;
     }
@@ -4363,9 +5665,20 @@ async function buildPreflightResponse(opts: {
       // EVENTS/PROMOTIONS FIRST — these patterns must match BEFORE the broad
       // "is X in Y" pattern below, otherwise "is there trivia at georgy inc"
       // captures "there trivia" as the candidate.
-      /\bevents?\s+(?:at|in|near)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // Widened to catch "what events are at X" / "what events is X having" /
+      // "events happening at X" / "events going on at X" / "events coming up at X".
+      /\bevents?\s+(?:are\s+|is\s+|do\s+|does\s+|happening\s+|going\s+on\s+|coming\s+up\s+)?(?:at|in|near|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // "show/list/tell me events at X"
+      /\b(?:show|list|tell)\s+(?:me\s+)?(?:the\s+|any\s+|some\s+)?events?\s+(?:at|in|near|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // "what's happening at X" / "what's going on at X"
+      /\bwhat(?:'?s)?\s+(?:happening|going\s+on|coming\s+up|cooking|on(?:\s+tonight)?)\s+(?:at|in|near|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
       // "is there/are there/any/got trivia/live music/happy hour at X"
       /\b(?:is\s+there|are\s+there|any|got)\s+(?:any\s+)?(?:trivia|live\s+music|happy\s+hour|karaoke|dj(?:\s+nights?)?|comedy|brunch\s+special|wagyu\s+tasting|wine\s+(?:tasting|dinner|pairing)|tasting(?:\s+menu)?|prix\s+fixe|tasting\s+night|theme\s+night|pairing\s+(?:dinner|night))\s+(?:at|in|near)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // Bare event-theme + at X — without "is there/any/got" prefix. Wide-probe
+      // finding 2026-05-13: "live music at jacobs" / "trivia at mark testing"
+      // were falling through to LLM tool loop and getting stuck on filler.
+      // Non-capturing on theme; restaurant in group 1 for the resolver.
+      /\b(?:live\s+music|trivia(?:\s+night)?|happy\s+hour|karaoke|dj(?:\s+nights?)?|comedy|wagyu(?:\s+(?:tasting|wednesday))?|wine\s+(?:tasting|dinner|pairing|wednesday)|prix\s+fixe|jazz(?:\s+night)?|salsa(?:\s+night)?|burgundy)\s+(?:at|in|near)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
       /\bdoes\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+have\s+(?:any\s+)?(?:trivia|live\s+music|happy\s+hour|karaoke|dj(?:\s+nights?)?|comedy|events?|specials?\s+tonight|tasting|wine\s+(?:dinner|pairing)|brunch)\b/i,
       // "wagyu wednesday at X" / "wine wednesday at X" — themed-night queries
       /\b(?:wagyu|wine|rib|industry|date)\s+(?:wednesday|monday|tuesday|thursday|friday|saturday|sunday|night)\s+(?:at|in|near)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
@@ -4428,6 +5741,11 @@ async function buildPreflightResponse(opts: {
       const restPhone = (best.phone as string | null) ?? "";
       const restPriceRaw = (best as Record<string, unknown>).price_range;
       const restPrice = typeof restPriceRaw === "number" ? restPriceRaw : null;
+      // Stashed when events/promotions handlers run — propagated to the
+      // response's booking_state so the NEXT turn's booking can auto-attach
+      // the matching event_id / promotion_id (see `resolveEventAttachment`).
+      let offeredEventsForBooking: Array<{ id: string; name: string | null; date: string | null; start_time: string | null; end_time: string | null }> | null = null;
+      let offeredPromotionForBooking: { id: string; promo_code: string | null; title: string | null } | null = null;
       const priceLabel = restPrice === 1
         ? "budget-friendly ($)"
         : restPrice === 2
@@ -4467,40 +5785,83 @@ async function buildPreflightResponse(opts: {
       } else if (askingReviews) {
         answer = `Reviews aren't surfaced in our system yet — I focus on availability and bookings. Want me to grab you a table at ${restName}?`;
       } else if (askingEvents) {
-        // Real DB lookup: events table has restaurant-specific rows.
-        const { data: eventRows } = await supabaseAdmin
+        // Extract theme keyword from transcript so "wagyu wednesday at jacobs"
+        // filters to wagyu events only, not all upcoming. Judge finding
+        // 2026-05-12: "wagyu wednesday at jacobs" was returning ALL events
+        // (Wagyu Masterclass + Beaune Burgundy + ...) instead of just Wagyu.
+        const themeKeywords = [
+          "wagyu", "wine", "live music", "trivia", "karaoke", "comedy",
+          "dj", "prix fixe", "tasting", "burgundy", "champagne", "whiskey",
+          "rib", "industry", "brunch", "happy hour", "jazz", "salsa",
+          "country", "rock", "pairing", "chef",
+        ];
+        let themeMatch: string | null = null;
+        for (const kw of themeKeywords) {
+          if (new RegExp(`\\b${kw.replace(/\s+/g, "\\s+")}\\b`, "i").test(transcript)) {
+            themeMatch = kw;
+            break;
+          }
+        }
+        let evQuery = supabaseAdmin
           .from("events")
-          .select("name, date, start_time, theme, price_per_person")
+          .select("id, name, date, start_time, end_time, theme, price_per_person, is_recurring, end_date")
           .eq("restaurant_id", best.id as string)
           .eq("is_active", true)
           .eq("is_private", false)
-          .gte("date", new Date().toISOString().slice(0, 10))
+          // Show recurring events even if their stored date is in the past —
+          // resolveEventAttachment now matches them by weekday + time window.
+          .or(`date.gte.${new Date().toISOString().slice(0, 10)},is_recurring.eq.true`);
+        if (themeMatch) {
+          // ILIKE on name OR theme — events table has both columns. Use
+          // raw or() filter for the disjunction.
+          evQuery = evQuery.or(`name.ilike.%${themeMatch}%,theme.ilike.%${themeMatch}%`);
+        }
+        const { data: eventRows } = await evQuery
           .order("date", { ascending: true })
           .limit(3);
+        // Stash the offered events on the response so the NEXT turn's
+        // booking can auto-attach the matching event_id when the user
+        // says "book me a table for that wine pairing".
+        if (eventRows && eventRows.length > 0) {
+          offeredEventsForBooking = eventRows.map((ev) => ({
+            id: ev.id, name: ev.name, date: ev.date,
+            start_time: ev.start_time, end_time: ev.end_time,
+            is_recurring: (ev as { is_recurring?: boolean }).is_recurring === true,
+            end_date: typeof (ev as { end_date?: string | null }).end_date === "string"
+              ? (ev as { end_date?: string | null }).end_date : null,
+          }));
+        }
         if (eventRows && eventRows.length > 0) {
           const lines = eventRows.map((ev) => {
             const dateLabel = ev.date
               ? new Date(`${ev.date}T00:00:00`).toLocaleDateString("en-US", {
-                  weekday: "short", month: "short", day: "numeric",
+                  weekday: "long", month: "long", day: "numeric",
                 })
               : "TBD";
-            const timeLabel = ev.start_time ? ` at ${ev.start_time.slice(0, 5)}` : "";
+            // Convert raw "HH:MM" or "HH:MM:SS" to "1:30 PM" via the same
+            // 12-hour speech helper used for booking confirmations.
+            const timeLabel = ev.start_time
+              ? ` at ${formatTimeForSpeech(ev.start_time.slice(0, 5))}`
+              : "";
             const priceLabel = ev.price_per_person ? ` ($${Number(ev.price_per_person).toFixed(0)}/person)` : "";
             return `${ev.name}${timeLabel} on ${dateLabel}${priceLabel}`;
           });
+          const themeLabel = themeMatch ? ` ${themeMatch}` : "";
           const head = eventRows.length === 1
-            ? `${restName} has one coming up: `
-            : `${restName} has ${eventRows.length} coming up — `;
+            ? `${restName} has one${themeLabel} event coming up: `
+            : `${restName} has ${eventRows.length}${themeLabel} events coming up — `;
           answer = `${head}${lines.join("; ")}. Want me to book you a table for one of those nights?`;
         } else {
-          answer = `Nothing on the calendar at ${restName} right now. Want me to grab you a table anyway?`;
+          answer = themeMatch
+            ? `No ${themeMatch} events scheduled at ${restName} right now. Want me to grab you a regular table?`
+            : `Nothing on the calendar at ${restName} right now. Want me to grab you a table anyway?`;
         }
       } else if (askingPromotions) {
         // Real DB lookup: promotions table has restaurant-specific active offers.
         const nowIso = new Date().toISOString();
         const { data: promoRows } = await supabaseAdmin
           .from("promotions")
-          .select("title, description, discount_value, discount_unit, promo_code, ends_at")
+          .select("id, title, description, discount_value, discount_unit, promo_code, ends_at")
           .eq("restaurant_id", best.id as string)
           .eq("is_active", true)
           .eq("is_private", false)
@@ -4508,6 +5869,16 @@ async function buildPreflightResponse(opts: {
           .or(`ends_at.is.null,ends_at.gt.${nowIso}`)
           .order("starts_at", { ascending: false, nullsFirst: false })
           .limit(3);
+        // Stash the FIRST offered promotion as the candidate for the next
+        // booking turn. The user typically asks about deals then books at
+        // the same restaurant — that booking should get the promo tagged.
+        if (promoRows && promoRows.length > 0) {
+          offeredPromotionForBooking = {
+            id: promoRows[0].id,
+            promo_code: promoRows[0].promo_code,
+            title: promoRows[0].title,
+          };
+        }
         if (promoRows && promoRows.length > 0) {
           const lines = promoRows.map((p) => {
             const discount = p.discount_value != null
@@ -4593,8 +5964,44 @@ async function buildPreflightResponse(opts: {
         } else {
           answer = `I don't have a location on file for ${restName}. Want to book anyway?`;
         }
-      } else if (/\bopen\b|\bhours\b/i.test(transcript)) {
-        answer = `I'd need to pull up live hours for ${restName} — want me to check availability for a specific date?`;
+      } else if (/\bopen\b|\bhours\b|\bclose[ds]?\b|\bwhat time/i.test(transcript)) {
+        // Read hours_json directly. Shape: { monday: {open, close}|null, ... }.
+        // Judge finding 2026-05-12: "what are your hours" was getting a
+        // dismissive deflection. Now actually answers from the row.
+        const hoursJson = (best as { hours_json?: Record<string, { open: string; close: string } | null> }).hours_json;
+        if (hoursJson && typeof hoursJson === "object") {
+          // Determine which day the user is asking about — default to "today"
+          // in the restaurant's tz. Map weekday-name mentions if explicit.
+          const dayMap: Record<string, string> = {
+            sunday: "sunday", monday: "monday", tuesday: "tuesday",
+            wednesday: "wednesday", thursday: "thursday", friday: "friday", saturday: "saturday",
+            sun: "sunday", mon: "monday", tue: "tuesday", tues: "tuesday",
+            wed: "wednesday", weds: "wednesday", thu: "thursday", thurs: "thursday",
+            fri: "friday", sat: "saturday",
+          };
+          let askedDay: string | null = null;
+          for (const [k, v] of Object.entries(dayMap)) {
+            if (new RegExp(`\\b${k}\\b`, "i").test(transcript)) { askedDay = v; break; }
+          }
+          if (!askedDay) {
+            // "today" / "tonight" / "right now" → today in restaurant tz; fallback English.
+            const todayName = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: opts.timezone })
+              .format(new Date())
+              .toLowerCase();
+            askedDay = todayName;
+          }
+          const hoursEntry = hoursJson[askedDay];
+          const dayLabel = askedDay.charAt(0).toUpperCase() + askedDay.slice(1);
+          if (hoursEntry && hoursEntry.open && hoursEntry.close) {
+            answer = `${restName} is open ${hoursEntry.open}–${hoursEntry.close} on ${dayLabel}. Want me to book a table?`;
+          } else if (hoursEntry === null) {
+            answer = `${restName} is closed on ${dayLabel}. Want to try a different day?`;
+          } else {
+            answer = `I don't have hours on file for ${restName}${restPhone ? ` — try calling ${restPhone}` : ""}. Want me to check live availability?`;
+          }
+        } else {
+          answer = `I don't have hours on file for ${restName}${restPhone ? ` — try calling ${restPhone}` : ""}. Want me to check live availability?`;
+        }
       } else if (askingAbout) {
         // Generic "tell me about X" / "what's X about" / "what's X like" — describe the row.
         const bits: string[] = [];
@@ -4633,7 +6040,7 @@ async function buildPreflightResponse(opts: {
           currentBookingStatus === "loading_availability" ||
           currentBookingStatus === "awaiting_time_selection" ||
           currentBookingStatus === "confirming";
-        const factLookupBookingPatch = isInFlightBooking
+        const factLookupBookingPatch: Record<string, unknown> = isInFlightBooking
           ? {
               restaurant_id: best.id as string,
               restaurant_name: restName,
@@ -4644,6 +6051,13 @@ async function buildPreflightResponse(opts: {
               restaurant_name: restName,
               status: "idle" as const,
             };
+        // Persist offered events/promotion for next-turn auto-attach.
+        if (offeredEventsForBooking && offeredEventsForBooking.length > 0) {
+          factLookupBookingPatch.offered_events = offeredEventsForBooking;
+        }
+        if (offeredPromotionForBooking) {
+          factLookupBookingPatch.offered_promotion = offeredPromotionForBooking;
+        }
         // BUG FIX #1: when mid-booking, the user asked an off-topic factual
         // question. Strip the booking-conversion CTA from the answer (the
         // existing copy ends with "Want me to check availability?" / "Want a
@@ -4723,9 +6137,30 @@ async function buildPreflightResponse(opts: {
     if (!hasAtRestaurant && /\b(promotions?|deals?|discounts?|specials?|offers?|coupons?|happy hour)\b/.test(t)) {
       return "Deals are on the Deals page in the app — I can also book you straight in. What spot are you eyeing?";
     }
-    // "any events tonight" / "what's happening" — general events
+    // "any events tonight" / "what's happening" — general events.
+    // NOTE: we DO have an events table populated; tell user which restaurants
+    // have events and invite them to pick. User bug 2026-05-12: prior copy
+    // claimed "events aren't tracked centrally yet" — which was inaccurate.
     if (/\b(events?|happenings?|live music|trivia)\b/.test(t) && !/\b(at|in|near)\s+\w+/.test(t)) {
-      return "Events aren't tracked centrally yet. I focus on getting you a great table — anywhere on your mind?";
+      return "I can pull events at a specific restaurant — which one are you eyeing? Or say 'show me restaurants with events tonight' and I'll surface them.";
+    }
+    // "what time do they open/close" / "are they open/closed" without a
+    // restaurant in transcript AND no state restaurant → ask. Wide-probe
+    // finding 2026-05-13: these were falling through to LLM tool loop and
+    // getting stuck on "One moment please." filler.
+    const stateRestaurantNameLower = typeof bookingState?.restaurant_name === "string"
+      ? (bookingState.restaurant_name as string).toLowerCase()
+      : "";
+    if (!stateRestaurantNameLower) {
+      if (/\bwhat\s+time\s+(?:do|does)\s+(?:they|it|you)\s+(?:open|close|opens|closes)\b/.test(t) ||
+          /\b(?:are|is)\s+(?:they|it|you)\s+(?:open|closed)\b/.test(t) ||
+          /\bwhat(?:'?s| are| were)?\s+(?:the\s+|their\s+|its\s+|your\s+)?hours\b/.test(t)) {
+        return "Which restaurant should I check hours for?";
+      }
+      // "is it fancy/expensive/cheap/...?" — vibe questions without context.
+      if (/\bis\s+it\s+(?:fancy|expensive|cheap|pricey|good|busy|popular|quiet|loud|trendy|hip|cozy|romantic|casual|kid[-\s]?friendly|family[-\s]?friendly|dog[-\s]?friendly)\b/.test(t)) {
+        return "Which restaurant are you asking about?";
+      }
     }
     return null;
   })();
@@ -4934,6 +6369,67 @@ async function buildPreflightResponse(opts: {
       });
     }
 
+    // Deposit hand-off: if this party size triggers a deposit at this
+    // restaurant, voice can't securely collect card details — redirect to
+    // the public booking page with the slot pre-filled. The web flow handles
+    // the deposit via the existing Stripe-stubbed checkout step. Mirrors the
+    // LLM tool-flow handler at line 9159; without this the casual-handler
+    // confirm path silently books without a deposit.
+    {
+      const { data: depositCents, error: depositErr } = await supabaseAdmin.rpc(
+        "compute_deposit_for_party",
+        {
+          p_restaurant_id: currentRestaurantId,
+          p_party_size: partySize,
+        },
+      );
+      if (!depositErr && typeof depositCents === "number" && depositCents > 0) {
+        const { data: restaurantRow } = await supabaseAdmin
+          .from("restaurants")
+          .select("slug, name")
+          .eq("id", currentRestaurantId)
+          .maybeSingle();
+        const slug = restaurantRow && typeof (restaurantRow as { slug?: string }).slug === "string"
+          ? (restaurantRow as { slug: string }).slug : null;
+        const dollars = (depositCents / 100).toFixed(2);
+        const params = new URLSearchParams();
+        if (date) params.set("date", date);
+        if (liveSlot.display_time) params.set("time", liveSlot.display_time);
+        params.set("people", String(partySize));
+        if (liveSlot.shift_id) params.set("shift_id", liveSlot.shift_id);
+        const query = params.toString();
+        const path = slug ? (query ? `/${slug}?${query}` : `/${slug}`) : "/discover";
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `Parties of ${partySize} need a $${dollars} deposit at ${currentRestaurantName ?? "this restaurant"}. Opening the booking page so you can add your card.`,
+          intent: "confirm_booking",
+          step: "done",
+          nextExpectedInput: "none",
+          uiActions: [
+            { type: "navigate", path },
+            { type: "close_assistant" },
+          ],
+          booking: {
+            restaurant_id: currentRestaurantId,
+            party_size: partySize,
+            date,
+            time: liveSlot.display_time,
+            shift_id: liveSlot.shift_id,
+            slot_iso: liveSlot.date_time,
+            status: "idle",
+            pending_action: null,
+          },
+        });
+      }
+    }
+
+    // Event/promotion auto-attachment: if the prior turn's events handler
+    // stashed offered_event metadata AND the user's chosen slot falls within
+    // an offered event's time window, tag the reservation with event_id so
+    // the booking shows up under "this event's attendees" on the owner
+    // dashboard. Same for promotions (simpler — no time check).
+    const eventAttach = resolveEventAttachment(bookingState, liveSlot.date_time, opts.timezone);
+    const promoAttach = resolvePromotionAttachment(bookingState);
     const result = await completeBooking({
       user_profile_id: opts.userProfileId,
       restaurant_id: currentRestaurantId,
@@ -4943,6 +6439,9 @@ async function buildPreflightResponse(opts: {
       party_size: partySize,
       special_request: bookingState.special_request as string | null | undefined,
       occasion: bookingState.occasion as string | null | undefined,
+      event_id: eventAttach,
+      promotion_id: promoAttach?.id ?? null,
+      applied_promo_code: promoAttach?.code ?? null,
     });
     if (!result.success || !result.reservation_id || !result.confirmation_code) {
       console.error("[orchestrator early-confirm] completeBooking failed", {
@@ -5087,9 +6586,10 @@ async function buildPreflightResponse(opts: {
     const nextDate = explicitDate ?? date;
     const nextTime = explicitTime ?? time;
     if (ambiguousTime) {
+      const restPrefix = currentRestaurantName ? `Got it — ${currentRestaurantName}. ` : "";
       return makeAssistantPayload({
         conversationId,
-        spokenText: ambiguousBareTimePrompt(ambiguousTime),
+        spokenText: `${restPrefix}${ambiguousBareTimePrompt(ambiguousTime)}`,
         intent: "reservation_create",
         step: "choose_time",
         nextExpectedInput: "time",
@@ -5210,27 +6710,26 @@ async function buildPreflightResponse(opts: {
   }
 
   if (
-    (/\b(cancel|scrap|drop|kill|nuke|trash|abort|nix|delete|remove)\b/i.test(transcript) &&
+    reservationId &&
+    ((/\b(cancel|scrap|drop|kill|nuke|trash|abort|nix|delete|remove)\b/i.test(transcript) &&
       /\b(booking|reservation|table|it|that|one)\b/i.test(transcript)) ||
-    /\bi (?:need|want|wanna|gotta|have)\s+to\s+cancel\b/i.test(transcript) ||
-    /^cancel\.?$/i.test(transcript.trim())
+      /\bi (?:need|want|wanna|gotta|have)\s+to\s+cancel\b/i.test(transcript) ||
+      /^cancel\.?$/i.test(transcript.trim()))
   ) {
-    const summary = reservationId
-      ? `Just confirming: cancel your reservation at ${currentRestaurantName}?`
-      : "I can help cancel, but I need the reservation details first.";
+    const summary = `Just confirming: cancel your reservation at ${currentRestaurantName}?`;
     return makeAssistantPayload({
       conversationId,
       spokenText: summary,
       intent: "reservation_cancel",
-      step: reservationId ? "confirm" : "done",
-      nextExpectedInput: reservationId ? "confirmation" : "none",
-      booking: reservationId ? {
+      step: "confirm",
+      nextExpectedInput: "confirmation",
+      booking: {
         pending_action: {
           type: "cancel_reservation",
           payload: { reservation_id: reservationId },
           confirmation_text: summary,
         },
-      } : null,
+      },
     });
   }
 
@@ -5242,21 +6741,25 @@ async function buildPreflightResponse(opts: {
   // on the (cancelled) reservation they just heard about.
   if (
     !reservationId && !currentRestaurantId &&
-    /\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript) &&
-    /\b(it|that|that one|the booking|the reservation)\b/i.test(transcript)
+    /\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|cancel|drop|scrap|kill|nuke|abort|make\s+it|set\s+it)\b/i.test(transcript) &&
+    /\b(it|that|that one|my\s+(?:[\w'’&-]+\s+){0,3}(?:booking|reservation|table|rez|res|dinner|date|time|party|spot|sitting)|the\s+(?:[\w'’&-]+\s+){0,3}(?:booking|reservation|table|rez|res|date|time|party))\b/i.test(transcript)
   ) {
     // Check if the user has any active future reservation we can offer.
+    // Limit 3 was too restrictive — if the user has many active bookings and
+    // says "change my jacobs reservation", we need to load enough rows to find
+    // Jacobs even if it isn't in the next 3 by reserved_at. 25 is a sane
+    // ceiling for active-future per user.
     const { data: activeRows } = await supabaseAdmin
       .from("reservations")
-      .select("id, reserved_at, restaurant_id, restaurants(name)")
+      .select("id, reserved_at, party_size, restaurant_id, shift_id, restaurants(name, timezone)")
       .eq("user_profile_id", opts.userProfileId)
       .neq("status", "cancelled")
       .neq("status", "no_show")
       .gte("reserved_at", new Date().toISOString())
       .order("reserved_at", { ascending: true })
-      .limit(3);
-    const active = (activeRows ?? []) as Array<Record<string, unknown>>;
-    if (active.length === 0) {
+      .limit(25);
+    const activeAll = (activeRows ?? []) as Array<Record<string, unknown>>;
+    if (activeAll.length === 0) {
       return makeAssistantPayload({
         conversationId,
         spokenText: "You don't have any active reservations to change. Want to book a new one?",
@@ -5266,54 +6769,379 @@ async function buildPreflightResponse(opts: {
         booking: { status: "idle" },
       });
     }
+    // If transcript names a restaurant token, narrow active list to that
+    // restaurant. e.g. "change my jacobs reservation to 7pm" should resolve
+    // uniquely when only one active booking is at Jacobs.
+    const stripAccentsLocal = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+    const transcriptNorm = stripAccentsLocal(transcript);
+    const filteredByName = activeAll.filter((r) => {
+      const rname = ((r.restaurants as { name?: string } | null)?.name ?? "").trim();
+      if (!rname) return false;
+      const tokens = stripAccentsLocal(rname).split(/\s+/).filter((t) => t.length >= 3);
+      return tokens.some((t) => transcriptNorm.includes(t));
+    });
+    const active = (filteredByName.length === 1
+      ? filteredByName
+      : (filteredByName.length > 1 ? filteredByName : activeAll)
+    );
     if (active.length === 1) {
-      // Promote the only active row so the next turn can work.
       const r = active[0];
-      const rest = (r.restaurants as { name?: string } | null) ?? {};
+      const rest = (r.restaurants as { name?: string; timezone?: string } | null) ?? {};
+      const reservedAt = r.reserved_at as string;
+      const tz = rest.timezone || opts.timezone || "America/Toronto";
+      const reservedDate = formatISODateInTimeZone(new Date(reservedAt), tz);
+      const reservedTime = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(reservedAt));
+      const partySize = typeof r.party_size === "number" ? r.party_size : null;
+      const isCancelVerb = /\b(cancel|drop|scrap|kill|nuke|abort)\b/i.test(transcript);
+      const restName = rest.name ?? "your booking";
+      const resRestaurantId = r.restaurant_id as string;
+
+      // CANCEL: queue pending_action so "yes" cancels via confirmPendingAction
+      if (isCancelVerb) {
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `Want to cancel your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}? Say yes to confirm.`,
+          intent: "reservation_cancel",
+          step: "confirm",
+          nextExpectedInput: "confirmation",
+          booking: {
+            reservation_id: r.id as string,
+            restaurant_id: resRestaurantId,
+            restaurant_name: restName,
+            date: reservedDate,
+            time: reservedTime,
+            party_size: partySize,
+            shift_id: typeof r.shift_id === "string" ? r.shift_id : null,
+            status: "post_booking",
+            pending_action: {
+              type: "cancel_reservation",
+              payload: { reservation_id: r.id as string },
+              confirmation_text: `Cancel ${restName} on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}?`,
+            },
+          },
+        });
+      }
+
+      // MODIFY: if the user named a new time in the same utterance, queue a
+      // modify pending_action directly. Otherwise just promote the reservation
+      // details and ask what they want to change.
+      // Fallback for bare ambiguous times like "8:30" (no AM/PM) — in a modify
+      // context the overwhelming default is PM (dinner). Without this fallback
+      // "move my dinner to 8:30" returned the no-time branch and asked for a
+      // new time, even though 8:30 was named.
+      let requestedTime = parseTime(transcript);
+      if (!requestedTime) {
+        const amb = parseAmbiguousBareTime(transcript);
+        if (amb) requestedTime = hhmmForAmbiguousPeriod(amb, "pm");
+      }
+      if (requestedTime && partySize != null) {
+        const availability = await getAvailability(resRestaurantId, reservedDate, partySize);
+        const slot = findNearestSlot(availability.slots ?? [], requestedTime);
+        if (slot) {
+          const newTimeLabel = formatTimeForSpeech(slot.display_time);
+          const oldTimeLabel = formatTimeForSpeech(reservedTime);
+          const differs = slot.display_time !== formatTimeForSpeech(requestedTime);
+          const prompt = differs
+            ? `${formatTimeForSpeech(requestedTime)} isn't available — they have ${newTimeLabel}. Want to move from ${oldTimeLabel} to ${newTimeLabel} on ${reservedDate}? Say yes.`
+            : `Want to move your ${restName} booking from ${oldTimeLabel} to ${newTimeLabel} on ${reservedDate}? Say yes.`;
+          return makeAssistantPayload({
+            conversationId,
+            spokenText: prompt,
+            intent: "reservation_modify",
+            step: "confirm",
+            nextExpectedInput: "confirmation",
+            booking: {
+              reservation_id: r.id as string,
+              restaurant_id: resRestaurantId,
+              restaurant_name: restName,
+              date: reservedDate,
+              time: slot.display_time,
+              party_size: partySize,
+              shift_id: slot.shift_id,
+              status: "post_booking",
+              pending_action: {
+                type: "modify_reservation",
+                payload: {
+                  reservation_id: r.id as string,
+                  restaurant_id: resRestaurantId,
+                  party_size: partySize,
+                  date: reservedDate,
+                  time: slot.display_time,
+                  shift_id: slot.shift_id,
+                  slot_iso: slot.date_time,
+                },
+                confirmation_text: prompt,
+              },
+            },
+          });
+        }
+      }
+
+      // No new time given (or unavailable) — just promote details and prompt.
       return makeAssistantPayload({
         conversationId,
-        spokenText: `Did you mean your ${rest.name ?? "upcoming"} booking? Just say "modify" or "cancel" again.`,
-        intent: "general_question",
+        spokenText: `Want to modify your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}? Give me a new time.`,
+        intent: "reservation_modify",
         step: "done",
         nextExpectedInput: "free_text",
         booking: {
           reservation_id: r.id as string,
-          restaurant_id: r.restaurant_id as string,
-          restaurant_name: rest.name as string,
+          restaurant_id: resRestaurantId,
+          restaurant_name: restName,
+          date: reservedDate,
+          time: reservedTime,
+          party_size: partySize,
+          shift_id: typeof r.shift_id === "string" ? r.shift_id : null,
           status: "post_booking",
         },
       });
     }
-    // Multiple active — ask user to pick.
-    const names = active.map((r) => ((r.restaurants as { name?: string } | null) ?? {}).name).filter(Boolean);
+    // Multiple active — ask user to pick. Stash candidates + intent in
+    // booking_state so the user's next reply (restaurant name, date phrase,
+    // weekday word) can route BACK to the modify/cancel flow instead of
+    // being treated as a fresh booking interest.
+    const isCancelVerb = /\b(cancel|drop|scrap|kill|nuke|abort|nix|delete|remove)\b/i.test(transcript);
+    // Capture an explicit new time the user named in the modify utterance
+    // (e.g. "change my keg reservation to 8pm") so the disambig follow-up
+    // can use it without re-asking.
+    let stashedNewTime: string | null = parseTime(transcript);
+    if (!stashedNewTime && !isCancelVerb) {
+      const ambForStash = parseAmbiguousBareTime(transcript);
+      if (ambForStash) stashedNewTime = hhmmForAmbiguousPeriod(ambForStash, "pm");
+    }
+    const candidateRows = active.map((r) => ({
+      id: r.id as string,
+      restaurant_id: r.restaurant_id as string,
+      restaurant_name: ((r.restaurants as { name?: string } | null) ?? {}).name ?? "",
+      reserved_at: r.reserved_at as string,
+      party_size: typeof r.party_size === "number" ? r.party_size : null,
+      shift_id: typeof r.shift_id === "string" ? r.shift_id : null,
+    }));
+    const names = candidateRows.map((r) => r.restaurant_name).filter(Boolean);
+    // If all candidates are at the SAME restaurant, the user's "which one?"
+    // can only be disambiguated by date — surface the date in the prompt.
+    const sameRestaurant = candidateRows.every((r) => r.restaurant_id === candidateRows[0]?.restaurant_id);
+    const tz = opts.timezone || "America/Toronto";
+    const dateLabels = sameRestaurant ? candidateRows.map((r) => {
+      const d = new Date(r.reserved_at);
+      return `${new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" }).format(d)} at ${new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(d)}`;
+    }) : [];
+    const prompt = sameRestaurant
+      ? `You've got ${active.length} bookings at ${names[0]} — ${dateLabels.slice(0, 3).join(" and ")}. Which one?`
+      : `You've got ${active.length} upcoming bookings — at ${names.slice(0, 2).join(" and ")}. Which one?`;
     return makeAssistantPayload({
       conversationId,
-      spokenText: `You've got ${active.length} upcoming bookings — at ${names.slice(0, 2).join(" and ")}. Which one?`,
-      intent: "general_question",
+      spokenText: prompt,
+      intent: isCancelVerb ? "reservation_cancel" : "reservation_modify",
       step: "done",
       nextExpectedInput: "free_text",
-      booking: { status: "idle" },
+      booking: {
+        status: "idle",
+        pending_modify_disambig: {
+          action: isCancelVerb ? "cancel" : "modify",
+          new_time: stashedNewTime,
+          candidates: candidateRows,
+        },
+      },
     });
   }
 
-  if (/\b(change|modify|move|switch|update|make it|add|reschedule|push|bump|shift|adjust|edit)\b/i.test(transcript) &&
+  // ── Disambig follow-up: previous turn asked "which one?" and stashed
+  // candidates — route the user's reply (restaurant name, weekday word, or
+  // a date) back to the modify/cancel flow.
+  {
+    const disambig = bookingState.pending_modify_disambig as
+      | { action: string; new_time: string | null; candidates: Array<Record<string, unknown>> }
+      | null
+      | undefined;
+    if (disambig && Array.isArray(disambig.candidates) && disambig.candidates.length > 0) {
+      const tlcD = transcript.toLowerCase();
+      const tzD = opts.timezone || "America/Toronto";
+      const stripAcc = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+      const tNorm = stripAcc(tlcD);
+      // Try to match by restaurant name token first.
+      let pick: Record<string, unknown> | null = null;
+      for (const c of disambig.candidates) {
+        const rname = stripAcc(String(c.restaurant_name ?? ""));
+        const tokens = rname.split(/\s+/).filter((t) => t.length >= 3);
+        if (tokens.some((t) => tNorm.includes(t))) { pick = c; break; }
+      }
+      // If not matched by restaurant, try weekday / "the saturday one" /
+      // "the friday booking" etc.
+      if (!pick) {
+        for (const c of disambig.candidates) {
+          const d = new Date(c.reserved_at as string);
+          const weekday = new Intl.DateTimeFormat("en-US", { timeZone: tzD, weekday: "long" }).format(d).toLowerCase();
+          const weekdayShort = weekday.slice(0, 3);
+          if (new RegExp(`\\b(?:${weekday}|${weekdayShort}(?:day)?)\\b`).test(tlcD)) { pick = c; break; }
+        }
+      }
+      // If still not matched, try date numeric ("the 22nd", "may 22").
+      if (!pick) {
+        for (const c of disambig.candidates) {
+          const d = new Date(c.reserved_at as string);
+          const dayNum = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: tzD, day: "numeric" }).format(d), 10);
+          const monthName = new Intl.DateTimeFormat("en-US", { timeZone: tzD, month: "long" }).format(d).toLowerCase();
+          const matchesDay = new RegExp(`\\b(?:the\\s+)?${dayNum}(?:st|nd|rd|th)?\\b`).test(tlcD);
+          const matchesMonth = new RegExp(`\\b${monthName}\\b`).test(tlcD);
+          if (matchesDay || matchesMonth) { pick = c; break; }
+        }
+      }
+      if (pick) {
+        const tz = tzD;
+        const reservedAt = pick.reserved_at as string;
+        const reservedDate = formatISODateInTimeZone(new Date(reservedAt), tz);
+        const reservedTime = new Intl.DateTimeFormat("en-US", {
+          timeZone: tz, hour12: false, hour: "2-digit", minute: "2-digit",
+        }).format(new Date(reservedAt));
+        const restName = String(pick.restaurant_name ?? "your booking");
+        const partySize = typeof pick.party_size === "number" ? pick.party_size as number : null;
+        if (disambig.action === "cancel") {
+          return makeAssistantPayload({
+            conversationId,
+            spokenText: `Want to cancel your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}? Say yes to confirm.`,
+            intent: "reservation_cancel",
+            step: "confirm",
+            nextExpectedInput: "confirmation",
+            booking: {
+              reservation_id: pick.id as string,
+              restaurant_id: pick.restaurant_id as string,
+              restaurant_name: restName,
+              date: reservedDate,
+              time: reservedTime,
+              party_size: partySize,
+              shift_id: (pick.shift_id as string) ?? null,
+              status: "post_booking",
+              pending_modify_disambig: null,
+              pending_action: {
+                type: "cancel_reservation",
+                payload: { reservation_id: pick.id as string },
+                confirmation_text: `Cancel ${restName} on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}?`,
+              },
+            },
+          });
+        }
+        // Modify path
+        const requestedTime = disambig.new_time;
+        if (requestedTime && partySize != null) {
+          const availability = await getAvailability(pick.restaurant_id as string, reservedDate, partySize);
+          const slot = findNearestSlot(availability.slots ?? [], requestedTime);
+          if (slot) {
+            const newTimeLabel = formatTimeForSpeech(slot.display_time);
+            const oldTimeLabel = formatTimeForSpeech(reservedTime);
+            return makeAssistantPayload({
+              conversationId,
+              spokenText: `Want to move your ${restName} booking from ${oldTimeLabel} to ${newTimeLabel} on ${reservedDate}? Say yes.`,
+              intent: "reservation_modify",
+              step: "confirm",
+              nextExpectedInput: "confirmation",
+              booking: {
+                reservation_id: pick.id as string,
+                restaurant_id: pick.restaurant_id as string,
+                restaurant_name: restName,
+                date: reservedDate,
+                time: slot.display_time,
+                party_size: partySize,
+                shift_id: slot.shift_id,
+                status: "post_booking",
+                pending_modify_disambig: null,
+                pending_action: {
+                  type: "modify_reservation",
+                  payload: {
+                    reservation_id: pick.id as string,
+                    restaurant_id: pick.restaurant_id as string,
+                    party_size: partySize,
+                    date: reservedDate,
+                    time: slot.display_time,
+                    shift_id: slot.shift_id,
+                    slot_iso: slot.date_time,
+                  },
+                  confirmation_text: `Move ${restName} from ${oldTimeLabel} to ${newTimeLabel}?`,
+                },
+              },
+            });
+          }
+        }
+        // No requested time — just promote details and ask for a new time.
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `Got it — your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}. What time should I change it to?`,
+          intent: "reservation_modify",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: {
+            reservation_id: pick.id as string,
+            restaurant_id: pick.restaurant_id as string,
+            restaurant_name: restName,
+            date: reservedDate,
+            time: reservedTime,
+            party_size: partySize,
+            shift_id: (pick.shift_id as string) ?? null,
+            status: "post_booking",
+            pending_modify_disambig: null,
+          },
+        });
+      }
+    }
+  }
+
+  // Modify intent detection: either an explicit modify verb, OR we're
+  // continuing a modify flow that started on a prior turn (partial fields
+  // stashed in booking_state.modify_time / modify_date / modify_party). UI
+  // regression 2026-05-12: turn 1 "change my reservation to 8pm" stored
+  // nothing, turn 2 "thursday at 8pm" had no modify verb and fell into the
+  // standard booking flow which asked "How many guests?". Now turn 1 stashes
+  // partial fields and turn 2 detects them via isContinuingModify.
+  const stashedModifyTime = typeof bookingState.modify_time === "string"
+    ? (bookingState.modify_time as string)
+    : null;
+  const stashedModifyDate = typeof bookingState.modify_date === "string"
+    ? (bookingState.modify_date as string)
+    : null;
+  const stashedModifyParty = typeof bookingState.modify_party === "number"
+    ? (bookingState.modify_party as number)
+    : null;
+  const isContinuingModify =
+    stashedModifyTime != null ||
+    stashedModifyDate != null ||
+    stashedModifyParty != null;
+  if (
+    (
+      /\b(change|modify|move|switch|update|make it|add|reschedule|push|bump|shift|adjust|edit)\b/i.test(transcript) ||
+      isContinuingModify
+    ) &&
     (
       /\b(time|tomorrow|today|tonight|friday|saturday|sunday|monday|tuesday|wednesday|thursday|noon|midnight|morning|afternoon|evening|night|earlier|later|sooner|hours?|minutes?|people|guests?|outdoor|patio|booth|note|birthday|anniversary|date)\b/i.test(transcript) ||
-      /\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)?\b/i.test(transcript)
+      /\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)?\b/i.test(transcript) ||
+      isContinuingModify
     ) &&
     (reservationId || currentRestaurantId)
   ) {
-    const newDate = parseDateInTimeZone(transcript, opts.timezone) ?? date;
+    const newDate = parseDateInTimeZone(transcript, opts.timezone) ?? stashedModifyDate ?? date;
     // Try explicit time first, then relative delta (e.g. "push it back an hour").
     const explicitTime = parseTime(transcript);
     const relativeDelta = explicitTime ? null : parseRelativeTimeDelta(transcript);
     const deltaTime = relativeDelta != null ? applyTimeDelta(time, relativeDelta) : null;
-    const newTime = explicitTime ?? deltaTime ?? time;
-    const newParty = parsePartySize(transcript) ?? partySize;
+    const newTime = explicitTime ?? deltaTime ?? stashedModifyTime ?? time;
+    const newParty = parsePartySize(transcript) ?? stashedModifyParty ?? partySize;
     if (currentRestaurantId && newDate && newTime && newParty != null) {
       const availability = await getAvailability(currentRestaurantId, newDate, newParty);
       const slot = findNearestSlot(availability.slots ?? [], newTime);
-      if (slot) {
+      // Defensive validation — `findNearestSlot` must return a slot whose
+      // display_time is actually in availability.slots (defense against any
+      // future regression that fabricates a slot the SQL won't book). Also
+      // confirm we actually have slots; if not, the modify flow shouldn't
+      // claim a time the booking RPC will reject on confirm. 2026-05-13 fix
+      // pairs with the close-time bug fix in _shared/availability.ts.
+      const slotExistsInAvailability = slot
+        ? (availability.slots ?? []).some((s) => s.date_time === slot.date_time && s.display_time === slot.display_time)
+        : false;
+      if (slot && slotExistsInAvailability) {
         const requestedLabel = formatTimeForSpeech(newTime);
         const requestedMinutes = displayTimeToMinutes(requestedLabel);
         const slotMinutes = displayTimeToMinutes(slot.display_time);
@@ -5330,6 +7158,10 @@ async function buildPreflightResponse(opts: {
           step: "confirm",
           nextExpectedInput: "confirmation",
           booking: {
+            // Clear stashed partials now that modify is queued for confirmation.
+            modify_date: null,
+            modify_time: null,
+            modify_party: null,
             pending_action: {
               type: "modify_reservation",
               payload: {
@@ -5346,13 +7178,60 @@ async function buildPreflightResponse(opts: {
           },
         });
       }
+      // No slot matched (either none returned by getAvailability, or the
+      // nearest match was > 45 min off). Tell the user explicitly what's
+      // available rather than falling through to "I need a date and time".
+      // Without this branch, the user heard "I need to check that change
+      // before updating it. What date and time should I check?" — confusing
+      // because they just gave a date and time. 2026-05-13 fix.
+      const requestedLabel = formatTimeForSpeech(newTime);
+      const nearbyLabels = nearestSlotLabels(availability.slots ?? [], newTime, 2);
+      const hoursWindow = availability.hours_window;
+      const lastBookable = (availability.slots ?? [])[((availability.slots ?? []).length || 1) - 1]?.display_time;
+      const altText = nearbyLabels.length
+        ? ` Closest options: ${nearbyLabels.join(" or ")}.`
+        : hoursWindow
+          ? ` They're open ${hoursWindow} that day${lastBookable ? `; last bookable is ${lastBookable}` : ""}.`
+          : lastBookable
+            ? ` Last bookable time is ${lastBookable}.`
+            : "";
+      const noSlotPrompt = `${requestedLabel} isn't available on ${newDate}.${altText} Want to pick a different time?`;
+      return makeAssistantPayload({
+        conversationId,
+        spokenText: noSlotPrompt,
+        intent: "reservation_modify",
+        step: "choose_time",
+        nextExpectedInput: "time",
+        booking: {
+          // Keep modify_* stashed so the user's next reply ("8pm then")
+          // continues the modify flow rather than starting a fresh booking.
+          modify_date: newDate,
+          modify_time: null,
+          modify_party: newParty,
+        },
+      });
     }
+    // Couldn't complete — stash whatever partials we have and ask for the
+    // specific missing field. Without this, turn 2 ("thursday at 8pm")
+    // would lose the time + start a fresh booking.
+    const missingPhrasing = !newDate && !newTime
+      ? "I need a date and time for that change. What day and time?"
+      : !newDate
+        ? `Got ${formatTimeForSpeech(newTime)} for that change — what day?`
+        : !newTime
+          ? `Got ${newDate} for that change — what time?`
+          : "I need to check that change before updating it. What date and time should I check?";
     return makeAssistantPayload({
       conversationId,
-      spokenText: "I need to check that change before updating it. What date and time should I check?",
+      spokenText: missingPhrasing,
       intent: "reservation_modify",
-      step: "choose_date",
-      nextExpectedInput: "date",
+      step: !newDate ? "choose_date" : "choose_time",
+      nextExpectedInput: !newDate ? "date" : "time",
+      booking: {
+        modify_date: newDate ?? null,
+        modify_time: newTime ?? null,
+        modify_party: newParty ?? null,
+      },
     });
   }
 
@@ -5510,10 +7389,31 @@ async function buildPreflightResponse(opts: {
     });
   }
 
+  // If the user is naming a DIFFERENT restaurant ("book me at nobu") but
+  // booking_state still has the previous turn's restaurant_id (from a prior
+  // fact-lookup like "any deals at jacobs"), DO NOT proceed with the
+  // existing-restaurant booking-collection path below. Yield to the
+  // unknown-restaurant handler at line ~5822 so the new restaurant name
+  // gets the unknown-restaurant check instead of being silently overridden
+  // by the stale state. Caught 2026-05-11 in browser testing where
+  // "any deals at jacobs" → "book me at nobu" auto-filled a Jacobs booking.
+  const userNamedUnknownRestaurant = (() => {
+    const candidate = extractUnknownRestaurantCandidate(transcript);
+    if (!candidate) return false;
+    const normalizedCandidate = candidate.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    return !restaurants.some((r) => {
+      const lname = (r.name ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+      // Match if the candidate's first significant token appears in the
+      // restaurant name (e.g. "harbour" in "harbour sixty steakhouse").
+      const tokens = normalizedCandidate.split(/\s+/).filter((t) => t.length >= 3);
+      return tokens.length > 0 && tokens.every((t) => lname.includes(t));
+    });
+  })();
   if (
     currentRestaurantId &&
     !reservationId &&
     currentStatus !== "confirming" &&
+    !userNamedUnknownRestaurant &&
     (selectedRestaurantId || currentStatus === "collecting_minimum_fields" || currentStatus === "loading_availability" || currentStatus === "awaiting_time_selection")
   ) {
     const restaurantName = selectedRestaurant?.name?.trim() || currentRestaurantName;
@@ -5537,9 +7437,14 @@ async function buildPreflightResponse(opts: {
     ];
 
     if (ambiguousTime) {
+      // Include restaurant context so the user knows what's being booked.
+      // Wide-probe finding 2026-05-12: "I should like to dine at Mark Testing
+      // tomorrow evening at 7..." was returning bare "Did you mean 7 AM or
+      // 7 PM?" — clobbers restaurant context the user just gave.
+      const restPrefix = restaurantName ? `Got it — ${restaurantName}. ` : "";
       return makeAssistantPayload({
         conversationId,
-        spokenText: ambiguousBareTimePrompt(ambiguousTime),
+        spokenText: `${restPrefix}${ambiguousBareTimePrompt(ambiguousTime)}`,
         intent: "reservation_create",
         step: "choose_time",
         nextExpectedInput: "time",
@@ -5547,10 +7452,15 @@ async function buildPreflightResponse(opts: {
         booking: bookingPatch,
       });
     }
+    // Restaurant-context prefix for missing-field prompts. Wide-probe finding:
+    // "reserve a birthday dinner at Mark Testing for 4 tomorrow" → "What time?"
+    // (loses restaurant context user just gave). Now: "Got it — Mark Testing
+    // for 4 on 2026-05-13. What time?".
+    const restPrefix = restaurantName ? `Got it — ${restaurantName}${nextPartySize != null ? ` for ${nextPartySize}` : ""}${nextDate ? ` on ${nextDate}` : ""}. ` : "";
     if (nextPartySize == null) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "How many guests?",
+        spokenText: `${restPrefix}How many guests?`,
         intent: "reservation_create",
         step: "choose_party",
         nextExpectedInput: "party_size",
@@ -5561,7 +7471,7 @@ async function buildPreflightResponse(opts: {
     if (!nextDate) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "What date and time?",
+        spokenText: `${restPrefix}What date and time?`,
         intent: "reservation_create",
         step: "choose_date",
         nextExpectedInput: "date",
@@ -5572,7 +7482,7 @@ async function buildPreflightResponse(opts: {
     if (!nextTime) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "What time?",
+        spokenText: `${restPrefix}What time?`,
         intent: "reservation_create",
         step: "choose_time",
         nextExpectedInput: "time",
@@ -5831,7 +7741,25 @@ async function buildPreflightResponse(opts: {
     // makes the user repeat their request) and never silently substitute a
     // different restaurant.
     const candidate = extractUnknownRestaurantCandidate(transcript);
+    // SAFETY: before declaring this restaurant "unknown", do an accent-
+    // stripped fuzzy match against the active restaurants. `findNamedRestaurants`
+    // requires EVERY token of the restaurant name to appear in the transcript
+    // ("Harbour Sixty Steakhouse" → needs "steakhouse" in the transcript),
+    // which gives false-unknown for "book me at harbour sixty". This relaxed
+    // check matches if all tokens of the CANDIDATE appear in the restaurant
+    // name (the reverse direction).
     if (candidate) {
+      const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+      const normCand = stripAccents(candidate.toLowerCase());
+      const candTokens = normCand.split(/\s+/).filter((t) => t.length >= 3);
+      const fuzzyMatch = candTokens.length > 0 && restaurants.some((r) => {
+        const lname = stripAccents((r.name ?? "").toLowerCase());
+        return candTokens.every((t) => lname.includes(t));
+      });
+      if (fuzzyMatch) {
+        // Restaurant exists — fall through to the normal booking flow below
+        // by yielding from this unknown-restaurant block.
+      } else {
       // SMART alternative selection — scales as we onboard more restaurants.
       // Strategy:
       //   1. Run `topRecommendationRows` to apply the existing smart sort:
@@ -5888,17 +7816,19 @@ async function buildPreflightResponse(opts: {
         // Reset booking_state to idle WITHOUT echoing the user's prior time/
         // date — the suggested alternatives may have different availability,
         // and if the user pivots to one of them the next turn will collect
-        // fresh time/date. Without this, the prior "for 2 tomorrow at 7pm"
-        // leaked into the next "book mark testing wednesday at 8pm" turn,
-        // landing on Tue / 7pm instead of Wed / 8pm.
+        // fresh time/date. Also clear restaurant_name so the client doesn't
+        // keep the prior fact-lookup restaurant in its display state.
         booking: {
           status: "idle",
           restaurant_id: null,
+          restaurant_name: null,
           party_size: null,
           date: null,
           time: null,
           shift_id: null,
           slot_iso: null,
+          reservation_id: null,
+          confirmation_code: null,
         },
         map: altRows.length
           ? {
@@ -5908,6 +7838,7 @@ async function buildPreflightResponse(opts: {
             }
           : null,
       });
+      } // close inner `else { ... }` for fuzzyMatch
     }
     return makeAssistantPayload({
       conversationId,
@@ -6014,9 +7945,11 @@ async function buildPreflightResponse(opts: {
     }
 
     if (ambiguousTime) {
+      // Include restaurant context — wide-probe finding 2026-05-12.
+      const restPrefix = restaurant?.name ? `Got it — ${restaurant.name}. ` : "";
       return makeAssistantPayload({
         conversationId,
-        spokenText: ambiguousBareTimePrompt(ambiguousTime),
+        spokenText: `${restPrefix}${ambiguousBareTimePrompt(ambiguousTime)}`,
         intent: "reservation_create",
         step: "choose_time",
         nextExpectedInput: "time",
@@ -6024,10 +7957,13 @@ async function buildPreflightResponse(opts: {
         booking: bookingPatch,
       });
     }
+    // Restaurant-context prefix — same as block above. Wide-probe + Section
+    // 14 finding 2026-05-12.
+    const restPrefix2 = restaurant?.name ? `Got it — ${restaurant.name}${partySize != null ? ` for ${partySize}` : ""}${date ? ` on ${date}` : ""}. ` : "";
     if (partySize == null) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "How many guests?",
+        spokenText: `${restPrefix2}How many guests?`,
         intent: "reservation_create",
         step: "choose_party",
         nextExpectedInput: "party_size",
@@ -6038,7 +7974,7 @@ async function buildPreflightResponse(opts: {
     if (!date) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "What date and time?",
+        spokenText: `${restPrefix2}What date and time?`,
         intent: "reservation_create",
         step: "choose_date",
         nextExpectedInput: "date",
@@ -6049,7 +7985,7 @@ async function buildPreflightResponse(opts: {
     if (!time) {
       return makeAssistantPayload({
         conversationId,
-        spokenText: "What time?",
+        spokenText: `${restPrefix2}What time?`,
         intent: "reservation_create",
         step: "choose_time",
         nextExpectedInput: "time",
@@ -6446,6 +8382,206 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── Pending modify-disambig follow-up ────────────────────────────────
+    // The prior turn asked "which one?" and stashed candidates. The user's
+    // reply (restaurant name, weekday, date phrase) must route to the
+    // modify/cancel flow — NOT small-prompt or fresh-booking. Run before
+    // isSmallPromptTurn classification.
+    {
+      const disambig = (booking_state as Record<string, unknown>).pending_modify_disambig as
+        | { action?: string; new_time?: string | null; candidates?: Array<Record<string, unknown>> }
+        | null
+        | undefined;
+      if (disambig && Array.isArray(disambig.candidates) && disambig.candidates.length > 0) {
+        const tlcD = transcript.toLowerCase();
+        const tzD = effectiveTimeZone;
+        const stripAcc = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+        const tNorm = stripAcc(tlcD);
+        let pick: Record<string, unknown> | null = null;
+        // Priority 1: weekday match ("the saturday one", "monday booking").
+        // Important when all candidates are at the same restaurant.
+        for (const c of disambig.candidates) {
+          const d = new Date(c.reserved_at as string);
+          const weekday = new Intl.DateTimeFormat("en-US", { timeZone: tzD, weekday: "long" }).format(d).toLowerCase();
+          const weekdayShort = weekday.slice(0, 3);
+          if (new RegExp(`\\b(?:${weekday}|${weekdayShort}(?:day)?)\\b`).test(tlcD)) { pick = c; break; }
+        }
+        // Priority 2: date match ("the 22nd", "may 22").
+        if (!pick) {
+          for (const c of disambig.candidates) {
+            const d = new Date(c.reserved_at as string);
+            const dayNum = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: tzD, day: "numeric" }).format(d), 10);
+            const monthName = new Intl.DateTimeFormat("en-US", { timeZone: tzD, month: "long" }).format(d).toLowerCase();
+            const matchesDay = new RegExp(`\\b(?:the\\s+)?${dayNum}(?:st|nd|rd|th)?\\b`).test(tlcD);
+            const matchesMonth = new RegExp(`\\b${monthName}\\b`).test(tlcD);
+            if (matchesDay || matchesMonth) { pick = c; break; }
+          }
+        }
+        // Priority 3: restaurant-name match (only useful when candidates span
+        // multiple restaurants and the user picks by name).
+        if (!pick) {
+          for (const c of disambig.candidates) {
+            const rname = stripAcc(String(c.restaurant_name ?? ""));
+            const tokens = rname.split(/\s+/).filter((t) => t.length >= 3);
+            if (tokens.some((t) => tNorm.includes(t))) { pick = c; break; }
+          }
+        }
+        if (pick) {
+          const reservedAt = pick.reserved_at as string;
+          const reservedDate = formatISODateInTimeZone(new Date(reservedAt), tzD);
+          const reservedTime = new Intl.DateTimeFormat("en-US", {
+            timeZone: tzD, hour12: false, hour: "2-digit", minute: "2-digit",
+          }).format(new Date(reservedAt));
+          const restName = String(pick.restaurant_name ?? "your booking");
+          const partySize = typeof pick.party_size === "number" ? pick.party_size as number : null;
+          let dispatchPayload: AssistantPayload;
+          if (disambig.action === "cancel") {
+            dispatchPayload = makeAssistantPayload({
+              conversationId: activeConversationId,
+              spokenText: `Want to cancel your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}? Say yes to confirm.`,
+              intent: "reservation_cancel",
+              step: "confirm",
+              nextExpectedInput: "confirmation",
+              booking: {
+                reservation_id: pick.id as string,
+                restaurant_id: pick.restaurant_id as string,
+                restaurant_name: restName,
+                date: reservedDate,
+                time: reservedTime,
+                party_size: partySize,
+                shift_id: (pick.shift_id as string) ?? null,
+                status: "post_booking",
+                pending_modify_disambig: null,
+                pending_action: {
+                  type: "cancel_reservation",
+                  payload: { reservation_id: pick.id as string },
+                  confirmation_text: `Cancel ${restName} on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}?`,
+                },
+              },
+            });
+          } else {
+            const requestedTime = disambig.new_time ?? null;
+            if (requestedTime && partySize != null) {
+              const availability = await getAvailability(pick.restaurant_id as string, reservedDate, partySize);
+              const slot = findNearestSlot(availability.slots ?? [], requestedTime);
+              if (slot) {
+                const newTimeLabel = formatTimeForSpeech(slot.display_time);
+                const oldTimeLabel = formatTimeForSpeech(reservedTime);
+                dispatchPayload = makeAssistantPayload({
+                  conversationId: activeConversationId,
+                  spokenText: `Want to move your ${restName} booking from ${oldTimeLabel} to ${newTimeLabel} on ${reservedDate}? Say yes.`,
+                  intent: "reservation_modify",
+                  step: "confirm",
+                  nextExpectedInput: "confirmation",
+                  booking: {
+                    reservation_id: pick.id as string,
+                    restaurant_id: pick.restaurant_id as string,
+                    restaurant_name: restName,
+                    date: reservedDate,
+                    time: slot.display_time,
+                    party_size: partySize,
+                    shift_id: slot.shift_id,
+                    status: "post_booking",
+                    pending_modify_disambig: null,
+                    pending_action: {
+                      type: "modify_reservation",
+                      payload: {
+                        reservation_id: pick.id as string,
+                        restaurant_id: pick.restaurant_id as string,
+                        party_size: partySize,
+                        date: reservedDate,
+                        time: slot.display_time,
+                        shift_id: slot.shift_id,
+                        slot_iso: slot.date_time,
+                      },
+                      confirmation_text: `Move ${restName} from ${oldTimeLabel} to ${newTimeLabel}?`,
+                    },
+                  },
+                });
+              } else {
+                dispatchPayload = makeAssistantPayload({
+                  conversationId: activeConversationId,
+                  spokenText: `${restName} doesn't have that time open on ${reservedDate}. Want a different time?`,
+                  intent: "reservation_modify",
+                  step: "done",
+                  nextExpectedInput: "free_text",
+                  booking: { pending_modify_disambig: null },
+                });
+              }
+            } else {
+              dispatchPayload = makeAssistantPayload({
+                conversationId: activeConversationId,
+                spokenText: `Got it — your ${restName} booking on ${reservedDate} at ${formatTimeForSpeech(reservedTime)}. What time should I change it to?`,
+                intent: "reservation_modify",
+                step: "done",
+                nextExpectedInput: "free_text",
+                booking: {
+                  reservation_id: pick.id as string,
+                  restaurant_id: pick.restaurant_id as string,
+                  restaurant_name: restName,
+                  date: reservedDate,
+                  time: reservedTime,
+                  party_size: partySize,
+                  shift_id: (pick.shift_id as string) ?? null,
+                  status: "post_booking",
+                  pending_modify_disambig: null,
+                },
+              });
+            }
+          }
+          await sendEarlyFinal(send, activeConversationId, userContentForPersistence, dispatchPayload);
+          latency.done({ path: "disambig_followup" });
+          return;
+        }
+      }
+    }
+
+    // ── Global-discovery early intercepts ────────────────────────────────
+    // Rating, vibe, and dietary queries need to bypass the small-prompt
+    // classifier entirely — they get hijacked by isSmallPromptTurn=true when
+    // there's no booking keyword. Run these BEFORE isSmallPromptTurn check.
+    {
+      const earlyLc = transcript.toLowerCase();
+      const earlyRatingIntent =
+        /\b(?:highest|top|best)\s+rated\b/.test(earlyLc) ||
+        /\bbest\s+reviewed\b/.test(earlyLc) ||
+        /\btop\s+(?:reviewed|rated)\b/.test(earlyLc) ||
+        /\b(?:5|five)[\s-]?star\b/.test(earlyLc) ||
+        /\bmost\s+(?:loved|popular|reviewed)\s+(?:restaurants?|spots?|places?)\b/.test(earlyLc);
+      if (earlyRatingIntent) {
+        const payload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: "I don't surface ratings yet — I focus on availability and bookings. Want me to show what's open tonight instead?",
+          intent: "discover_restaurants",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: { status: "idle" },
+        });
+        await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+        latency.done({ path: "rating_early" });
+        return;
+      }
+      const earlyDietary = earlyLc.match(/\b(halal|kosher|vegan|vegetarian|gluten[\s-]?free|nut[\s-]?free|dairy[\s-]?free|pescatarian)\b/);
+      const earlyAskingDietaryList =
+        /\b(?:show|list|tell|give|find|recommend|suggest)\s+(?:me\s+)?(?:some\s+|any\s+|the\s+)?(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\b/.test(earlyLc) ||
+        /\b(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\s+(?:restaurants?|spots?|places?|food|options?|eats?)\b/.test(earlyLc) ||
+        /\bwhat\s+(?:halal|kosher|vegan|vegetarian|gluten[\s-]?free)\s+(?:restaurants?|spots?|places?|food|options?)\b/.test(earlyLc);
+      if (earlyDietary && earlyAskingDietaryList) {
+        const tag = earlyDietary[1].replace(/[\s-]+/g, "-");
+        const payload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: `I don't have certified ${tag} listings on file right now. Want me to show all restaurants and you can ask the place directly?`,
+          intent: "discover_restaurants",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: { status: "idle" },
+        });
+        await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+        latency.done({ path: "dietary_early" });
+        return;
+      }
+    }
+
     if (rejectedSingleRecommendation) {
       const payload = makeAssistantPayload({
         conversationId: activeConversationId,
@@ -6547,6 +8683,24 @@ Deno.serve(async (req) => {
         send({ type: "speech_chunk", text: safeSpokenText });
       }
 
+      // Preserve booking state across small-prompt turns. Without this,
+      // bare affirmatives like "sure" mid-booking wipe the user's collected
+      // fields (restaurant_id, party, date, time) and the next turn has no
+      // context. Smoke regression 2026-05-12 (Section 3 state persistence).
+      const preservedBooking = (
+        typeof booking_state.restaurant_id === "string" ||
+        typeof booking_state.party_size === "number" ||
+        typeof booking_state.date === "string" ||
+        typeof booking_state.time === "string"
+      ) ? {
+        ...(typeof booking_state.restaurant_id === "string" ? { restaurant_id: booking_state.restaurant_id as string } : {}),
+        ...(typeof booking_state.restaurant_name === "string" ? { restaurant_name: booking_state.restaurant_name as string } : {}),
+        ...(typeof booking_state.party_size === "number" ? { party_size: booking_state.party_size as number } : {}),
+        ...(typeof booking_state.date === "string" ? { date: booking_state.date as string } : {}),
+        ...(typeof booking_state.time === "string" ? { time: booking_state.time as string } : {}),
+        ...(typeof booking_state.status === "string" ? { status: booking_state.status as string } : {}),
+      } : null;
+
       const payload = makeAssistantPayload({
         conversationId: activeConversationId,
         spokenText: spokenSmallPromptText,
@@ -6554,7 +8708,7 @@ Deno.serve(async (req) => {
         step: "collect_booking_details",
         nextExpectedInput: nextSmallPromptExpectedInput(booking_state),
         uiActions: [],
-        booking: null,
+        booking: preservedBooking,
         map: null,
         filters: null,
       });
@@ -7176,7 +9330,7 @@ Deno.serve(async (req) => {
               // in JS still has enough rows to surface a useful top-8.
               let query = supabaseAdmin
                 .from("restaurants")
-                .select("id, name, cuisine_type, business_type, city, description, address, lat, lng, slug, price_range, avg_rating")
+                .select("id, name, cuisine_type, business_type, city, description, address, lat, lng, slug, price_range, avg_rating, bookings_last_30d")
                 .eq("is_active", true)
                 .limit(120);
               const cuisineTypeInput =
@@ -7222,11 +9376,56 @@ Deno.serve(async (req) => {
                   "in", "of", "to", "at", "on", "is", "or", "an", "as", "by",
                   "be", "do", "go", "if", "it", "me", "my", "no", "so", "up", "us", "we",
                 ]);
-                const words = toolInput.query
+                // British/American spelling + number-word variants. Deepgram
+                // often transcribes "Harbour 60" as "harbor 60" (US spelling)
+                // and the DB has the Canadian "Harbour Sixty Steakhouse" — so
+                // `name.ilike.%harbor%` misses, and the zero-result fallback
+                // then ranks by distance, which sends the user the wrong
+                // restaurant. Expanding each query token into its likely
+                // variants lets the ILIKE catch the named restaurant
+                // regardless of transcription quirks. Added 2026-05-11 after
+                // user reported "Harbour 60 → Georgy Inc" misdirection.
+                const SPELLING_VARIANTS: Record<string, string[]> = {
+                  harbor: ["harbour"], harbour: ["harbor"],
+                  center: ["centre"], centre: ["center"],
+                  theater: ["theatre"], theater_: ["theatre"], theatre: ["theater"],
+                  flavor: ["flavour"], flavour: ["flavor"],
+                  color: ["colour"], colour: ["color"],
+                  meter: ["metre"], metre: ["meter"],
+                  liter: ["litre"], litre: ["liter"],
+                  traveler: ["traveller"], traveller: ["traveler"],
+                  honor: ["honour"], honour: ["honor"],
+                };
+                const NUMBER_WORDS: Record<string, string[]> = {
+                  "10": ["ten"], "20": ["twenty"], "30": ["thirty"],
+                  "40": ["forty"], "50": ["fifty"], "60": ["sixty"],
+                  "70": ["seventy"], "80": ["eighty"], "90": ["ninety"],
+                  "100": ["hundred"],
+                  ten: ["10"], twenty: ["20"], thirty: ["30"], forty: ["40"],
+                  fifty: ["50"], sixty: ["60"], seventy: ["70"], eighty: ["80"],
+                  ninety: ["90"], hundred: ["100"],
+                };
+                const expandVariants = (w: string): string[] => {
+                  const variants = new Set<string>([w]);
+                  for (const v of SPELLING_VARIANTS[w] ?? []) variants.add(v);
+                  for (const v of NUMBER_WORDS[w] ?? []) variants.add(v);
+                  return Array.from(variants);
+                };
+                const rawWords = toolInput.query
                   .trim()
                   .toLowerCase()
-                  .split(/\s+/)
-                  .filter((w: string) => w.length >= 3 && !QUERY_STOP_WORDS.has(w));
+                  .split(/\s+/);
+                // Keep number tokens (2-3 chars) when they expand to a word
+                // — they're often part of a restaurant name (e.g. "60" in
+                // "Harbour 60"). Other short tokens still drop.
+                const words = rawWords
+                  .filter((w: string) => {
+                    if (QUERY_STOP_WORDS.has(w)) return false;
+                    if (w.length >= 3) return true;
+                    // Allow short numbers like "60" that have a word variant.
+                    return /^\d+$/.test(w) && NUMBER_WORDS[w] != null;
+                  })
+                  .flatMap((w: string) => expandVariants(w));
                 if (words.length) {
                   const conditions = words
                     .map((w: string) => `name.ilike.%${w}%,cuisine_type.ilike.%${w}%,city.ilike.%${w}%`)
@@ -7712,6 +9911,13 @@ Deno.serve(async (req) => {
                 continue;
               }
             }
+            // Event/promotion auto-attach: same logic as the early-confirm
+            // path (see resolveEventAttachment / resolvePromotionAttachment).
+            // When the prior turn surfaced events/promotions for this
+            // restaurant, the booking gets tagged so the owner dashboard
+            // can group attendees by event.
+            const llmEventAttach = resolveEventAttachment(booking_state, authoritativeSlotIso, timezone);
+            const llmPromoAttach = resolvePromotionAttachment(booking_state);
             const result = await completeBooking({
               user_profile_id: userProfileId,
               restaurant_id: authoritativeRestaurantId,
@@ -7726,6 +9932,9 @@ Deno.serve(async (req) => {
                 toolInput.occasion ??
                 (booking_state.occasion as string | null | undefined),
               seating_preference: toolInput.seating_preference,
+              event_id: llmEventAttach,
+              promotion_id: llmPromoAttach?.id ?? null,
+              applied_promo_code: llmPromoAttach?.code ?? null,
             });
             if (result.reservation_id) lastReservationId = result.reservation_id;
             if (result.guest_id) lastGuestId = result.guest_id;
@@ -8320,6 +10529,9 @@ Deno.serve(async (req) => {
               lastTextReply =
                 `This booking needs a $${dollars}-per-guest deposit — I can't process card details by voice. Sending you to the page with everything pre-filled.`;
             } else {
+              // Event/promotion auto-attach (same as the other two paths).
+              const finalizeEventAttach = resolveEventAttachment(booking_state, liveSlot.date_time, timezone);
+              const finalizePromoAttach = resolvePromotionAttachment(booking_state);
               const result = await completeBooking({
                 user_profile_id: userProfileId,
                 restaurant_id: bsRestaurantId!,
@@ -8329,6 +10541,9 @@ Deno.serve(async (req) => {
                 party_size: bsPartySize!,
                 special_request: booking_state.special_request as string | null | undefined,
                 occasion: booking_state.occasion as string | null | undefined,
+                event_id: finalizeEventAttach,
+                promotion_id: finalizePromoAttach?.id ?? null,
+                applied_promo_code: finalizePromoAttach?.code ?? null,
               });
               if (result.success && result.reservation_id && result.confirmation_code) {
                 lastReservationId = result.reservation_id;

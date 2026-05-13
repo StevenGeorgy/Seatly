@@ -1069,9 +1069,12 @@ export default function RestaurantPublicPage() {
     previewSlotRevalidation.partySize === initialPartySize &&
     (!previewSlotRevalidation.shiftId || previewSlotRevalidation.shiftId === requestedShiftId),
   );
-  const bookingLockedFromPreview = Boolean(
-    searchParams.get("slot") ?? searchParams.get("time") ?? searchParams.get("date") ?? searchParams.get("people"),
-  );
+  // Lock the slot only when an exact ISO `slot=` came in (preview-modal
+  // and time-pill-click flows). When only `date/time/people` are passed
+  // — e.g. from /deals → event/promo card → Book — we still want the
+  // diner to pick a real slot from the AvailabilityPanel pills; those
+  // params just pre-fill the panel's date and party controls.
+  const bookingLockedFromPreview = Boolean(searchParams.get("slot"));
   const { restaurant, loading } = useRestaurant(restaurantSlug);
   const { profile } = useUser();
   const { promotions: allPromos } = useAllActivePromotions();
@@ -1745,8 +1748,13 @@ export default function RestaurantPublicPage() {
             total_amount: roundMoney(totalNow),
             discount_amount: discount > 0 ? roundMoney(discount) : null,
             discount_reason: activePromo?.title ?? null,
-            promotion_id: activePromo?.id ?? null,
+            promotion_id: activePromo?.id ?? searchParams.get("promotion_id") ?? null,
             payment_method: paymentSplitMode === "split" ? "split" : "card",
+            // When the diner came in via /deals → event/promotion card, the
+            // URL pre-fills `event_id` so the new reservation is tagged
+            // with the right event for owner-dashboard attendee lists.
+            event_id: searchParams.get("event_id") ?? null,
+            applied_promo_code: searchParams.get("promo_code") ?? null,
           }),
         });
         const body = await res.json().catch(() => ({})) as PublicBookingResponse;

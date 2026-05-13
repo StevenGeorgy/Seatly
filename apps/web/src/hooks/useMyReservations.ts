@@ -4,6 +4,25 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { useUser } from "@/hooks/useUser";
 import { reservationDisplayStatus } from "@/lib/reservations/displayStatus";
 
+export type MyReservationEventRef = {
+  id: string;
+  name: string | null;
+  date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  theme: string | null;
+  price_per_person: number | null;
+};
+
+export type MyReservationPromotionRef = {
+  id: string;
+  title: string | null;
+  promo_code: string | null;
+  badge_color: string | null;
+  discount_value: number | null;
+  discount_unit: string | null;
+};
+
 export type MyReservationRow = {
   id: string;
   created_at: string | null;
@@ -16,6 +35,14 @@ export type MyReservationRow = {
   cancellation_reason: string | null;
   special_request: string | null;
   internal_notes: string | null;
+  // Event + promotion linkage (added 2026-05-11). When the booking was made
+  // for a specific event or used a promo code, these surface on the booking
+  // card as chips so customers can see what they booked for.
+  event_id: string | null;
+  promotion_id: string | null;
+  applied_promo_code: string | null;
+  event: MyReservationEventRef | null;
+  promotion: MyReservationPromotionRef | null;
   restaurant: {
     id: string;
     name: string;
@@ -34,6 +61,8 @@ export type MyReservationRow = {
 export function useMyReservations() {
   const { profile } = useUser();
   const profileId = profile?.id;
+  const profileEmail = profile?.email ?? null;
+  const profilePhone = profile?.phone ?? null;
   const [upcoming, setUpcoming] = useState<MyReservationRow[]>([]);
   const [past, setPast] = useState<MyReservationRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,46 +80,66 @@ export function useMyReservations() {
     setError(null);
     const client = getSupabaseBrowserClient();
 
-    const { data: guestRows, error: gErr } = await client
-      .from("guests")
-      .select("id")
-      .eq("user_profile_id", profileId);
+    // Query reservations directly by `user_profile_id` (and fallback by
+    // `guest_email` / `guest_phone` for legacy rows or future guest-only
+    // bookings made before the user signed in). The previous approach —
+    // looking up `guests.id WHERE user_profile_id=…` then
+    // `.in("guest_id", guestIds)` — used to 414 URI-too-long when a user
+    // had hundreds of `guests` rows (one per public booking submit). The
+    // direct query avoids the IN-list explosion and surfaces every
+    // reservation the diner has rights to see.
+    const orFilters: string[] = [`user_profile_id.eq.${profileId}`];
+    if (profileEmail) orFilters.push(`guest_email.eq.${profileEmail}`);
+    if (profilePhone) orFilters.push(`guest_phone.eq.${profilePhone}`);
 
-    if (gErr) {
-      setError(new Error(gErr.message));
-      setLoading(false);
-      return;
-    }
+    // Split the fetch into two passes so a diner who has accumulated
+    // hundreds of cancellations (from rapid public-page resubmits or
+    // long-running test sessions) doesn't push their actual active
+    // bookings past the row limit when ordered by date.
+    //   Pass A: every non-cancelled reservation (no date filter).
+    //   Pass B: cancelled rows within the last 90 days (display-only).
+    const selectFields = "id, created_at, updated_at, reserved_at, duration_minutes, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, event_id, promotion_id, applied_promo_code, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url, timezone), table:tables(label), event:events(id, name, date, start_time, end_time, theme, price_per_person), promotion:promotions(id, title, promo_code, badge_color, discount_value, discount_unit)";
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
-    const guestIds = (guestRows ?? []).map((g) => g.id);
-    if (guestIds.length === 0) {
-      setUpcoming([]);
-      setPast([]);
-      setLoading(false);
-      return;
-    }
+    const [activeRes, cancelledRes] = await Promise.all([
+      client
+        .from("reservations")
+        .select(selectFields)
+        .or(orFilters.join(","))
+        .neq("status", "cancelled")
+        .order("reserved_at", { ascending: false })
+        .limit(500),
+      client
+        .from("reservations")
+        .select(selectFields)
+        .or(orFilters.join(","))
+        .eq("status", "cancelled")
+        .gte("reserved_at", ninetyDaysAgo)
+        .order("reserved_at", { ascending: false })
+        .limit(200),
+    ]);
 
-    const { data, error: rErr } = await client
-      .from("reservations")
-      .select(
-        "id, created_at, updated_at, reserved_at, duration_minutes, party_size, status, confirmation_code, cancellation_reason, special_request, internal_notes, restaurant:restaurants(id, name, slug, cuisine_type, city, address, phone, logo_url, cover_photo_url, timezone), table:tables(label)",
-      )
-      .in("guest_id", guestIds)
-      .order("reserved_at", { ascending: false });
-
+    const rErr = activeRes.error ?? cancelledRes.error;
     if (rErr) {
       setError(new Error(rErr.message));
       setLoading(false);
       return;
     }
+    const data = [...(activeRes.data ?? []), ...(cancelledRes.data ?? [])];
 
-    type RawReservationRow = Omit<MyReservationRow, "restaurant" | "table"> & {
+    type RawReservationRow = Omit<MyReservationRow, "restaurant" | "table" | "event" | "promotion"> & {
       restaurant:
         | MyReservationRow["restaurant"]
         | NonNullable<MyReservationRow["restaurant"]>[];
       table:
         | MyReservationRow["table"]
         | NonNullable<MyReservationRow["table"]>[];
+      event:
+        | MyReservationRow["event"]
+        | NonNullable<MyReservationRow["event"]>[];
+      promotion:
+        | MyReservationRow["promotion"]
+        | NonNullable<MyReservationRow["promotion"]>[];
     };
     const rows = (data ?? []).map((row) => {
       const raw = row as unknown as RawReservationRow;
@@ -102,6 +151,12 @@ export function useMyReservations() {
         table: Array.isArray(raw.table)
           ? raw.table[0] ?? null
           : raw.table,
+        event: Array.isArray(raw.event)
+          ? raw.event[0] ?? null
+          : raw.event,
+        promotion: Array.isArray(raw.promotion)
+          ? raw.promotion[0] ?? null
+          : raw.promotion,
       };
     });
     const visibleRows = rows.filter(
@@ -132,7 +187,7 @@ export function useMyReservations() {
       return status === "past" || status === "cancelled";
     }));
     setLoading(false);
-  }, [profileId]);
+  }, [profileId, profileEmail, profilePhone]);
 
   useEffect(() => {
     void Promise.resolve().then(fetch);

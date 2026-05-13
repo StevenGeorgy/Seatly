@@ -1,18 +1,24 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import {
   CalendarDays,
   DollarSign,
   Plus,
   ShoppingBag,
+  Ticket,
   Users,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { EventAttendeesDialog } from "@/components/dashboard/EventAttendeesDialog";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  useTonightEvents,
+  type EventTimelineRow,
+} from "@/hooks/useEventAttendees";
 import { useOverviewStats, type OverviewOrderStats } from "@/hooks/useOverviewStats";
 import { useReservations, type ReservationRow } from "@/hooks/useReservations";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
@@ -21,6 +27,7 @@ import {
   reservationDisplayStatusKey,
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
+import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 
@@ -190,18 +197,86 @@ function MetricCard({ metric }: { metric: ServiceMetric }) {
   );
 }
 
+function eventStartHour(event: EventTimelineRow, fallbackHour: number): number {
+  if (!event.start_time) return fallbackHour;
+  const [h] = event.start_time.split(":");
+  const hour = Number(h);
+  return Number.isFinite(hour) ? hour : fallbackHour;
+}
+
+function eventEndHour(event: EventTimelineRow, startHour: number): number {
+  if (!event.end_time) return Math.min(startHour + 2, 23);
+  const [h, m] = event.end_time.split(":");
+  const hour = Number(h);
+  const minutes = Number(m ?? 0);
+  if (!Number.isFinite(hour)) return Math.min(startHour + 2, 23);
+  return minutes > 0 ? hour + 0.999 : hour;
+}
+
+function formatEventTimeRange(event: EventTimelineRow): string {
+  const fmt = (value: string | null) => {
+    if (!value) return "";
+    const [h, m] = value.split(":");
+    const hours = Number(h);
+    const minutes = Number(m ?? 0);
+    if (!Number.isFinite(hours)) return value;
+    const suffix = hours >= 12 ? "pm" : "am";
+    const displayHour = hours % 12 || 12;
+    return minutes === 0
+      ? `${displayHour}${suffix}`
+      : `${displayHour}:${String(minutes).padStart(2, "0")}${suffix}`;
+  };
+  if (event.start_time && event.end_time) {
+    return `${fmt(event.start_time)} – ${fmt(event.end_time)}`;
+  }
+  if (event.start_time) return `from ${fmt(event.start_time)}`;
+  if (event.end_time) return `until ${fmt(event.end_time)}`;
+  return "all day";
+}
+
 function TimelineChart({
   buckets,
   counts,
+  events,
   now,
   rows,
+  onEventClick,
 }: {
   buckets: TimelineBucket[];
   counts: ReservationStatusCounts;
+  events: EventTimelineRow[];
   now: Date;
   rows: ServiceReservation[];
+  onEventClick: (event: EventTimelineRow) => void;
 }) {
   const maxCount = Math.max(...buckets.map((bucket) => bucket.count), 1);
+  const firstReservationHour = rows[0]?.reservedAt.getHours() ?? null;
+  const lastReservationHour = rows[rows.length - 1]?.reservedAt.getHours() ?? null;
+
+  const eventOverlay = useMemo(() => {
+    if (buckets.length === 0 || events.length === 0) return null;
+    const parsedBucketHour = Number(buckets[0].label);
+    const firstHour = firstReservationHour ?? (Number.isFinite(parsedBucketHour) ? parsedBucketHour : 17);
+    const lastHour = lastReservationHour ?? firstHour + buckets.length - 1;
+    const totalHours = Math.max(lastHour - firstHour + 1, 1);
+
+    return events
+      .map((event) => {
+        const startHour = eventStartHour(event, firstHour);
+        const endHour = eventEndHour(event, startHour);
+        const clampedStart = Math.max(startHour, firstHour);
+        const clampedEnd = Math.min(endHour, lastHour + 1);
+        if (clampedEnd <= clampedStart) return null;
+        const leftPct = ((clampedStart - firstHour) / totalHours) * 100;
+        const widthPct = ((clampedEnd - clampedStart) / totalHours) * 100;
+        return {
+          event,
+          leftPct,
+          widthPct: Math.max(widthPct, 4),
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  }, [buckets, events, firstReservationHour, lastReservationHour]);
 
   return (
     <section className="rounded-2xl border border-border bg-bg-surface p-5 lg:p-6">
@@ -210,6 +285,9 @@ function TimelineChart({
           <h2 className="font-serif text-2xl text-white">Tonight's timeline</h2>
           <p className="mt-1 text-xs text-text-muted">
             {serviceWindowLabel(rows)} · {pluralize(rows.length, "reservation")}
+            {events.length > 0 ? (
+              <> · {pluralize(events.length, "event")}</>
+            ) : null}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -222,6 +300,12 @@ function TimelineChart({
           <span className="rounded-full border border-border bg-bg-elevated px-3 py-1 text-[11px] text-text-secondary">
             Past · {counts.past}
           </span>
+          {events.length > 0 ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-500/15 px-3 py-1 text-[11px] text-purple-300">
+              <Ticket className="size-3" />
+              Events · {events.length}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -253,6 +337,61 @@ function TimelineChart({
           Now · {compactTime(now)}
         </div>
       </div>
+
+      {events.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-purple-500/20 bg-purple-500/[0.05] p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-purple-300">
+              <Ticket className="size-3.5" />
+              Tonight's events
+            </p>
+            <p className="text-[11px] text-text-muted">Click a bar to see attendees</p>
+          </div>
+          {eventOverlay && eventOverlay.length > 0 ? (
+            <div className="relative h-12 rounded-lg border border-purple-500/20 bg-bg-base/40">
+              {eventOverlay.map((entry) => (
+                <button
+                  key={entry.event.id}
+                  type="button"
+                  onClick={() => onEventClick(entry.event)}
+                  className={cn(
+                    "group absolute top-1.5 h-9 overflow-hidden rounded-md border border-purple-400/60 bg-gradient-to-r from-purple-500/70 to-purple-400/60 px-3 text-left text-xs font-medium text-white shadow-lg shadow-purple-500/20 transition-all duration-150 hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-purple-400/30 focus-visible:-translate-y-0.5 focus-visible:border-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/60",
+                  )}
+                  style={{ left: `${entry.leftPct}%`, width: `${entry.widthPct}%` }}
+                  title={`${entry.event.name} · ${formatEventTimeRange(entry.event)}`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Ticket className="size-3 shrink-0" />
+                    <span className="truncate font-semibold">{entry.event.name}</span>
+                  </span>
+                  <span className="block truncate text-[10px] opacity-80">
+                    {formatEventTimeRange(entry.event)} ·{" "}
+                    {entry.event.capacity != null
+                      ? `${entry.event.tickets_sold}/${entry.event.capacity}`
+                      : `${entry.event.tickets_sold} sold`}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {events.map((event) => (
+                <button
+                  key={event.id}
+                  type="button"
+                  onClick={() => onEventClick(event)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs text-purple-200 transition-colors hover:border-purple-300 hover:bg-purple-500/25 hover:text-white"
+                >
+                  <Ticket className="size-3.5" />
+                  <span className="font-semibold">{event.name}</span>
+                  <span className="text-purple-300/80">·</span>
+                  <span className="text-purple-300/80">{formatEventTimeRange(event)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -357,14 +496,17 @@ function ServiceSummary({
 export default function OverviewPage() {
   const { selectedRestaurant } = useRestaurantScope();
   const currency = selectedRestaurant?.currency ?? "cad";
+  const timezone = selectedRestaurant?.timezone ?? null;
   const now = useMemo(() => new Date(), []);
   const today = isoDate(now);
   const statsRange = useMemo(() => dayRange(now), [now]);
   const { stats: orderStats, loading: statsLoading, error: statsError } = useOverviewStats(statsRange);
   const { reservations, loading: reservationsLoading } = useReservations({
     date: today,
-    timezone: selectedRestaurant?.timezone ?? null,
+    timezone,
   });
+  const { events: tonightEvents } = useTonightEvents(today);
+  const [activeEvent, setActiveEvent] = useState<EventTimelineRow | null>(null);
 
   const loading = statsLoading || reservationsLoading;
 
@@ -434,7 +576,14 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid gap-5">
-        <TimelineChart buckets={timelineBuckets} counts={statusCounts} now={now} rows={activeReservations} />
+        <TimelineChart
+          buckets={timelineBuckets}
+          counts={statusCounts}
+          events={tonightEvents}
+          now={now}
+          rows={activeReservations}
+          onEventClick={setActiveEvent}
+        />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.9fr)]">
@@ -447,6 +596,15 @@ export default function OverviewPage() {
           upcomingRows={upcomingReservations}
         />
       </div>
+
+      <EventAttendeesDialog
+        event={activeEvent}
+        open={activeEvent !== null}
+        timezone={timezone}
+        onOpenChange={(open) => {
+          if (!open) setActiveEvent(null);
+        }}
+      />
     </AnimatedPage>
   );
 }

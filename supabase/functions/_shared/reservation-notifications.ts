@@ -26,7 +26,9 @@ export function formatReservationDate(
   date: Date,
   timeZone = "America/Toronto",
 ): string {
-  return new Intl.DateTimeFormat("en-CA", {
+  // en-US for "7:00 PM" not "7:00 p.m." (en-CA), to match the rest of the
+  // system's uppercase AM/PM formatting. Audit caught 2026-05-11.
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "full",
     timeStyle: "short",
     timeZone,
@@ -53,12 +55,17 @@ export async function sendReservationNotification({
   subject,
   body,
 }: SendReservationNotificationParams): Promise<ReservationNotificationResult> {
+  // Kill switch — set CENAIVA_SMS_DISABLED=true in Supabase env to suppress
+  // all SMS sends. Useful during automated test runs or incidents (Twilio
+  // costs spiking, abuse). Email still sends. User bug 2026-05-12.
+  const smsDisabled = Deno.env.get("CENAIVA_SMS_DISABLED") === "true";
+
   const resendKey = Deno.env.get("RESEND_API_KEY");
   const resend = resendKey ? new Resend(resendKey) : null;
   const twilioSid = Deno.env.get("TWILIO_ACCOUNT_SID");
   const twilioToken = Deno.env.get("TWILIO_AUTH_TOKEN");
   const twilioFromPhone = Deno.env.get("TWILIO_PHONE_NUMBER");
-  const twilioClient = twilioSid && twilioToken ? twilio(twilioSid, twilioToken) : null;
+  const twilioClient = !smsDisabled && twilioSid && twilioToken ? twilio(twilioSid, twilioToken) : null;
 
   let channel: ReservationNotificationChannel = null;
   let status: ReservationNotificationStatus = "skipped";

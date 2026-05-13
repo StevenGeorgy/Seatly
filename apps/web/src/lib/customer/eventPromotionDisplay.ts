@@ -45,6 +45,29 @@ export type EventPromotionDisplay = {
   actionLabel: string;
   promoCode: string | null;
   isActive: boolean;
+  // Raw fields the booking flow needs (default time, capacity, restaurant id,
+  // event/promo id) — surfaced for the EventPromotionDetailCard's party-size
+  // and time controls and for forwarding event_id/promotion_id to the
+  // public-page booking URL.
+  rawStartTime: string | null;
+  rawEndTime: string | null;
+  rawDate: string | null;
+  restaurantId: string | null;
+  capacity: number | null;
+  seatsLeft: number | null;
+  // Booking constraints. The EventPromotionDetailCard uses these to lock or
+  // bound the diner's date/time pickers.
+  //   - rawEndDate: when set AND > rawDate, the date picker is open between
+  //     rawDate..rawEndDate inclusive. Otherwise the date is locked to rawDate.
+  //   - timeLocked: when true (events with fixed_arrival_time), the time
+  //     picker is read-only and pinned to rawStartTime.
+  //   - rawTimeWindowStart/End: when both set, the time picker is constrained
+  //     to that window. For events these come from start_time/end_time; for
+  //     promos they come from start_time_of_day/end_time_of_day.
+  rawEndDate: string | null;
+  timeLocked: boolean;
+  rawTimeWindowStart: string | null;
+  rawTimeWindowEnd: string | null;
 };
 
 function formatDate(date: string | null | undefined): string {
@@ -179,6 +202,20 @@ export function eventToDisplay(
     actionLabel: "Book",
     promoCode: null,
     isActive: event.is_active,
+    rawStartTime: event.start_time ?? null,
+    rawEndTime: event.end_time ?? null,
+    rawDate: event.date ?? null,
+    restaurantId: event.restaurant_id ?? null,
+    capacity: event.capacity ?? null,
+    seatsLeft,
+    rawEndDate: event.end_date ?? null,
+    // When owner toggles "fixed arrival time" the diner can't pick a
+    // different arrival — they must arrive exactly at start_time.
+    timeLocked: Boolean((event as { fixed_arrival_time?: boolean }).fixed_arrival_time)
+      || !event.end_time
+      || event.start_time === event.end_time,
+    rawTimeWindowStart: event.start_time ?? null,
+    rawTimeWindowEnd: event.end_time ?? null,
   };
 }
 
@@ -228,5 +265,17 @@ export function promotionToDisplay(
     actionLabel: "Book",
     promoCode: promotion.promo_code,
     isActive: promotion.is_active,
+    rawStartTime: null,
+    rawEndTime: null,
+    rawDate: starts ?? null,
+    restaurantId: promotion.restaurant_id ?? null,
+    capacity: null,
+    seatsLeft: remaining,
+    rawEndDate: ends ?? null,
+    // Promos don't lock the arrival time (a single moment) — they bound it
+    // to a daily window (e.g., 12 PM – 5 PM). The diner picks within.
+    timeLocked: false,
+    rawTimeWindowStart: (promotion as { start_time_of_day?: string | null }).start_time_of_day ?? null,
+    rawTimeWindowEnd: (promotion as { end_time_of_day?: string | null }).end_time_of_day ?? null,
   };
 }

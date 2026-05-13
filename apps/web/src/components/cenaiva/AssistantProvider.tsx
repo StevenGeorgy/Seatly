@@ -64,6 +64,17 @@ interface AssistantContextValue {
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
 const RELISTEN_AFTER_EMPTY_TURN_MS = 100;
 const RELISTEN_AFTER_ERROR_MS = 150;
+// Auto-close the assistant after this long with no user input + no AI
+// activity. Catches the case where the user opens the assistant, walks
+// away (or wakes-word false-positive fires onto a still-open assistant),
+// and the mic keeps burning Deepgram quota for hours. Reset on every
+// transcript send, every AI response, every drawer click.
+const IDLE_AUTO_CLOSE_MS = 120_000;
+// Suppress repeat wake-word fires within this window. The wake recognizer
+// occasionally bursts multiple onWake calls from fuzzy phrase matches
+// ("hey sanibel" / "hey soniva" / etc.) — without a debounce each call
+// re-runs the open-greeting flow.
+const WAKE_DEBOUNCE_MS = 3_000;
 
 export function useAssistant(): AssistantContextValue | null {
   return useContext(AssistantCtx);
@@ -149,6 +160,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // recognizer before starting the command recognizer. React's effect-based
   // teardown runs *after* commit, which is too late and causes InvalidStateError.
   const forceStopWakeWordRef = useRef<() => void>(() => {});
+  // Idle auto-close + wake debounce refs. The idle timer is reset on
+  // every activity (sendTranscript, AI response, user interaction); when
+  // it fires, the assistant gracefully closes if nothing's in flight.
+  const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastWakeFireMsRef = useRef(0);
   // Mirror state in a ref so sendTranscript always reads the *latest* booking
   // fields — not the snapshot from when the callback was defined. This was
   // the root cause of "AI keeps asking for party_size even after I answered":
@@ -160,7 +176,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
   // stream, permission glitched, InvalidStateError looping, etc.). Without a
   // cap the .then-chain can starve the main thread via microtasks → page hang.
   const emptyRelistenStreakRef = useRef(0);
-  const MAX_EMPTY_RELISTENS = 3;
+  // Set to 20 (≈100s of patient mic-on after AI response if user is
+  // silent). Originally 3, briefly 1 on 2026-05-11 evening — that was
+  // too aggressive: 5s of think-time is short and the user kept getting
+  // their mic closed mid-thought. The IDLE_AUTO_CLOSE_MS timer (120s) is
+  // the real "user gave up" signal; this cap is just a safety net so a
+  // stuck recognizer can't loop forever.
+  const MAX_EMPTY_RELISTENS = 20;
 
   // Sync hasCard into booking state so components and orchestrator requests can use it
   useEffect(() => {
@@ -305,10 +327,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // a date and routes to the availability check (Stage 2) — which then
       // returns the restaurant's HOURS instead of the orchestrator's
       // deterministic deals/about/etc handler.
-      const isFactOrGlobalQuery = /\b(?:reviews?|ratings?|expensive|cheap|pricey|popular|best|top|favorite|favourite|deals?|promotions?|discounts?|specials?|offers?|coupons?|happy hour|closest|nearest|near me|nearby|close by|around me|walking distance|tell me about|known for|famous for|all about)\b/i.test(transcript) ||
+      const isFactOrGlobalQuery = /\b(?:reviews?|ratings?|expensive|cheap|pricey|popular|best|top|favorite|favourite|deals?|promotions?|discounts?|specials?|offers?|coupons?|happy hour|closest|nearest|near me|nearby|close by|around me|walking distance|tell me about|known for|famous for|all about|menu|appetizers?|entrees?|mains?|starters?|desserts?|kids?\s+menu|drink\s+(?:list|menu)|wine\s+(?:list|menu)|beer\s+(?:list|menu)|cocktail\s+(?:list|menu)|dish(?:es)?|events?|happenings?|live music|trivia|wagyu|wine\s+pairing|tasting\s+(?:menu|night)|prix\s+fixe)\b/i.test(transcript) ||
         /\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like)\b/i.test(transcript) ||
         /\b(?:what|how)\s+(?:kind|type|sort)\s+of\b/i.test(transcript) ||
-        /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a\s+(?:cafe|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse)|fancy|romantic|casual|quiet|loud|trendy|hip|cozy|kid|family|good\s+for)\b/i.test(transcript);
+        /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a\s+(?:cafe|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse)|fancy|romantic|casual|quiet|loud|trendy|hip|cozy|kid|family|good\s+for)\b/i.test(transcript) ||
+        /\bdo\s+they\s+(?:have|serve)\s+(?:vegan|vegetarian|gluten[- ]?free|halal|kosher|fish|seafood|steak|pasta|burger|pizza|salad|brunch)\b/i.test(transcript);
       // Skip Stage 1 for modify/cancel referencing prior context ("modify it",
       // "cancel that", "change the booking"). Otherwise the local booking
       // collector parses "5pm" as a new booking time and asks "What restaurant
@@ -322,7 +345,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // Also skip when user references "my reservation" / "my booking" — the
       // orchestrator owns those flows.
       const isReservationListQuery = /\b(my\s+(?:most\s+recent|latest|newest|last|next|upcoming|first|current|active)\s+(?:reservation|booking|table)|show\s+me\s+my\s+(?:reservation|booking|past|upcoming|cancelled)|list\s+my\s+(?:reservation|booking)|(?:do|did)\s+i\s+(?:have|book))\b/i.test(transcript);
-      if (FAST_PATH_ENABLED && !isPureGreeting && !isFactOrGlobalQuery && !isModifyOrCancelRef && !isReservationListQuery) {
+      // Skip Stage 1 for indirect / tentative booking phrasings — "what about
+      // X", "how about X", "can you get me into X", "any chance of a table at
+      // Y", "thinking of going to Z", "feel like X". Without this guard, the
+      // local collector parses time words ("tomorrow", "tonight") out of the
+      // transcript, treats restaurant_id as missing, and emits the robotic
+      // "What restaurant or area should I book?" prompt — confusing because
+      // the transcript clearly NAMES a restaurant. The orchestrator's casual
+      // booking handler does the proper fuzzy match. Smoke regression
+      // 2026-05-11.
+      const isIndirectBookingIntent = /\b(?:what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)|any\s+chance\s+(?:of|to\s+get|i\s+can\s+get)|thinking\s+(?:of|about)\s+(?:going|trying)|feel\s+like|hit\s+up|set\s+me\s+up|grab\s+us|snag|dinner\s+for|lunch\s+for|brunch\s+for|drinks\s+for|i\s+want\s+to\s+go\s+to|i'?d\s+like\s+to\s+(?:go|try)|let'?s\s+go\s+to|book\s+(?:me\s+)?(?:a\s+)?(?:table\s+)?at|reserve\s+(?:me\s+)?(?:a\s+)?(?:table\s+)?at|i\s+want\s+a\s+table|(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|wife|husband|partner|family|kids|date|gf|bf|friend|buddy|mate|mom|mum|dad|sister|brother|cousin|coworker|colleague|spouse|fiance|fiancee))\b/i.test(transcript);
+      if (FAST_PATH_ENABLED && !isPureGreeting && !isFactOrGlobalQuery && !isModifyOrCancelRef && !isReservationListQuery && !isIndirectBookingIntent) {
         const decision = planLocalBookingTurn({
           transcript,
           booking: current.booking,
@@ -402,7 +435,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // confirmPendingAction handler, not the small-prompt LLM (which would
       // emit a fresh booking-flow prompt and silently drop the pending action).
       const hasPendingAction = !!current.booking.pending_action;
-      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction) {
+      // Mid-booking affirmative — when the user has already named a restaurant
+      // (restaurant_id set) and replies with a short yes/sure/ok/sounds good,
+      // route to the orchestrator so the booking flow continues. Without this
+      // guard, "yes" alone goes to small-prompt and the booking state silently
+      // resets. Smoke regression 2026-05-12.
+      const isMidBookingAffirmative =
+        !!current.booking.restaurant_id &&
+        /^(?:yes|yeah|yep|yup|sure|ok|okay|sounds good|sounds great|please|go ahead|let'?s do it|do it|book it|absolutely|definitely|of course)\b/i.test(
+          transcript.trim(),
+        );
+      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction && !isMidBookingAffirmative) {
         const controller = new AbortController();
         const timer = window.setTimeout(() => controller.abort(), 8_000);
         try {
@@ -452,6 +495,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         screen: "discover",
         booking_state: {
           restaurant_id: current.booking.restaurant_id,
+          restaurant_name: current.booking.restaurant_name,
           party_size: current.booking.party_size,
           date: current.booking.date,
           time: current.booking.time,
@@ -471,7 +515,24 @@ function AssistantInner({ children }: { children: ReactNode }) {
           cart_subtotal: current.booking.cart_subtotal,
           cart: current.booking.cart,
           pending_action: current.booking.pending_action,
-        },
+          // Forward event/promo auto-attach context so multi-turn flows
+          // (e.g. "any events at X" → "book it for 2") see the candidates
+          // stashed by the prior orchestrator turn.
+          offered_events: current.booking.offered_events,
+          offered_promotion: current.booking.offered_promotion,
+          // Forward multi-turn modify scratch so turn 2 of "change my
+          // reservation to 8pm" → "thursday at 8pm" sees the prior turn's
+          // partial fields. Without this, isContinuingModify on the
+          // orchestrator side stays false and the standard booking-
+          // collection flow hijacks the follow-up turn. 2026-05-13 fix.
+          modify_date: current.booking.modify_date,
+          modify_time: current.booking.modify_time,
+          modify_party: current.booking.modify_party,
+          // Forward disambig context — set by orchestrator when multi-active
+          // modify/cancel needs the user to pick one. Without this, the next
+          // turn's reply ("the saturday one", "harbour sixty") loses context.
+          pending_modify_disambig: (current.booking as unknown as Record<string, unknown>).pending_modify_disambig ?? null,
+        } as OrchestratorRequestType["booking_state"],
         map_state: {
           visible: current.map.visible,
           center: current.map.center,
@@ -775,6 +836,16 @@ function AssistantInner({ children }: { children: ReactNode }) {
       restaurantName?: string,
       opts?: { autoListen?: boolean; greetingText?: string },
     ) => {
+      // Kill switch — set VITE_CENAIVA_AI_DISABLED=true to hide the AI
+      // assistant entirely. Use during incidents (LLM provider down, costs
+      // spiking, bad behavior in prod). Users can still book via the public
+      // restaurant pages directly.
+      if (import.meta.env.VITE_CENAIVA_AI_DISABLED === "true") {
+        toast.info("Voice booking is temporarily unavailable. Use the booking page instead.", {
+          duration: 4000,
+        });
+        return;
+      }
       autoListenOnOpenRef.current = opts?.autoListen === true;
       greetingTextRef.current = opts?.greetingText ?? null;
       isOpenRef.current = true;
@@ -876,6 +947,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
     textModeRef.current = false;
     emptyRelistenStreakRef.current = 0;
     autoListenOnOpenRef.current = false;
+    if (idleCloseTimerRef.current) {
+      clearTimeout(idleCloseTimerRef.current);
+      idleCloseTimerRef.current = null;
+    }
     voiceRef.current.stopSpeaking();
     voiceRef.current.stopListening();
     dispatch({ type: "CLOSE" });
@@ -884,6 +959,52 @@ function AssistantInner({ children }: { children: ReactNode }) {
     // navigate() is a no-op if they are already on /discover.
     if (pathnameRef.current !== "/discover") navigate("/discover");
   }, [dispatch, navigate]);
+
+  // Stable ref to close() so the idle timer's setTimeout callback can call
+  // it without listing close in deps (which would re-create the scheduler
+  // on every render).
+  const closeRef = useRef(close);
+  useEffect(() => { closeRef.current = close; }, [close]);
+
+  // Restart the idle-close countdown. Called from every user activity site
+  // (sendTranscript, AI response, on open). If the user is silent for
+  // IDLE_AUTO_CLOSE_MS, gracefully close the assistant so the mic stops
+  // burning Deepgram quota. We do NOT fire while voice is actively
+  // listening / speaking / processing — those states aren't "idle".
+  const scheduleIdleClose = useCallback(() => {
+    if (idleCloseTimerRef.current) {
+      clearTimeout(idleCloseTimerRef.current);
+      idleCloseTimerRef.current = null;
+    }
+    if (!isOpenRef.current) return;
+    idleCloseTimerRef.current = setTimeout(() => {
+      idleCloseTimerRef.current = null;
+      if (!isOpenRef.current) return;
+      // Skip auto-close if voice is mid-turn. Re-arm the timer.
+      const vs = stateRef.current.voiceStatus;
+      if (vs === "listening" || vs === "processing" || vs === "speaking") {
+        return;
+      }
+      if (import.meta.env.DEV) console.log("[Cenaiva] idle auto-close fired");
+      closeRef.current();
+    }, IDLE_AUTO_CLOSE_MS);
+  }, []);
+
+  // Restart the idle auto-close timer whenever the voiceStatus becomes idle
+  // while the assistant is open. This covers every "AI just finished
+  // speaking" / "user empty turn ended" moment without having to
+  // instrument each callback individually. When voice is mid-flow
+  // (listening / processing / speaking), don't run the countdown — the
+  // status will flip back to idle when the turn ends.
+  useEffect(() => {
+    if (!state.isOpen) return;
+    if (state.voiceStatus === "idle") {
+      scheduleIdleClose();
+    } else if (idleCloseTimerRef.current) {
+      clearTimeout(idleCloseTimerRef.current);
+      idleCloseTimerRef.current = null;
+    }
+  }, [state.isOpen, state.voiceStatus, scheduleIdleClose]);
 
   const sayGoodbyeAndClose = useCallback(
     async (message?: string, redirectAfter?: string) => {
@@ -951,6 +1072,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [state.booking.status, sayGoodbyeAndClose]);
 
   const onWake = useCallback(() => {
+    const now = Date.now();
+    // Wake-word debounce: the recognizer's fuzzy phrase matcher
+    // occasionally bursts multiple onWake calls in quick succession
+    // (e.g. "hey sanibel" / "hey soniva" / "hey son iv" all matching as
+    // "Hey Cenaiva"). Without a debounce, each one re-runs the greeting
+    // + autoListen flow on top of itself.
+    if (now - lastWakeFireMsRef.current < WAKE_DEBOUNCE_MS) {
+      if (import.meta.env.DEV) console.log(`[WakeWord] debounced — ${now - lastWakeFireMsRef.current}ms since last fire`);
+      return;
+    }
+    lastWakeFireMsRef.current = now;
     if (import.meta.env.DEV) console.log(`[WakeWord] onWake fired — user=${!!user} isCustomerRoute=${isCustomerRoute} isOpen=${isOpenRef.current}`);
     if (!user) return;
     if (isOpenRef.current) {
@@ -1021,6 +1153,38 @@ function AssistantInner({ children }: { children: ReactNode }) {
     }),
     [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode],
   );
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__cenaivaTest = {
+      send: async (transcript: string, opts?: { restaurantId?: string; force?: boolean }) => {
+        const baseline = stateRef.current.lastSpokenText ?? "";
+        await sendTranscript(transcript, opts);
+        const deadline = Date.now() + 45_000;
+        while (Date.now() < deadline) {
+          const cur = stateRef.current.lastSpokenText ?? "";
+          if (cur && cur !== baseline) {
+            return {
+              spokenText: cur,
+              booking: stateRef.current.booking,
+              uiActions: stateRef.current.ui_actions ?? [],
+            };
+          }
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        return { spokenText: null, booking: stateRef.current.booking, timeout: true };
+      },
+      open: (rid?: string, greeting?: string, opts?: { autoListen?: boolean; greetingText?: string }) =>
+        open(rid, greeting, opts),
+      close: () => close(),
+      getState: () => stateRef.current,
+      getSpoken: () => stateRef.current.lastSpokenText,
+      setTextMode: (on: boolean) => setTextMode(on),
+    };
+    return () => { delete w.__cenaivaTest; };
+  }, [sendTranscript, open, close, setTextMode]);
+
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }
 

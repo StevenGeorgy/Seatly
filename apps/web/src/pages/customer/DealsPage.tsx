@@ -1293,7 +1293,10 @@ export default function DealsPage() {
     window.history.replaceState(window.history.state, "", `/deals?${next.toString()}`);
   };
 
-  const bookItem = (item: EventPromotionDisplay) => {
+  const bookItem = (
+    item: EventPromotionDisplay,
+    overrides?: { partySize: number; time: string; date?: string },
+  ) => {
     const matchingPreview = restaurantPreviews.find(
       (restaurant) => restaurant.name.toLowerCase() === item.restaurantName.toLowerCase(),
     );
@@ -1306,13 +1309,26 @@ export default function DealsPage() {
     const returnDetail = `${item.source}-${item.id}`;
     markCurrentDealsReturn(returnDetail);
 
+    // Diner picks party size + arrival time on the event/promotion card.
+    // Forward both to the restaurant public page so the booking form is
+    // pre-filled. Also include the event_id or promotion_id so the resulting
+    // reservation gets tagged (visible on /bookings + owner dashboard).
+    const pickedTime = overrides?.time ?? time;
+    const pickedParty = overrides?.partySize ?? normalizePartySize(partySize);
     const params = new URLSearchParams({
       back: "deals",
       returnDetail,
-      time,
+      time: pickedTime,
+      people: String(pickedParty),
       source: item.source,
       item: item.id,
     });
+    // Diner-picked date (overridden by card's date control). Falls back to
+    // the event's actual date for single-day events, or the promo's start.
+    const pickedDate = overrides?.date ?? item.rawDate ?? null;
+    if (pickedDate) params.set("date", pickedDate);
+    if (item.source === "event") params.set("event_id", item.id);
+    if (item.source === "promotion") params.set("promotion_id", item.id);
     void navigate(`/${restaurantKey}?${params.toString()}`);
   };
 

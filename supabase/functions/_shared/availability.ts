@@ -200,10 +200,19 @@ export async function getAvailability(
     let slotMin = sH * 60 + sM;
     const endMin = eH * 60 + eM;
 
-    while (slotMin + slotMins <= endMin) {
+    // Close-time guard: the slot's RESERVATION (start + turn_time) must end
+    // within the shift's bookable window. The previous check used slotMins
+    // (15-min slot increment) which let a 90-min turn run past close. This
+    // mirrors the SQL get_available_slots fix in migration
+    // 20260509100000_get_available_slots_close_time_turn.sql — the in-memory
+    // path needs the same correction or the orchestrator surfaces times
+    // (e.g. "They have 9:00 PM available") that modify_reservation_slot /
+    // book_reservation refuse on confirm because turn ends past close.
+    // 2026-05-13 fix.
+    while (slotMin + turnMins <= endMin) {
       if (
         configuredHours.window &&
-        (slotMin < configuredHours.window.open || slotMin + slotMins > configuredHours.window.close)
+        (slotMin < configuredHours.window.open || slotMin + turnMins > configuredHours.window.close)
       ) {
         slotMin += slotMins;
         continue;

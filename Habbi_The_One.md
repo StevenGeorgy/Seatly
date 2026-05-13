@@ -1852,6 +1852,253 @@ main();
 
 ---
 
+## Addendum — 2026-05-11 PM voice changes (post-publish)
+
+Two orchestrator changes landed AFTER the initial publish of this document. They affect voice book/modify/cancel responses and need to be replayed on mobile. Both are **server-side `cenaiva-orchestrate` changes only** — no client-side orchestrator-bypass regex is required since the existing intent classifiers already route these phrasings through the orchestrator. The relevant patterns (`menu`, `appetizers?`, `deals?`, `events?`, `promotions?`, etc.) are already in mobile's `simplePromptIntent.ts` `DINING_SCOPE_PATTERN`, `BOOKING_PROCESS_DETAIL_PATTERN`, and `GLOBAL_DISCOVERY_QUERY_PATTERN`, and in the AssistantProvider's `isFactOrGlobalQuery` guard. Verify those are present; add the missing tokens if not (`menu`, `appetizers?`, `entrees?`, `mains?`, `starters?`, `desserts?`, `kids?\s+menu`, `drink\s+(?:list|menu)`, `wine\s+(?:list|menu)`, `beer\s+(?:list|menu)`, `cocktail\s+(?:list|menu)`, `dish(?:es)?`, `events?`, `happenings?`, `live music`, `trivia`, `wagyu`, `wine\s+pairing`, `tasting\s+(?:menu|night)`, `prix\s+fixe`, `do\s+they\s+(?:have|serve)\s+(?:vegan|vegetarian|gluten[- ]?free|halal|kosher|fish|seafood|steak|pasta|burger|pizza|salad|brunch)`).
+
+### Addendum A — SMS body includes event/promo line on voice modify + cancel
+
+**Reason.** When a voice-cancelled or voice-modified booking is linked to an event or promotion, the SMS body said only the date/time/party. Diners with multiple bookings couldn't tell which one was cancelled. Now the SMS appends one of:
+- ` Event: <event.name>.`
+- ` Promo: <promotion.title> (code <promo_code>).`
+- ` Promo code: <applied_promo_code>.` (when only the code was applied with no joined promo row)
+
+**Where the change lives in the orchestrator.** Two places — the deterministic voice-cancel branch and the deterministic voice-modify branch in `buildPreflightResponse`'s `confirmPendingAction`. In both branches, AFTER the `release_reservation_tables` / `modify_reservation_slot` RPC succeeds and BEFORE calling `sendReservationNotification`:
+
+```ts
+// After fetching the cancelled/modified row, also pull event/promo linkage.
+const { data: row } = await supabaseAdmin
+  .from("reservations")
+  .select(`
+    id, restaurant_id, guest_id, reserved_at, party_size, confirmation_code,
+    event_id, promotion_id, applied_promo_code,
+    guests(full_name, email, phone),
+    restaurants(name, timezone)
+  `)
+  .eq("id", reservationId)
+  .maybeSingle();
+
+let eventLine = "";
+let promoLine = "";
+const evId = row.event_id as string | null;
+const prId = row.promotion_id as string | null;
+const prCode = row.applied_promo_code as string | null;
+if (evId) {
+  const { data: ev } = await supabaseAdmin
+    .from("events").select("name").eq("id", evId)
+    .maybeSingle<{ name: string | null }>();
+  if (ev?.name) eventLine = ` Event: ${ev.name}.`;
+}
+if (prId) {
+  const { data: pr } = await supabaseAdmin
+    .from("promotions").select("title, promo_code").eq("id", prId)
+    .maybeSingle<{ title: string | null; promo_code: string | null }>();
+  if (pr?.title) {
+    const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+    promoLine = ` Promo: ${pr.title}${codePart}.`;
+  }
+} else if (prCode) {
+  promoLine = ` Promo code: ${prCode}.`;
+}
+
+// Append to the existing body. Example for cancel:
+const cancelBody =
+  `Hi ${guestName}, your reservation at ${restName} on ${dateLabel} ` +
+  `for ${row.party_size} ${row.party_size === 1 ? "guest" : "guests"} ` +
+  `has been cancelled. Confirmation code: ${row.confirmation_code}.` +
+  eventLine + promoLine;
+```
+
+**Tables consulted.** `events` (id, name) and `promotions` (id, title, promo_code). Both are public-readable for service-role queries.
+
+**Verified end-to-end on web 2026-05-11 via `communication_log`:**
+- Event modify body: `…Confirmation code: ABBF0217. Event: Chef Tasting Menu.`
+- Event cancel body: `…Confirmation code: ABBF0217. Event: Chef Tasting Menu.`
+- Promo modify body: `…Confirmation code: 1408FBCF. Promo: Weekday Lunch Deal — 20% Off (code WEEKDAY20).`
+- Promo cancel body: `…Confirmation code: 1408FBCF. Promo: Weekday Lunch Deal — 20% Off (code WEEKDAY20).`
+
+**Mobile parity action.** The orchestrator is shared across web + mobile (same `/cenaiva-orchestrate` endpoint). So this change is **automatic on mobile** once the orchestrator deploy goes through — no mobile code change required. Mobile QA: pick a reservation linked to an event, cancel it via voice, confirm the SMS body contains the `Event:` line.
+
+### Addendum B — Menu Q&A always answers (preorder still hands off)
+
+**Reason.** Before this change, ANY mention of "menu" / "appetizers" / "entrees" triggered the preorder hand-off — voice would say "Pre-orders need the menu screen, I'll take you there" and close. Users asking purely *informational* menu questions ("what's on the menu at Mark Testing?", "any vegan options?") got dumped to the booking page instead of an answer. User directive on 2026-05-11: **voice should always answer menu questions; only true actions (pre-order, prepay, add-to-cart, checkout) should hand off.**
+
+**Two changes in `cenaiva-orchestrate` `buildPreflightResponse`:**
+
+1. **Narrow the preorder hand-off pattern** so bare menu words no longer trigger:
+   ```ts
+   // BEFORE
+   const preorderRequestPattern =
+     /\b(pre[- ]?order|prepay|order ahead|skip the line|order now|menu|appetizers?|entrees?|mains?|kids?\s+menu|what'?s?\s+on\s+the\s+menu|drink list|wine list|beer list)\b/i;
+   // AFTER
+   const preorderRequestPattern =
+     /\b(pre[- ]?order|prepay|order ahead|skip the line|order now|add (?:it )?to (?:my )?(?:cart|order)|checkout|pay (?:now|for)|charge my card)\b/i;
+   ```
+   The hand-off spoken text was also softened: "Pre-orders need the order screen — I'll take you there to finish." / "I can't take card details by voice — sending you to the booking page to pre-pay." / "Pre-orders go through the booking page — opening it now."
+
+2. **Add a new menu Q&A deterministic handler** that runs BEFORE `confirmPendingAction` and BEFORE the fact-lookup. Catches menu-info questions and answers from `menu_items` directly. Pattern + resolution logic:
+
+   ```ts
+   const menuQuestionPattern =
+     /\b(?:what'?s?\s+(?:on|in|good\s+on)\s+(?:the\s+)?menu|menu\s+(?:items?|like|got|have)|appetizers?|entrees?|mains?|starters?|sides?|desserts?|kids?\s+menu|drink\s+(?:list|menu)|wine\s+(?:list|menu)|beer\s+(?:list|menu)|cocktail\s+(?:list|menu)|specials?\b(?!\s+tonight)|do\s+they\s+(?:have|serve)\s+(?:vegan|vegetarian|gluten|halal|kosher|fish|seafood|steak|pasta|burger|pizza|salad|brunch))\b/i;
+
+   if (menuQuestionPattern.test(transcript)) {
+     // 1) extract restaurant from "menu at X" / "X's menu", else use bookingState.restaurant_id
+     // 2) query menu_items by restaurant_id, is_active=true, is_available=true
+     //    ordered by is_featured DESC, sort_order ASC; limit 60
+     // 3) filter by category keyword in transcript: vegan / vegetarian / gluten /
+     //    drinks (category ILIKE 'drink|wine|beer|cocktail|bar') /
+     //    appetizer / main / dessert / kids
+     // 4) spoken_text: "<lead>: name ($price), name ($price), …, and N more. Want a table?"
+     //    Categories' lead phrases: "Vegan picks at <rest>", "Drinks at <rest>",
+     //    "Starters at <rest>", "Mains at <rest>", etc.
+     // 5) If no items match → "I don't have a menu loaded for <rest> yet. Worth a
+     //    call to confirm. Want me to book a table?"
+   }
+   ```
+
+   `menu_items` schema (relevant columns): `id`, `restaurant_id`, `name`, `description`, `price`, `category` (text), `dietary_flags` (text[]), `allergens` (text[]), `is_active`, `is_available`, `is_preorderable`, `is_featured`, `sort_order`.
+
+   Restaurant name extraction supports two patterns:
+   - `menu at <name>` / `appetizers at <name>` / etc. — `\b(?:menu|appetizers?|entrees?|mains?|drinks?|wine|beer|cocktails?|kids?\s+menu)\s+(?:at|for|from)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$`
+   - `<name>'s menu` — `\b([a-z][a-z0-9'’\s&]{1,40}?)(?:'?s)\s+menu\b`
+
+   Token-score against `fetchActiveRestaurants()` (accent-normalised) — same fuzzy match the fact-lookup uses. Falls back to `bookingState.restaurant_id` for mid-booking / post-booking turns ("what's on the menu?" without naming the restaurant resolves to the current booking's restaurant).
+
+**Hard rule (preserved):** deposits and pre-order payments still hand off via the narrowed preorder pattern. Voice never takes a card; the user lands on `/{slug}?confirmation=<code>` to complete the action manually. Confirmed by the user on 2026-05-11.
+
+**Mobile parity action.** Same as Addendum A — orchestrator is shared. No mobile client change required. Mobile QA: ask "what's on the menu at Mark Testing?" via voice; confirm response lists actual items (not "I'll take you to the menu screen").
+
+### Addendum C — Direct "book me for [event] at [restaurant]" voice handler
+
+**Reason.** After Addendum B landed (menu Q&A always answers), the user asked for direct event booking by voice: "book me for chef tasting menu at mark testing for 2" should resolve the event + restaurant + party in one shot and offer confirmation. Previously the LLM tool loop either treated this as a menu question (because "Chef Tasting Menu" contains "menu") or asked the user to repeat fields. The auto-attach path ("any events at X" → list → "book the wine pairing" → resolveEventAttachment) already worked, but direct-mention booking did not.
+
+**Change in `cenaiva-orchestrate` `buildPreflightResponse`.** New deterministic handler placed AFTER menu Q&A and BEFORE `confirmPendingAction`. Pattern + resolution outline:
+
+```ts
+const bookEventPattern =
+  /\b(?:book|reserve|grab|get)\s+(?:me|us|a\s+(?:table|seat|spot|booking|reservation))\s+(?:for|at)\s+(?:the\s+)?(.+?)(?:\s+at\s+([a-z][\w\s'’&]{1,40}?))?(?:\s+for\s+(\d+)(?:\s*(?:people|guests?|persons?))?)?(?:\s+(?:on\s+\w+|tomorrow|tonight|today|next\s+\w+|\d{1,2}(?::\d{2})?\s*(?:am|pm)))?\s*\??\s*$/i;
+
+// Steps:
+// 1. Reject if event_candidate is too short or looks like party-only/date-only.
+// 2. Resolve restaurant — fuzzy token-score against fetchActiveRestaurants(),
+//    fall back to bookingState.restaurant_id.
+// 3. Query events where is_active=true, is_private=false, date>=today
+//    (scoped to restaurant_id when known), fuzzy-match by name tokens;
+//    require score >= floor(tokens/2).
+// 4. Capacity sanity-check: if seatsLeft < partyHint, refuse with
+//    "Event only has N seats left — too few for partyHint".
+// 5. Resolve shift_id + slot_iso by calling getAvailability(restaurant_id,
+//    event.date, partyHint) and matching the slot whose display_time maps
+//    to event.start_time. Without this, the confirmation handler at line
+//    5414 (`if (!partySize || !date || !shiftId || !slotIso)`) bounces
+//    with "I need the reservation details again. What date and time?".
+// 6. Patch booking_state: status (confirming when all fields present),
+//    restaurant_id, restaurant_name, date, time, party_size, shift_id,
+//    slot_iso, offered_events: [{id, name, date, start_time, end_time}].
+// 7. Spoken text: "Got it — <event.name> at <restaurant_name> on <date>
+//    at <time> for <N> guests. Confirming?".
+```
+
+Guarded by `isBookingUtterance` — only fires when `book|reserve|table|seat` AND `me|us|a table` are both present in the transcript. This prevents the handler from grabbing pure menu queries that happen to mention "menu".
+
+**Required client-side support (the orchestrator's response would be wasted without this).**
+
+1. **`@cenaiva/assistant` schema + types** must include `offered_events` + `offered_promotion` on `BookingDeltaSchema`, `BookingState`, `BookingDelta`. Without these the client serialiser strips the orchestrator's auto-attach context before sending the next turn, and the confirmation handler can't resolve which event the user is confirming.
+
+   ```ts
+   // schema.ts — add to BookingDeltaSchema:
+   offered_events: z.array(z.object({
+     id: z.string(),
+     name: z.string().nullable().optional(),
+     date: z.string().nullable().optional(),
+     start_time: z.string().nullable().optional(),
+     end_time: z.string().nullable().optional(),
+   })).nullable().optional(),
+   offered_promotion: z.object({
+     id: z.string(),
+     promo_code: z.string().nullable().optional(),
+     title: z.string().nullable().optional(),
+   }).nullable().optional(),
+   ```
+
+2. **`AssistantProvider.tsx` booking_state payload** — explicitly forward `restaurant_name`, `offered_events`, `offered_promotion` to `/cenaiva-orchestrate` on every turn (the request payload enumerates fields rather than spreading the whole BookingState).
+
+3. **`AssistantStore.tsx` initialBooking** — add `offered_events: null, offered_promotion: null` so the type narrowing is clean.
+
+**End-to-end verification (2026-05-11):** Two-turn UI test through the real CenaivaVoiceShell chat input:
+- Turn 1: "book me for chef tasting menu at mark testing for 2" → "Got it — Chef Tasting Menu at Mark Testing on Tuesday, May 12 at 6:00 PM for 2 guests. Confirming?", `status=confirming`, `shift_id` + `slot_iso` resolved.
+- Turn 2: "yes confirm" → "You're booked for 6:00 PM.", `status=post_booking`, `confirmation_code=EC7C3346`, `reservation_id` populated.
+- DB row: `event_id` correctly linked to Chef Tasting Menu event.
+- SMS body: `"Hi Mark Habbi, your table at Mark Testing is booked for 2 guests on Tuesday, May 12, 2026 at 6:00 PM. Event: Chef Tasting Menu. Confirmation code: EC7C3346. Manage: …"`.
+
+**Mobile parity action.** Orchestrator change is shared (mobile picks it up automatically). The three client-side parts (schema, request payload, initial state) need parallel changes in mobile if it has equivalent files. Specifically: mobile's BookingState/Delta types + the `/cenaiva-orchestrate` request builder must include the same fields. Without that, mobile's direct event booking will fail on turn 2.
+
+### Addendum D — Mic-turn tightening + idle auto-close + wake debounce
+
+**Reason.** Audit of the voice-shell console log on 2026-05-11 caught: (a) the wake recognizer fuzzy-matching "hey sanibel" as the wake phrase (multiple variants per minute), (b) the mic auto-resume burning Deepgram quota for ~15s after every AI turn when the user is silent, (c) no auto-close when the user steps away leaving the assistant open. None of the three are user-facing bugs but they waste resources.
+
+**Three constants in `AssistantProvider.tsx`** (no other file touched; wake recognizer at `useCenaivaWakeWord.ts` remains untouched per the long-standing hard rule):
+
+```ts
+const MAX_EMPTY_RELISTENS = 20; // ≈100s of patient mic-on; safety cap only
+const IDLE_AUTO_CLOSE_MS = 120_000; // 2 min — real "user gave up" cleanup
+const WAKE_DEBOUNCE_MS = 3_000; // suppress repeat onWake within this window
+```
+
+**Note on `MAX_EMPTY_RELISTENS`.** Briefly tried `1` on first roll-out — the mic gave up after one ~5s empty turn, which closed the mic before the user finished thinking. Bumped to 20 (≈100s of patience) since `IDLE_AUTO_CLOSE_MS` is the real cleanup trigger. The cap remains as a safety net against a stuck recognizer infinitely empty-turning.
+
+**Idle close timer (state-driven).** A `useEffect([state.isOpen, state.voiceStatus])` runs `scheduleIdleClose()` whenever the assistant is open AND voice is idle. The timer reset is driven by status transitions, not callback instrumentation — every "AI just finished speaking" / "empty turn ended" naturally re-arms the countdown. If voice is mid-turn (listening / processing / speaking), the timer pauses and re-arms when status flips back to idle.
+
+```ts
+const idleCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const closeRef = useRef(close); useEffect(() => { closeRef.current = close; }, [close]);
+
+const scheduleIdleClose = useCallback(() => {
+  if (idleCloseTimerRef.current) clearTimeout(idleCloseTimerRef.current);
+  idleCloseTimerRef.current = null;
+  if (!isOpenRef.current) return;
+  idleCloseTimerRef.current = setTimeout(() => {
+    idleCloseTimerRef.current = null;
+    if (!isOpenRef.current) return;
+    const vs = stateRef.current.voiceStatus;
+    if (vs === "listening" || vs === "processing" || vs === "speaking") return;
+    closeRef.current();
+  }, IDLE_AUTO_CLOSE_MS);
+}, []);
+
+useEffect(() => {
+  if (!state.isOpen) return;
+  if (state.voiceStatus === "idle") scheduleIdleClose();
+  else if (idleCloseTimerRef.current) {
+    clearTimeout(idleCloseTimerRef.current);
+    idleCloseTimerRef.current = null;
+  }
+}, [state.isOpen, state.voiceStatus, scheduleIdleClose]);
+```
+
+**Wake debounce.** First thing in the `onWake` callback:
+
+```ts
+const lastWakeFireMsRef = useRef(0);
+const onWake = useCallback(() => {
+  const now = Date.now();
+  if (now - lastWakeFireMsRef.current < WAKE_DEBOUNCE_MS) return;
+  lastWakeFireMsRef.current = now;
+  // ... existing logic
+}, [...]);
+```
+
+**Close() also clears the timer.** Add `if (idleCloseTimerRef.current) { clearTimeout(idleCloseTimerRef.current); idleCloseTimerRef.current = null; }` to the existing `close` callback so manual closes don't leave the timer dangling.
+
+**Mobile parity action.** Mobile's voice shell has equivalent constants and auto-resume logic. Replay all three knob changes in the mobile RN code. The wake-word debounce in particular is independent of the recognizer implementation — it lives in whatever component owns the `onWake` handler on mobile.
+
+### Verification
+
+Harness re-run with these four changes (3 iterations, all 81 base cases + new event/promo group): most recent 3x pass was 842/843 attempts, 0 hard fails, 1 H8 flake. Single-pass on the post-event-handler orchestrator (v266) returned 281/281 / 0 hard fails / 0 flakes. Hard-fail count must remain 0 before mobile deploy.
+
+---
+
 ## End of document
 
 This file is exhaustive by design. Mobile team using Claude Opus 4.7 Max: read the entire document end-to-end before writing any code. Then execute §6 step by step. Then run §8 verification. Then update mobile's `CLAUDE.md` equivalent with the headline state changes. Then ship.
@@ -1861,3 +2108,96 @@ This file is exhaustive by design. Mobile team using Claude Opus 4.7 Max: read t
 **Author signature:** Mark Habbi + Claude Opus 4.7 Max — 2026-05-10 → 2026-05-11.
 
 — END —
+
+---
+
+## Addendum E (2026-05-12) — Multi-turn smoke test fixes
+
+A 132-test multi-turn Playwright smoke suite was built and iterated on (web repo). This addendum captures the **mobile-mirror diff** — fixes that need to land in mobile to preserve parity. Backend (orchestrator) changes apply automatically since mobile calls the same edge functions; **only client-side regex/routing changes need mobile mirroring**.
+
+### Files that need updates (mobile equivalents)
+
+| Web file | What changed | Mobile equivalent |
+|---|---|---|
+| `apps/web/src/lib/cenaiva/simplePromptIntent.ts` | Extended `BOOKING_ADJACENT_PATTERN` + added `RECOMMENDATION_OR_COMPANION_PATTERN` | Same path under mobile repo |
+| `apps/web/src/components/cenaiva/AssistantProvider.tsx` | Added `isIndirectBookingIntent` + `isMidBookingAffirmative` guards | Mobile's AssistantProvider |
+
+### E.1 — `simplePromptIntent.ts` patch
+
+**1. Extend `BOOKING_ADJACENT_PATTERN`** — add companion words so mid-booking utterances like "yes my girlfriend really wants to go" don't fall through to the small-prompt LLM.
+
+```diff
+ const BOOKING_ADJACENT_PATTERN =
+-  /\b(somewhere|...|family|parents|proposal|anniversary|birthday|date|...|near me)\b/i;
++  /\b(somewhere|...|family|parents|proposal|anniversary|birthday|date|...|near me|girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|fiance|fiancee|sister|brother|kids|child|children|cousin|coworker|colleague|friend|friends|buddy|buddies|mate|mates|son|daughter|mom|mum|dad|guest|guests)\b/i;
+```
+
+**2. Add `RECOMMENDATION_OR_COMPANION_PATTERN`** above the `isCenaivaProcessPrompt` body:
+
+```ts
+// "my friend recommended X", "I heard about X", "want to take my girlfriend
+// out", "my boy said X is great" — booking-intent signals that previously
+// fell through to small-prompt. User-reported bug 2026-05-12.
+const RECOMMENDATION_OR_COMPANION_PATTERN =
+  /\b(?:(?:my|a)\s+(?:friend|buddy|boy|girl|coworker|colleague|sister|brother|mom|mum|dad|wife|husband|partner|date|sis|bro|son|daughter|cousin|kid|kids|family)\s+(?:recommended|said|told\s+me\s+about|mentioned|raved\s+about|swears\s+by|loves)|recommended\s+(?:me\s+)?(?:to\s+go\s+to|to\s+try|me\s+to\s+try|me\s+to\s+go)|i\s+(?:heard|read)\s+about|i'?ve\s+heard\s+about|been\s+meaning\s+to\s+(?:try|go\s+to|check\s+out))\b|\b(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|friends|buddy|buddies|mate|mates|family|parents|kids?|child|children|mom|mum|dad|son|daughter|sister|brother|cousin|coworker|colleague|team)\b/i;
+```
+
+**3. Wire it into the OR chain in `isCenaivaProcessPrompt`:**
+
+```diff
+     SESSION_PIVOT_PATTERN.test(normalized) ||
++    // "my friend recommended X", "want to take my girlfriend out", etc.
++    RECOMMENDATION_OR_COMPANION_PATTERN.test(normalized) ||
+     /\b(can you handle it|...)\b/i.test(normalized)
+```
+
+### E.2 — `AssistantProvider.tsx` patches
+
+**1. Add `isIndirectBookingIntent` guard** (skips Stage 1 local collector for "what about X" / "can you get me into X"):
+
+```ts
+const isIndirectBookingIntent = /\b(?:what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)|any\s+chance\s+(?:of|to\s+get|i\s+can\s+get)|thinking\s+(?:of|about)\s+(?:going|trying)|feel\s+like)\b/i.test(transcript);
+
+// Wire into the existing Stage 1 gate:
+if (FAST_PATH_ENABLED && !isPureGreeting && !isFactOrGlobalQuery && !isModifyOrCancelRef && !isReservationListQuery && !isIndirectBookingIntent) {
+  // planLocalBookingTurn ...
+}
+```
+
+**2. Add `isMidBookingAffirmative` guard** (skips Stage 3 small-prompt when user replies "yes/sure/ok" mid-booking):
+
+```ts
+const isMidBookingAffirmative =
+  !!current.booking.restaurant_id &&
+  /^(?:yes|yeah|yep|yup|sure|ok|okay|sounds good|sounds great|please|go ahead|let'?s do it|do it|book it|absolutely|definitely|of course)\b/i.test(transcript.trim());
+
+// Wire into the Stage 3 gate:
+if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction && !isMidBookingAffirmative) {
+  // small-prompt fast path ...
+}
+```
+
+### E.3 — Backend changes (no mobile work required)
+
+These are deployed in `cenaiva-orchestrate` and apply automatically:
+
+1. **`directBookingIntent`** extended with three new regex blocks (recommendation phrasings, take-companion-out, what-about/how-about). `cenaiva-orchestrate/index.ts:2420-2438`.
+2. **Casual booking handler** now matches 5 patterns instead of 2: `wantToGoPattern`, `takeToPattern`, `whatAboutPattern`, `recommendedPattern`, `bookReservePattern`. Captures restaurant from group 1 in each. `cenaiva-orchestrate/index.ts:~4429-4475`.
+3. **Party-size inference** — `take my <companion> out` anywhere in transcript → party = 2.
+4. **`wantToGoPattern` lookahead loosened** — stops at any `for\s+\w`. Catches "Let's go to X for dinner" without greedy-capturing.
+
+### E.4 — Verification on mobile
+
+After applying E.1 + E.2, run these test transcripts through mobile's voice flow:
+
+| Transcript | Expected |
+|---|---|
+| "my boy recommended me to go to harbour 60 and I want to take my girlfriend out" | Identifies Harbour Sixty, sets restaurant_id |
+| Then: "yes my girlfriend really wants to go" | Preserves restaurant_id, asks next field (NOT "which area or city?") |
+| "What about Baton Rouge tomorrow?" | Identifies Bâton Rouge |
+| "Can you get me into Harbour Sixty for 2 tonight?" | Routes to booking with restaurant + party + date |
+| "Hit up STK Toronto Friday at 7" | Identifies STK Toronto |
+| "Reserve Mark Testing for 4 on Saturday at 8" | Identifies Mark Testing |
+| Mid-booking: "yes" / "sure" / "sounds good" | Booking state preserved; asks next field |
+
+— END Addendum E —

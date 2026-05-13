@@ -66,6 +66,11 @@ const initialBooking: BookingState = {
   order_id: null,
   payment_status: "idle",
   has_saved_card: false,
+  offered_events: null,
+  offered_promotion: null,
+  modify_date: null,
+  modify_time: null,
+  modify_party: null,
 };
 
 const initialMap: MapState = {
@@ -532,6 +537,27 @@ export function assistantReducer(
           };
         } else {
           next = { ...next, booking: { ...next.booking, ...bookingPatch } };
+        }
+        // Multi-turn modify scratch — the null-strip above retains stale
+        // values. When the orchestrator queues a modify pending_action
+        // (modify is finalized + waiting for "yes confirm"), clear the
+        // scratch so the next turn isn't treated as a continuation.
+        // Same when the response intent transitions back to a non-modify
+        // shape (booking finished / hard-reset / etc).
+        const newPendingAction = next.booking.pending_action;
+        if (
+          newPendingAction &&
+          newPendingAction.type === "modify_reservation"
+        ) {
+          next = {
+            ...next,
+            booking: {
+              ...next.booking,
+              modify_date: null,
+              modify_time: null,
+              modify_party: null,
+            },
+          };
         }
       }
 

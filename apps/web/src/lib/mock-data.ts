@@ -61,6 +61,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 12, waiter_id: null, deposit_amount: 25, deposit_status: "paid",
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: todayAt(10), checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(9),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "Olivia Martinez", email: "olivia@example.com", phone: "+1 514-555-0101" },
   },
   {
@@ -71,6 +72,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 5, waiter_id: null, deposit_amount: null, deposit_status: null,
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: todayAt(11), checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(8),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "James Chen", email: "james.chen@example.com", phone: "+1 438-555-0202" },
   },
   {
@@ -81,6 +83,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 35, waiter_id: null, deposit_amount: 50, deposit_status: "pending",
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: null, checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(12),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "Sophie Tremblay", email: "sophie.t@example.com", phone: "+1 514-555-0303" },
   },
   {
@@ -91,6 +94,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 8, waiter_id: null, deposit_amount: null, deposit_status: null,
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: todayAt(13), checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(11),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "Liam Patel", email: "liam.p@example.com", phone: "+1 647-555-0404" },
   },
   {
@@ -101,6 +105,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 2, waiter_id: null, deposit_amount: null, deposit_status: null,
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: todayAt(14), checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(10),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "Emma Dubois", email: "emma.d@example.com", phone: "+1 514-555-0505" },
   },
   {
@@ -111,6 +116,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: 62, waiter_id: null, deposit_amount: 100, deposit_status: "paid",
     is_guest_checkout: false, guest_email: null, guest_phone: null, guest_full_name: null,
     confirmed_at: todayAt(15), checked_in_at: null, seated_at: null, completed_at: null, cancelled_at: null, created_at: todayAt(7),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: { full_name: "Noah Williams", email: "noah.w@example.com", phone: "+1 416-555-0606" },
   },
   {
@@ -121,6 +127,7 @@ export const MOCK_RESERVATIONS: ReservationRow[] = [
     no_show_risk_score: null, waiter_id: null, deposit_amount: null, deposit_status: null,
     is_guest_checkout: true, guest_email: "walk.in@example.com", guest_phone: null, guest_full_name: "Walk-in Guest",
     confirmed_at: null, checked_in_at: todayAt(17, 25), seated_at: todayAt(17, 30), completed_at: null, cancelled_at: null, created_at: todayAt(17, 25),
+    event_id: null, promotion_id: null, applied_promo_code: null,
     guests: null,
   },
 ];
@@ -302,12 +309,13 @@ export const MOCK_EVENTS: EventRow[] = ([
   { id: "ev-2", restaurant_id: RID, name: "Jazz & Cocktails Night", description: "Live jazz trio with handcrafted cocktail specials all evening.", date: daysFromNow(12), start_time: "20:00", end_time: "23:30", price_per_person: null, capacity: 60, tickets_sold: 0, is_recurring: true, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(7) },
   { id: "ev-3", restaurant_id: RID, name: "Chef's Table Experience", description: "Intimate 8-seat dinner cooked tableside by Chef Marco. Weekly rotating menu.", date: daysFromNow(3), start_time: "19:30", end_time: "22:30", price_per_person: 150.00, capacity: 8, tickets_sold: 7, is_recurring: true, cover_image_url: null, min_age: null, dress_code: "Business casual", is_private: true, created_at: daysAgo(21) },
   { id: "ev-4", restaurant_id: RID, name: "Easter Brunch Buffet", description: "Family-friendly brunch featuring a live carving station, omelette bar, and kids activities.", date: daysFromNow(20), start_time: "10:30", end_time: "14:00", price_per_person: 45.00, capacity: 80, tickets_sold: 34, is_recurring: false, cover_image_url: null, min_age: null, dress_code: null, is_private: false, created_at: daysAgo(10) },
-]).map((event) => ({
+]).map((event): EventRow => ({
   end_date: null,
   is_active: true,
   media_url: null,
   media_type: null,
   media_name: null,
   theme: null,
+  fixed_arrival_time: false,
   ...event,
 }));

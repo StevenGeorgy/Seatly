@@ -96,15 +96,19 @@ async function rpcCall(name, args) {
 }
 
 async function cleanupReservations() {
+  // SAFE cleanup: only cancel reservations the harness ITSELF created (tracked
+  // in CREATED_RESERVATIONS during the test run). The old harness_cleanup_test_user
+  // RPC unconditionally cancelled Mark Habbi's real reservations because his
+  // user_profile_id was the hardcoded test profile — see Task #123. The new
+  // harness_cancel_by_ids RPC takes an explicit array of IDs and is scoped to
+  // the harness test profile as a defense-in-depth guard.
+  const ids = Array.from(CREATED_RESERVATIONS.keys());
   CREATED_RESERVATIONS.clear();
+  if (ids.length === 0) return;
   // Run cleanup up to 3 times with short pauses to handle slow propagation
-  // of reservation_tables.released_at updates. Under fast back-to-back
-  // tests, the partial-exclusion on reservation_tables sometimes still sees
-  // the prior test's tables as held even AFTER the cleanup UPDATE ran,
-  // because the trigger / index update is eventually consistent. Three
-  // passes empirically clears it.
+  // of reservation_tables.released_at updates.
   for (let i = 0; i < 3; i++) {
-    await rpcCall("harness_cleanup_test_user");
+    await rpcCall("harness_cancel_by_ids", { p_ids: ids });
     if (i < 2) await delay(120);
   }
 }

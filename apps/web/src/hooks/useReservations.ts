@@ -12,6 +12,28 @@ import {
 import { matchesReservationSearch } from "@/lib/reservations/search";
 import { localDayBoundsUtcIso } from "@/lib/utils/time";
 
+export type ReservationEventRef = {
+  id: string;
+  name: string;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  capacity: number | null;
+  tickets_sold: number;
+  is_active: boolean;
+};
+
+export type ReservationPromotionRef = {
+  id: string;
+  title: string;
+  promo_code: string | null;
+  promo_type: string | null;
+  discount_value: number | null;
+  discount_unit: string | null;
+  badge_color: string | null;
+  is_active: boolean;
+};
+
 export type ReservationRow = {
   id: string;
   restaurant_id: string;
@@ -43,7 +65,12 @@ export type ReservationRow = {
   cancelled_at: string | null;
   created_at: string | null;
   updated_at?: string | null;
+  event_id: string | null;
+  promotion_id: string | null;
+  applied_promo_code: string | null;
   guests?: { full_name: string | null; email: string | null; phone: string | null } | null;
+  event?: ReservationEventRef | null;
+  promotion?: ReservationPromotionRef | null;
   reservation_tables?: Array<{
     table_id: string;
     is_primary: boolean;
@@ -116,7 +143,9 @@ export function useReservations(filters?: ReservationFilters) {
 
     let query = client
       .from("reservations")
-      .select("*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity))")
+      .select(
+        "*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity)), event:events(id, name, date, start_time, end_time, capacity, tickets_sold, is_active), promotion:promotions(id, title, promo_code, promo_type, discount_value, discount_unit, badge_color, is_active)",
+      )
       .eq("restaurant_id", selectedRestaurantId)
       .order("reserved_at", { ascending: true });
 

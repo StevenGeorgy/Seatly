@@ -26,6 +26,7 @@ export type EventRow = {
   dress_code: string | null;
   is_private: boolean;
   theme: string | null;
+  fixed_arrival_time: boolean;
   created_at: string | null;
 };
 
@@ -60,6 +61,7 @@ export type CreateEventPayload = {
   media_name?: string | null;
   is_active?: boolean;
   is_private?: boolean;
+  fixed_arrival_time?: boolean;
 };
 
 export type EventMediaUpload = {

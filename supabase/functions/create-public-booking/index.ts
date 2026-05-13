@@ -43,6 +43,10 @@ type BookingPayload = {
   discount_reason?: unknown;
   promotion_id?: unknown;
   payment_method?: unknown;
+  // Event / promotion linkage — forwarded from the /deals card flow so the
+  // reservation row gets tagged with event_id / promotion_id / applied_promo_code.
+  event_id?: unknown;
+  applied_promo_code?: unknown;
 };
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
@@ -412,6 +416,14 @@ Deno.serve(async (req: Request) => {
     // same slot serialize cleanly here. The exclusion constraint on
     // reservation_tables is the unbreakable backstop if the lock is somehow
     // bypassed (e.g. direct DB write).
+    // Event / promotion linkage (2026-05-11). When the diner came in via the
+    // /deals event/promotion card, the URL pre-fills `event_id` /
+    // `promotion_id` and we forward those to book_reservation so the
+    // reservation row is tagged + appears under the right event's attendees
+    // list on the owner dashboard.
+    const reservationEventId = asUuid(payload.event_id);
+    const reservationPromotionId = asUuid(payload.promotion_id);
+    const reservationPromoCode = asText(payload.applied_promo_code) ?? null;
     const { data: bookingRows, error: bookingError } = await supabase.rpc("book_reservation", {
       p_restaurant_id: restaurantId,
       p_shift_id: shiftId,
@@ -429,6 +441,16 @@ Deno.serve(async (req: Request) => {
       p_guest_full_name: guestName,
       p_guest_email: guestEmail,
       p_guest_phone: guestPhone,
+      p_event_id: reservationEventId,
+      p_promotion_id: reservationPromotionId,
+      p_applied_promo_code: reservationPromoCode,
+      // Web bookings are confirmed at creation. Deposit-required parties are
+      // hand-offed pre-RPC by the orchestrator and pre-form by the public
+      // page, so by the time we reach book_reservation, the booking is
+      // ready to go. Without p_status='confirmed', the RPC default is
+      // 'pending' and the diner sees an ambiguous "not yet confirmed"
+      // state on /bookings.
+      p_status: "confirmed",
     });
 
     if (bookingError) {
@@ -574,10 +596,30 @@ Deno.serve(async (req: Request) => {
     const manageLink = restaurantSlug && savedConfirmationCode
       ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(savedConfirmationCode)}`
       : null;
+    // Enrich the SMS body with event/promo context so diners see what they
+    // actually booked. Mirrors the same enrichment in _shared/booking.ts.
+    let eventLine = "";
+    let promoLine = "";
+    if (reservationEventId) {
+      const { data: ev } = await supabase
+        .from("events").select("name").eq("id", reservationEventId).maybeSingle();
+      if (ev?.name) eventLine = ` Event: ${ev.name}.`;
+    }
+    if (reservationPromotionId) {
+      const { data: pr } = await supabase
+        .from("promotions").select("title, promo_code").eq("id", reservationPromotionId).maybeSingle();
+      if (pr?.title) {
+        const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+        promoLine = ` Promo: ${pr.title}${codePart}.`;
+      }
+    } else if (reservationPromoCode) {
+      promoLine = ` Promo code: ${reservationPromoCode}.`;
+    }
     const confirmationBody =
       `Hi ${guestName}, your table at ${restaurantName} is booked for ${partySize} ` +
-      `${partySize === 1 ? "guest" : "guests"} on ${reservationDateLabel}. ` +
-      `Confirmation code: ${savedConfirmationCode}.` +
+      `${partySize === 1 ? "guest" : "guests"} on ${reservationDateLabel}.` +
+      eventLine + promoLine +
+      ` Confirmation code: ${savedConfirmationCode}.` +
       (manageLink ? ` Manage: ${manageLink}` : "");
     let confirmationChannel: "email" | "sms" | null = null;
     let confirmationStatus: "sent" | "skipped" | "failed" = "skipped";

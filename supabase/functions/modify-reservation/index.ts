@@ -41,6 +41,11 @@ type ReservationRow = {
   guest_full_name: string | null;
   guest_email: string | null;
   guest_phone: string | null;
+  // Event/promo linkage — needed so the modification SMS body can include
+  // the event name / promotion title + code that the diner originally booked.
+  event_id: string | null;
+  promotion_id: string | null;
+  applied_promo_code: string | null;
 };
 
 type GuestRow = {
@@ -142,7 +147,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")
-      .select("id, restaurant_id, guest_id, user_profile_id, reserved_at, party_size, status, special_request, internal_notes, confirmation_code, guest_full_name, guest_email, guest_phone")
+      .select("id, restaurant_id, guest_id, user_profile_id, reserved_at, party_size, status, special_request, internal_notes, confirmation_code, guest_full_name, guest_email, guest_phone, event_id, promotion_id, applied_promo_code")
       .eq("id", reservationId)
       .maybeSingle<ReservationRow>();
     if (reservationError) return json({ error: reservationError.message }, 400);
@@ -435,6 +440,34 @@ Deno.serve(async (req: Request) => {
     const codeLine = reservation.confirmation_code?.trim()
       ? ` Confirmation code: ${reservation.confirmation_code.trim()}.`
       : "";
+
+    // Surface the event / promotion the reservation is linked to in the SMS
+    // body so the diner sees the modification applied to *that* event/promo
+    // (and isn't confused by a generic "your booking was updated" line).
+    let eventLine = "";
+    let promoLine = "";
+    if (reservation.event_id) {
+      const { data: ev } = await adminClient
+        .from("events")
+        .select("name")
+        .eq("id", reservation.event_id)
+        .maybeSingle<{ name: string | null }>();
+      if (ev?.name) eventLine = ` Event: ${ev.name}.`;
+    }
+    if (reservation.promotion_id) {
+      const { data: pr } = await adminClient
+        .from("promotions")
+        .select("title, promo_code")
+        .eq("id", reservation.promotion_id)
+        .maybeSingle<{ title: string | null; promo_code: string | null }>();
+      if (pr?.title) {
+        const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+        promoLine = ` Promo: ${pr.title}${codePart}.`;
+      }
+    } else if (reservation.applied_promo_code) {
+      promoLine = ` Promo code: ${reservation.applied_promo_code}.`;
+    }
+
     const notification = guest
       ? await sendReservationNotification({
           supabase: adminClient,
@@ -448,7 +481,9 @@ Deno.serve(async (req: Request) => {
           body:
             `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
             `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
-            codeLine,
+            codeLine +
+            eventLine +
+            promoLine,
         })
       : ({ status: "skipped" as const, channel: null });
 

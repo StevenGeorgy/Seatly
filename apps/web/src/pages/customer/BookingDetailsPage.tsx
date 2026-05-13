@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  BadgePercent,
   CalendarDays,
   CheckCircle2,
   Clock,
@@ -11,6 +12,7 @@ import {
   PencilLine,
   Phone,
   Tag,
+  Ticket,
   Users,
   X,
 } from "lucide-react";
@@ -394,6 +396,35 @@ export default function BookingDetailsPage() {
                     label="Confirmation"
                     value={reservation.confirmation_code ?? "Not issued yet"}
                   />
+                  {reservation.event && (
+                    <DetailRow
+                      icon={Ticket}
+                      label="Event"
+                      value={
+                        reservation.event.price_per_person != null
+                          ? `${reservation.event.name ?? "Event"} · $${Number(reservation.event.price_per_person).toFixed(0)}/person`
+                          : reservation.event.name ?? "Event"
+                      }
+                    />
+                  )}
+                  {reservation.promotion && (
+                    <DetailRow
+                      icon={BadgePercent}
+                      label="Promotion"
+                      value={
+                        reservation.promotion.promo_code
+                          ? `${reservation.promotion.title ?? "Promotion"} (${reservation.promotion.promo_code})`
+                          : reservation.promotion.title ?? "Promotion"
+                      }
+                    />
+                  )}
+                  {!reservation.promotion && reservation.applied_promo_code && (
+                    <DetailRow
+                      icon={BadgePercent}
+                      label="Promo code"
+                      value={reservation.applied_promo_code}
+                    />
+                  )}
                   {reservation.special_request && (
                     <DetailRow
                       icon={PencilLine}

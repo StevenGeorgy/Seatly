@@ -5,6 +5,7 @@
 .env.production
 .env.staging
 .env.test
+.env.test.local
 
 # Dependencies
 node_modules/

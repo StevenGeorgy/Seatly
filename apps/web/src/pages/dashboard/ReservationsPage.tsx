@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -23,7 +24,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useReservations,
+  type ReservationEventRef,
   type ReservationFilters,
+  type ReservationPromotionRef,
   type ReservationRow,
 } from "@/hooks/useReservations";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
@@ -66,6 +69,9 @@ type ReservationBoardRow = {
   startsAt: number;
   durationMinutes: number;
   searchValues: string[];
+  event: ReservationEventRef | null;
+  promotion: ReservationPromotionRef | null;
+  appliedPromoCode: string | null;
 };
 
 type TimelineTableRow = {
@@ -236,12 +242,62 @@ function adaptReservation(
       rowData.guest_email,
       rowData.guests?.phone,
       rowData.guests?.email,
+      rowData.event?.name,
+      rowData.promotion?.title,
+      rowData.applied_promo_code,
     ].filter((value): value is string => Boolean(value)),
+    event: rowData.event ?? null,
+    promotion: rowData.promotion ?? null,
+    appliedPromoCode: rowData.applied_promo_code,
   };
 }
 
 function statusBadgeLabel(status: ReservationBoardRow["status"], t: TranslationFn): string {
   return t(reservationDisplayStatusKey(status));
+}
+
+function ReservationLinkChips({
+  event,
+  promotion,
+  appliedPromoCode,
+  className,
+}: {
+  event: ReservationEventRef | null;
+  promotion: ReservationPromotionRef | null;
+  appliedPromoCode: string | null;
+  className?: string;
+}) {
+  if (!event && !promotion && !appliedPromoCode) return null;
+  return (
+    <div className={cn("flex flex-wrap gap-1.5", className)}>
+      {event ? (
+        <Badge
+          variant="secondary"
+          className="gap-1 border-purple-500/40 bg-purple-500/15 text-purple-300"
+        >
+          <span aria-hidden="true">🎫</span>
+          <span className="max-w-[140px] truncate" title={event.name}>{event.name}</span>
+        </Badge>
+      ) : null}
+      {promotion ? (
+        <Badge
+          variant="outline"
+          className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-300"
+        >
+          <span aria-hidden="true">🏷️</span>
+          <span className="max-w-[140px] truncate" title={promotion.title}>{promotion.title}</span>
+        </Badge>
+      ) : appliedPromoCode ? (
+        <Badge
+          variant="outline"
+          className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono"
+        >
+          <span aria-hidden="true">🏷️</span>
+          PROMO · {appliedPromoCode}
+        </Badge>
+      ) : null}
+    </div>
+  );
 }
 
 function blockClasses(status: ReservationBoardRow["status"]): string {
@@ -887,6 +943,20 @@ function ReservationDetailsDialog({
               <span className="text-xs text-text-muted">{t("dashboard.reservations.status")}</span>
               <StatusBadge status={reservation.status} label={statusBadgeLabel(reservation.status, t)} />
             </div>
+            {reservation.event || reservation.promotion || reservation.appliedPromoCode ? (
+              <div className="rounded-lg border border-border bg-bg-surface px-3 py-2">
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                  Linked offers
+                </p>
+                <div className="mt-2">
+                  <ReservationLinkChips
+                    event={reservation.event}
+                    promotion={reservation.promotion}
+                    appliedPromoCode={reservation.appliedPromoCode}
+                  />
+                </div>
+              </div>
+            ) : null}
             <DetailItem label={t("dashboard.reservations.guest")} value={contact || reservation.phone} />
             <DetailItem label={t("dashboard.reservations.specialRequest")} value={reservation.notes} />
           </div>
@@ -986,8 +1056,14 @@ function FloorTimeline({
                         )}
                         style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
                       >
-                        <span className="block truncate">
-                          {booking.guest.split(",")[0]} · {booking.time}
+                        <span className="flex items-center gap-1 truncate">
+                          {booking.event ? <span aria-hidden="true">🎫</span> : null}
+                          {booking.promotion || booking.appliedPromoCode ? (
+                            <span aria-hidden="true">🏷️</span>
+                          ) : null}
+                          <span className="truncate">
+                            {booking.guest.split(",")[0]} · {booking.time}
+                          </span>
                         </span>
                         {booking.confirmationCode ? (
                           <span className="block truncate font-mono text-[9px] uppercase opacity-80">
@@ -1163,7 +1239,16 @@ function ReservationsTable({
                           ) : null}
                         </div>
                       </td>
-                      <td className="px-5 py-4 text-text-muted">{reservation.notes}</td>
+                      <td className="px-5 py-4 text-text-muted">
+                        <div className="flex flex-col gap-1.5">
+                          <ReservationLinkChips
+                            event={reservation.event}
+                            promotion={reservation.promotion}
+                            appliedPromoCode={reservation.appliedPromoCode}
+                          />
+                          <span>{reservation.notes}</span>
+                        </div>
+                      </td>
                       <td className="px-5 py-4 text-right">
                         {reservation.status === "upcoming" || reservation.status === "current" ? (
                           <div className="flex justify-end gap-2">

@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { X, Keyboard, Mic, MicOff } from "lucide-react";
+import { X, Keyboard, Mic, MicOff, ThumbsDown, ThumbsUp } from "lucide-react";
+import { toast } from "sonner";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
@@ -264,6 +266,55 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           >
             {voice.isMuted ? <MicOff className="size-5" /> : <Mic className="size-5" />}
           </button>
+
+          {/* Feedback — thumbs up/down on the latest AI response. Captures
+              the conversation turn + booking state to cenaiva_feedback for
+              triage. Thumbs-up reinforces good behavior (regression guard
+              fixture candidates). Thumbs-down flags bugs. Mobile mirror:
+              same buttons + insert pattern. */}
+          {(() => {
+            const submitFeedback = async (sentiment: "thumbs_up" | "thumbs_down") => {
+              try {
+                const client = getSupabaseBrowserClient();
+                const { error } = await client.from("cenaiva_feedback").insert({
+                  user_id: profile?.id ?? null,
+                  conversation_id: state.conversationId ?? null,
+                  ai_response: state.lastSpokenText ?? null,
+                  booking_state: state.booking ?? null,
+                  sentiment,
+                });
+                if (error) throw error;
+                toast.success(
+                  sentiment === "thumbs_up"
+                    ? "Glad that worked!"
+                    : "Thanks for the feedback — we'll review it.",
+                );
+              } catch (err) {
+                console.error("[Cenaiva feedback] insert failed:", err);
+                toast.error("Couldn't send feedback. Try again later.");
+              }
+            };
+            return (
+              <>
+                <button
+                  onClick={() => submitFeedback("thumbs_up")}
+                  className="absolute right-36 top-4 z-50 flex size-12 items-center justify-center rounded-full border border-white/20 bg-white/5 text-white/60 shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:bg-emerald-500/15 hover:text-emerald-400"
+                  aria-label="Mark response as good"
+                  title="That worked well"
+                >
+                  <ThumbsUp className="size-5" />
+                </button>
+                <button
+                  onClick={() => submitFeedback("thumbs_down")}
+                  className="absolute right-20 top-4 z-50 flex size-12 items-center justify-center rounded-full border border-white/20 bg-white/5 text-white/60 shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:bg-red-500/15 hover:text-red-400"
+                  aria-label="Report bad response"
+                  title="Something wrong with that reply?"
+                >
+                  <ThumbsDown className="size-5" />
+                </button>
+              </>
+            );
+          })()}
 
           {/* Map layer — hidden while the user is driving the manual menu
               flow so the menu can fill the screen. */}

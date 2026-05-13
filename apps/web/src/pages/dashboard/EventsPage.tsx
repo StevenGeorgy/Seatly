@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion } from "framer-motion";
-import { CalendarDays, Eye, FileText, ImageIcon, LayoutGrid, Pencil, Plus, Send, Sparkles, Ticket, Trash2, Upload, X } from "lucide-react";
+import { CalendarDays, Eye, FileText, ImageIcon, LayoutGrid, Pencil, Plus, Send, Sparkles, Ticket, Trash2, Upload, Users, X } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { EventPromotionDetailDialog } from "@/components/customer/EventPromotionDetailCard";
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { EventAttendeesDialog } from "@/components/dashboard/EventAttendeesDialog";
+import type { EventTimelineRow } from "@/hooks/useEventAttendees";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -49,6 +51,7 @@ const eventSchema = z.object({
   start_time: z.string().optional(),
   end_time: z.string().optional(),
   is_private: z.boolean(),
+  fixed_arrival_time: z.boolean(),
   capacity_mode: z.enum(["limited", "unlimited"]),
   capacity: z.string().optional(),
   price_per_person: z.string().optional().refine((value) => !value || Number(value) >= 0, "Price must be zero or greater."),
@@ -74,6 +77,7 @@ const DEFAULT_EVENT_FORM: EventFormValues = {
   start_time: "",
   end_time: "",
   is_private: false,
+  fixed_arrival_time: false,
   capacity_mode: "limited",
   capacity: "",
   price_per_person: "",
@@ -90,6 +94,7 @@ function eventToFormValues(event: EventRow): EventFormValues {
     start_time: event.start_time ?? "",
     end_time: event.end_time ?? "",
     is_private: event.is_private ?? false,
+    fixed_arrival_time: event.fixed_arrival_time ?? false,
     capacity_mode: event.capacity == null ? "unlimited" : "limited",
     capacity: event.capacity?.toString() ?? "",
     price_per_person: event.price_per_person?.toString() ?? "",
@@ -316,6 +321,7 @@ function valuesToPayload(values: EventFormValues, isActive: boolean, media?: Eve
     price_per_person: values.price_per_person ? Number(values.price_per_person) : null,
     is_active: isActive,
     is_private: values.is_private,
+    fixed_arrival_time: values.fixed_arrival_time,
   };
 }
 
@@ -353,6 +359,7 @@ function valuesToPreview(
     min_age: null,
     dress_code: null,
     is_private: values.is_private,
+    fixed_arrival_time: values.fixed_arrival_time,
     theme: payload.theme ?? null,
     created_at: null,
   };
@@ -596,6 +603,7 @@ function EventFormDialog({
   const startTimeValue = watch("start_time") ?? "";
   const endTimeValue = watch("end_time") ?? "";
   const isPrivateValue = watch("is_private");
+  const fixedArrivalTimeValue = watch("fixed_arrival_time");
   const titleValue = watch("name") ?? "";
   const descriptionValue = watch("description") ?? "";
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -839,6 +847,19 @@ function EventFormDialog({
               />
             </div>
             </div>
+            <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-border bg-bg-surface/70 p-3">
+              <div>
+                <Label htmlFor="event-fixed-arrival">Lock arrival to start time</Label>
+                <p className="mt-1 text-xs text-text-muted">
+                  When on, diners can't pick a different arrival time — they must arrive at the event's start time. Useful for tasting menus, set-time experiences.
+                </p>
+              </div>
+              <Switch
+                id="event-fixed-arrival"
+                checked={fixedArrivalTimeValue}
+                onCheckedChange={(checked) => setValue("fixed_arrival_time", checked, { shouldValidate: true })}
+              />
+            </div>
           </section>
 
           <section className="rounded-2xl border border-border bg-bg-elevated/35 p-4">
@@ -905,6 +926,7 @@ function EventCardView({
   onEdit,
   onDelete,
   onPost,
+  onViewAttendees,
   saving,
 }: {
   event: EventRow;
@@ -913,6 +935,7 @@ function EventCardView({
   onEdit: (event: EventRow) => void;
   onDelete: (event: EventRow) => void;
   onPost: (event: EventRow) => void;
+  onViewAttendees: (event: EventRow) => void;
   saving: boolean;
 }) {
   const phase = eventPhase(event);
@@ -981,6 +1004,15 @@ function EventCardView({
           <Button type="button" variant="outline" className="w-full gap-2" onClick={() => onPreview(display)}>
             <Eye className="size-4" />
             Preview diner card
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full gap-2 border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/15"
+            onClick={() => onViewAttendees(event)}
+          >
+            <Users className="size-4" />
+            View attendees ({event.tickets_sold})
           </Button>
           <div className="grid grid-cols-2 gap-2">
             <Button type="button" variant="outline" className="gap-2" onClick={() => onEdit(event)}>
@@ -1093,6 +1125,7 @@ export default function EventsPage() {
   const [deleteTarget, setDeleteTarget] = useState<EventRow | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [previewItem, setPreviewItem] = useState<EventPromotionDisplay | null>(null);
+  const [attendeesTarget, setAttendeesTarget] = useState<EventTimelineRow | null>(null);
 
   const restaurantFallback = useMemo(
     () => buildRestaurantFallback(selectedRestaurant),
@@ -1261,6 +1294,22 @@ export default function EventsPage() {
               onEdit={openEdit}
               onDelete={setDeleteTarget}
               onPost={(target) => void handlePost(target)}
+              onViewAttendees={(target) =>
+                setAttendeesTarget({
+                  id: target.id,
+                  name: target.name,
+                  description: target.description,
+                  date: target.date,
+                  start_time: target.start_time,
+                  end_time: target.end_time,
+                  capacity: target.capacity,
+                  tickets_sold: target.tickets_sold,
+                  price_per_person: target.price_per_person,
+                  is_active: target.is_active,
+                  theme: target.theme,
+                  cover_image_url: target.cover_image_url,
+                })
+              }
               saving={saving}
             />
           ))}
@@ -1300,6 +1349,28 @@ export default function EventsPage() {
           if (!open) setPreviewItem(null);
         }}
         preview
+      />
+      <EventAttendeesDialog
+        event={attendeesTarget}
+        open={attendeesTarget !== null}
+        timezone={selectedRestaurant?.timezone ?? null}
+        onOpenChange={(open) => {
+          if (!open) setAttendeesTarget(null);
+        }}
+        onEdit={(target) => {
+          const row = events.find((e) => e.id === target.id);
+          if (row) {
+            setAttendeesTarget(null);
+            openEdit(row);
+          }
+        }}
+        onCancel={(target) => {
+          const row = events.find((e) => e.id === target.id);
+          if (row) {
+            setAttendeesTarget(null);
+            setDeleteTarget(row);
+          }
+        }}
       />
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => {
         if (!open) setDeleteTarget(null);

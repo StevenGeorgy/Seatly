@@ -25,6 +25,8 @@ export type PromotionRow = {
   min_order_amount: number | null;
   starts_at: string;
   ends_at: string | null;
+  start_time_of_day: string | null;
+  end_time_of_day: string | null;
   is_active: boolean;
   promo_code: string | null;
   max_uses: number | null;

@@ -139,6 +139,12 @@ export function useCenaivaVoice() {
   const speak = useCallback(
     async (text: string) => {
       if (!text) return;
+      if (
+        import.meta.env.DEV &&
+        (window as unknown as { __cenaivaSilenceTTS?: boolean }).__cenaivaSilenceTTS
+      ) {
+        return;
+      }
       const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
       const normalized = normalize(text);
       // Dedup: drop a duplicate of the in-flight text outright.

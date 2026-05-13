@@ -20,13 +20,13 @@ const SPECIFIC_PLACE_LOOKUP_PATTERN =
 const SPECIFIC_PLACE_FACT_PATTERN =
   /\bwhere(?:'?s|\s+(?:is|are|can\s+(?:i|we)\s+find))\b|\bwhat\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|time|price|menu|drinks?|about|kind|type|sort|reviews?|rating)\b|\bhow\s+(?:much|expensive|cheap|pricey|busy|popular|far|late|early|long|good|fancy|casual)\b|\bdoes\s+\w+(?:\s+\w+){0,3}\s+(?:have|serve|allow|take|do|offer)\b|\btell\s+me\s+about\b|\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like|known for|famous for|all about)\b|\b(?:reviews?|ratings?)\s+(?:for|of|on|about|at)\s+\w+/i;
 const GLOBAL_DISCOVERY_QUERY_PATTERN =
-  /\b(?:closest|nearest|near me|nearby|close by|around me|around here|walking distance)\b|\b(?:best|top|popular|favorite|favourite)\s+(?:cuisines?|foods?|restaurants?|spots?|places?|dishes?)\b|\b(?:promotions?|deals?|discounts?|specials?|offers?|coupons?|happy hour)\b|\b(?:events?|happenings?|live music|trivia)\b/i;
+  /\b(?:closest|nearest|near me|nearby|close by|around me|around here|walking distance)\b|\b(?:best|top|popular|favorite|favourite)\s+(?:cuisines?|foods?|restaurants?|spots?|places?|dishes?|reviewed|rated)\b|\b(?:highest|top)\s+rated\b|\b(?:promotions?|promos?|deals?|discounts?|specials?|offers?|coupons?|happy hour|promo\s+code)\b|\b(?:events?|happenings?|live music|trivia)\b|\b(?:high[\s-]?end|fancy|fine\s+dining|upscale|cheap\s+eats?|cheap\s+restaurants?)\b/i;
 
 const RESTAURANT_POLICY_PATTERN =
   /\b(bring (?:a )?(?:dog|pet)|allow kids|kids allowed|parking|vegan|wheelchair|accessible|accessibility|outdoor seating|sit at the bar|birthday cake|split bills?|dress code|halal|gluten[- ]free|booth|allerg(?:y|ies)|high chairs?|loud inside|bring balloons?|no[- ]shows?|deposit|change the booking later|request outdoor|request a booth)\b/i;
 
 const BOOKING_ADJACENT_PATTERN =
-  /\b(somewhere|something nice|usual|you know what i mean|make it good|whatever works|surprise me|you choose|for us|few people|vibes?|main character|lighting|outfit|bread|fries|mocktails?|cocktails?|healthy|spicy|dessert|burgers?|pasta|seafood|vegetarian|steak|family|parents|proposal|anniversary|birthday|date|work dinner|team|party|private|quiet|calm|romantic|cheap|budget|budget friendly|fancy|downtown|takeout|tonight|tomorrow|friday|saturday|sunday|next weekend|after work|before the movie|sunset|in an hour|late|early|earlier|later|indoors?|closest|near me)\b/i;
+  /\b(somewhere|something nice|usual|you know what i mean|make it good|whatever works|surprise me|you choose|for us|few people|vibes?|main character|lighting|outfit|bread|fries|mocktails?|cocktails?|healthy|spicy|dessert|burgers?|pasta|seafood|vegetarian|steak|family|parents|proposal|anniversary|birthday|date|work dinner|team|party|private|quiet|calm|romantic|cheap|budget|budget friendly|fancy|downtown|takeout|tonight|tomorrow|friday|saturday|sunday|next weekend|after work|before the movie|sunset|in an hour|late|early|earlier|later|indoors?|closest|near me|girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|fiance|fiancee|sister|brother|kids|child|children|cousin|coworker|colleague|friend|friends|buddy|buddies|mate|mates|son|daughter|mom|mum|dad|guest|guests)\b/i;
 
 const BOOKING_PROCESS_DETAIL_PATTERN =
   /\b(reservations?|bookings?|booked|confirm|confirmed|confirmation|details|cancel|change|modify|edit|move|switch|update|reschedule|push|bump|shift|adjust|make it|drop|scrap|kill|table|guests?|people|party size|slot|availability|available|openings?|upcoming|past|cancelled|menu|pre[- ]?order|prepay|order|checkout|pay|payment|card|deposit|refund|fee|tax|tip|directions?|address|phone|contact|hours?|parking|dress code|outdoor|indoor|booth|bar seating|birthday cake|high chair|no show|no-show|show up|are we good|show them this|need id|arrive early|hold the table|confirmation number|booking summary|where is it|remind me)\b/i;
@@ -73,6 +73,14 @@ const SESSION_PIVOT_PATTERN =
 const SESSION_END_PATTERN =
   /^(?:no|nope|nah|i'?m good|i'?m done|we'?re done|that'?s it|nothing else|all done|all good|that'?s all|no\s+thanks|no thank you|nothing|nope thanks)\.?$/i;
 
+// "my friend recommended X", "I heard about X", "want to take my girlfriend
+// out", "my boy said X is great" — booking-intent signals that previously
+// fell through to small-prompt. User-reported bug 2026-05-12: "my boy
+// recommended me to go to harbour 60 and I want to take my girlfriend out"
+// was being treated as a small-prompt and answered with a goodbye line.
+const RECOMMENDATION_OR_COMPANION_PATTERN =
+  /\b(?:(?:my|a)\s+(?:friend|buddy|boy|girl|coworker|colleague|sister|brother|mom|mum|dad|wife|husband|partner|date|sis|bro|son|daughter|cousin|kid|kids|family)\s+(?:recommended|said|told\s+me\s+about|mentioned|raved\s+about|swears\s+by|loves)|recommended\s+(?:me\s+)?(?:to\s+go\s+to|to\s+try|me\s+to\s+try|me\s+to\s+go)|i\s+(?:heard|read)\s+about|i'?ve\s+heard\s+about|been\s+meaning\s+to\s+(?:try|go\s+to|check\s+out))\b|\b(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|gf|bf|wife|husband|partner|spouse|date|fiance[e]?|fiancee|friend|friends|buddy|buddies|mate|mates|family|parents|kids?|child|children|mom|mum|dad|son|daughter|sister|brother|cousin|coworker|colleague|team)\b/i;
+
 export function isCenaivaProcessPrompt(transcript: string): boolean {
   const normalized = normalize(transcript);
   if (!normalized) return false;
@@ -104,6 +112,15 @@ export function isCenaivaProcessPrompt(transcript: string): boolean {
     // "show me the map", "back to map", "show me deals", "different restaurant"
     // — post-action session pivots routed to the orchestrator's pivot handlers.
     SESSION_PIVOT_PATTERN.test(normalized) ||
+    // "my friend recommended X", "want to take my girlfriend out", etc.
+    RECOMMENDATION_OR_COMPANION_PATTERN.test(normalized) ||
+    // Indirect booking phrasings — "feel like X", "thinking of going to X",
+    // "what about X", "how about X", "can you get me into X", "any chance",
+    // "dinner for N at X", "set me up at X". Without these, the small-prompt
+    // LLM intercepts and treats restaurant names as random words.
+    /\b(?:feel\s+like|thinking\s+(?:of|about)\s+(?:going|trying)|what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)|any\s+chance|dinner\s+for|lunch\s+for|brunch\s+for|drinks\s+for|set\s+me\s+up|hit\s+up|snag|grab\s+us)\b/i.test(
+      normalized,
+    ) ||
     /\b(can you handle it|not too late|for a few people|for us|i don'?t know yet|changed my mind|start over|cancel that|different restaurant|switch to|closer|earlier|later|make it cheaper|make it fancier)\b/i.test(
       normalized,
     )

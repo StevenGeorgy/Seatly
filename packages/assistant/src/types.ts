@@ -58,6 +58,29 @@ export interface BookingState {
   order_id: string | null;
   payment_status: "idle" | "pending" | "paid" | "failed";
   has_saved_card: boolean;
+  // Event / promo auto-attach context — round-trips client ↔ orchestrator
+  // so multi-turn confirmations after a "any events at X" search OR a
+  // direct "book me for <event-name>" handler can resolve the right
+  // event_id / promotion_id when the user finally says "yes confirm".
+  offered_events?: Array<{
+    id: string;
+    name?: string | null;
+    date?: string | null;
+    start_time?: string | null;
+    end_time?: string | null;
+  }> | null;
+  offered_promotion?: {
+    id: string;
+    promo_code?: string | null;
+    title?: string | null;
+  } | null;
+  // Multi-turn modify scratch — see BookingDeltaSchema (schema.ts) for the
+  // full explanation. Stashed on turn 1 of a modify request when only some
+  // fields are present; turn 2 picks them up via isContinuingModify so the
+  // standard booking-collection path doesn't intercept the follow-up.
+  modify_date?: string | null;
+  modify_time?: string | null;
+  modify_party?: number | null;
 }
 
 export interface MapState {
@@ -98,6 +121,24 @@ export interface BookingDelta {
   order_id?: string | null;
   payment_status?: BookingState["payment_status"];
   has_saved_card?: boolean;
+  // See BookingState for context — mirror these in the delta type so
+  // event/promo attach info round-trips through the request/response cycle.
+  offered_events?: Array<{
+    id: string;
+    name?: string | null;
+    date?: string | null;
+    start_time?: string | null;
+    end_time?: string | null;
+  }> | null;
+  offered_promotion?: {
+    id: string;
+    promo_code?: string | null;
+    title?: string | null;
+  } | null;
+  // Multi-turn modify scratch — see BookingState for context.
+  modify_date?: string | null;
+  modify_time?: string | null;
+  modify_party?: number | null;
 }
 
 export interface MapDelta {

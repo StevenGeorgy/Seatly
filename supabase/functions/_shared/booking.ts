@@ -39,6 +39,13 @@ export interface CompleteBookingParams {
   special_request?: string | null;
   occasion?: string | null;
   seating_preference?: string | null;
+  // Event / promotion linkage — when the user books FOR a specific event
+  // or applies a promo code, these get persisted on the reservation row.
+  // The book_reservation RPC validates event capacity, event time window,
+  // and rejects normal bookings during a private-event buyout.
+  event_id?: string | null;
+  promotion_id?: string | null;
+  applied_promo_code?: string | null;
   // Order items (optional for pure reservations)
   items?: BookingItem[];
   notes?: string | null;
@@ -101,6 +108,9 @@ export async function completeBooking(
     special_request,
     occasion,
     seating_preference,
+    event_id,
+    promotion_id,
+    applied_promo_code,
     notes,
   } = params;
 
@@ -244,6 +254,13 @@ export async function completeBooking(
       // is a no-deposit booking. Without this, book_reservation defaults
       // to 'pending' and the UI shows the booking as not-yet-confirmed.
       p_status: "confirmed",
+      // Event / promotion linkage (2026-05-11). When the user is booking
+      // for a specific event ("the wine pairing on Saturday") or applies
+      // a promo code, the RPC persists these on the reservation row and
+      // also runs event-capacity + private-event-buyout safety checks.
+      p_event_id: event_id ?? null,
+      p_promotion_id: promotion_id ?? null,
+      p_applied_promo_code: applied_promo_code ?? null,
     },
   );
   if (resvErr) {
@@ -398,10 +415,38 @@ export async function completeBooking(
       ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(persistedConfirmationCode)}`
       : null;
     const guestNameForBody = guestFields.full_name || "there";
+    // Look up event/promotion details to enrich the confirmation message
+    let eventLine = "";
+    let promoLine = "";
+    if (event_id) {
+      const { data: ev } = await supabaseAdmin
+        .from("events")
+        .select("name, start_time")
+        .eq("id", event_id)
+        .maybeSingle();
+      if (ev?.name) {
+        eventLine = ` Event: ${ev.name}.`;
+      }
+    }
+    if (promotion_id) {
+      const { data: pr } = await supabaseAdmin
+        .from("promotions")
+        .select("title, promo_code")
+        .eq("id", promotion_id)
+        .maybeSingle();
+      if (pr?.title) {
+        const codePart = pr.promo_code ? ` (code ${pr.promo_code})` : "";
+        promoLine = ` Promo: ${pr.title}${codePart}.`;
+      }
+    } else if (applied_promo_code) {
+      promoLine = ` Promo code: ${applied_promo_code}.`;
+    }
     const confirmationBody =
       `Hi ${guestNameForBody}, your table at ${restaurantName} is booked for ${party_size} ` +
-      `${party_size === 1 ? "guest" : "guests"} on ${reservationDateLabel}. ` +
-      `Confirmation code: ${persistedConfirmationCode}.` +
+      `${party_size === 1 ? "guest" : "guests"} on ${reservationDateLabel}.` +
+      eventLine +
+      promoLine +
+      ` Confirmation code: ${persistedConfirmationCode}.` +
       (manageLink ? ` Manage: ${manageLink}` : "");
     await sendReservationNotification({
       supabase: supabaseAdmin,

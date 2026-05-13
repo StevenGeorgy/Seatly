@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useMemo } from "react";
-import { Tag, Plus, Pencil, Trash2, X, CheckCircle2, CalendarDays, Eye, Sparkles, Search, Upload, ImageIcon, FileText } from "lucide-react";
+import { Tag, Plus, Pencil, Trash2, Users, X, CheckCircle2, CalendarDays, Eye, Sparkles, Search, Upload, ImageIcon, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { format, isValid, parse, startOfToday } from "date-fns";
 
 import { EventPromotionDetailDialog } from "@/components/customer/EventPromotionDetailCard";
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { PromotionRedemptionsDialog } from "@/components/dashboard/PromotionRedemptionsDialog";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -57,6 +58,8 @@ type FormState = {
   min_order_amount: string;
   starts_at: string;
   ends_at: string;
+  start_time_of_day: string;
+  end_time_of_day: string;
   is_active: boolean;
   promo_code: string;
   max_uses: string;
@@ -104,6 +107,8 @@ const DEFAULT_FORM: FormState = {
   min_order_amount: "",
   starts_at: new Date().toISOString().slice(0, 10),
   ends_at: "",
+  start_time_of_day: "",
+  end_time_of_day: "",
   is_active: true,
   promo_code: "",
   max_uses: "",
@@ -177,6 +182,8 @@ function formToPromotionPreview(
     min_order_amount: form.min_order_amount ? Number(form.min_order_amount) : null,
     starts_at: new Date(form.starts_at || new Date()).toISOString(),
     ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
+    start_time_of_day: form.start_time_of_day.trim() || null,
+    end_time_of_day: form.end_time_of_day.trim() || null,
     is_active: form.is_active,
     promo_code: form.promo_code.trim() || null,
     max_uses: form.max_uses ? Number(form.max_uses) : null,
@@ -377,6 +384,7 @@ function PromotionCardView({
   onDelete,
   onSchedule,
   onPost,
+  onViewRedemptions,
   saving,
 }: {
   promotion: PromotionRow;
@@ -385,6 +393,7 @@ function PromotionCardView({
   onDelete: (promotion: PromotionRow) => void;
   onSchedule: (promotion: PromotionRow) => void;
   onPost: (promotion: PromotionRow) => void;
+  onViewRedemptions: (promotion: PromotionRow) => void;
   saving: boolean;
 }) {
   const status = promoStatus(promotion);
@@ -456,10 +465,20 @@ function PromotionCardView({
 
       <div className="relative mt-7">
         <div className="flex items-end justify-between gap-4">
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Redemptions</p>
-            <p className="mt-1 font-serif text-xl text-white">{usesLabel}</p>
-          </div>
+          <button
+            type="button"
+            onClick={() => onViewRedemptions(promotion)}
+            className="group/redeem -m-1 flex flex-col items-start rounded-md p-1 text-left transition-colors hover:bg-white/5 focus-visible:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+            title="Click to see reservations that used this promotion"
+          >
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted group-hover/redeem:text-gold">
+              Redemptions
+            </p>
+            <p className="mt-1 inline-flex items-center gap-2 font-serif text-xl text-white group-hover/redeem:text-gold">
+              {usesLabel}
+              <Users className="size-4 text-text-muted opacity-0 transition-opacity group-hover/redeem:opacity-100" />
+            </p>
+          </button>
           <div className="text-right">
             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Ends</p>
             <p className="mt-1 font-serif text-xl text-white">{endsLabel}</p>
@@ -513,6 +532,15 @@ function PromotionCardView({
           <Button type="button" variant="outline" className="w-full gap-2" onClick={() => onPreview(promotion)}>
             <Eye className="size-4" />
             Preview diner card
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full gap-2 border-amber-500/30 bg-amber-500/5 text-amber-200 hover:bg-amber-500/10"
+            onClick={() => onViewRedemptions(promotion)}
+          >
+            <Users className="size-4" />
+            View bookings ({usesLabel})
           </Button>
           <div className="grid grid-cols-2 gap-2">
             <Button type="button" variant="outline" className="gap-2" onClick={() => onEdit(promotion)}>
@@ -1220,6 +1248,35 @@ function PromoFormDrawer({
               </div>
 
               <section className="grid gap-3 rounded-2xl border border-border bg-bg-elevated/35 p-3">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Daily time window</p>
+                  <p className="mt-1 text-xs text-text-muted">
+                    Optional — leave blank to allow any time during the restaurant's service hours. Example: 12:00 PM to 5:00 PM.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="promo-start-tod">Valid from time of day</Label>
+                    <Input
+                      id="promo-start-tod"
+                      type="time"
+                      value={form.start_time_of_day}
+                      onChange={(e) => set("start_time_of_day", e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="promo-end-tod">Valid until time of day</Label>
+                    <Input
+                      id="promo-end-tod"
+                      type="time"
+                      value={form.end_time_of_day}
+                      onChange={(e) => set("end_time_of_day", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </section>
+
+              <section className="grid gap-3 rounded-2xl border border-border bg-bg-elevated/35 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Recurring</p>
@@ -1430,6 +1487,7 @@ export default function PromotionsPage() {
   const [deleteTarget, setDeleteTarget] = useState<PromotionRow | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [previewItem, setPreviewItem] = useState<EventPromotionDisplay | null>(null);
+  const [redemptionTarget, setRedemptionTarget] = useState<PromotionRow | null>(null);
 
   const restaurantFallback = useMemo(
     () => buildRestaurantFallback(selectedRestaurant),
@@ -1447,6 +1505,8 @@ export default function PromotionsPage() {
         min_order_amount: editTarget.min_order_amount?.toString() ?? "",
         starts_at: editTarget.starts_at.slice(0, 10),
         ends_at: editTarget.ends_at?.slice(0, 10) ?? "",
+        start_time_of_day: editTarget.start_time_of_day?.slice(0, 5) ?? "",
+        end_time_of_day: editTarget.end_time_of_day?.slice(0, 5) ?? "",
         is_active: editTarget.is_active,
         promo_code: editTarget.promo_code ?? "",
         max_uses: editTarget.max_uses?.toString() ?? "",
@@ -1545,6 +1605,8 @@ export default function PromotionsPage() {
       min_order_amount: form.min_order_amount ? Number(form.min_order_amount) : null,
       starts_at: startsDate.toISOString(),
       ends_at: endsDate ? endsDate.toISOString() : null,
+      start_time_of_day: form.start_time_of_day.trim() || null,
+      end_time_of_day: form.end_time_of_day.trim() || null,
       is_active: action !== "draft",
       promo_code: form.promo_code.trim() || null,
       max_uses: form.max_uses ? Number(form.max_uses) : null,
@@ -1717,6 +1779,7 @@ export default function PromotionsPage() {
               onDelete={setDeleteTarget}
               onSchedule={handleSchedulePromotion}
               onPost={handlePostPromotion}
+              onViewRedemptions={setRedemptionTarget}
               saving={saving}
             />
           ))}
@@ -1751,6 +1814,14 @@ export default function PromotionsPage() {
           if (!open) setPreviewItem(null);
         }}
         preview
+      />
+      <PromotionRedemptionsDialog
+        promotion={redemptionTarget}
+        open={redemptionTarget !== null}
+        timezone={selectedRestaurant?.timezone ?? null}
+        onOpenChange={(open) => {
+          if (!open) setRedemptionTarget(null);
+        }}
       />
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => {
         if (!open) setDeleteTarget(null);

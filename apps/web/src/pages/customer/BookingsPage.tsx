@@ -69,6 +69,13 @@ type BookingCard = {
   phone?: string;
   logoUrl?: string | null;
   coverPhotoUrl?: string | null;
+  // Event / promotion linkage (2026-05-11). When the booking was made for
+  // a specific event or used a promo code, surface those on the card so the
+  // customer can see what they actually signed up for.
+  eventName?: string | null;
+  eventPrice?: number | null;
+  promotionTitle?: string | null;
+  promotionCode?: string | null;
 };
 
 function adapt(r: MyReservationRow): BookingCard {
@@ -91,6 +98,10 @@ function adapt(r: MyReservationRow): BookingCard {
     logoUrl: r.restaurant?.logo_url ?? null,
     coverPhotoUrl: r.restaurant?.cover_photo_url ?? null,
     status,
+    eventName: r.event?.name ?? null,
+    eventPrice: r.event?.price_per_person ? Number(r.event.price_per_person) : null,
+    promotionTitle: r.promotion?.title ?? null,
+    promotionCode: r.promotion?.promo_code ?? r.applied_promo_code ?? null,
   };
 }
 
@@ -198,6 +209,26 @@ function BookingCardView({
             </>
           )}
         </div>
+        {(b.eventName || b.promotionTitle || b.promotionCode) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {b.eventName && (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-purple-500/40 bg-purple-500/10 px-2 py-1 text-[11px] font-medium text-purple-200">
+                🎫 {b.eventName}
+                {b.eventPrice != null && (
+                  <span className="text-purple-300/80">· ${b.eventPrice.toFixed(0)}/person</span>
+                )}
+              </span>
+            )}
+            {(b.promotionTitle || b.promotionCode) && (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200">
+                🏷️ {b.promotionTitle ?? b.promotionCode}
+                {b.promotionTitle && b.promotionCode && (
+                  <span className="text-amber-300/80">· {b.promotionCode}</span>
+                )}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-2 border-t border-border/60">
         {variant === "past" ? (

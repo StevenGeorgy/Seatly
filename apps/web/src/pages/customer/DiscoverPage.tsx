@@ -823,8 +823,8 @@ function GoogleDiscoverMap({
         <>
           <div ref={mapNodeRef} className="size-full" />
           <div className="absolute right-4 top-4 overflow-hidden rounded-xl border border-gold/25 bg-bg-surface/90 shadow-2xl shadow-black/30 backdrop-blur">
-            <button
-              type="button"
+    <button
+      type="button"
               onClick={() => {
                 const map = mapRef.current;
                 if (!map) return;
@@ -932,7 +932,7 @@ function MapRestaurantPopup({
             aria-label="Close"
           >
             <X className="size-5" />
-          </button>
+    </button>
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-3 p-4 sm:p-5">
@@ -1282,7 +1282,7 @@ export default function DiscoverPage() {
       const timeParam = nextDisplayTime
         ? formatCompactTimeLabel(nextDisplayTime)
         : formatCompactTimeLabel(nextSlot);
-      navigate(
+    navigate(
         `/${r.slug ?? r.id}?slot=${encodeURIComponent(nextSlot)}&time=${encodeURIComponent(timeParam)}&people=${partyCount}&date=${encodeURIComponent(slotDate)}${shiftQuery}${backQuery}`,
         state ? { state } : undefined,
       );
@@ -1485,13 +1485,13 @@ export default function DiscoverPage() {
 
       <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         <div className="text-center">
-          <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
-          <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
-            Good evening, <span className="capitalize">{greetingName}</span>.
-          </h1>
-          <p className="mt-3 text-base text-text-secondary">
-            {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
-          </p>
+        <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
+        <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+          Good evening, <span className="capitalize">{greetingName}</span>.
+        </h1>
+        <p className="mt-3 text-base text-text-secondary">
+          {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
+        </p>
         </div>
 
         {/* Search bar + view toggle */}
@@ -1592,7 +1592,7 @@ export default function DiscoverPage() {
                 <div className="mt-6 flex flex-wrap gap-3 [&>*]:min-w-[12rem] [&>*]:flex-1">
                   {/* Date picker */}
                   <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
-                    <PopoverTrigger asChild>
+                                <PopoverTrigger asChild>
                       <button type="button" className="text-left">
                         <FilterPickerButton
                           icon={CalendarDays}
@@ -1605,14 +1605,14 @@ export default function DiscoverPage() {
                           })()}
                           active={pendingDateId !== "today"}
                         />
-                      </button>
-                    </PopoverTrigger>
+                                  </button>
+                                </PopoverTrigger>
                     <PopoverContent align="start" className="w-auto p-3">
-                      <Calendar
-                        mode="single"
+                                  <Calendar
+                                    mode="single"
                         selected={pendingCustomDate ?? new Date()}
-                        onSelect={(d) => {
-                          if (d) {
+                                    onSelect={(d) => {
+                                      if (d) {
                             setPendingCustomDate(d);
                             setPendingDateId("custom");
                             setDatePickerOpen(false);
@@ -1628,11 +1628,11 @@ export default function DiscoverPage() {
                           month_caption: "flex h-(--cell-size) w-full items-center justify-center px-(--cell-size) text-base font-semibold text-white",
                           weekday: "flex-1 text-text-muted font-mono text-xs uppercase tracking-wider",
                           day: "relative size-(--cell-size) p-0 text-center text-sm",
-                        }}
-                        initialFocus
-                      />
-                    </PopoverContent>
-                  </Popover>
+                                    }}
+                                    initialFocus
+                                  />
+                                </PopoverContent>
+                              </Popover>
 
                   {/* Time picker */}
                   <Popover open={timePickerOpen} onOpenChange={setTimePickerOpen}>
@@ -1644,7 +1644,7 @@ export default function DiscoverPage() {
                           value={pendingTime}
                           active={pendingTime !== getNearestUpcomingHalfHour()}
                         />
-                      </button>
+                            </button>
                     </PopoverTrigger>
                     <PopoverContent align="start" className="w-44 p-2">
                       <ScrollWheelPicker
@@ -1660,7 +1660,7 @@ export default function DiscoverPage() {
                         >
                           Done
                         </Button>
-                      </div>
+                  </div>
                     </PopoverContent>
                   </Popover>
 
@@ -1717,7 +1717,7 @@ export default function DiscoverPage() {
                           }
                           active={!!userLocation && pendingRadius !== "anywhere"}
                         />
-                      </button>
+                        </button>
                     </PopoverTrigger>
                     <PopoverContent align="start" className="w-56 p-3">
                       {userLocation ? (
@@ -1736,13 +1736,13 @@ export default function DiscoverPage() {
                             >
                               Done
                             </Button>
-                          </div>
+                    </div>
                         </>
                       ) : (
                         <div className="space-y-3 text-center">
                           <div className="mx-auto flex size-9 items-center justify-center rounded-full bg-gold/15">
                             <LocateFixed className="size-4 text-gold" />
-                          </div>
+                  </div>
                           <p className="text-sm font-medium text-white">
                             {locationStatus === "denied"
                               ? "Location is blocked"
@@ -1792,7 +1792,7 @@ export default function DiscoverPage() {
                       )}
                     </PopoverContent>
                   </Popover>
-                </div>
+                    </div>
 
                 <div className="mt-6 grid gap-8 lg:grid-cols-2">
                   <div>
@@ -2050,8 +2050,8 @@ export default function DiscoverPage() {
                   const previewId = selectedId ?? hoveredId;
                   if (!previewId) return null;
                   const r = filtered.find((x) => x.id === previewId);
-                  if (!r) return null;
-                  return (
+                    if (!r) return null;
+                    return (
                     <MapRestaurantPopup
                       restaurant={r}
                       favorite={favorites.has(r.id)}
@@ -2065,8 +2065,8 @@ export default function DiscoverPage() {
                       onToggleSave={() => toggleSavedRestaurant(r.id)}
                       onOpenPreview={() => openRestaurantPreview(r)}
                     />
-                  );
-                })()}
+                    );
+                  })()}
               </div>
             </div>
           </div>

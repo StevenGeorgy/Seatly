@@ -7,8 +7,14 @@ import type {
 
 export type CenaivaRecommendationMode = "single" | "list";
 
+// BOOKING_WORDS short-circuits getCenaivaRecommendationMode → null, which
+// prevents normalizeSingleRestaurantRecommendationResponse from stripping
+// `booking` (including pending_action) off the orchestrator response.
+// Includes cancel/modify verbs because "kill that one" / "scrap that one"
+// match EXPLICIT_SINGLE_WORDS via "one" and would otherwise be routed as
+// single-recommendation, wiping the cancel pending_action on the client.
 const BOOKING_WORDS =
-  /\b(book|reserve|reservation|table|slot|availability|available|confirm|pre-?order|preorder|order|checkout|pay|payment)\b/i;
+  /\b(book|reserve|reservation|table|slot|availability|available|confirm|pre-?order|preorder|order|checkout|pay|payment|cancel|modify|change|switch|reschedule|update|adjust|edit|move|push|bump|drop|scrap|kill|nuke|abort|nix|remove|delete|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tonight|tomorrow|today|yesterday)\b/i;
 
 const PLURAL_DISCOVERY_WORDS = /\b(restaurants|places|spots|options|recommendations)\b/i;
 const EXPLICIT_SINGLE_WORDS = /\b(one|single|just one|only one|a restaurant|a place|a spot)\b/i;

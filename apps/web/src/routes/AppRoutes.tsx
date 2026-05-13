@@ -5,7 +5,6 @@ import { RestaurantScopeProvider } from "@/contexts/restaurant-scope-context";
 import { DashboardRoleGuard } from "@/components/routing/DashboardRoleGuard";
 import { GuestOnly } from "@/components/routing/GuestOnly";
 import { RequireAuth } from "@/components/routing/RequireAuth";
-import { RequireCustomer } from "@/components/routing/RequireCustomer";
 import { RequireStaff } from "@/components/routing/RequireStaff";
 import { RouteFallback } from "@/components/routing/RouteFallback";
 
@@ -116,13 +115,16 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
+        {/* /bookings is the diner-side view of "my reservations". Available
+            to ANY authenticated user — owners and staff can also be diners
+            (they book personal reservations at other restaurants), so the
+            previous RequireCustomer gate caused owner-account bookings to
+            silently disappear behind a /dashboard redirect. */}
         <Route
           path="/bookings"
           element={
             <RequireAuth>
-              <RequireCustomer>
-                <BookingsPage />
-              </RequireCustomer>
+              <BookingsPage />
             </RequireAuth>
           }
         />
@@ -130,19 +132,18 @@ export function AppRoutes() {
           path="/bookings/:reservationId"
           element={
             <RequireAuth>
-              <RequireCustomer>
-                <BookingDetailsPage />
-              </RequireCustomer>
+              <BookingDetailsPage />
             </RequireAuth>
           }
         />
+        {/* /deals is the diner-facing events + promotions feed. Owners can
+            also be diners (they book at other restaurants), so this route
+            stays auth-gated only — same reasoning as /bookings. */}
         <Route
           path="/deals"
           element={
             <RequireAuth>
-              <RequireCustomer>
-                <DealsPage />
-              </RequireCustomer>
+              <DealsPage />
             </RequireAuth>
           }
         />
