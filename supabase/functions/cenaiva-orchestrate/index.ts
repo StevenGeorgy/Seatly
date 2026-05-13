@@ -4,6 +4,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { getAvailability, type AvailabilityResult } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
 import {
@@ -8171,6 +8172,27 @@ Deno.serve(async (req) => {
     const userProfileId: string = userProfile.id;
     const userName: string = userProfile.full_name ?? "there";
     const firstName = userName.split(" ")[0];
+
+    // Per-user rate limit. 30/60s is wide enough for a long voice
+    // conversation (5–15 turns is normal; 30 covers heavy back-and-forth)
+    // while still tripping a stuck client or scripted abuse. SSE responses
+    // can't return a 429 once streaming has started, so we mirror the
+    // in-band error pattern used for auth failures above.
+    try {
+      await enforceRateLimit(
+        supabaseAdmin,
+        "cenaiva_orchestrate",
+        rateLimitIdentifier(req, userProfileId),
+        { limit: 30, windowSeconds: 60 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        send({ type: "error", message: e.message, status: 429 });
+        latency.done({ path: "rate_limited" });
+        return;
+      }
+      throw e;
+    }
 
     // Parse body
     const body = await req.json() as {

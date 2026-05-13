@@ -3,6 +3,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1";
 const DEFAULT_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "EXAVITQu4vr4xnSDxMaL";
@@ -31,13 +32,30 @@ Deno.serve(async (req) => {
     const payload = decodeJwtPayload(token);
     if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401);
 
-    // Lightweight user check
-    const { error: profileErr } = await supabaseAdmin
+    // Lightweight user check + capture profile.id for the rate-limit bucket.
+    const { data: profile, error: profileErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id")
       .eq("auth_user_id", payload.sub as string)
       .single();
-    if (profileErr) return jsonRes({ error: "Unauthorized" }, 401);
+    if (profileErr || !profile) return jsonRes({ error: "Unauthorized" }, 401);
+
+    // Per-user rate limit. Each AI turn = 1 TTS call (plus retries + streaming
+    // chunks via speakQueued). 60/min is generous for a normal conversation
+    // and trips on sustained tab-spam or a stuck retry loop.
+    try {
+      await enforceRateLimit(
+        supabaseAdmin,
+        "elevenlabs_tts",
+        rateLimitIdentifier(req, profile.id),
+        { limit: 60, windowSeconds: 60 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+      }
+      throw e;
+    }
 
     const body = await req.json() as { text?: string; voice_id?: string };
     const rawText = (body.text ?? "").trim();

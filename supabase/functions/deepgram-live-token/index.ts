@@ -3,6 +3,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 // Deepgram's /v1/auth/grant endpoint mints short-lived tokens (30s TTL) that
 // are safe to hand to the browser — unlike the long-lived project API key,
@@ -30,14 +31,31 @@ Deno.serve(async (req) => {
       return jsonRes({ error: "Unauthorized", reason: "jwt_decode" }, 401);
     }
 
-    const { error: profileErr } = await supabaseAdmin
+    const { data: profile, error: profileErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id")
       .eq("auth_user_id", payload.sub as string)
       .single();
-    if (profileErr) {
-      console.warn("[deepgram-live-token] profile lookup failed for sub:", payload.sub, profileErr.message);
+    if (profileErr || !profile) {
+      console.warn("[deepgram-live-token] profile lookup failed for sub:", payload.sub, profileErr?.message);
       return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401);
+    }
+
+    // Per-user rate limit. Tokens are TTL-cached client-side (~30s), so real
+    // usage is far below 60/min. 60 is a safety net for a stuck recognizer or
+    // a client that loses its cache.
+    try {
+      await enforceRateLimit(
+        supabaseAdmin,
+        "deepgram_live_token",
+        rateLimitIdentifier(req, profile.id),
+        { limit: 60, windowSeconds: 60 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+      }
+      throw e;
     }
 
     const dgRes = await fetch(DEEPGRAM_TOKEN_ENDPOINT, {

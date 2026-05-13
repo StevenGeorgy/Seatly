@@ -16,10 +16,12 @@
 
 1. [Context — why this work is needed](#1-context--why-this-work-is-needed)
 2. [Goals, non-goals, and definition of done](#2-goals-non-goals-and-definition-of-done)
-3. [Architecture overview (post-session)](#3-architecture-overview-post-session)
-4. [Critical files inventory](#4-critical-files-inventory)
-5. [Behavioral gap matrix (web → mobile)](#5-behavioral-gap-matrix-web--mobile)
-6. [Implementation order — 14 steps](#6-implementation-order--14-steps)
+3. [Feature inventory — what Hey Cenaiva includes](#3-feature-inventory--what-hey-cenaiva-includes)
+4. [Google Maps integration and setup](#4-google-maps-integration-and-setup)
+5. [Architecture overview (post-session)](#5-architecture-overview-post-session)
+6. [Critical files inventory](#6-critical-files-inventory)
+7. [Behavioral gap matrix (web → mobile)](#7-behavioral-gap-matrix-web--mobile)
+8. [Implementation order — 14 steps](#8-implementation-order--14-steps)
    - [Step 1 — Backend is free (no port required for orchestrator changes)](#step-1--backend-is-free-no-port-required-for-orchestrator-changes)
    - [Step 2 — Mute toggle (new UI button)](#step-2--mute-toggle-new-ui-button)
    - [Step 3 — Reduce auto-relisten gated statuses](#step-3--reduce-auto-relisten-gated-statuses)
@@ -34,18 +36,18 @@
    - [Step 12 — Date formatting: "Mon" → "Monday" everywhere user-facing](#step-12--date-formatting-mon--monday-everywhere-user-facing)
    - [Step 13 — Streaming TTS logging + telemetry](#step-13--streaming-tts-logging--telemetry)
    - [Step 14 — Wire harness into mobile CI](#step-14--wire-harness-into-mobile-ci)
-7. [Edge-case behavior matrix](#7-edge-case-behavior-matrix)
-8. [Verification — end-to-end test plan](#8-verification--end-to-end-test-plan)
-9. [Risks, rollback, and mitigations](#9-risks-rollback-and-mitigations)
-10. [Performance baseline and targets](#10-performance-baseline-and-targets)
-11. [Mobile-specific tradeoffs (React Native considerations)](#11-mobile-specific-tradeoffs-react-native-considerations)
-12. [PR / commit message conventions](#12-pr--commit-message-conventions)
-13. [Appendix A — Orchestrator source excerpts (verbatim)](#appendix-a--orchestrator-source-excerpts-verbatim)
-14. [Appendix B — Client TypeScript surface diffs](#appendix-b--client-typescript-surface-diffs)
-15. [Appendix C — Sequence diagrams](#appendix-c--sequence-diagrams)
-16. [Appendix D — The 255-test harness — full case list with pass criteria](#appendix-d--the-255-test-harness--full-case-list-with-pass-criteria)
-17. [Appendix E — DB cleanup RPCs (SECURITY DEFINER)](#appendix-e--db-cleanup-rpcs-security-definer)
-18. [Appendix F — Harness Node script outline](#appendix-f--harness-node-script-outline)
+9. [Edge-case behavior matrix](#9-edge-case-behavior-matrix)
+10. [Verification — end-to-end test plan](#10-verification--end-to-end-test-plan)
+11. [Risks, rollback, and mitigations](#11-risks-rollback-and-mitigations)
+12. [Performance baseline and targets](#12-performance-baseline-and-targets)
+13. [Mobile-specific tradeoffs (React Native considerations)](#13-mobile-specific-tradeoffs-react-native-considerations)
+14. [PR / commit message conventions](#14-pr--commit-message-conventions)
+15. [Appendix A — Orchestrator source excerpts (verbatim)](#appendix-a--orchestrator-source-excerpts-verbatim)
+16. [Appendix B — Client TypeScript surface diffs](#appendix-b--client-typescript-surface-diffs)
+17. [Appendix C — Sequence diagrams](#appendix-c--sequence-diagrams)
+18. [Appendix D — The 255-test harness — full case list with pass criteria](#appendix-d--the-255-test-harness--full-case-list-with-pass-criteria)
+19. [Appendix E — DB cleanup RPCs (SECURITY DEFINER)](#appendix-e--db-cleanup-rpcs-security-definer)
+20. [Appendix F — Harness Node script outline](#appendix-f--harness-node-script-outline)
 
 ---
 
@@ -159,7 +161,265 @@ A mobile build is considered "Habbi_The_One-complete" when:
 
 ---
 
-## 3. Architecture overview (post-session)
+## 3. Feature inventory — what Hey Cenaiva includes
+
+This is the complete feature surface a beta user (or porting engineer) needs
+to know about. Grouped by category. Each item lists the user-facing
+behavior and the primary file or orchestrator handler that owns it.
+
+### 3.1 Voice I/O
+
+- **Wake word "Hey Cenaiva"** — Web Speech API recognizer, fuzzy-match
+  tolerant of "hey son iva" / "hey san eva" / etc. Off-limits per
+  CLAUDE.md; never modify.
+  *File:* `apps/web/src/hooks/useCenaivaWakeWord.ts`
+- **Speech-to-text (STT)** — Deepgram REST `/v1/listen` with Nova-3
+  model, language=`en`. RMS-based silence detection ends turns at 1.5 s
+  of measured quiet. 15 s no-speech timeout, 60 s hard turn cap.
+  *File:* `apps/web/src/hooks/useDeepgramTranscription.ts`, edge
+  `supabase/functions/deepgram-live-token/index.ts`
+- **Text-to-speech (TTS)** — ElevenLabs `eleven_flash_v2_5` is the
+  primary path; Web Speech is the per-turn fallback when ElevenLabs
+  fails twice in a row (15 s self-healing cooldown). IndexedDB cache
+  for common phrases ("One moment please.", etc.).
+  *Files:* `apps/web/src/hooks/useElevenLabsTTS.ts`, edge
+  `supabase/functions/elevenlabs-tts/index.ts`
+- **Voice orb with RMS pulse** — pulse ring scale + opacity track the
+  user's voice loudness via external store (`useSyncExternalStore`,
+  not React state — perf-critical).
+  *File:* `apps/web/src/components/cenaiva/VoiceOrb.tsx`
+- **Manual mute** — top-right mic toggle. When muted, mic stays off
+  across turns until user unmutes; AI TTS still plays.
+- **Race-safe `startListening`** — 250 ms post-stop gap prevents Chrome
+  from erroring when the mic is re-acquired immediately after a turn.
+- **Permission re-prompt on orb tap** — when `voiceStatus === "error"`,
+  tapping the orb re-triggers `getUserMedia` instead of silently failing.
+- **Per-user voice picker** — `user_profiles.cenaiva_tts_voice` column
+  + `/account/voice` route. Falls back to the global default voice.
+
+### 3.2 Booking flow
+
+- **Single-utterance slot resolution** — "book mark testing for 2
+  thursday at 7pm" resolves party + date + time + shift_id in one
+  turn via the casual handler.
+  *Handler:* `cenaiva-orchestrate/index.ts` ~ line 4720
+- **Multi-turn collecting_minimum_fields** — when fields are missing,
+  granular prompts: "How many guests?" / "What date?" / "What time?"
+  (not the legacy catch-all).
+  *File:* Stage 1 `planLocalBookingTurn` in
+  `apps/web/src/lib/cenaiva/localBookingCollector.ts`
+- **Explicit "yes" confirmation routing** — `shouldRouteAsCenaivaBookingConfirmation`
+  rewrites bare "yes" → "yes, confirm booking" when status is
+  `confirming`, so the orchestrator gets unambiguous intent.
+- **Atomic `book_reservation` RPC** — advisory lock on
+  `(restaurant_id, reserved_at)`, cover-cap recheck, diner-overlap
+  pre-check. Maps `P0006 / diner_double_book` and `23P01` to a 409 with
+  `unavailable_reason`.
+  *RPC:* `book_reservation`, edge `create-public-booking`
+- **Multi-table combiner** — `find_available_table_group` recursive
+  CTE walks up to 16 tables, prefers smallest single → adjacent same-
+  section combo → any-combo fallback.
+- **Deposit hand-off** — parties ≥ `deposit_tiers.min_party_size` get
+  redirected to the public restaurant page (`/<slug>?date=&time=&people=&shift_id=`)
+  for card entry instead of being booked $0 in voice.
+- **Pre-order hand-off** — "pre-order food", "order ahead", "order
+  food in advance" route to the public restaurant page with
+  `?step=menu` so the user can browse the menu UI.
+
+### 3.3 Modify / cancel
+
+- **Voice modify cross-session** — close assistant, reopen,
+  "change my reservation to 8pm" → looks up the diner's active
+  reservation, finds the new slot, queues
+  `pending_action: { type: "modify_reservation", ... }`, executes
+  on "yes" via `modify_reservation_slot` RPC.
+  *Handler:* `cenaiva-orchestrate/index.ts:6440-6494`
+- **Voice cancel** — same shape; queues
+  `pending_action: { type: "cancel_reservation" }`, executes on "yes".
+- **Restaurant-name disambiguation** — when the user has multiple
+  active bookings, the modify/cancel handler narrows by restaurant
+  name from the transcript (accent-strip + token-score) before the
+  single-active fast path fires.
+- **Single-turn modify** — when the user names a new time in the same
+  utterance ("change my reservation to 8pm"), `parseTime` extracts the
+  new time and `getAvailability` resolves the shift_id immediately —
+  no second turn required.
+
+### 3.4 Discovery / fact-lookup
+
+- **Restaurant search** — live DB query via the `find_restaurants` LLM
+  tool; fuzzy-matches typed and spoken names ("Mark Can I Book" →
+  Mark Testing).
+- **Events query with theme filter** — "wagyu events at jacobs" filters
+  by 24 theme keywords (wagyu, wine, live music, trivia, karaoke, jazz,
+  brunch, happy hour, …) via `.or("name.ilike.%theme%,theme.ilike.%theme%")`.
+- **Promos / deals query** — "any deals at harbour sixty" returns
+  active promos with codes; pivots to `/deals` page when scope is
+  unspecified ("any deals tonight?").
+- **Hours query** — reads `restaurants.hours_json`. Replies
+  "Restaurant is open 11:00 AM–10:00 PM on Tuesday" or "closed on
+  Sunday". Day inferred from transcript or restaurant timezone.
+- **Off-topic redirect** — jokes, weather, generic chit-chat get a
+  short on-brand persona reply that nudges back to booking.
+- **Geo-aware recommendations** — "cafes near Milton" passes
+  `user_location: { lat, lng }` to the orchestrator; results are
+  scored by distance + rating.
+
+### 3.5 Customer surfaces (non-voice)
+
+- **Discover page** — Google Maps + restaurant rail + filters.
+- **Deals page** — Google Maps + active promos rail + search.
+- **Restaurant preview modal** — opens from the rail; shows
+  `<AvailabilityPanel>` (the unified date + time + party + 6-pill grid).
+- **Restaurant public page** — full booking widget, deposit checkout,
+  pre-order menu, post-booking summary.
+- **My Reservations** — upcoming + past bookings list.
+- **Modify booking dialog** — uses the same `<AvailabilityPanel>` with
+  `excludeReservationId` so conflict windows skip the row being edited.
+- **Cancel booking** — single-click cancel with confirmation.
+- **Account page** — profile, preferences, sign-out.
+- **Voice preference picker** — `/account/voice`.
+
+### 3.6 Safety + ops (live in production)
+
+- **Edge-function rate limits** (deployed 2026-05-13 late evening):
+  - `cenaiva_orchestrate`: 30 requests / 60s per user (LLM cost driver)
+  - `elevenlabs_tts`: 60 requests / 60s per user
+  - `deepgram_live_token`: 60 requests / 60s per user
+- **Booking integrity:** advisory locks + partial exclusion constraints
+  (`reservations_user_no_overlap`, `reservations_guest_email_no_overlap`,
+  `reservations_guest_phone_no_overlap`) prevent same-slot and double-
+  book races at the DB layer.
+- **Diner conflict windows** in `<AvailabilityPanel>` — overlapping
+  slots render as disabled with a tooltip ("hidden — you have a 7:30
+  booking at Mark Testing"), never silently filtered.
+- **Realtime invalidation registry** — `useAvailabilityRealtimeInvalidate`
+  multiplexes one Supabase channel per restaurant across all consumers
+  on the page (preview modal + public page + AvailabilityPanel share
+  one socket).
+- **Test harness** — 281-test regression suite in
+  `apps/web/scripts/cenaiva-test-harness.mjs`. As of 2026-05-13 late
+  evening: scoped cleanup via `harness_cancel_by_ids(p_ids uuid[])` —
+  the dangerous unscoped `harness_cleanup_test_user()` was dropped
+  (migration `20260513213000_drop_dangerous_harness_cleanup.sql`).
+- **Self-service restaurant signup is open** — `signup-restaurant-owner`
+  defaults `is_active=true`; new restaurants are immediately bookable
+  and discoverable by Cenaiva.
+
+---
+
+## 4. Google Maps integration and setup
+
+Google Maps powers four customer-facing surfaces and one owner-facing
+surface. Setting it up is a 10-minute task in Google Cloud Console plus
+one env var.
+
+### 4.1 Where Google Maps is used (web today)
+
+- **`apps/web/src/lib/google-maps.ts`** — single source of truth for
+  the loader (`loadGoogleMaps()`), the branded dark theme array
+  (`CENAIVA_MAP_STYLES`), the `parseGooglePlace` helper for Places
+  Autocomplete results, and the `gm_authFailure` global error hook.
+- **`apps/web/src/components/cenaiva/CustomerMap.tsx`** — the map
+  inside the voice shell. Markers driven imperatively from
+  `state.map.marker_restaurant_ids`.
+- **`apps/web/src/pages/customer/DiscoverPage.tsx`** — the main
+  customer-facing discover map.
+- **`apps/web/src/pages/customer/DealsPage.tsx`** — the deals map.
+  Note: has its own local copy of `CENAIVA_MAP_STYLES` (line 448);
+  deduping into the shared module is a known minor TODO.
+- **`apps/web/src/components/restaurant/GoogleAddressAutocompleteInput.tsx`**
+  — restaurant-signup address autocomplete using the Places API.
+  Returns parsed `address / city / province / country / postalCode /
+  placeId / lat / lng`.
+
+### 4.2 Setup — getting Google Maps running locally and in production
+
+Step-by-step. Allow 10 minutes the first time.
+
+1. **Open Google Cloud Console** at `console.cloud.google.com`.
+2. **Create a project** (or use the existing Seatly GCP project).
+3. **Enable the two APIs** from APIs & Services → Library:
+   - **Maps JavaScript API**
+   - **Places API**
+4. **Enable Billing** on the project. Google requires a billing account
+   even for the free tier. You get a **$200/month free credit** which
+   covers normal beta traffic (one Discover page view = 1 dynamic map
+   load ≈ $0.007, so $200 = ~28,000 page views per month).
+5. **Create the API key** under APIs & Services → Credentials →
+   Create Credentials → API key.
+6. **Restrict the API key** (do this — an unrestricted key in your JS
+   bundle is a financial risk):
+   - **Application restrictions:** HTTP referrers (web sites)
+   - **Allowed referrers** (add each as a separate line):
+     - `http://localhost:5173/*` (Vite dev)
+     - `http://localhost:*` (other local ports)
+     - `https://staging.yourdomain.com/*` (if you have staging)
+     - `https://yourdomain.com/*` (production)
+   - **API restrictions:** Restrict key → select **Maps JavaScript API**
+     + **Places API** only.
+7. **Add the env var:**
+   - **Local dev:** add to `apps/web/.env` (create if needed):
+     ```
+     VITE_GOOGLE_MAPS_API_KEY=AIza...your-key-here
+     ```
+   - **Production:** add `VITE_GOOGLE_MAPS_API_KEY` to your deploy
+     platform's env-var settings (Vercel project settings, Netlify
+     environment variables, etc.).
+8. **Restart the dev server.** Vite only reads env vars on cold start
+   — hot reload won't pick up a new `.env` value.
+9. **Verify.** Open `/discover`. You should see the dark-themed map
+   with restaurant markers. If you see a fallback "Map unavailable"
+   message or "Add `VITE_GOOGLE_MAPS_API_KEY`…", check the browser
+   console for the exact reason and consult §4.3 below.
+
+### 4.3 Troubleshooting
+
+The loader sets `cenaivaMapsLoadError` and dispatches a
+`cenaiva:google-maps-error` custom event when anything fails. The map
+components subscribe to that event and render a clear fallback UI
+instead of silently showing an empty div.
+
+Common errors and fixes:
+
+| Console error | Fix |
+|---|---|
+| `Google Maps API key is not configured.` | `VITE_GOOGLE_MAPS_API_KEY` env var missing. Add to `.env` and restart Vite. |
+| `ApiNotActivatedMapError` | Maps JavaScript API not enabled in Cloud Console — turn it on. |
+| `RefererNotAllowedMapError` | Current URL not in the API key's HTTP referrer allowlist. Add it under Credentials → your key → Application restrictions. |
+| `BillingNotEnabledMapError` | Enable billing on the GCP project. |
+| `InvalidKeyMapError` | Typo in the key, or key was deleted. Regenerate. |
+| Blank map after production deploy | Vite bakes env vars at build time. Setting the env var after the build doesn't help — you have to redeploy after setting it. |
+| `Failed to load Google Maps script.` (network) | Browser blocked the script (ad blocker, CSP, offline). Check Network tab. |
+
+### 4.4 Mobile port notes
+
+Since this document is the web → mobile port manual, here's how the
+mobile equivalent should be set up:
+
+- **Don't use the Google Maps JS SDK in React Native.** Use
+  [`react-native-maps`](https://github.com/react-native-maps/react-native-maps)
+  with the `PROVIDER_GOOGLE` provider on both iOS and Android.
+- **Reuse `CENAIVA_MAP_STYLES`** verbatim — `react-native-maps` accepts
+  the same JSON shape via the `customMapStyle` prop on `<MapView>`.
+  Don't re-invent the dark theme.
+- **API key on mobile** lives in the native config:
+  - iOS: `AppDelegate.swift` (or `.m`) — `GMSServices.provideAPIKey(...)`
+    + `Info.plist` entry
+  - Android: `AndroidManifest.xml` `<meta-data android:name="com.google.android.geo.API_KEY" .../>`
+  - Restrict the mobile key separately from the web key — application
+    restrictions: iOS bundle IDs / Android SHA-1 + package name.
+- **Address autocomplete on mobile:** use
+  [`react-native-google-places-autocomplete`](https://github.com/FaridSafi/react-native-google-places-autocomplete)
+  instead of the web `google.maps.places.Autocomplete` class. The
+  response shape differs slightly; write a small adapter to match
+  `GoogleAddressParts` so the rest of the signup flow stays identical.
+- **Free-credit accounting on mobile** is separate from web — Google
+  bills mobile SDK loads against a different SKU. Monitor both.
+
+---
+
+## 5. Architecture overview (post-session)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -249,7 +509,7 @@ A mobile build is considered "Habbi_The_One-complete" when:
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 What changed in the orchestrator (one-line summary per change)
+### 5.1 What changed in the orchestrator (one-line summary per change)
 
 | # | Change | Why |
 |---|---|---|
@@ -268,7 +528,7 @@ A mobile build is considered "Habbi_The_One-complete" when:
 | 13 | Relative time modify parser | Bug H6 — "push it back an hour" works |
 | 14 | Date formatting "Monday" not "Mon" | User request 2026-05-11 |
 
-### 3.2 What changed on the client (one-line summary per change)
+### 5.2 What changed on the client (one-line summary per change)
 
 | # | File | Change |
 |---|---|---|
@@ -292,9 +552,9 @@ A mobile build is considered "Habbi_The_One-complete" when:
 
 ---
 
-## 4. Critical files inventory
+## 6. Critical files inventory
 
-### 4.1 Files modified on web (mobile equivalents must replicate)
+### 6.1 Files modified on web (mobile equivalents must replicate)
 
 | Web path | Mobile equivalent | Lines changed | Purpose |
 |---|---|---|---|
@@ -311,14 +571,14 @@ A mobile build is considered "Habbi_The_One-complete" when:
 | **NEW** `apps/web/scripts/cenaiva-test-harness.mjs` | mobile copies this verbatim | 800+ new | Harness |
 | **NEW** `apps/web/scripts/cenaiva-test-cases.mjs` | mobile copies this verbatim | 1500+ new | 255 test cases |
 
-### 4.2 Files NOT modified (do not touch on mobile either)
+### 6.2 Files NOT modified (do not touch on mobile either)
 
 - `useCenaivaWakeWord.ts` (only debug logs added — no logic change)
 - Edge functions OTHER than `cenaiva-orchestrate` (deepgram-live-token, elevenlabs-tts, create-public-booking, etc.)
 - Supabase schema, RLS policies, triggers (other than the two test-user helpers in Appendix E)
 - Any `_shared/*.ts` helper in supabase/functions
 
-### 4.3 Files added
+### 6.3 Files added
 
 - `Habbi_The_One.md` (this file — copy to mobile repo)
 - `apps/web/scripts/cenaiva-test-harness.mjs` (harness Node script)
@@ -327,7 +587,7 @@ A mobile build is considered "Habbi_The_One-complete" when:
 
 ---
 
-## 5. Behavioral gap matrix (web → mobile)
+## 7. Behavioral gap matrix (web → mobile)
 
 Each row is a behavior that changed on web and must be replicated on mobile. "Mobile today" assumes mobile is at the jolly-prancing-clover-baseline (pre-2026-05-10).
 
@@ -359,7 +619,7 @@ Each row is a behavior that changed on web and must be replicated on mobile. "Mo
 
 ---
 
-## 6. Implementation order — 14 steps
+## 8. Implementation order — 14 steps
 
 Execute these in order. Each step lists: (a) which file, (b) what change, (c) why, (d) verification command.
 
@@ -769,7 +1029,7 @@ node scripts/cenaiva-test-harness.mjs --repeat 3
 
 ---
 
-## 7. Edge-case behavior matrix
+## 9. Edge-case behavior matrix
 
 Each row is a specific input/state pair with the expected behavior. Mobile must match all of these. Test IDs in parentheses map to harness cases (Appendix D).
 
@@ -814,9 +1074,9 @@ Each row is a specific input/state pair with the expected behavior. Mobile must 
 
 ---
 
-## 8. Verification — end-to-end test plan
+## 10. Verification — end-to-end test plan
 
-### 8.1 Harness run (automated)
+### 10.1 Harness run (automated)
 
 ```bash
 # Clean DB:
@@ -836,7 +1096,7 @@ Expected output:
 
 Any failure = blocker. Investigate, fix, re-run.
 
-### 8.2 Manual smoke tests (real device, real voice)
+### 10.2 Manual smoke tests (real device, real voice)
 
 Run each on iOS + Android.
 
@@ -859,7 +1119,7 @@ Run each on iOS + Android.
 
 All 14 must pass on iOS AND Android.
 
-### 8.3 Voice quality sanity (subjective)
+### 10.3 Voice quality sanity (subjective)
 
 Listen to 5 minutes of conversation. Expect:
 - ElevenLabs consistent (no robotic Web Speech fallback)
@@ -868,7 +1128,7 @@ Listen to 5 minutes of conversation. Expect:
 - Mic auto-resumes within ~260ms after AI finishes speaking
 - Mute toggle persists (doesn't reset between turns)
 
-### 8.4 Latency sanity (subjective)
+### 10.4 Latency sanity (subjective)
 
 - Tap mic → "Listening" indicator within 500ms
 - After user finishes speaking → AI starts responding within 2-5s (deterministic) or 5-15s (LLM-driven)
@@ -876,7 +1136,7 @@ Listen to 5 minutes of conversation. Expect:
 
 ---
 
-## 9. Risks, rollback, and mitigations
+## 11. Risks, rollback, and mitigations
 
 | Risk | Severity | Mitigation |
 |---|---|---|
@@ -905,7 +1165,7 @@ If a mobile build with these changes goes south:
 
 ---
 
-## 10. Performance baseline and targets
+## 12. Performance baseline and targets
 
 | Metric | Web baseline (post-session) | Mobile target |
 |---|---|---|
@@ -920,9 +1180,9 @@ If a mobile build with these changes goes south:
 
 ---
 
-## 11. Mobile-specific tradeoffs (React Native considerations)
+## 13. Mobile-specific tradeoffs (React Native considerations)
 
-### 11.1 Voice input options on mobile
+### 13.1 Voice input options on mobile
 
 | Option | Pros | Cons | Recommendation |
 |---|---|---|---|
@@ -931,7 +1191,7 @@ If a mobile build with these changes goes south:
 | Vapi/Retell SDK | Handles wake word + AEC + STT + TTS for you | $0.05-0.15/min, vendor lock | Fastest to ship |
 | Picovoice Porcupine + native STT | Best wake-word accuracy, low power | Wake word costs $$ for production tier | Best wake-word UX |
 
-### 11.2 TTS playback options
+### 13.2 TTS playback options
 
 | Option | Pros | Cons |
 |---|---|---|
@@ -941,7 +1201,7 @@ If a mobile build with these changes goes south:
 
 Recommend: ElevenLabs primary, mobile native speech as the same Web-Speech-equivalent fallback. Pre-cache the ~9 common phrases the web app caches (see jolly-prancing-clover §5).
 
-### 11.3 Wake word on mobile
+### 13.3 Wake word on mobile
 
 **Hard decision.** Three viable approaches:
 
@@ -951,7 +1211,7 @@ Recommend: ElevenLabs primary, mobile native speech as the same Web-Speech-equiv
 
 Whatever you pick, **do not port the web's `useCenaivaWakeWord.ts`** — it uses browser-only APIs and is explicitly excluded from this port.
 
-### 11.4 Echo cancellation (AEC)
+### 13.4 Echo cancellation (AEC)
 
 Browsers handle AEC for free via `getUserMedia({ echoCancellation: true })`. Mobile needs platform-specific setup:
 
@@ -960,7 +1220,7 @@ Browsers handle AEC for free via `getUserMedia({ echoCancellation: true })`. Mob
 
 Without proper AEC, the mic will pick up the AI's TTS playback and feed it back as user input. Catastrophic UX.
 
-### 11.5 Background mode
+### 13.5 Background mode
 
 Web doesn't have "background" — close the tab and it's gone. Mobile users expect the assistant to respond even with the app in background (e.g. they tapped the icon, then switched to Maps to check directions, then want to come back and continue the booking).
 
@@ -975,7 +1235,7 @@ If you don't support background mode:
 
 ---
 
-## 12. PR / commit message conventions
+## 14. PR / commit message conventions
 
 When porting these changes to mobile, use commit messages that reference the web change:
 
