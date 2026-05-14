@@ -5,6 +5,7 @@ import {
   sendReservationNotification,
 } from "../_shared/reservation-notifications.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 
 // Status semantics: this function permits cancelling reservations in any
 // status except an already-`cancelled` one (idempotent OK) or a past one
@@ -255,19 +256,40 @@ Deno.serve(async (req: Request) => {
 
     // Notify Me fan-out: when a slot frees up we ping any active
     // `availability_alerts` rows that match this restaurant + date + party.
-    // Wrapped in try/catch so a fan-out failure can NEVER block the cancel
-    // response — alerts are best-effort. RPC is a no-op when zero alerts.
+    // Both the in-app notification (created inside the match RPC) AND a
+    // best-effort SMS (via sendNotifyMeSms) get dispatched. Wrapped in
+    // try/catch so any fan-out failure can NEVER block the cancel
+    // response. RPC is a no-op when zero alerts match.
     const fanOutSlotOpened = async () => {
       try {
-        await adminClient.rpc("match_availability_alerts_for_restaurant", {
-          p_restaurant_id: reservation.restaurant_id,
-          p_freed_at: reservation.reserved_at,
-          p_freed_party_size: reservation.party_size,
-        });
+        const rows: FulfilledAlertRow[] = [];
+        const { data: restRows, error: restErr } = await adminClient.rpc(
+          "match_availability_alerts_for_restaurant",
+          {
+            p_restaurant_id: reservation.restaurant_id,
+            p_freed_at: reservation.reserved_at,
+            p_freed_party_size: reservation.party_size,
+          },
+        );
+        if (!restErr && restRows) rows.push(...(restRows as FulfilledAlertRow[]));
         if (reservation.event_id) {
-          await adminClient.rpc("match_availability_alerts_for_event", {
-            p_event_id: reservation.event_id,
-          });
+          const { data: evtRows, error: evtErr } = await adminClient.rpc(
+            "match_availability_alerts_for_event",
+            { p_event_id: reservation.event_id },
+          );
+          if (!evtErr && evtRows) rows.push(...(evtRows as FulfilledAlertRow[]));
+        }
+        if (rows.length > 0) {
+          // Fire-and-forget the SMS dispatch so Twilio latency never blocks
+          // the cancel response. waitUntil keeps the promise alive after
+          // the function returns. Falls back to a plain promise if the
+          // runtime doesn't expose waitUntil (local Deno).
+          const dispatch = sendNotifyMeSms(adminClient, rows).catch((e) =>
+            console.warn("[cancel-reservation] notify-me SMS dispatch failed:", e),
+          );
+          const edge = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } })
+            .EdgeRuntime;
+          if (edge?.waitUntil) edge.waitUntil(dispatch);
         }
       } catch (e) {
         // Swallow — alert fan-out must never block cancel.

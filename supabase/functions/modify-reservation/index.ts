@@ -7,6 +7,7 @@ import {
   sendReservationNotification,
 } from "../_shared/reservation-notifications.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -489,19 +490,35 @@ Deno.serve(async (req: Request) => {
 
     // Notify Me fan-out: when a reservation is modified, the OLD slot frees up.
     // We ping availability_alerts matching the original reserved_at (not the new
-    // one — that slot just got taken). Wrapped in try/catch so a fan-out
+    // one — that slot just got taken). The in-app notification + a best-effort
+    // SMS get dispatched per matched alert. Wrapped in try/catch so a fan-out
     // failure can NEVER block the modify response. RPC is a no-op when zero
     // alerts.
     try {
-      await adminClient.rpc("match_availability_alerts_for_restaurant", {
-        p_restaurant_id: reservation.restaurant_id,
-        p_freed_at: reservation.reserved_at, // OLD slot
-        p_freed_party_size: reservation.party_size, // OLD party
-      });
+      const rows: FulfilledAlertRow[] = [];
+      const { data: restRows, error: restErr } = await adminClient.rpc(
+        "match_availability_alerts_for_restaurant",
+        {
+          p_restaurant_id: reservation.restaurant_id,
+          p_freed_at: reservation.reserved_at, // OLD slot
+          p_freed_party_size: reservation.party_size, // OLD party
+        },
+      );
+      if (!restErr && restRows) rows.push(...(restRows as FulfilledAlertRow[]));
       if (reservation.event_id) {
-        await adminClient.rpc("match_availability_alerts_for_event", {
-          p_event_id: reservation.event_id,
-        });
+        const { data: evtRows, error: evtErr } = await adminClient.rpc(
+          "match_availability_alerts_for_event",
+          { p_event_id: reservation.event_id },
+        );
+        if (!evtErr && evtRows) rows.push(...(evtRows as FulfilledAlertRow[]));
+      }
+      if (rows.length > 0) {
+        const dispatch = sendNotifyMeSms(adminClient, rows).catch((e) =>
+          console.warn("[modify-reservation] notify-me SMS dispatch failed:", e),
+        );
+        const edge = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } })
+          .EdgeRuntime;
+        if (edge?.waitUntil) edge.waitUntil(dispatch);
       }
     } catch (e) {
       console.warn("[modify-reservation] notify-me fan-out failed:", e);
