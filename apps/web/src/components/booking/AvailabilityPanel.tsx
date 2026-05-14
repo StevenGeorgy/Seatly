@@ -19,6 +19,7 @@ import {
 } from "@/hooks/useAvailability";
 import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
+import { NotifyMeButton } from "@/components/customer/NotifyMeButton";
 
 export type AvailabilityPanelSlotState =
   | { kind: "available"; slot: AvailabilitySlot }
@@ -26,6 +27,9 @@ export type AvailabilityPanelSlotState =
 
 export type AvailabilityPanelProps = {
   restaurantId: string;
+  /** Used by Notify Me dialog copy when no slots are available for the chosen
+   *  date. Optional — falls back to "this restaurant". */
+  restaurantName?: string;
   /** IANA tz, e.g. "America/Toronto" — used for "now" comparisons + conflict labels. */
   restaurantTimezone: string;
   /** Default 2. */
@@ -174,6 +178,7 @@ function classifySlot(
  */
 export function AvailabilityPanel({
   restaurantId,
+  restaurantName,
   restaurantTimezone,
   defaultPartySize = DEFAULT_PARTY,
   initialDate,
@@ -590,7 +595,10 @@ export function AvailabilityPanel({
           </div>
         ) : (
           <EmptyState
+            restaurantId={restaurantId}
+            restaurantName={restaurantName}
             date={date}
+            time={time}
             partySize={partySize}
             unavailableMessage={unavailableMessage}
             unavailableReason={unavailableReason}
@@ -619,14 +627,20 @@ export function AvailabilityPanel({
 }
 
 function EmptyState({
+  restaurantId,
+  restaurantName,
   date,
+  time,
   partySize,
   unavailableMessage,
   unavailableReason,
   suggestedNextDate,
   onTrySuggested,
 }: {
+  restaurantId: string;
+  restaurantName?: string;
   date: string;
+  time: string;
   partySize: number;
   unavailableMessage: string | null;
   unavailableReason: string | null;
@@ -644,18 +658,41 @@ function EmptyState({
       ? `Party size of ${partySize} exceeds this restaurant's capacity.`
       : `No availability for ${partySize} guest${partySize === 1 ? "" : "s"}${dateLabel ? ` on ${dateLabel}` : ""}.`);
 
+  // Notify Me only applies when the empty state is "no slots" — not when the
+  // party size is structurally larger than the restaurant's capacity (no
+  // amount of cancellations would create a slot that big).
+  const showNotifyMe = unavailableReason !== "party_size_out_of_range" && Boolean(date);
+
   return (
     <div className="rounded-xl border border-border bg-bg-elevated/40 px-3 py-3 text-sm text-text-secondary">
       <p>{headline}</p>
-      {suggestedNextDate ? (
-        <button
-          type="button"
-          onClick={() => onTrySuggested(suggestedNextDate)}
-          className="mt-2 rounded-full border border-gold/40 bg-gold/10 px-3 py-1 text-xs font-medium text-gold transition-colors hover:bg-gold/20"
-        >
-          Try {safeParseDate(suggestedNextDate)?.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" })}
-        </button>
-      ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {suggestedNextDate ? (
+          <button
+            type="button"
+            onClick={() => onTrySuggested(suggestedNextDate)}
+            className="rounded-full border border-gold/40 bg-gold/10 px-3 py-1 text-xs font-medium text-gold transition-colors hover:bg-gold/20"
+          >
+            Try {safeParseDate(suggestedNextDate)?.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" })}
+          </button>
+        ) : null}
+        {showNotifyMe ? (
+          <NotifyMeButton
+            variant="restaurant"
+            restaurantId={restaurantId}
+            restaurantName={restaurantName}
+            defaultDate={date}
+            defaultTime={time || undefined}
+            defaultPartySize={partySize}
+            size="sm"
+            // Calendar is already visible right behind this dialog — the
+            // "Look for available day" button would just close the dialog
+            // and drop the user on the same picker they're already looking
+            // at. Hide it here.
+            showLookForDay={false}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

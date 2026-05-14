@@ -18,6 +18,7 @@ const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
 const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
+const NotificationsPage = lazy(() => import("@/pages/customer/NotificationsPage"));
 const DiscoverPage = lazy(() => import("@/pages/customer/DiscoverPage"));
 const DealsPage = lazy(() => import("@/pages/customer/DealsPage"));
 const RestaurantPublicPage = lazy(() => import("@/pages/customer/RestaurantPublicPage"));
@@ -125,6 +126,14 @@ export function AppRoutes() {
           element={
             <RequireAuth>
               <BookingsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/notifications"
+          element={
+            <RequireAuth>
+              <NotificationsPage />
             </RequireAuth>
           }
         />

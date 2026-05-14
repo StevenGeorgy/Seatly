@@ -10,6 +10,7 @@ import { SeatWheel } from "@/components/booking/SeatWheel";
 import { TimeWheel } from "@/components/booking/TimeWheel";
 import type { EventPromotionDisplay } from "@/lib/customer/eventPromotionDisplay";
 import { cn } from "@/lib/utils";
+import { NotifyMeButton } from "@/components/customer/NotifyMeButton";
 
 export type ReserveParams = {
   partySize: number;
@@ -484,6 +485,18 @@ export function EventPromotionDetailCard({
             <Ticket className="size-4" />
             {preview ? "Preview only" : "Book"}
           </Button>
+          {/* Sold out → offer Notify Me so the diner can still get pinged
+              when cancellations free up seats. Only meaningful for events
+              with tracked capacity. */}
+          {!preview && item.source === "event" && item.seatsLeft != null && item.seatsLeft <= 0 ? (
+            <NotifyMeButton
+              variant="event"
+              eventId={item.id}
+              eventName={item.title}
+              defaultPartySize={partySize}
+              className="mt-3 w-full justify-center"
+            />
+          ) : null}
           {canOpenRestaurant && (
             <Button
               type="button"

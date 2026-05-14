@@ -13,6 +13,8 @@ import {
   Settings,
   ShoppingBag,
   Sparkles,
+  Star,
+  Trash2,
 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
@@ -20,11 +22,22 @@ import { z } from "zod";
 
 import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useMyOrders, type MyOrderRow } from "@/hooks/useMyOrders";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
+import { useMyReviewsAndSnaps, type MyReviewSnapEntry } from "@/hooks/useMyReviewsAndSnaps";
 import { useUpdateProfile } from "@/hooks/useUpdateProfile";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -35,7 +48,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
-type Section = "bookings" | "orders" | "loyalty" | "concierge" | "payment" | "preferences";
+type Section = "bookings" | "orders" | "reviews" | "loyalty" | "concierge" | "payment" | "preferences";
 type BookingTab = "upcoming" | "past" | "cancelled";
 
 type BookingPreview = {
@@ -61,6 +74,7 @@ type ProfileFormValues = z.infer<typeof profileFormSchema>;
 const ACCOUNT_NAV: { id: Section; label: string; icon: typeof CalendarDays }[] = [
   { id: "bookings", label: "Bookings", icon: CalendarDays },
   { id: "orders", label: "Orders", icon: ShoppingBag },
+  { id: "reviews", label: "Reviews", icon: Star },
   { id: "loyalty", label: "Loyalty", icon: Gift },
   { id: "concierge", label: "Concierge", icon: MessageCircle },
   { id: "payment", label: "Payment", icon: CreditCard },
@@ -216,12 +230,96 @@ function EmptyPanel({ title, body }: { title: string; body: string }) {
   );
 }
 
+function ReviewEntryRow({
+  entry,
+  onDelete,
+}: {
+  entry: MyReviewSnapEntry;
+  onDelete: () => void;
+}) {
+  const dateLabel = format(new Date(entry.createdAt), "MMM d, yyyy");
+  return (
+    <motion.article
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex gap-4 rounded-2xl border border-border bg-bg-surface p-4"
+    >
+      {entry.photo ? (
+        <Link
+          to={entry.restaurantSlug ? `/${entry.restaurantSlug}` : "#"}
+          className="block size-20 shrink-0 overflow-hidden rounded-xl bg-bg-elevated"
+        >
+          <img
+            src={entry.photo.image_url}
+            alt={entry.photo.caption ?? `Photo at ${entry.restaurantName}`}
+            loading="lazy"
+            className="size-full object-cover"
+          />
+        </Link>
+      ) : (
+        <div className="flex size-20 shrink-0 items-center justify-center rounded-xl bg-bg-elevated">
+          <Star className="size-6 text-gold" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-3">
+          <Link
+            to={entry.restaurantSlug ? `/${entry.restaurantSlug}` : "#"}
+            className="truncate font-serif text-lg text-white hover:text-gold"
+          >
+            {entry.restaurantName}
+          </Link>
+          <span className="shrink-0 text-[11px] text-text-muted">{dateLabel}</span>
+        </div>
+        {entry.review ? (
+          <div className="mt-1 flex items-center gap-0.5 text-gold">
+            {[1, 2, 3, 4, 5].map((value) => (
+              <Star
+                key={value}
+                className={`size-3.5 ${value <= entry.review!.rating ? "fill-gold text-gold" : "text-text-muted"}`}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-text-muted">Photo only · no rating</p>
+        )}
+        {entry.review?.review_text ? (
+          <p className="mt-2 line-clamp-2 text-sm leading-5 text-text-secondary">
+            {entry.review.review_text}
+          </p>
+        ) : entry.photo?.caption ? (
+          <p className="mt-2 line-clamp-2 text-sm leading-5 text-text-secondary">
+            {entry.photo.caption}
+          </p>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label="Delete review and photo"
+        className="shrink-0 rounded-md border border-border bg-bg-elevated p-2 text-text-muted transition-colors hover:border-warning/40 hover:text-warning"
+      >
+        <Trash2 className="size-4" />
+      </button>
+    </motion.article>
+  );
+}
+
 export default function AccountPage() {
   const navigate = useNavigate();
   const { profile, signOut } = useUser();
   const { upcoming, past, loading: reservationsLoading } = useMyReservations();
   const { orders, loading: ordersLoading } = useMyOrders();
+  const { entries: reviewEntries, loading: reviewEntriesLoading, remove: removeReviewEntry } =
+    useMyReviewsAndSnaps();
   const { updateProfile, saving } = useUpdateProfile();
+
+  // Delete-confirmation state for My Reviews. We keep the candidate in
+  // component state so the confirm dialog can read its preview while the
+  // delete promise is in flight.
+  const [reviewToDelete, setReviewToDelete] = useState<MyReviewSnapEntry | null>(null);
+  const [reviewDeleting, setReviewDeleting] = useState(false);
 
   const [activeSection, setActiveSection] = useState<Section>("bookings");
   const [bookingTab, setBookingTab] = useState<BookingTab>("upcoming");
@@ -363,6 +461,83 @@ export default function AccountPage() {
               <EmptyPanel title="No orders yet" body="Your preorders and dine-in payments will appear here." />
             )}
           </div>
+        </>
+      );
+    }
+
+    if (activeSection === "reviews") {
+      return (
+        <>
+          <SectionHeading
+            title="My reviews"
+            body="Your reviews and photos from past visits. Photos can only be taken from the Cenaiva mobile app — you can still delete them here."
+          />
+          <div className="mt-5 space-y-3">
+            {reviewEntriesLoading ? (
+              <EmptyPanel title="Loading…" body="Pulling your reviews and snaps." />
+            ) : reviewEntries.length === 0 ? (
+              <EmptyPanel
+                title="No reviews yet"
+                body="Your reviews and photos from past visits will appear here. Leave a review from the Bookings page after you dine."
+              />
+            ) : (
+              reviewEntries.map((entry) => (
+                <ReviewEntryRow
+                  key={entry.key}
+                  entry={entry}
+                  onDelete={() => setReviewToDelete(entry)}
+                />
+              ))
+            )}
+          </div>
+
+          {/* All-or-nothing delete confirm. Mirrors mobile's deleteMyReview
+              behavior — removes review row + photo row + storage object in
+              one shot (HAB_REVIEW_SNAP_TRANSFER §8). */}
+          <Dialog
+            open={reviewToDelete !== null}
+            onOpenChange={(open) => { if (!open) setReviewToDelete(null); }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Delete this review?</DialogTitle>
+                <DialogDescription>
+                  This removes your rating, written review, and photo for{" "}
+                  <span className="text-white">{reviewToDelete?.restaurantName}</span>. It can't be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  variant="ghost"
+                  onClick={() => setReviewToDelete(null)}
+                  disabled={reviewDeleting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="gap-1.5"
+                  disabled={reviewDeleting}
+                  onClick={async () => {
+                    if (!reviewToDelete) return;
+                    setReviewDeleting(true);
+                    try {
+                      await removeReviewEntry(reviewToDelete);
+                      toast.success("Review deleted.");
+                      setReviewToDelete(null);
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Could not delete.");
+                    } finally {
+                      setReviewDeleting(false);
+                    }
+                  }}
+                >
+                  <Trash2 className="size-4" />
+                  {reviewDeleting ? "Deleting…" : "Delete"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </>
       );
     }

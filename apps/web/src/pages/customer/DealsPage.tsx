@@ -6,7 +6,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft,
   ArrowRight,
-  Bell,
   Bookmark,
   CalendarDays,
   Flame,
@@ -44,6 +43,8 @@ import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { EventPromotionDetailDialog } from "@/components/customer/EventPromotionDetailCard";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
+import { CustomerBellDropdown } from "@/components/customer/CustomerBellDropdown";
+import { NotifyMeButton } from "@/components/customer/NotifyMeButton";
 import { ScrollWheelPicker } from "@/components/customer/ScrollWheelPicker";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import {
@@ -928,16 +929,25 @@ function EventCard({
         </div>
         <AvailableTimes slots={e.availableSlots} onBookSlot={onBookSlot} />
         {e.isSoldOut ? (
-          <Button
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onOpen();
-            }}
-            variant="outline"
-            className="mt-2 h-11 w-full rounded-md font-semibold opacity-70"
-          >
-            Sold out — view details
-          </Button>
+          <div className="mt-2 space-y-2" onClick={(ev) => ev.stopPropagation()}>
+            <Button
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onOpen();
+              }}
+              variant="outline"
+              className="h-11 w-full rounded-md font-semibold opacity-70"
+            >
+              Sold out — view details
+            </Button>
+            <NotifyMeButton
+              variant="event"
+              eventId={e.id.startsWith("event-") ? e.id.replace(/^event-/, "") : undefined}
+              eventName={e.title}
+              defaultPartySize={2}
+              className="w-full justify-center"
+            />
+          </div>
         ) : (
           <Button
             onClick={(ev) => {
@@ -1603,16 +1613,7 @@ export default function DealsPage() {
           <CustomerNav />
 
           <div className="ml-auto flex shrink-0 items-center gap-4">
-            <button
-              type="button"
-              className="relative inline-flex size-11 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-              aria-label="Notifications"
-            >
-              <Bell className="size-5" />
-              <span className="absolute -right-0.5 -top-0.5 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 font-mono text-[11px] font-bold text-black">
-                3
-              </span>
-            </button>
+            <CustomerBellDropdown className="size-11 rounded-full border border-border bg-bg-surface/70 hover:border-gold/40" />
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2310,15 +2311,28 @@ export default function DealsPage() {
                           {e.when} · <span className="text-gold">{e.price}</span>
                         </p>
                         <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => void bookEventSlot(e, slot)} size="sm" />
-                        <Button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            bookEvent(e);
-                          }}
-                          className="h-8 w-full rounded-md text-xs font-semibold"
-                        >
-                          {e.detail?.actionLabel ?? "Book"}
-                        </Button>
+                        {e.isSoldOut ? (
+                          <div onClick={(ev) => ev.stopPropagation()}>
+                            <NotifyMeButton
+                              variant="event"
+                              eventId={e.id.startsWith("event-") ? e.id.replace(/^event-/, "") : undefined}
+                              eventName={e.title}
+                              defaultPartySize={2}
+                              size="sm"
+                              className="h-8 w-full justify-center text-xs"
+                            />
+                          </div>
+                        ) : (
+                          <Button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              bookEvent(e);
+                            }}
+                            className="h-8 w-full rounded-md text-xs font-semibold"
+                          >
+                            {e.detail?.actionLabel ?? "Book"}
+                          </Button>
+                        )}
                       </div>
                     </div>
                   );

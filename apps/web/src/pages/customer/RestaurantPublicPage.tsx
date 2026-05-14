@@ -54,6 +54,8 @@ import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItem
 import { useAllActivePromotions, getPromotionLabel, getPromoTypeBadgeClasses } from "@/hooks/usePromotions";
 import { useRestaurantPreviewStats } from "@/hooks/useRestaurantPreviewStats";
 import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
+import { useRestaurantPhotos, type RestaurantPhoto } from "@/hooks/useRestaurantPhotos";
+import { PhotoReviewDialog } from "@/components/customer/PhotoReviewDialog";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useUser } from "@/hooks/useUser";
 import {
@@ -450,6 +452,7 @@ function RestaurantStaffPreview({
   const [previewPartySize, setPreviewPartySize] = useState(2);
   const previewDateTriggerId = useId();
   const [previewDatePopoverOpen, setPreviewDatePopoverOpen] = useState(false);
+  const [selectedSnap, setSelectedSnap] = useState<RestaurantPhoto | null>(null);
   const [previewPartyPopoverOpen, setPreviewPartyPopoverOpen] = useState(false);
   const [previewCalendarMonth, setPreviewCalendarMonth] = useState(() => new Date());
   const [availableDateKeys, setAvailableDateKeys] = useState<Set<string>>(new Set());
@@ -476,6 +479,7 @@ function RestaurantStaffPreview({
   const { events: allEvents, loading: eventsLoading } = useAllActiveEvents();
   const { stats } = useRestaurantPreviewStats(restaurant.id);
   const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(restaurant.id);
+  const { photos: dinerPhotos, loading: dinerPhotosLoading } = useRestaurantPhotos(restaurant.id);
   const savedMenuItems = useMemo(() => (hasSavedMenu ? menuItems : []), [hasSavedMenu, menuItems]);
   const menuHighlights = savedMenuItems.slice(0, 4);
   const menuSections = useMemo(() => {
@@ -770,19 +774,100 @@ function RestaurantStaffPreview({
                 <>
                   <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-gold">Media</p>
                   <h2 className="mt-2 font-serif text-2xl text-white">Photos</h2>
-                  {photoSources.length > 0 ? (
-                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                      {photoSources.map((imageUrl) => (
-                        <div key={imageUrl} className="h-36">
-                          <PreviewArt label={restaurant.name} imageUrl={imageUrl} />
-                        </div>
+
+                  {/* Diner snaps — visit_photos joined with reviewer info +
+                      paired review via booking_id / ±5min heuristic. Mobile
+                      writes these; web is read-only for snap creation. */}
+                  <p className="mt-5 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                    From diners
+                  </p>
+                  {dinerPhotosLoading ? (
+                    <div className="mt-3 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      Loading photos...
+                    </div>
+                  ) : dinerPhotos.length > 0 ? (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                      {dinerPhotos.map((p) => (
+                        <article
+                          key={p.id}
+                          className="overflow-hidden rounded-2xl border border-border bg-bg-elevated"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setSelectedSnap(p)}
+                            className="block aspect-square w-full overflow-hidden bg-bg-base transition-opacity hover:opacity-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-gold"
+                            aria-label={`View full review from ${p.poster_name ?? "this diner"}`}
+                          >
+                            <img
+                              src={p.image_url}
+                              alt={p.caption ?? `Photo at ${restaurant.name}`}
+                              loading="lazy"
+                              className="size-full object-cover"
+                            />
+                          </button>
+                          <div className="space-y-2 p-3">
+                            <div className="flex items-center gap-2">
+                              {p.poster_avatar_url ? (
+                                <img
+                                  src={p.poster_avatar_url}
+                                  alt=""
+                                  className="size-7 rounded-full object-cover"
+                                />
+                              ) : (
+                                <div className="flex size-7 items-center justify-center rounded-full bg-gold/15 text-[10px] font-semibold text-gold">
+                                  {(p.poster_name ?? "?").slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                              <span className="truncate text-xs text-text-secondary">
+                                {p.poster_name ?? "A diner"}
+                              </span>
+                              {p.paired_review ? (
+                                <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-[11px] font-medium text-gold">
+                                  <Star className="size-3 fill-gold" />
+                                  {p.paired_review.rating}
+                                </span>
+                              ) : p.rating ? (
+                                <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-[11px] font-medium text-gold">
+                                  <Star className="size-3 fill-gold" />
+                                  {p.rating}
+                                </span>
+                              ) : null}
+                            </div>
+                            {p.paired_review?.review_text ? (
+                              <p className="line-clamp-2 text-sm leading-snug text-text-secondary">
+                                {p.paired_review.review_text}
+                              </p>
+                            ) : p.caption ? (
+                              <p className="line-clamp-2 text-sm leading-snug text-text-secondary">
+                                {p.caption}
+                              </p>
+                            ) : null}
+                          </div>
+                        </article>
                       ))}
                     </div>
                   ) : (
-                    <div className="mt-5 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
-                      No restaurant or menu photos have been added yet.
+                    <div className="mt-3 rounded-2xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                      No photos shared yet. Diners can post photos from the mobile app after their visit.
                     </div>
                   )}
+
+                  {/* Restaurant-owned photos (cover, menu shots) — owner-uploaded
+                      gallery, distinct from diner snaps. */}
+                  {photoSources.length > 0 ? (
+                    <>
+                      <p className="mt-8 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                        From the restaurant
+                      </p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        {photoSources.map((imageUrl) => (
+                          <div key={imageUrl} className="h-36">
+                            <PreviewArt label={restaurant.name} imageUrl={imageUrl} />
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
                 </>
               )}
               {activeTab === "Reviews" && (
@@ -807,26 +892,42 @@ function RestaurantStaffPreview({
                       {reviews.map((review) => (
                         <article key={review.id} className="rounded-2xl bg-bg-elevated p-4">
                           <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-1 text-gold">
-                              {[1, 2, 3, 4, 5].map((value) => (
-                                <Star
-                                  key={value}
-                                  className={cn(
-                                    "size-4",
-                                    value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
-                                  )}
+                            <div className="flex items-center gap-2.5">
+                              {review.reviewer_avatar_url ? (
+                                <img
+                                  src={review.reviewer_avatar_url}
+                                  alt=""
+                                  className="size-8 rounded-full object-cover"
                                 />
-                              ))}
+                              ) : (
+                                <div className="flex size-8 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
+                                  {(review.reviewer_name ?? "?").slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="truncate text-sm text-white">
+                                  {review.reviewer_name ?? "A diner"}
+                                </p>
+                                <div className="mt-0.5 flex items-center gap-0.5 text-gold">
+                                  {[1, 2, 3, 4, 5].map((value) => (
+                                    <Star
+                                      key={value}
+                                      className={cn(
+                                        "size-3.5",
+                                        value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
+                                      )}
+                                    />
+                                  ))}
+                                </div>
+                              </div>
                             </div>
-                            <span className="text-[11px] text-text-muted">
+                            <span className="shrink-0 text-[11px] text-text-muted">
                               {format(new Date(review.created_at), "MMM d, yyyy")}
                             </span>
                           </div>
                           {review.review_text ? (
                             <p className="mt-3 text-sm leading-6 text-text-secondary">{review.review_text}</p>
-                          ) : (
-                            <p className="mt-3 text-sm text-text-muted">Rated {review.rating} out of 5.</p>
-                          )}
+                          ) : null}
                         </article>
                       ))}
                     </div>
@@ -1018,6 +1119,12 @@ function RestaurantStaffPreview({
           </div>
         </aside>
       </main>
+      <PhotoReviewDialog
+        open={selectedSnap !== null}
+        onOpenChange={(next) => { if (!next) setSelectedSnap(null); }}
+        photo={selectedSnap}
+        restaurantName={restaurant.name}
+      />
     </div>
   );
 }

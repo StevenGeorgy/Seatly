@@ -36,6 +36,7 @@ import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewModal";
+import { NotifyMeButton } from "@/components/customer/NotifyMeButton";
 import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter";
 import { ScrollWheelPicker } from "@/components/customer/ScrollWheelPicker";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
@@ -45,6 +46,7 @@ import {
   normalizePartySize,
 } from "@/lib/customer/availabilityFilters";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { DiscoverReviewBanner } from "@/components/customer/DiscoverReviewBanner";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -413,6 +415,7 @@ function GridCard({
   onToggleSave,
   onBookSlot,
   onOpen,
+  notifyDefaults,
 }: {
   r: RestaurantCard;
   favorite: boolean;
@@ -421,6 +424,7 @@ function GridCard({
   onToggleSave: () => void;
   onBookSlot: (slot: AvailabilitySlot) => void;
   onOpen: () => void;
+  notifyDefaults: { date: string; time: string; partySize: number };
 }) {
   const prefetch = useRestaurantPrefetch(r.id, r.slug);
   return (
@@ -473,9 +477,22 @@ function GridCard({
         {r.availableSlots.length > 0 ? (
           <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
         ) : (
-          <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated/40 px-3 py-2 text-xs text-text-secondary">
-            <Clock className="size-3.5 text-text-muted" />
-            <span>Booked up tonight — tap to pick another night</span>
+          <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated/40 px-3 py-2 text-xs text-text-secondary">
+              <Clock className="size-3.5 text-text-muted" />
+              <span>Booked up tonight — tap to pick another night</span>
+            </div>
+            <NotifyMeButton
+              variant="restaurant"
+              restaurantId={r.id}
+              restaurantName={r.name}
+              restaurantSlug={r.slug}
+              defaultDate={notifyDefaults.date}
+              defaultTime={notifyDefaults.time}
+              defaultPartySize={notifyDefaults.partySize}
+              size="sm"
+              className="w-full justify-center"
+            />
           </div>
         )}
       </div>
@@ -875,6 +892,7 @@ function MapRestaurantPopup({
   onToggleFavorite,
   onToggleSave,
   onOpenPreview,
+  notifyDefaults,
 }: {
   restaurant: RestaurantCard;
   favorite: boolean;
@@ -884,6 +902,7 @@ function MapRestaurantPopup({
   onToggleFavorite: () => void;
   onToggleSave: () => void;
   onOpenPreview: () => void;
+  notifyDefaults: { date: string; time: string; partySize: number };
 }) {
   return (
     <div
@@ -952,7 +971,23 @@ function MapRestaurantPopup({
           {restaurant.cuisine ? <span>{capitalizeWords(restaurant.cuisine)}</span> : null}
           {restaurant.area ? <span>{capitalizeWords(restaurant.area)}</span> : null}
         </div>
-        <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} size="lg" />
+        {restaurant.availableSlots.length > 0 ? (
+          <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} size="lg" />
+        ) : (
+          <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm text-text-secondary">Booked up tonight.</p>
+            <NotifyMeButton
+              variant="restaurant"
+              restaurantId={restaurant.id}
+              restaurantName={restaurant.name}
+              restaurantSlug={restaurant.slug}
+              defaultDate={notifyDefaults.date}
+              defaultTime={notifyDefaults.time}
+              defaultPartySize={notifyDefaults.partySize}
+              className="w-full justify-center"
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1505,6 +1540,29 @@ export default function DiscoverPage() {
     return `Available ${format(d, "EEE, MMM d")} near you`;
   }, [autoRollOffsetDays, effectiveBookingDate]);
 
+  // Short day-only label used as a suffix on the OTHER rail titles when
+  // auto-roll has fired. Without this, "Date night picks" and "New on
+  // Cenaiva" silently show slot pills for the rolled-to date (e.g. May 15
+  // 5pm) while their titles still imply "tonight" — the user reads "5pm"
+  // on May 14 and assumes it's today's 5pm. The suffix turns the rail
+  // into "Date night picks · Fri, May 15" so the date is unambiguous.
+  const rolledDateSuffix = useMemo(() => {
+    if (autoRollOffsetDays === 0) return null;
+    const d = new Date(`${effectiveBookingDate}T00:00:00`);
+    if (autoRollOffsetDays <= 6) return format(d, "EEEE");
+    return format(d, "EEE, MMM d");
+  }, [autoRollOffsetDays, effectiveBookingDate]);
+
+  const dateNightRowTitle = rolledDateSuffix
+    ? `Date night picks · ${rolledDateSuffix}`
+    : "Date night picks";
+  const newOnCenaivaRowTitle = rolledDateSuffix
+    ? `New on Cenaiva · ${rolledDateSuffix}`
+    : "New on Cenaiva";
+  const bookedUpRowTitle = rolledDateSuffix
+    ? `Booked up ${rolledDateSuffix} — try another night`
+    : "Booked up tonight — try another night";
+
   const greetingName = profile?.full_name?.split(" ")[0] ?? "guest";
 
   const today = new Date();
@@ -1540,9 +1598,18 @@ export default function DiscoverPage() {
                 </button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-80 border-border bg-bg-elevated p-0 text-text-primary">
-                <div className="border-b border-border px-4 py-3">
-                  <p className="font-serif text-lg text-white">Notifications</p>
-                  <p className="text-xs text-text-muted">Invites and account updates</p>
+                <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <div>
+                    <p className="font-serif text-lg text-white">Notifications</p>
+                    <p className="text-xs text-text-muted">Invites and account updates</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/notifications")}
+                    className="text-xs font-medium text-gold transition-colors hover:text-gold/80"
+                  >
+                    View all
+                  </button>
                 </div>
                 <div className="max-h-80 overflow-y-auto p-2">
                   {pendingStaffInvites.map((invite) => (
@@ -1628,6 +1695,7 @@ export default function DiscoverPage() {
       </header>
 
       <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
+        <DiscoverReviewBanner />
         <div className="text-center">
         <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
         <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
@@ -2070,10 +2138,10 @@ export default function DiscoverPage() {
               ? [{ key: "available", eyebrow: "Curated", title: availableRowTitle, pool: filtered, preview: featured }]
               : []),
             ...(bookedUpTonightPool.length > 0
-              ? [{ key: "booked-up", eyebrow: "Tonight", title: "Booked up tonight — try another night", pool: bookedUpTonightPool, preview: bookedUpTonightPool.slice(0, 4) }]
+              ? [{ key: "booked-up", eyebrow: "Tonight", title: bookedUpRowTitle, pool: bookedUpTonightPool, preview: bookedUpTonightPool.slice(0, 4) }]
               : []),
-            { key: "date-night", eyebrow: "Curated", title: "Date night picks", pool: filtered, preview: dateNight },
-            { key: "new", eyebrow: "Curated", title: "New on Cenaiva", pool: filtered, preview: newOnCenaiva },
+            { key: "date-night", eyebrow: "Curated", title: dateNightRowTitle, pool: filtered, preview: dateNight },
+            { key: "new", eyebrow: "Curated", title: newOnCenaivaRowTitle, pool: filtered, preview: newOnCenaiva },
           ];
           const visible = expandedRow
             ? rows.filter((r) => r.key === expandedRow)
@@ -2127,6 +2195,11 @@ export default function DiscoverPage() {
                           onToggleSave={() => toggleSavedRestaurant(r.id)}
                           onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
                           onOpen={() => openRestaurantPreview(r)}
+                          notifyDefaults={{
+                            date: selectedBookingDate,
+                            time,
+                            partySize: selectedPartySize,
+                          }}
                         />
                       ))}
                     </div>
@@ -2227,6 +2300,11 @@ export default function DiscoverPage() {
                       onToggleFavorite={() => toggleFavorite(r.id)}
                       onToggleSave={() => toggleSavedRestaurant(r.id)}
                       onOpenPreview={() => openRestaurantPreview(r)}
+                      notifyDefaults={{
+                        date: selectedBookingDate,
+                        time,
+                        partySize: selectedPartySize,
+                      }}
                     />
                     );
                   })()}

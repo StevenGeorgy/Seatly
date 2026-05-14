@@ -5,7 +5,6 @@ import { format } from "date-fns";
 import {
   Bookmark,
   CalendarDays,
-  Camera,
   Clock,
   Heart,
   Info,
@@ -33,6 +32,8 @@ import { useAllActiveEvents } from "@/hooks/useEvents";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
+import { useRestaurantPhotos, type RestaurantPhoto } from "@/hooks/useRestaurantPhotos";
+import { PhotoReviewDialog } from "@/components/customer/PhotoReviewDialog";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -191,6 +192,7 @@ export function RestaurantPreviewModal({
   // "Continue with X" button below; AvailabilityPanel owns date / time /
   // party state itself.
   const [pickedSlot, setPickedSlot] = useState<AvailabilitySlot | null>(null);
+  const [selectedSnap, setSelectedSnap] = useState<RestaurantPhoto | null>(null);
 
   const previewRestaurantKey = restaurant?.slug ?? restaurant?.id;
   const { restaurant: restaurantDetails } = useRestaurant(previewRestaurantKey);
@@ -220,6 +222,7 @@ export function RestaurantPreviewModal({
   const { categories: dbCategories } = usePublicMenuCategories(resolvedRestaurantId, { enabled: activeTab === "menu" });
   const { items: dbMenuItems, loading: menuLoading } = usePublicMenuItems(resolvedRestaurantId, { enabled: activeTab === "menu" });
   const { reviews, summary: reviewSummary, loading: reviewsLoading } = useRestaurantReviews(resolvedRestaurantId, { enabled: activeTab === "reviews" });
+  const { photos: dinerPhotos, loading: dinerPhotosLoading } = useRestaurantPhotos(resolvedRestaurantId, { enabled: activeTab === "photos" });
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents({ enabled: activeTab === "events" });
   const {
     fetchSlots,
@@ -693,28 +696,97 @@ export function RestaurantPreviewModal({
                         <div className="mb-4 flex items-center justify-between">
                           <div>
                             <h3 className="font-serif text-2xl text-white">Photos</h3>
-                            <p className="text-xs text-text-muted">Photos saved for this restaurant and menu.</p>
+                            <p className="text-xs text-text-muted">From diners and the restaurant.</p>
                           </div>
-                          <span className="inline-flex items-center gap-1 text-xs text-text-muted">
-                            <Camera className="size-3.5" /> {photoSources.length} photos
-                          </span>
                         </div>
-                        {photoSources.length > 0 ? (
-                          <div className="grid h-[520px] grid-cols-2 gap-2 sm:grid-cols-3">
-                            {photoSources.slice(0, 5).map((imageUrl, index) => (
-                              <StripeArt
-                                key={imageUrl}
-                                label={restaurant.name}
-                                imageUrl={imageUrl}
-                                className={cn(index === 0 && "col-span-2 row-span-2", "min-h-0")}
-                              />
+
+                        {/* From diners — visit_photos joined with reviewer info
+                            + paired review via booking_id / ±5min heuristic.
+                            Snap creation is mobile-only; web users can delete
+                            their own from the Account page. */}
+                        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                          From diners
+                        </p>
+                        {dinerPhotosLoading ? (
+                          <div className="mt-3 rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                            Loading photos...
+                          </div>
+                        ) : dinerPhotos.length > 0 ? (
+                          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                            {dinerPhotos.map((p) => (
+                              <article
+                                key={p.id}
+                                className="overflow-hidden rounded-xl border border-border bg-bg-elevated"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedSnap(p)}
+                                  className="block aspect-square w-full overflow-hidden bg-bg-base transition-opacity hover:opacity-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-gold"
+                                  aria-label={`View full review from ${p.poster_name ?? "this diner"}`}
+                                >
+                                  <img
+                                    src={p.image_url}
+                                    alt={p.caption ?? `Photo at ${restaurant.name}`}
+                                    loading="lazy"
+                                    className="size-full object-cover"
+                                  />
+                                </button>
+                                <div className="space-y-1.5 p-2.5">
+                                  <div className="flex items-center gap-1.5">
+                                    {p.poster_avatar_url ? (
+                                      <img
+                                        src={p.poster_avatar_url}
+                                        alt=""
+                                        className="size-5 rounded-full object-cover"
+                                      />
+                                    ) : (
+                                      <div className="flex size-5 items-center justify-center rounded-full bg-gold/15 text-[9px] font-semibold text-gold">
+                                        {(p.poster_name ?? "?").slice(0, 1).toUpperCase()}
+                                      </div>
+                                    )}
+                                    <span className="truncate text-[11px] text-text-secondary">
+                                      {p.poster_name ?? "A diner"}
+                                    </span>
+                                    {p.paired_review ? (
+                                      <span className="ml-auto inline-flex items-center gap-0.5 text-[11px] font-medium text-gold">
+                                        <Star className="size-3 fill-gold" />
+                                        {p.paired_review.rating}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {(p.paired_review?.review_text || p.caption) ? (
+                                    <p className="line-clamp-2 text-sm leading-snug text-text-secondary">
+                                      {p.paired_review?.review_text ?? p.caption}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </article>
                             ))}
                           </div>
                         ) : (
-                          <div className="rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
-                            No restaurant or menu photos have been added yet.
+                          <div className="mt-3 rounded-xl border border-dashed border-border bg-bg-elevated p-5 text-sm text-text-muted">
+                            No photos shared yet. Diners can post photos from the mobile app.
                           </div>
                         )}
+
+                        {/* From the restaurant — owner-uploaded cover/menu shots. */}
+                        {photoSources.length > 0 ? (
+                          <>
+                            <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                              From the restaurant
+                            </p>
+                            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                              {photoSources.slice(0, 6).map((imageUrl, index) => (
+                                <StripeArt
+                                  key={imageUrl}
+                                  label={restaurant.name}
+                                  imageUrl={imageUrl}
+                                  className={cn(index === 0 && "col-span-2 row-span-2", "min-h-0")}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        ) : null}
                       </section>
                     )}
 
@@ -747,26 +819,42 @@ export function RestaurantPreviewModal({
                               {reviews.map((review) => (
                                 <article key={review.id} className="rounded-xl border border-border bg-bg-elevated p-4">
                                   <div className="flex items-center justify-between gap-3">
-                                    <div className="flex items-center gap-1 text-gold">
-                                      {[1, 2, 3, 4, 5].map((value) => (
-                                        <Star
-                                          key={value}
-                                          className={cn(
-                                            "size-4",
-                                            value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
-                                          )}
+                                    <div className="flex items-center gap-2.5">
+                                      {review.reviewer_avatar_url ? (
+                                        <img
+                                          src={review.reviewer_avatar_url}
+                                          alt=""
+                                          className="size-8 rounded-full object-cover"
                                         />
-                                      ))}
+                                      ) : (
+                                        <div className="flex size-8 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
+                                          {(review.reviewer_name ?? "?").slice(0, 1).toUpperCase()}
+                                        </div>
+                                      )}
+                                      <div className="min-w-0">
+                                        <p className="truncate text-sm text-white">
+                                          {review.reviewer_name ?? "A diner"}
+                                        </p>
+                                        <div className="mt-0.5 flex items-center gap-0.5 text-gold">
+                                          {[1, 2, 3, 4, 5].map((value) => (
+                                            <Star
+                                              key={value}
+                                              className={cn(
+                                                "size-3.5",
+                                                value <= review.rating ? "fill-gold text-gold" : "text-text-muted",
+                                              )}
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
                                     </div>
-                                    <span className="text-[11px] text-text-muted">
+                                    <span className="shrink-0 text-[11px] text-text-muted">
                                       {format(new Date(review.created_at), "MMM d, yyyy")}
                                     </span>
                                   </div>
                                   {review.review_text ? (
                                     <p className="mt-3 text-sm leading-6 text-text-secondary">{review.review_text}</p>
-                                  ) : (
-                                    <p className="mt-3 text-sm text-text-muted">Rated {review.rating} out of 5.</p>
-                                  )}
+                                  ) : null}
                                 </article>
                               ))}
                             </div>
@@ -943,6 +1031,12 @@ export function RestaurantPreviewModal({
           </motion.div>
         </motion.div>
       )}
+      <PhotoReviewDialog
+        open={selectedSnap !== null}
+        onOpenChange={(next) => { if (!next) setSelectedSnap(null); }}
+        photo={selectedSnap}
+        restaurantName={restaurant?.name ?? ""}
+      />
     </AnimatePresence>
   );
 }

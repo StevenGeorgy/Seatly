@@ -487,6 +487,26 @@ Deno.serve(async (req: Request) => {
         })
       : ({ status: "skipped" as const, channel: null });
 
+    // Notify Me fan-out: when a reservation is modified, the OLD slot frees up.
+    // We ping availability_alerts matching the original reserved_at (not the new
+    // one — that slot just got taken). Wrapped in try/catch so a fan-out
+    // failure can NEVER block the modify response. RPC is a no-op when zero
+    // alerts.
+    try {
+      await adminClient.rpc("match_availability_alerts_for_restaurant", {
+        p_restaurant_id: reservation.restaurant_id,
+        p_freed_at: reservation.reserved_at, // OLD slot
+        p_freed_party_size: reservation.party_size, // OLD party
+      });
+      if (reservation.event_id) {
+        await adminClient.rpc("match_availability_alerts_for_event", {
+          p_event_id: reservation.event_id,
+        });
+      }
+    } catch (e) {
+      console.warn("[modify-reservation] notify-me fan-out failed:", e);
+    }
+
     return json({
       ok: true,
       reservation_id: reservationId,

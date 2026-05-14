@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import { toast } from "sonner";
 import {
-  Bell,
   Calendar as CalendarIcon,
   CalendarDays,
   CalendarPlus,
@@ -18,6 +17,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Star,
   Tag,
   User,
   Users,
@@ -29,9 +29,19 @@ import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservati
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
+import { CustomerBellDropdown } from "@/components/customer/CustomerBellDropdown";
 import { StaffWorkspaceMenuItems } from "@/components/customer/StaffWorkspaceMenuItems";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,7 +51,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
-import { useNotifications } from "@/hooks/useNotifications";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import {
   reservationDisplayStatus,
@@ -156,6 +165,7 @@ function BookingCardView({
   onPrimary,
   onCancel,
   onModify,
+  onReview,
   cancelling,
 }: {
   b: BookingCard;
@@ -163,6 +173,8 @@ function BookingCardView({
   onPrimary: () => void;
   onCancel?: () => void;
   onModify?: () => void;
+  /** Past variant only — opens the Leave a Review modal. */
+  onReview?: () => void;
   cancelling?: boolean;
 }) {
   return (
@@ -247,6 +259,16 @@ function BookingCardView({
             >
               Details <ChevronRight className="size-4" />
             </Link>
+            {onReview ? (
+              <button
+                type="button"
+                onClick={onReview}
+                className="col-span-2 flex items-center justify-center gap-2 border-t border-border/60 py-3 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-gold"
+              >
+                <Star className="size-4 text-gold" />
+                Leave a review
+              </button>
+            ) : null}
           </>
         ) : (
           <>
@@ -476,12 +498,19 @@ export default function BookingsPage() {
   } = useUser();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
   const { upcoming, past, loading, refresh } = useMyReservations();
-  const { unreadCount } = useNotifications();
   const assistant = useAssistant();
 
   const [tab, setTab] = useState<Tab>("upcoming");
   const [search, setSearch] = useState("");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // Leave-a-review modal state. Holds the booking card the user clicked
+  // "Leave a review" on; null = closed. We pull guest_id + restaurant_id
+  // from the reservations table at submit time to satisfy the NOT NULL
+  // constraints on restaurant_reviews.
+  const [reviewBooking, setReviewBooking] = useState<BookingCard | null>(null);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewText, setReviewText] = useState<string>("");
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
 
   const upcomingCards = useMemo(() => {
     return upcoming
@@ -523,6 +552,60 @@ export default function BookingsPage() {
 
   const handleBookAgain = (b: BookingCard) => {
     navigate(`/${b.restaurantSlug}`);
+  };
+
+  const handleSubmitReview = async () => {
+    if (!reviewBooking) return;
+    // restaurant_reviews.user_id FK references user_profiles(id) — NOT
+    // auth.users(id) — so we send profile.id, not profile.auth_user_id.
+    // The RLS policy `user_id = current_profile_id()` validates this match.
+    if (!profile?.id) {
+      toast.error("Please sign in to leave a review.");
+      return;
+    }
+    if (reviewRating < 1 || reviewRating > 5) {
+      toast.error("Pick a rating from 1 to 5.");
+      return;
+    }
+    setReviewSubmitting(true);
+    try {
+      const client = getSupabaseBrowserClient();
+      // Pull guest_id + restaurant_id straight from the reservation. The
+      // restaurant_reviews table requires both NOT NULL — we can't infer
+      // guest_id from useMyReservations's projection.
+      const { data: rRow, error: rErr } = await client
+        .from("reservations")
+        .select("guest_id, restaurant_id")
+        .eq("id", reviewBooking.id)
+        .single<{ guest_id: string; restaurant_id: string }>();
+      if (rErr || !rRow) {
+        throw new Error(rErr?.message ?? "Reservation not found");
+      }
+      const { error } = await client.from("restaurant_reviews").insert({
+        reservation_id: reviewBooking.id,
+        restaurant_id: rRow.restaurant_id,
+        guest_id: rRow.guest_id,
+        user_id: profile.id,
+        rating: reviewRating,
+        review_text: reviewText.trim() || null,
+      });
+      if (error) {
+        if (error.code === "23505") {
+          toast.error("You've already reviewed this visit.");
+        } else {
+          toast.error(error.message);
+        }
+        return;
+      }
+      toast.success("Thanks — your review is live.");
+      setReviewBooking(null);
+      setReviewRating(5);
+      setReviewText("");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not post review.");
+    } finally {
+      setReviewSubmitting(false);
+    }
   };
 
   const handleDetails = (b: BookingCard) => {
@@ -571,18 +654,7 @@ export default function BookingsPage() {
           <CustomerNav />
 
           <div className="ml-auto flex shrink-0 items-center gap-4">
-            <button
-              type="button"
-              className="relative inline-flex size-11 items-center justify-center rounded-full border border-border bg-bg-surface/70 text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-              aria-label="Notifications"
-            >
-              <Bell className="size-5" />
-              {unreadCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 font-mono text-[11px] font-bold text-black">
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </span>
-              )}
-            </button>
+            <CustomerBellDropdown className="size-11 rounded-full border border-border bg-bg-surface/70 hover:border-gold/40" />
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -761,6 +833,7 @@ export default function BookingsPage() {
                         b={b}
                         variant="past"
                         onPrimary={() => handleBookAgain(b)}
+                        onReview={() => setReviewBooking(b)}
                       />
                     ))}
                   </div>
@@ -815,6 +888,81 @@ export default function BookingsPage() {
           </aside>
         </div>
       </main>
+
+      {/* Leave-a-review modal. Triggered from past-card "Leave a review"
+          button. Inserts into restaurant_reviews; photos are mobile-only. */}
+      <Dialog
+        open={reviewBooking !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReviewBooking(null);
+            setReviewRating(5);
+            setReviewText("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Leave a review</DialogTitle>
+            <DialogDescription>
+              Share how it went at{" "}
+              <span className="text-white">{reviewBooking?.restaurantName}</span>. Adding photos to
+              your review is available in the mobile app.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">Rating</p>
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setReviewRating(value)}
+                    aria-label={`${value} star${value === 1 ? "" : "s"}`}
+                    className="rounded-md p-1 transition-colors hover:bg-bg-elevated"
+                  >
+                    <Star
+                      className={`size-7 ${
+                        value <= reviewRating ? "fill-gold text-gold" : "text-text-muted"
+                      }`}
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
+                Tell other diners (optional)
+              </p>
+              <Textarea
+                value={reviewText}
+                onChange={(e) => setReviewText(e.target.value)}
+                placeholder="What stood out? Service, ambiance, dishes..."
+                rows={4}
+                maxLength={800}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="ghost"
+              onClick={() => setReviewBooking(null)}
+              disabled={reviewSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitReview}
+              disabled={reviewSubmitting || reviewRating < 1}
+              className="gap-1.5"
+            >
+              <Star className="size-4" />
+              {reviewSubmitting ? "Posting..." : "Post review"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

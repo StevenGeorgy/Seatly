@@ -253,10 +253,33 @@ Deno.serve(async (req: Request) => {
       .eq("id", reservationId);
     if (updateError) return json({ error: updateError.message }, 400);
 
+    // Notify Me fan-out: when a slot frees up we ping any active
+    // `availability_alerts` rows that match this restaurant + date + party.
+    // Wrapped in try/catch so a fan-out failure can NEVER block the cancel
+    // response — alerts are best-effort. RPC is a no-op when zero alerts.
+    const fanOutSlotOpened = async () => {
+      try {
+        await adminClient.rpc("match_availability_alerts_for_restaurant", {
+          p_restaurant_id: reservation.restaurant_id,
+          p_freed_at: reservation.reserved_at,
+          p_freed_party_size: reservation.party_size,
+        });
+        if (reservation.event_id) {
+          await adminClient.rpc("match_availability_alerts_for_event", {
+            p_event_id: reservation.event_id,
+          });
+        }
+      } catch (e) {
+        // Swallow — alert fan-out must never block cancel.
+        console.warn("[cancel-reservation] notify-me fan-out failed:", e);
+      }
+    };
+
     const { error: rpcReleaseError } = await adminClient.rpc("release_reservation_tables", {
       p_reservation_id: reservationId,
     });
     if (!rpcReleaseError) {
+      await fanOutSlotOpened();
       const notification = await sendCancellationNotice();
       return json({
         ok: true,
@@ -307,6 +330,7 @@ Deno.serve(async (req: Request) => {
       if (tableUpdateError) return json({ error: tableUpdateError.message }, 400);
     }
 
+    await fanOutSlotOpened();
     const notification = await sendCancellationNotice();
     return json({
       ok: true,

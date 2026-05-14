@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Star, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -7,40 +7,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { useUser } from "@/hooks/useUser";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
-
-type ReviewRequest = {
-  notification_id: string;
-  reservation_id: string;
-  restaurant_id: string;
-  restaurant_name: string;
-  reserved_at: string;
-};
-
-type PendingReviewRequestRow = {
-  notification_id?: string | null;
-  reservation_id?: string | null;
-  restaurant_id?: string | null;
-  restaurant_name?: string | null;
-  reserved_at?: string | null;
-};
-
-const DISMISSED_STORAGE_PREFIX = "cenaiva:review-prompt-dismissed:";
-const REVIEW_REQUEST_CHECK_MS = 60_000;
-
-function normalizeReviewRequests(rows: PendingReviewRequestRow[] | null): ReviewRequest[] {
-  return (rows ?? [])
-    .map((row) => ({
-      notification_id: row.notification_id ?? "",
-      reservation_id: row.reservation_id ?? "",
-      restaurant_id: row.restaurant_id ?? "",
-      restaurant_name: row.restaurant_name ?? "Restaurant",
-      reserved_at: row.reserved_at ?? "",
-    }))
-    .filter((row) => row.notification_id && row.reservation_id && row.restaurant_id && row.reserved_at);
-}
+import {
+  useReservationReviewRequests,
+  type ReviewRequest,
+} from "@/hooks/useReservationReviewRequests";
 
 function reviewRouteReservationId(pathname: string, search: string): string | null {
   const params = new URLSearchParams(search);
@@ -48,92 +19,33 @@ function reviewRouteReservationId(pathname: string, search: string): string | nu
   return pathname.match(/^\/bookings\/([^/?#]+)/)?.[1] ?? null;
 }
 
-function dismissedStorageKey(reservationId: string): string {
-  return `${DISMISSED_STORAGE_PREFIX}${reservationId}`;
-}
-
-function hasDismissedPrompt(reservationId: string): boolean {
-  if (typeof window === "undefined") return false;
-  return window.sessionStorage.getItem(dismissedStorageKey(reservationId)) === "1";
-}
-
-function setDismissedPrompt(reservationId: string): void {
-  if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(dismissedStorageKey(reservationId), "1");
-}
-
-function clearDismissedPrompt(reservationId: string): void {
-  if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(dismissedStorageKey(reservationId));
-}
-
-function dispatchNotificationsChanged(): void {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("cenaiva:notifications-changed"));
-}
-
 export function ReservationReviewPrompt() {
-  const { profile, user } = useUser();
   const location = useLocation();
   const navigate = useNavigate();
-  const [requests, setRequests] = useState<ReviewRequest[]>([]);
-  const [dismissedReservationIds, setDismissedReservationIds] = useState<Set<string>>(new Set());
+  const { requests, activeRequest, dismiss, submit, reactivate } = useReservationReviewRequests();
 
   const routeReservationId = useMemo(
     () => reviewRouteReservationId(location.pathname, location.search),
     [location.pathname, location.search],
   );
 
-  const fetchReviewRequests = useCallback(async () => {
-    if (!profile?.id || !user || !isSupabaseConfigured()) {
-      setRequests([]);
-      return;
-    }
-
-    const client = getSupabaseBrowserClient();
-    const { data, error } = await client.rpc("ensure_pending_reservation_review_requests");
-    if (error) {
-      setRequests([]);
-      return;
-    }
-
-    const nextRequests = normalizeReviewRequests(data as PendingReviewRequestRow[] | null);
-    setRequests(nextRequests);
-    if (nextRequests.length > 0) dispatchNotificationsChanged();
-  }, [profile?.id, user]);
-
+  // Deep-link path: /bookings/<id>?review=1 should reopen the prompt even
+  // if the user previously dismissed it this session.
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void fetchReviewRequests();
-    }, 0);
-    const interval = profile?.id && user
-      ? window.setInterval(() => {
-        void fetchReviewRequests();
-      }, REVIEW_REQUEST_CHECK_MS)
-      : null;
-    return () => {
-      window.clearTimeout(timeout);
-      if (interval) window.clearInterval(interval);
-    };
-  }, [fetchReviewRequests, profile?.id, user]);
+    if (routeReservationId) reactivate(routeReservationId);
+  }, [routeReservationId, reactivate]);
 
-  const activeRequest = useMemo(() => {
-    const routeRequest = routeReservationId
-      ? requests.find((request) => request.reservation_id === routeReservationId) ?? null
-      : null;
-    return routeRequest
-      ?? requests.find((request) => (
-        !dismissedReservationIds.has(request.reservation_id)
-        && !hasDismissedPrompt(request.reservation_id)
-      ))
-      ?? null;
-  }, [dismissedReservationIds, requests, routeReservationId]);
+  // Pick the route-pinned request first, else fall back to the hook's
+  // session-aware activeRequest.
+  const request = useMemo<ReviewRequest | null>(() => {
+    if (routeReservationId) {
+      return requests.find((r) => r.reservation_id === routeReservationId) ?? null;
+    }
+    return activeRequest;
+  }, [requests, routeReservationId, activeRequest]);
 
   const closePrompt = () => {
-    if (activeRequest) {
-      setDismissedPrompt(activeRequest.reservation_id);
-      setDismissedReservationIds((prev) => new Set(prev).add(activeRequest.reservation_id));
-    }
+    if (request) dismiss(request.reservation_id);
     if (routeReservationId) {
       const params = new URLSearchParams(location.search);
       params.delete("review");
@@ -142,24 +54,17 @@ export function ReservationReviewPrompt() {
     }
   };
 
-  const handleSubmitted = (reservationId: string) => {
-    clearDismissedPrompt(reservationId);
-    setDismissedReservationIds((prev) => {
-      const next = new Set(prev);
-      next.delete(reservationId);
-      return next;
-    });
-    setRequests((prev) => prev.filter((request) => request.reservation_id !== reservationId));
-    dispatchNotificationsChanged();
-    toast.success("Thanks for the review.");
+  const handleSubmit = async (reservationId: string, rating: number, text: string | null) => {
+    const outcome = await submit(reservationId, rating, text);
+    toast.success(outcome === "already-reviewed" ? "Already reviewed — thanks!" : "Thanks for the review.");
   };
 
   return (
     <ReviewPromptDialog
-      key={activeRequest?.reservation_id ?? "closed"}
-      request={activeRequest}
+      key={request?.reservation_id ?? "closed"}
+      request={request}
       onClose={closePrompt}
-      onSubmitted={handleSubmitted}
+      onSubmit={handleSubmit}
     />
   );
 }
@@ -167,31 +72,21 @@ export function ReservationReviewPrompt() {
 function ReviewPromptDialog({
   request,
   onClose,
-  onSubmitted,
+  onSubmit,
 }: {
   request: ReviewRequest | null;
   onClose: () => void;
-  onSubmitted: (reservationId: string) => void;
+  onSubmit: (reservationId: string, rating: number, text: string | null) => Promise<void>;
 }) {
   const [rating, setRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const submitReview = async () => {
-    if (!request || rating < 1 || submitting || !isSupabaseConfigured()) return;
-
+    if (!request || rating < 1 || submitting) return;
     setSubmitting(true);
     try {
-      const client = getSupabaseBrowserClient();
-      const { error } = await client.rpc("submit_reservation_review", {
-        p_reservation_id: request.reservation_id,
-        p_rating: rating,
-        p_review_text: reviewText.trim() || null,
-      });
-
-      if (error) throw new Error(error.message);
-
-      onSubmitted(request.reservation_id);
+      await onSubmit(request.reservation_id, rating, reviewText.trim() || null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not submit review.");
     } finally {
