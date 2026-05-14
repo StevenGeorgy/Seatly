@@ -2825,6 +2825,65 @@ function cuisineGroupForHint(cuisine: string | null): string | null {
   return null;
 }
 
+// `restaurants.business_type` has a DB-level CHECK constraint with exactly
+// 14 allowed values. The LLM-facing tool prompt is broader on purpose
+// ("coffee shop", "deli", "lounge", "izakaya" etc.) because users say those
+// out loud. canonicalizeBusinessType maps the LLM's natural-language output
+// back onto the canonical 14 so the ILIKE filter at the search_restaurants
+// call site can hit real rows. Unknown styles (e.g. "food truck") return
+// null so the filter just doesn't apply — better than returning zero results.
+const ALLOWED_BUSINESS_TYPES = [
+  "Cafe",
+  "Casual dining",
+  "Fast casual",
+  "Fine dining",
+  "Bistro",
+  "Steakhouse",
+  "Bar",
+  "Cocktail bar / Lounge",
+  "Wine bar",
+  "Sports bar",
+  "Pub",
+  "Brewery",
+  "Bakery",
+  "Brunch spot",
+] as const;
+
+const BUSINESS_TYPE_ALIASES: Record<string, string> = {
+  "coffee shop": "Cafe",
+  "coffee bar": "Cafe",
+  "coffeehouse": "Cafe",
+  "coffee house": "Cafe",
+  "deli": "Casual dining",
+  "delicatessen": "Casual dining",
+  "diner": "Casual dining",
+  "lounge": "Cocktail bar / Lounge",
+  "cocktail lounge": "Cocktail bar / Lounge",
+  "cocktail bar": "Cocktail bar / Lounge",
+  "speakeasy": "Cocktail bar / Lounge",
+  "izakaya": "Bar",
+  "gastropub": "Pub",
+  "tavern": "Pub",
+  "tap room": "Brewery",
+  "tap house": "Brewery",
+  "taproom": "Brewery",
+  "brewpub": "Brewery",
+  "patisserie": "Bakery",
+  "pâtisserie": "Bakery",
+  "boulangerie": "Bakery",
+  "brunch": "Brunch spot",
+  "brunch place": "Brunch spot",
+};
+
+function canonicalizeBusinessType(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const lower = raw.toLowerCase().trim();
+  if (!lower) return null;
+  if (lower in BUSINESS_TYPE_ALIASES) return BUSINESS_TYPE_ALIASES[lower];
+  const canonical = ALLOWED_BUSINESS_TYPES.find((t) => t.toLowerCase() === lower);
+  return canonical ?? null;
+}
+
 function extractCuisineHint(transcript: string): string | null {
   const normalized = normalizeSearchText(transcript);
   const aliases: Array<{ canonical: string; terms: string[] }> = [
@@ -4995,6 +5054,15 @@ async function buildPreflightResponse(opts: {
       if (best) {
         const restName = best.name as string;
         const restId = best.id as string;
+        // Cap 6 fix 2026-05-14: when transcript explicitly names a DIFFERENT
+        // restaurant than the one currently in booking_state, clear
+        // offered_events. Without this, leftover events from a prior
+        // "what events at jacobs" query polluted the next "book baton
+        // rouge..." attempt and corrupted date parsing.
+        const priorRestaurantId = typeof bookingState.restaurant_id === "string"
+          ? bookingState.restaurant_id
+          : null;
+        const restaurantChanged = priorRestaurantId !== null && priorRestaurantId !== restId;
         // Infer party_size by delegating to parsePartySize — picks up
         // colloquial phrasings ("two amigos", "couple of friends", "half a
         // dozen", "me and 3 others") that the previous inline digit-only
@@ -5099,6 +5167,8 @@ async function buildPreflightResponse(opts: {
             ...(inferredTime ? { time: inferredTime } : {}),
             ...(resolvedShiftId ? { shift_id: resolvedShiftId } : {}),
             ...(resolvedSlotIso ? { slot_iso: resolvedSlotIso } : {}),
+            // Cap 6 fix: clear stale offered_events when switching restaurants.
+            ...(restaurantChanged ? { offered_events: null } : {}),
           },
           uiActions: [
             { type: "highlight_restaurant", restaurant_id: restId },
@@ -5637,22 +5707,15 @@ async function buildPreflightResponse(opts: {
   // one?") hijacks the response and the user's actual question goes
   // unanswered.
   const factLookupMatch = (() => {
-    // First check for "what's the/their X" mid-booking case where the user
-    // is implicitly asking about the restaurant in booking_state.
-    // e.g. mid-booking with restaurant_name="Mark Testing", "what's the address"
-    // → resolve via bookingState.restaurant_name.
+    // 2026-05-14 fix (cap 9 sticky context): try TRANSCRIPT extraction first,
+    // only fall back to bookingState.restaurant_name when transcript has no
+    // explicit name. Prior behavior had this in the opposite order — once
+    // bookingState held a restaurant name, generic phrasing like "what time
+    // does mark testing open" returned the stale stateRestaurantName even
+    // though "mark testing" was explicitly in the transcript.
     const stateRestaurantName = typeof bookingState.restaurant_name === "string"
       ? (bookingState.restaurant_name as string).trim()
       : "";
-    if (
-      stateRestaurantName &&
-      (/\bwhat(?:'?s)?\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating|contact|location)\b/i.test(transcript) ||
-        /\bwhat\s+(?:are|were)\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|price|menu|drinks?|reviews?)\b/i.test(transcript) ||
-        /\bwhat\s+time\s+(?:do|does)\s+(?:they|it|you)\s+(?:open|close|opens|closes)\b/i.test(transcript) ||
-        /\b(?:are|is)\s+(?:they|it|you)\s+(?:open|closed)\b/i.test(transcript))
-    ) {
-      return stateRestaurantName;
-    }
     // Try to extract a restaurant name candidate from the transcript:
     //   "is mark testing in guelph"           → "mark testing"
     //   "where is mark testing"               → "mark testing"
@@ -5699,6 +5762,14 @@ async function buildPreflightResponse(opts: {
       /\bwhat(?:'?s| is)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:about|like|known for|famous for|all about)\b/i,
       /\b(?:reviews?|ratings?)\s+(?:for|of|on|about|at)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
       /\bhow\s+(?:expensive|cheap|pricey|busy|popular|good|fancy|casual)\s+is\s+([a-z][a-z0-9'’\s&]{1,40}?)\s*\??\s*$/i,
+      // "what time does <RESTAURANT> open/close" — explicit-name hours
+      // questions. Cap 9 fix 2026-05-14: before this pattern existed, the
+      // transcript fell through to the bookingState.restaurant_name
+      // fallback, returning the wrong restaurant's hours when prior turn
+      // had set a different restaurant in state.
+      /\bwhat\s+time\s+(?:do|does)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:open|close|opens|closes)(?:\s+(?:on|today|tomorrow|tonight))?\s*\??\s*$/i,
+      // "when does <RESTAURANT> open/close"
+      /\bwhen\s+(?:do|does)\s+([a-z][a-z0-9'’\s&]{1,40}?)\s+(?:open|close|opens|closes)\b/i,
       // CATCH-ALL last
       /\bwhat(?:'?s)?\s+(?:the|their|its)?\s*(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating)(?:\s+(?:of|at|for|is|are|does))?\s+([a-z][a-z0-9'’\s&]{1,40}?)(?:\s+(?:in|at|have|serve|of|like))?\s*\??\s*$/i,
       // "what's the X" (no restaurant name) — used when "their" implicitly refers to a prior restaurant
@@ -5708,6 +5779,18 @@ async function buildPreflightResponse(opts: {
     for (const re of patterns) {
       const m = transcript.match(re);
       if (m && m[1]) return m[1].trim().replace(/\s+/g, " ");
+    }
+    // No explicit restaurant in transcript. Fall back to bookingState
+    // restaurant_name when the transcript uses generic pronoun phrasing
+    // ("what's the address", "are they open", "what time do they close").
+    if (
+      stateRestaurantName &&
+      (/\bwhat(?:'?s)?\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|number|price|menu|drinks?|reviews?|rating|contact|location)\b/i.test(transcript) ||
+        /\bwhat\s+(?:are|were)\s+(?:the|their|its|your)\s+(?:city|state|area|neighborhood|address|cuisine|food|hours|phone|price|menu|drinks?|reviews?)\b/i.test(transcript) ||
+        /\bwhat\s+time\s+(?:do|does)\s+(?:they|it|you)\s+(?:open|close|opens|closes)\b/i.test(transcript) ||
+        /\b(?:are|is)\s+(?:they|it|you)\s+(?:open|closed)\b/i.test(transcript))
+    ) {
+      return stateRestaurantName;
     }
     return null;
   })();
@@ -9359,10 +9442,39 @@ Deno.serve(async (req) => {
                 typeof toolInput.cuisine_type === "string" && toolInput.cuisine_type.trim()
                   ? toolInput.cuisine_type.trim()
                   : "";
-              const businessTypeInput =
-                typeof toolInput.business_type === "string" && toolInput.business_type.trim()
-                  ? toolInput.business_type.trim()
-                  : "";
+              // Canonicalize the LLM-provided venue style onto one of the
+              // 14 DB CHECK values. "coffee shop" → "Cafe", "lounge" →
+              // "Cocktail bar / Lounge", etc. Unknown styles (e.g. "food
+              // truck") canonicalize to null → the filter is skipped, so
+              // the search returns broader results rather than zero.
+              //
+              // Defensive hoist: the system prompt tells the LLM to put
+              // venue styles in `business_type`, but the LLM occasionally
+              // emits them inside `query` instead (e.g. query="coffee shop"
+              // or query="find me a coffee shop"). If the raw business_type
+              // input doesn't canonicalize but `query` contains a known
+              // alias, hoist it. Verified 2026-05-14: "find me a coffee
+              // shop" was emitting query="coffee shop" without business_type,
+              // bypassing the Cafe filter entirely.
+              let rawBusinessType = typeof toolInput.business_type === "string" ? toolInput.business_type : null;
+              if (!canonicalizeBusinessType(rawBusinessType) && typeof toolInput.query === "string") {
+                const queryLower = toolInput.query.toLowerCase();
+                for (const alias of Object.keys(BUSINESS_TYPE_ALIASES)) {
+                  if (queryLower.includes(alias)) {
+                    rawBusinessType = alias;
+                    break;
+                  }
+                }
+                if (!rawBusinessType) {
+                  for (const canonical of ALLOWED_BUSINESS_TYPES) {
+                    if (queryLower.includes(canonical.toLowerCase())) {
+                      rawBusinessType = canonical;
+                      break;
+                    }
+                  }
+                }
+              }
+              const businessTypeInput = canonicalizeBusinessType(rawBusinessType) ?? "";
               const cuisineGroupTerms = cuisineTermsForHint(cuisineTypeInput);
               if (cuisineTypeInput && cuisineGroupTerms.length <= 1) {
                 query = query.ilike("cuisine_type", `%${cuisineTypeInput}%`);
