@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 
 import { useUser } from "@/hooks/useUser";
+import { useMyReservations } from "@/hooks/useMyReservations";
 import { useMyStaffInvites } from "@/hooks/useMyStaffInvites";
 import { useNotifications } from "@/hooks/useNotifications";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
@@ -469,7 +470,14 @@ function GridCard({
           {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
           {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
         </div>
-        <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
+        {r.availableSlots.length > 0 ? (
+          <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
+        ) : (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated/40 px-3 py-2 text-xs text-text-secondary">
+            <Clock className="size-3.5 text-text-muted" />
+            <span>Booked up tonight — tap to pick another night</span>
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -1019,6 +1027,27 @@ export default function DiscoverPage() {
   // user picks a different date manually so we never override their
   // explicit choice.
   const [autoRollOffsetDays, setAutoRollOffsetDays] = useState(0);
+  // Flips true after the first availability fetch settles. Without this gate,
+  // auto-roll fires on cold load DURING the window between "restaurants list
+  // arrived" and "availability fetch began" — `availabilityLoading` is still
+  // its previous-render `false` while `cards.length` is already 11, so the
+  // auto-roll effect sees `cardsWithSlotsCount === 0` and advances the date
+  // before the fetch even kicks off. By gating on this flag, the first valid
+  // auto-roll decision can only happen after real data has been seen at least
+  // once.
+  const [availabilityHasLoaded, setAvailabilityHasLoaded] = useState(false);
+  // Bumped whenever the user's reservation set changes (cancel / book / modify)
+  // OR the tab regains focus. Threaded into the availability fetch effect's
+  // deps so Discover refreshes after the user cancels — without it the
+  // auto-roll banner could lie forever ("No availability for May 13") even
+  // after the conflicting bookings were cancelled, because Discover doesn't
+  // hold a realtime socket per restaurant card.
+  const [availabilityRefreshTick, setAvailabilityRefreshTick] = useState(0);
+  const { upcoming: myUpcomingReservations, refresh: refreshMyReservations } = useMyReservations();
+  const myReservationIdsKey = useMemo(
+    () => myUpcomingReservations.map((r) => r.id).sort().join(","),
+    [myUpcomingReservations],
+  );
   const isOnDefaultDate = dateId === "today" && customDate === undefined;
   const effectiveBookingDate = useMemo(() => {
     if (autoRollOffsetDays === 0) return selectedBookingDate;
@@ -1033,6 +1062,65 @@ export default function DiscoverPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!isOnDefaultDate && autoRollOffsetDays !== 0) setAutoRollOffsetDays(0);
   }, [isOnDefaultDate, autoRollOffsetDays]);
+
+  // When the user's reservations change (cancel via /bookings, modify, or
+  // book), reset any prior auto-roll so the banner doesn't keep lying, and
+  // bump the refresh tick so the availability fetch effect re-runs. Skip the
+  // initial mount (empty -> first batch) so we don't wipe a legitimate roll
+  // that just settled.
+  const lastReservationIdsKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastReservationIdsKeyRef.current === null) {
+      lastReservationIdsKeyRef.current = myReservationIdsKey;
+      return;
+    }
+    if (lastReservationIdsKeyRef.current === myReservationIdsKey) return;
+    lastReservationIdsKeyRef.current = myReservationIdsKey;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAutoRollOffsetDays(0);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAvailabilityRefreshTick((t) => t + 1);
+  }, [myReservationIdsKey]);
+
+  // Tab refocus → re-pull the user's reservation list. Handles cases where
+  // reservations were cancelled outside this tab (Hey Cenaiva on another
+  // device, the harness, or a backend cleanup) while Discover was idle.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshMyReservations();
+      // Reset auto-roll so the user's original date gets a fresh look on
+      // tab return — see the periodic-refresh effect below for why.
+      setAutoRollOffsetDays(0);
+      setAvailabilityRefreshTick((t) => t + 1);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [refreshMyReservations]);
+
+  // Periodic refresh while the tab is visible. Without this, the auto-roll
+  // banner can keep showing "No availability for today" long after slots
+  // open up (e.g. a restaurant just got a cancellation, or a shift's
+  // cutoff time passed and earlier-evening slots dropped off). 60s is a
+  // gentle cadence — one server-side cache miss per minute per active
+  // viewer, well under the rate limits.
+  //
+  // Resetting `autoRollOffsetDays` here is what lets auto-roll RETREAT.
+  // Without the reset, the periodic fetch faithfully re-queries
+  // `effectiveBookingDate` (the rolled date), never re-checks the user's
+  // original selection, and the banner gets stuck announcing "no
+  // availability for May 13" indefinitely. With the reset, each minute we
+  // give the user's actual date a fresh chance; if it still has zero
+  // supply the existing auto-roll effect re-advances within the same
+  // render cycle (one extra RPC call, cheap).
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setAutoRollOffsetDays(0);
+      setAvailabilityRefreshTick((t) => t + 1);
+    }, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1054,11 +1142,12 @@ export default function DiscoverPage() {
       if (cancelled) return;
       setAvailabilityByRestaurantId(map);
       setAvailabilityLoading(false);
+      setAvailabilityHasLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [restaurantIds, effectiveBookingDate, selectedPartySize, time]);
+  }, [restaurantIds, effectiveBookingDate, selectedPartySize, time, availabilityRefreshTick]);
 
   const cards: RestaurantCard[] = useMemo(() => {
     return restaurants.map((restaurant) => adaptRestaurant(
@@ -1077,11 +1166,31 @@ export default function DiscoverPage() {
     () => cards.filter((c) => c.availableSlots.length > 0).length,
     [cards],
   );
+  // How many of the user's own upcoming reservations fall on the date(s)
+  // we just rolled past. Surfaced in the banner so users understand why
+  // their default date appeared empty — their existing bookings may have
+  // occupied the very tables/timeslots they'd want to use. Dates compared
+  // in browser-local timezone, which matches what the user sees elsewhere.
+  const bookingsInRolledWindow = useMemo(() => {
+    if (autoRollOffsetDays === 0) return 0;
+    const start = selectedBookingDate;
+    const end = effectiveBookingDate;
+    return myUpcomingReservations.filter((r) => {
+      const resDate = format(new Date(r.reserved_at), "yyyy-MM-dd");
+      return resDate >= start && resDate < end;
+    }).length;
+  }, [autoRollOffsetDays, myUpcomingReservations, selectedBookingDate, effectiveBookingDate]);
   const noFiltersActive =
     !search.trim() && activePrices.size === 0 && activeFeatures.size === 0;
   useEffect(() => {
     if (!isOnDefaultDate || !noFiltersActive) return;
     if (availabilityLoading || cards.length === 0) return;
+    // Cold-load guard: don't advance the date until at least one real
+    // availability fetch has settled. Without this, the brief render window
+    // between "restaurants list arrived" and "fetch effect runs" wrongly
+    // shows `cardsWithSlotsCount === 0`, and auto-roll fires before any
+    // server response.
+    if (!availabilityHasLoaded) return;
     if (cardsWithSlotsCount > 0) return;
     if (autoRollOffsetDays >= 14) return;
     // setState-in-effect is intentional here: we need to advance the date
@@ -1095,13 +1204,19 @@ export default function DiscoverPage() {
     isOnDefaultDate,
     noFiltersActive,
     availabilityLoading,
+    availabilityHasLoaded,
     cards.length,
     cardsWithSlotsCount,
     autoRollOffsetDays,
   ]);
 
-  const filtered = useMemo(() => {
-    let list = cards.filter((r) => r.availableSlots.length > 0);
+  // All cards matching search / price / feature / location filters — WITH OR
+  // WITHOUT slots. Drives the page-level count and the "Booked up tonight"
+  // rail, so restaurants whose seatings have already passed for the night
+  // stay visible (just rendered without time pills + a "fully booked"
+  // caption so the user can still tap in and pick another date).
+  const filteredAll = useMemo(() => {
+    let list = cards;
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -1136,6 +1251,21 @@ export default function DiscoverPage() {
     }
     return list;
   }, [cards, search, activePrices, activeFeatures, userLocation, radius]);
+
+  // Bookable tonight subset — drives the rails that imply "you can book this
+  // right now" and the map view.
+  const filtered = useMemo(
+    () => filteredAll.filter((r) => r.availableSlots.length > 0),
+    [filteredAll],
+  );
+
+  // Booked-up subset — feeds the new "Booked up tonight — try another
+  // night" rail so users can still discover restaurants whose last seating
+  // has already passed (or that are fully sold out for the night).
+  const bookedUpTonightPool = useMemo(
+    () => filteredAll.filter((r) => r.availableSlots.length === 0),
+    [filteredAll],
+  );
 
   useEffect(() => {
     if (view !== "map" || locationStatus !== "idle") return;
@@ -1361,6 +1491,20 @@ export default function DiscoverPage() {
   const newOnCenaiva =
     filtered.slice(8, 12).length === 4 ? filtered.slice(8, 12) : filtered.slice(-4);
 
+  // Rail title reflects whatever date the cards are actually showing. When
+  // auto-roll has advanced past the user's selection, the rail's slot
+  // pills are for `effectiveBookingDate` (e.g. Fri, May 15), not for
+  // tonight — keeping the "tonight" label here would misrepresent the
+  // data the user sees right below it.
+  const availableRowTitle = useMemo(() => {
+    if (autoRollOffsetDays === 0) return "Available tonight near you";
+    const d = new Date(`${effectiveBookingDate}T00:00:00`);
+    if (autoRollOffsetDays <= 6) {
+      return `Available ${format(d, "EEEE")} near you`;
+    }
+    return `Available ${format(d, "EEE, MMM d")} near you`;
+  }, [autoRollOffsetDays, effectiveBookingDate]);
+
   const greetingName = profile?.full_name?.split(" ")[0] ?? "guest";
 
   const today = new Date();
@@ -1490,7 +1634,7 @@ export default function DiscoverPage() {
           Good evening, <span className="capitalize">{greetingName}</span>.
         </h1>
         <p className="mt-3 text-base text-text-secondary">
-          {filtered.length} restaurant{filtered.length === 1 ? "" : "s"} available from Cenaiva.
+          {filteredAll.length} restaurant{filteredAll.length === 1 ? "" : "s"} on Cenaiva.
         </p>
         </div>
 
@@ -1871,11 +2015,20 @@ export default function DiscoverPage() {
             actually a non-empty list to display — avoids stacking with the
             empty-state card below when even auto-roll exhausted. */}
         {autoRollOffsetDays > 0 && !listingLoading && filtered.length > 0 && (
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-gold/30 bg-gold/5 px-4 py-3 text-center text-sm text-text-secondary">
+          <div className="mt-6 flex flex-col items-center justify-center gap-1 rounded-xl border border-gold/30 bg-gold/5 px-4 py-3 text-center text-sm text-text-secondary">
             <span>
               No availability for {format(new Date(`${selectedBookingDate}T00:00:00`), "EEE, MMM d")}.
               Showing <span className="font-medium text-white">{format(new Date(`${effectiveBookingDate}T00:00:00`), "EEE, MMM d")}</span> instead.
             </span>
+            {bookingsInRolledWindow > 0 && (
+              <span className="text-xs text-text-tertiary">
+                You already have {bookingsInRolledWindow} booking{bookingsInRolledWindow === 1 ? "" : "s"} on
+                {" "}{bookingsInRolledWindow === 1 ? "that day" : "those days"} — they may be holding tables.{" "}
+                <Link to="/bookings" className="underline underline-offset-2 hover:text-white">
+                  Review your bookings
+                </Link>
+              </span>
+            )}
           </div>
         )}
 
@@ -1891,8 +2044,9 @@ export default function DiscoverPage() {
           </div>
         )}
 
-        {/* Empty */}
-        {!listingLoading && filtered.length === 0 && (
+        {/* Empty — gate on filteredAll so the page only goes empty when NO
+            restaurants (bookable or otherwise) match the search/filter. */}
+        {!listingLoading && filteredAll.length === 0 && (
           <div className="mt-16 flex flex-col items-center gap-3 py-16 text-center">
             <div className="flex size-14 items-center justify-center rounded-2xl bg-gold/10">
               <Search className="size-6 text-gold" />
@@ -1905,10 +2059,19 @@ export default function DiscoverPage() {
           </div>
         )}
 
-        {/* Grid view */}
-        {!listingLoading && filtered.length > 0 && view === "grid" && (() => {
+        {/* Grid view — render whenever ANY restaurants match (bookable or
+            booked-up). The "Available tonight" rail only renders when there
+            ARE bookable restaurants; the "Booked up tonight" rail covers the
+            rest so the user can still discover them and pick a different
+            night. */}
+        {!listingLoading && filteredAll.length > 0 && view === "grid" && (() => {
           const rows = [
-            { key: "available", eyebrow: "Curated", title: "Available tonight near you", pool: filtered, preview: featured },
+            ...(filtered.length > 0
+              ? [{ key: "available", eyebrow: "Curated", title: availableRowTitle, pool: filtered, preview: featured }]
+              : []),
+            ...(bookedUpTonightPool.length > 0
+              ? [{ key: "booked-up", eyebrow: "Tonight", title: "Booked up tonight — try another night", pool: bookedUpTonightPool, preview: bookedUpTonightPool.slice(0, 4) }]
+              : []),
             { key: "date-night", eyebrow: "Curated", title: "Date night picks", pool: filtered, preview: dateNight },
             { key: "new", eyebrow: "Curated", title: "New on Cenaiva", pool: filtered, preview: newOnCenaiva },
           ];
@@ -2086,6 +2249,17 @@ export default function DiscoverPage() {
           }
           setPreviewAvailabilityNotice(null);
           setPreviewRestaurant(null);
+          // The user just saw a per-restaurant view, which fetches fresh
+          // availability + subscribes to realtime invalidation. If their
+          // intent was "let me double-check whether the banner is right,"
+          // we should now reconcile Discover's snapshot with whatever they
+          // just saw — bump the tick so the next paint reflects current
+          // reality rather than the stale "0 slots today" that triggered
+          // the banner. Also reset auto-roll so the user's original date
+          // gets re-checked (the modal may have shown them slots Discover
+          // missed earlier in the session).
+          setAutoRollOffsetDays(0);
+          setAvailabilityRefreshTick((t) => t + 1);
         }}
         onToggleFavorite={() => {
           if (activePreviewRestaurant) toggleFavorite(activePreviewRestaurant.id);

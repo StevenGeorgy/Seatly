@@ -211,6 +211,22 @@ export function AvailabilityPanel({
     unavailableReason,
   } = useAvailability();
 
+  // ── Drop past slots before anything else touches the list. ──
+  // The server returns every slot for the calendar date — including ones
+  // earlier than "now" — because `get_available_slots_cached` isn't aware
+  // of the caller's clock. Without this filter, opening a restaurant late
+  // at night shows pills for 5pm/6pm/7pm that look bookable but error on
+  // submit (book_reservation rejects past timestamps). It also confused
+  // users into thinking "today has availability" when Discover's banner
+  // correctly said it didn't.
+  const futureSlots = useMemo(() => {
+    const nowMs = Date.now();
+    return slots.filter((slot) => {
+      const ts = new Date(slot.date_time).getTime();
+      return Number.isFinite(ts) && ts >= nowMs;
+    });
+  }, [slots]);
+
   // ── Mount-only bootstrap: pick today (or next available) + closest time ──
   const bootstrapStartedRef = useRef(false);
   useEffect(() => {
@@ -246,13 +262,17 @@ export function AvailabilityPanel({
   // ── First slot fetch settled? Pick a default time if none was provided. ──
   useEffect(() => {
     if (time || availLoading) return;
-    if (slots.length === 0) return;
-    const closest = closestSlotTimeToNow(slots, restaurantTimezone);
+    // Use futureSlots so we don't default the time picker to a slot that
+    // already passed. closestSlotTimeToNow compares time-of-day, so on a
+    // late-evening load it would otherwise happily pick "5pm" as the
+    // closest match even though every 5pm slot is unbookable.
+    if (futureSlots.length === 0) return;
+    const closest = closestSlotTimeToNow(futureSlots, restaurantTimezone);
     // Sync setState here is safe — guarded on `time` being empty so it
     // runs at most once per cold load.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (closest) setTime(closest);
-  }, [slots, time, availLoading, restaurantTimezone]);
+  }, [futureSlots, time, availLoading, restaurantTimezone]);
 
   // ── Realtime invalidation: refetch when reservations change. ──
   useAvailabilityRealtimeInvalidate(restaurantId, () => {
@@ -310,10 +330,10 @@ export function AvailabilityPanel({
 
   // ── Compute the 8 centered pills with conflict overlay. ──
   const pillStates = useMemo<AvailabilityPanelSlotState[]>(() => {
-    if (slots.length === 0 || !time) return [];
-    const centered = centerSlotsAround(slots, time, SLOT_PILL_COUNT);
+    if (futureSlots.length === 0 || !time) return [];
+    const centered = centerSlotsAround(futureSlots, time, SLOT_PILL_COUNT);
     return centered.map((slot) => classifySlot(slot, conflicts, restaurantTimezone));
-  }, [slots, time, conflicts, restaurantTimezone]);
+  }, [futureSlots, time, conflicts, restaurantTimezone]);
 
   // ── Auto-track TIME → highlight the closest available pill. ──
   // Without this, nudging the time control re-centers the pill row but the
@@ -323,14 +343,14 @@ export function AvailabilityPanel({
   // the user just picked, which short-circuits via the `selectedSlotIso`
   // guard instead of fighting them.
   useEffect(() => {
-    if (!time || slots.length === 0) return;
+    if (!time || futureSlots.length === 0) return;
     const target = to24HourTime(time) ?? time;
     const targetMinutes = timeToMinutes(target);
     if (targetMinutes == null) return;
 
     let closest: AvailabilitySlot | null = null;
     let closestDist = Infinity;
-    for (const slot of slots) {
+    for (const slot of futureSlots) {
       if (classifySlot(slot, conflicts, restaurantTimezone).kind !== "available") continue;
       const t24 = to24HourTime(slot.display_time);
       const mins = t24 ? timeToMinutes(t24) : null;
@@ -344,7 +364,7 @@ export function AvailabilityPanel({
     if (!closest) return;
     if (selectedSlotIso === closest.date_time) return;
     onSelectSlot(closest);
-  }, [time, slots, conflicts, restaurantTimezone, selectedSlotIso, onSelectSlot]);
+  }, [time, futureSlots, conflicts, restaurantTimezone, selectedSlotIso, onSelectSlot]);
 
   // ── Aggregated conflict notices for the day. ──
   const conflictNotices = useMemo<string[]>(() => {
@@ -360,7 +380,10 @@ export function AvailabilityPanel({
   // ── "No availability — try X" suggestion. ──
   const [suggestedNextDate, setSuggestedNextDate] = useState<string | null>(null);
   useEffect(() => {
-    if (slots.length > 0 || !date || availLoading) return;
+    // Use futureSlots, not raw slots — otherwise the "try next date" hint
+    // never appears late at night even though every slot on this date has
+    // already passed. Matches what the user sees in the pill grid.
+    if (futureSlots.length > 0 || !date || availLoading) return;
     let cancelled = false;
     void fetchNextAvailableDate({
       restaurantId,
@@ -372,7 +395,7 @@ export function AvailabilityPanel({
     return () => {
       cancelled = true;
     };
-  }, [slots.length, date, availLoading, restaurantId, partySize]);
+  }, [futureSlots.length, date, availLoading, restaurantId, partySize]);
 
   // ── Calendar disabled predicate. ──
   // Hard cap = 10 years out. Each shift's `advance_booking_days` is the

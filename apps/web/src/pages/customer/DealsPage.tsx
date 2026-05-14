@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 
 import { useUser } from "@/hooks/useUser";
+import { useMyReservations } from "@/hooks/useMyReservations";
 import { usePublicRestaurants, type Restaurant } from "@/hooks/useRestaurant";
 import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantPreviewStats";
 import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
@@ -103,6 +104,14 @@ type DemoEvent = {
   lat: number | null;
   lng: number | null;
   availableSlots: AvailabilitySlot[];
+  // Derived flags for rail routing. `isSoldOut` covers ticketed events whose
+  // tickets_sold has caught up to capacity. `isPast` covers events whose
+  // end_time has elapsed (so finished events don't squat at the top of the
+  // page). `daysUntilExpiry` is non-null only for promotions and feeds the
+  // "Expiring soon" rail to surface deals that are about to disappear.
+  isSoldOut: boolean;
+  isPast: boolean;
+  daysUntilExpiry: number | null;
 };
 
 const TYPE_FILTERS = [
@@ -258,6 +267,18 @@ const TYPE_BADGE_LABEL: Record<EventType, string> = {
   Brunch: "BRUNCH",
 };
 
+// Combine an event's `date` (yyyy-MM-dd) and `end_time` (HH:MM[:SS]) into a
+// JS Date. Returns null when either input is missing or unparseable. Uses
+// browser-local timezone — fine for the dominant case (user + restaurant in
+// the same city); off by an hour or two in cross-region cases, which is
+// acceptable for past-event filtering.
+function combineDateTime(dateStr: string | null, timeStr: string | null): Date | null {
+  if (!dateStr) return null;
+  const time = timeStr && /^\d{1,2}:\d{2}/.test(timeStr) ? timeStr.slice(0, 5) : "23:59";
+  const d = new Date(`${dateStr}T${time}:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
   const detail = promotionToDisplay(p);
   const initials = (p.title || p.restaurants.name)
@@ -289,6 +310,11 @@ function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
     ? `Ends ${expiry.toLocaleDateString("en-CA", { month: "short", day: "numeric" })}`
     : "Limited time";
 
+  const isPast = expiry ? expiry.getTime() < Date.now() : false;
+  const daysUntilExpiry = expiry
+    ? Math.max(0, Math.ceil((expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000)))
+    : null;
+
   return {
     id: `promotion-${p.id}`,
     type,
@@ -306,6 +332,9 @@ function adaptPromotion(p: PromotionWithRestaurant): DemoEvent {
     lat: p.restaurants.lat,
     lng: p.restaurants.lng,
     availableSlots: [],
+    isSoldOut: false,
+    isPast,
+    daysUntilExpiry,
   };
 }
 
@@ -317,6 +346,17 @@ function adaptEvent(event: EventWithRestaurant): DemoEvent {
   else if (theme.includes("wine")) type = "Wine";
   else if (theme.includes("prix")) type = "Prix Fixe";
   else if (theme.includes("brunch")) type = "Brunch";
+
+  // Sold-out: capacity tracked AND tickets caught up. Free-capacity events
+  // (capacity = null) never count as sold out.
+  const isSoldOut = detail.seatsLeft != null && detail.seatsLeft <= 0;
+
+  // Past: combine date + end_time (falls back to 23:59) and compare to now.
+  // `event.end_date` covers multi-day events — if it's set and in the future
+  // the event isn't past.
+  const lastDate = event.end_date ?? event.date;
+  const endDt = combineDateTime(lastDate, event.end_time ?? event.start_time);
+  const isPast = endDt != null && endDt.getTime() < Date.now();
 
   return {
     id: `event-${event.id}`,
@@ -335,6 +375,9 @@ function adaptEvent(event: EventWithRestaurant): DemoEvent {
     lat: event.restaurants.lat,
     lng: event.restaurants.lng,
     availableSlots: [],
+    isSoldOut,
+    isPast,
+    daysUntilExpiry: null,
   };
 }
 
@@ -387,12 +430,17 @@ function AvailableTimes({
 }: {
   slots: AvailabilitySlot[];
   onBookSlot: (slot: AvailabilitySlot) => void;
-  size?: "md" | "lg";
+  size?: "sm" | "md" | "lg";
 }) {
   const visibleSlots = slots.slice(0, 6);
   if (visibleSlots.length === 0) return null;
   return (
-    <div className={cn("grid grid-cols-3", size === "lg" ? "gap-2.5" : "gap-2")}>
+    <div
+      className={cn(
+        "grid grid-cols-3",
+        size === "lg" ? "gap-2.5" : size === "sm" ? "gap-1.5" : "gap-2",
+      )}
+    >
       {visibleSlots.map((slot) => (
         <button
           key={`${slot.shift_id}-${slot.date_time}`}
@@ -406,7 +454,9 @@ function AvailableTimes({
             "flex items-center justify-center rounded-md border border-gold/25 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20",
             size === "lg"
               ? "min-h-12 px-3 text-base"
-              : "min-h-11 px-2 text-sm",
+              : size === "sm"
+                ? "min-h-9 px-1.5 text-xs"
+                : "min-h-11 px-2 text-sm",
           )}
         >
           {formatCompactTimeLabel(slot.display_time)}
@@ -546,12 +596,18 @@ function GoogleDealsMap({
   selectedId: string | null;
   hoveredId: string | null;
   userLocation: GeoPoint | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onHover: (id: string | null) => void;
 }) {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<GoogleMapInstance | null>(null);
   const markersRef = useRef<GoogleMapsMarker[]>([]);
+  // Maps each `google.maps.Marker` instance to the event/promo id it represents.
+  // Needed so the cluster-click handler can look up which events live in the
+  // cluster (cluster.markers gives us markers, not ids) and decide whether to
+  // auto-open the first event (single-restaurant cluster) or clear the popover
+  // (mixed-restaurant cluster).
+  const markerEventIdRef = useRef<Map<google.maps.Marker, string>>(new Map());
   const clustererRef = useRef<MarkerClusterer | null>(null);
   const userMarkerRef = useRef<GoogleMapsMarker | null>(null);
   const googleReady = hasGoogleMapsApiKey();
@@ -602,6 +658,7 @@ function GoogleDealsMap({
       clustererRef.current = null;
     }
     markersRef.current.forEach((marker) => marker.setMap(null));
+    markerEventIdRef.current = new Map();
 
     markersRef.current = mappableEvents.map((event) => {
       const active = selectedId === event.id || hoveredId === event.id;
@@ -622,6 +679,7 @@ function GoogleDealsMap({
       marker.addListener("click", () => onSelect(event.id));
       marker.addListener("mouseover", () => onHover(event.id));
       marker.addListener("mouseout", () => onHover(null));
+      markerEventIdRef.current.set(marker as unknown as google.maps.Marker, event.id);
       return marker;
     });
 
@@ -651,6 +709,28 @@ function GoogleDealsMap({
       map: map as unknown as google.maps.Map,
       markers: markersRef.current as unknown as google.maps.Marker[],
       renderer,
+      // Without a custom handler the library zooms into the cluster but does
+      // NOT touch `selectedId`. That leaves the previous popover stuck on
+      // screen at `bottom-4 left-4`, visually disconnected from the cluster
+      // the user just clicked. We zoom AND reconcile state: open the first
+      // event when the cluster is one restaurant (so the popover lines up);
+      // clear state when the cluster mixes restaurants (so a stale popover
+      // doesn't lie about which marker the user picked).
+      onClusterClick: (_clickEvent, cluster, mapArg) => {
+        if (cluster.bounds) {
+          mapArg.fitBounds(cluster.bounds);
+        }
+        const idsInCluster = (cluster.markers ?? [])
+          .map((m) => markerEventIdRef.current.get(m as google.maps.Marker))
+          .filter((id): id is string => typeof id === "string");
+        const eventsInCluster = mappableEvents.filter((e) => idsInCluster.includes(e.id));
+        const restaurantIds = new Set(eventsInCluster.map((e) => e.restaurantId));
+        if (restaurantIds.size === 1 && eventsInCluster.length > 0) {
+          onSelect(eventsInCluster[0].id);
+        } else {
+          onSelect(null);
+        }
+      },
     });
 
     return () => {
@@ -660,6 +740,7 @@ function GoogleDealsMap({
       }
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
+      markerEventIdRef.current = new Map();
     };
   }, [hoveredId, mappableEvents, onHover, onSelect, selectedId]);
 
@@ -703,10 +784,11 @@ function GoogleDealsMap({
     if (!map || !selectedId) return;
     const selected = mappableEvents.find((event) => event.id === selectedId);
     if (selected?.lat == null || selected.lng == null) return;
-    const point = { lat: selected.lat, lng: selected.lng };
-    const bounds = map.getBounds?.();
-    if (bounds && bounds.contains(point)) return;
-    map.panTo(point);
+    // Always pan to the picked marker, even if it's already in view. The
+    // popover anchors at `bottom-4 left-4`; without an explicit pan, clicking
+    // a pin near the upper-right would leave the popover feeling
+    // disconnected from the click.
+    map.panTo({ lat: selected.lat, lng: selected.lng });
   }, [mappableEvents, selectedId]);
 
   return (
@@ -845,16 +927,29 @@ function EventCard({
           </span>
         </div>
         <AvailableTimes slots={e.availableSlots} onBookSlot={onBookSlot} />
-        <Button
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onReserve();
-          }}
-          className="mt-2 h-11 w-full rounded-md font-semibold"
-        >
-          <CalendarDays className="size-4" />
-          {e.detail?.actionLabel ?? "Book"}
-        </Button>
+        {e.isSoldOut ? (
+          <Button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onOpen();
+            }}
+            variant="outline"
+            className="mt-2 h-11 w-full rounded-md font-semibold opacity-70"
+          >
+            Sold out — view details
+          </Button>
+        ) : (
+          <Button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onReserve();
+            }}
+            className="mt-2 h-11 w-full rounded-md font-semibold"
+          >
+            <CalendarDays className="size-4" />
+            {e.detail?.actionLabel ?? "Book"}
+          </Button>
+        )}
       </div>
     </motion.div>
   );
@@ -995,7 +1090,7 @@ export default function DealsPage() {
 
   const [view, setView] = useState<"grid" | "map">("grid");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [expandedRow, setExpandedRow] = useState<"tonight" | "weekend" | "week" | null>(null);
+  const [expandedRow, setExpandedRow] = useState<"tonight" | "weekend" | "week" | "expiring" | "sold-out" | null>(null);
   const [search, setSearch] = useState("");
   const [dateId, setDateId] = useState("today");
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
@@ -1040,6 +1135,47 @@ export default function DealsPage() {
   );
   const selectedPartySize = normalizePartySize(partySize);
 
+  // Mirrors the Discover refresh strategy: Deals has no per-restaurant
+  // realtime socket, so when the user cancels / books / modifies, the slot
+  // grid would otherwise show stale data. The tick bumps re-run the
+  // availability fetch effect; tab refocus pulls fresh reservations.
+  const [availabilityRefreshTick, setAvailabilityRefreshTick] = useState(0);
+  const { upcoming: myUpcomingReservations, refresh: refreshMyReservations } = useMyReservations();
+  const myReservationIdsKey = useMemo(
+    () => myUpcomingReservations.map((r) => r.id).sort().join(","),
+    [myUpcomingReservations],
+  );
+  const lastReservationIdsKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastReservationIdsKeyRef.current === null) {
+      lastReservationIdsKeyRef.current = myReservationIdsKey;
+      return;
+    }
+    if (lastReservationIdsKeyRef.current === myReservationIdsKey) return;
+    lastReservationIdsKeyRef.current = myReservationIdsKey;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAvailabilityRefreshTick((t) => t + 1);
+  }, [myReservationIdsKey]);
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshMyReservations();
+      setAvailabilityRefreshTick((t) => t + 1);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [refreshMyReservations]);
+
+  // Periodic refresh while the tab is visible. Matches the DiscoverPage
+  // cadence so slot lists don't drift stale during a long browse session.
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setAvailabilityRefreshTick((t) => t + 1);
+    }, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -1064,7 +1200,7 @@ export default function DealsPage() {
     return () => {
       cancelled = true;
     };
-  }, [restaurantIds, selectedBookingDate, selectedPartySize, time]);
+  }, [restaurantIds, selectedBookingDate, selectedPartySize, time, availabilityRefreshTick]);
 
   const events: DemoEvent[] = useMemo(() => {
     const rows = [
@@ -1088,7 +1224,13 @@ export default function DealsPage() {
 
   const filtered = useMemo(() => {
     let list = events
-      .filter((e) => e.availableSlots.length > 0)
+      // Drop past events/promos so finished items don't squat at the top of
+      // the page. Events are booked on their own fixed date+time so we
+      // intentionally do NOT gate on the restaurant's "today" slots — that
+      // filter used to hide all future-date events (May 22, May 29, …) just
+      // because the host restaurant was full tonight. Sold-out events stay
+      // in the list and get routed to the dedicated rail below.
+      .filter((e) => !e.isPast)
       .map((e) => ({
         ...e,
         _price: PRICE_FOR_TYPE[e.type] ?? "$$",
@@ -1229,9 +1371,18 @@ export default function DealsPage() {
     };
   }, [view, filtersOpen]);
 
-  const tonight = filtered.filter((e) => e.category === "Tonight");
-  const weekend = filtered.filter((e) => e.category === "This Weekend");
-  const week = filtered.filter((e) => e.category === "This Week");
+  const tonight = filtered.filter((e) => e.category === "Tonight" && !e.isSoldOut);
+  const weekend = filtered.filter((e) => e.category === "This Weekend" && !e.isSoldOut);
+  const week = filtered.filter((e) => e.category === "This Week" && !e.isSoldOut);
+  // Sold-out events get their own rail so users still discover them
+  // (typically high-demand experiences worth waitlisting for or planning
+  // around). Mirrors the "Booked up tonight" rail on Discover.
+  const soldOut = filtered.filter((e) => e.isSoldOut);
+  // Promotions ending within the next 7 days get a dedicated urgency rail.
+  // 7d is short enough to feel urgent and long enough to be actionable.
+  const expiringPromos = filtered.filter(
+    (e) => !e.isSoldOut && e.daysUntilExpiry != null && e.daysUntilExpiry <= 7,
+  );
 
   const initials = (profile?.full_name ?? profile?.email ?? "?")
     .split(" ")
@@ -1908,6 +2059,13 @@ export default function DealsPage() {
               pool: tonight,
             },
             {
+              key: "expiring" as const,
+              eyebrow: "Last chance",
+              title: "Expiring soon",
+              sub: "Promotions ending in the next 7 days.",
+              pool: expiringPromos,
+            },
+            {
               key: "weekend" as const,
               eyebrow: "Curated",
               title: "Worth the weekend",
@@ -1920,6 +2078,13 @@ export default function DealsPage() {
               title: "On the calendar",
               sub: undefined,
               pool: week,
+            },
+            {
+              key: "sold-out" as const,
+              eyebrow: "Booked up",
+              title: "Sold out — try another night",
+              sub: "Popular experiences that filled up tonight. Tap to plan another date.",
+              pool: soldOut,
             },
           ].filter((r) => r.pool.length > 0);
           const visible = expandedRow ? rows.filter((r) => r.key === expandedRow) : rows;
@@ -2076,19 +2241,19 @@ export default function DealsPage() {
                         }
                       }}
                       aria-label={`Open ${e.title}`}
-                      className="group absolute bottom-4 left-4 z-10 flex w-[min(26rem,calc(100vw-2rem))] cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+                      className="group absolute bottom-4 left-4 z-10 flex w-[min(17.5rem,calc(100vw-2rem))] cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
                     >
                       <div className="relative">
-                        <StripePlaceholder label={e.initials} imageUrl={e.imageUrl} className="aspect-auto h-36 sm:h-40" />
-                        <div className="absolute left-3 top-3 flex items-center gap-2 sm:left-4 sm:top-4">
-                          <span className="rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
+                        <StripePlaceholder label={e.initials} imageUrl={e.imageUrl} className="aspect-auto h-20 sm:h-24" />
+                        <div className="absolute left-2.5 top-2.5 flex items-center gap-1.5">
+                          <span className="rounded border border-gold/40 bg-black/60 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-gold backdrop-blur">
                             {TYPE_BADGE_LABEL[e.type]}
                           </span>
-                          <span className="inline-flex items-center gap-1 rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
-                            <Flame className="size-3" /> {e.availability}
+                          <span className="inline-flex items-center gap-1 rounded border border-gold/40 bg-black/60 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-gold backdrop-blur">
+                            <Flame className="size-2.5" /> {e.availability}
                           </span>
                         </div>
-                        <div className="absolute right-3 top-3 flex items-center gap-2 sm:right-4 sm:top-4">
+                        <div className="absolute right-2.5 top-2.5 flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={(event) => {
@@ -2097,9 +2262,9 @@ export default function DealsPage() {
                               toggleFavoriteRestaurant(e.restaurantId);
                             }}
                             aria-label="Favorite restaurant"
-                            className="rounded-full border border-border bg-black/60 p-2 backdrop-blur transition-colors hover:border-gold/50"
+                            className="rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
                           >
-                            <Heart className={cn("size-5", favoriteRestaurants.has(e.restaurantId) ? "fill-gold text-gold" : "text-white")} />
+                            <Heart className={cn("size-3.5", favoriteRestaurants.has(e.restaurantId) ? "fill-gold text-gold" : "text-white")} />
                           </button>
                           <button
                             type="button"
@@ -2109,9 +2274,9 @@ export default function DealsPage() {
                               toggleSave(e.id);
                             }}
                             aria-label="Save"
-                            className="rounded-full border border-border bg-black/60 p-2 backdrop-blur transition-colors hover:border-gold/50"
+                            className="rounded-full border border-border bg-black/60 p-1.5 backdrop-blur transition-colors hover:border-gold/50"
                           >
-                            <Bookmark className={cn("size-5", saved.has(e.id) ? "fill-gold text-gold" : "text-white")} />
+                            <Bookmark className={cn("size-3.5", saved.has(e.id) ? "fill-gold text-gold" : "text-white")} />
                           </button>
                           <button
                             type="button"
@@ -2120,37 +2285,37 @@ export default function DealsPage() {
                               setSelectedId(null);
                               setHoveredId(null);
                             }}
-                            className="rounded-full border border-border bg-black/60 p-2 text-white backdrop-blur transition-colors hover:border-gold/50"
+                            className="rounded-full border border-border bg-black/60 p-1.5 text-white backdrop-blur transition-colors hover:border-gold/50"
                             aria-label="Close"
                           >
-                            <X className="size-5" />
+                            <X className="size-3.5" />
                           </button>
                         </div>
                       </div>
-                      <div className="flex flex-1 flex-col gap-3 p-4 sm:p-5">
+                      <div className="flex flex-1 flex-col gap-1.5 p-2.5 sm:p-3">
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             openRestaurantPreviewFromEvent(e);
                           }}
-                          className="w-fit text-left font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted transition-colors hover:text-gold"
+                          className="w-fit text-left font-mono text-[9px] uppercase tracking-[0.14em] text-text-muted transition-colors hover:text-gold"
                         >
                           {e.restaurant}
                         </button>
-                        <p className="font-serif text-2xl leading-tight tracking-tight text-white sm:text-[1.75rem]">
+                        <p className="line-clamp-2 font-serif text-base leading-snug tracking-tight text-white sm:text-lg">
                           {e.title}
                         </p>
-                        <p className="text-sm text-text-secondary">
+                        <p className="text-[11px] text-text-secondary">
                           {e.when} · <span className="text-gold">{e.price}</span>
                         </p>
-                        <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => void bookEventSlot(e, slot)} size="lg" />
+                        <AvailableTimes slots={e.availableSlots} onBookSlot={(slot) => void bookEventSlot(e, slot)} size="sm" />
                         <Button
                           onClick={(event) => {
                             event.stopPropagation();
                             bookEvent(e);
                           }}
-                          className="h-11 w-full rounded-md font-semibold"
+                          className="h-8 w-full rounded-md text-xs font-semibold"
                         >
                           {e.detail?.actionLabel ?? "Book"}
                         </Button>
