@@ -14,7 +14,7 @@ import { useUser } from "@/hooks/useUser";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { ReservationReviewPrompt } from "@/components/customer/ReservationReviewPrompt";
 
-const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password", "/hey-cenaiva", "/loyalty", "/restaurants", "/book-a-demo"]);
+const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password", "/hey-cenaiva", "/loyalty", "/restaurants", "/book-a-demo", "/discover"]);
 const CenaivaVoiceShell = lazy(() =>
   import("@/components/cenaiva/CenaivaVoiceShell").then((module) => ({
     default: module.CenaivaVoiceShell,

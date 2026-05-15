@@ -16,6 +16,12 @@ type WizardShellProps = {
   canGoNext: boolean;
   nextLabel?: string;
   busy?: boolean;
+  /**
+   * Hide the footer Next button when the step renders its own inline submit
+   * button. Set true for steps 1-7 (each has a contextual "Continue to X"
+   * button); false for step 8 (only the footer Finish advances).
+   */
+  hideFooterNext?: boolean;
 };
 
 export function WizardShell({
@@ -30,6 +36,7 @@ export function WizardShell({
   canGoNext,
   nextLabel,
   busy,
+  hideFooterNext,
 }: WizardShellProps) {
   const progressPct = Math.min(100, Math.round((currentStep / totalSteps) * 100));
   const isFirstStep = currentStep <= 1;
@@ -94,15 +101,17 @@ export function WizardShell({
               <span className="hidden sm:inline">Save &amp; exit</span>
               <span className="sm:hidden">Exit</span>
             </Button>
-            <Button
-              type="button"
-              onClick={onNext}
-              disabled={!canGoNext || busy}
-              className={cn("gap-1.5 px-4 sm:px-6", busy && "opacity-70")}
-            >
-              {busy ? "Saving…" : nextLabel ?? "Next"}
-              {!busy ? <ArrowRight className="size-4" /> : null}
-            </Button>
+            {hideFooterNext ? null : (
+              <Button
+                type="button"
+                onClick={onNext}
+                disabled={!canGoNext || busy}
+                className={cn("gap-1.5 px-4 sm:px-6", busy && "opacity-70")}
+              >
+                {busy ? "Saving…" : nextLabel ?? "Next"}
+                {!busy ? <ArrowRight className="size-4" /> : null}
+              </Button>
+            )}
           </div>
         </div>
       </footer>

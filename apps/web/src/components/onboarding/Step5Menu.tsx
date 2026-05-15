@@ -531,7 +531,7 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
       ) : null}
 
       <div className="flex items-center justify-end">
-        <Button onClick={onSubmit} disabled={submitting} className="px-6">
+        <Button id="wizard-step-submit" onClick={onSubmit} disabled={submitting} className="px-6">
           {submitting ? "Saving…" : "Continue"}
         </Button>
       </div>

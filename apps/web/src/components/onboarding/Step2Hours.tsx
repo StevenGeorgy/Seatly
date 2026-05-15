@@ -109,6 +109,44 @@ export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: 
         toast.error(error.message);
         return;
       }
+      // Sync the default shift's days_of_week + service times so Step 4 doesn't
+      // show all 7 days pre-selected (which the edge function defaults to when
+      // hours_json is null at Step 1 submit time).
+      const dbDayIndex: Record<OnboardingDay, number> = {
+        sunday: 0,
+        monday: 1,
+        tuesday: 2,
+        wednesday: 3,
+        thursday: 4,
+        friday: 5,
+        saturday: 6,
+      };
+      const openDays: number[] = [];
+      const opens: string[] = [];
+      const closes: string[] = [];
+      ONBOARDING_DAYS.forEach((day) => {
+        const v = hours[day];
+        if (v !== null) {
+          openDays.push(dbDayIndex[day]);
+          opens.push(v.open);
+          closes.push(v.close);
+        }
+      });
+      if (openDays.length > 0) {
+        openDays.sort((a, b) => a - b);
+        opens.sort();
+        closes.sort();
+        const startTime = opens[0];
+        const endTime = closes[closes.length - 1];
+        const { error: shiftError } = await client
+          .from("shifts")
+          .update({ days_of_week: openDays, start_time: startTime, end_time: endTime })
+          .eq("restaurant_id", restaurantId)
+          .eq("is_active", true);
+        if (shiftError) {
+          console.error("[Step2Hours] failed to sync shift days_of_week", shiftError);
+        }
+      }
       onComplete(hours);
     } finally {
       setSubmitting(false);
@@ -132,7 +170,7 @@ export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: 
           return (
             <div
               key={day}
-              className="flex flex-col gap-3 rounded-xl border border-border bg-bg-surface p-4 sm:flex-row sm:items-center sm:gap-4 sm:p-3"
+              className="flex min-h-[64px] flex-col gap-3 rounded-xl border border-border bg-bg-surface p-4 transition-colors sm:flex-row sm:items-center sm:gap-4 sm:p-3"
             >
               <button
                 type="button"
@@ -196,7 +234,7 @@ export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: 
         <Label className="text-xs text-text-muted">
           {atLeastOneOpen ? "Looks good — at least one day is open." : "Pick at least one open day to continue."}
         </Label>
-        <Button onClick={onSubmit} disabled={!atLeastOneOpen || submitting} className="px-6">
+        <Button id="wizard-step-submit" onClick={onSubmit} disabled={!atLeastOneOpen || submitting} className="px-6">
           {submitting ? "Saving…" : "Continue to floor plan"}
         </Button>
       </div>

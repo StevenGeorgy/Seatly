@@ -180,6 +180,19 @@ function StripeConnectEmbeddedKYC({
         const instance = loadConnectAndInitialize({
           publishableKey,
           fetchClientSecret,
+          appearance: {
+            overlays: "dialog",
+            variables: {
+              colorPrimary: "#D4AF37",
+              colorBackground: "#0A0A0A",
+              colorText: "#FFFFFF",
+              colorDanger: "#EF4444",
+              buttonPrimaryColorBackground: "#D4AF37",
+              buttonPrimaryColorText: "#0A0A0A",
+              fontFamily: "system-ui, -apple-system, sans-serif",
+              borderRadius: "8px",
+            },
+          },
         });
         if (cancelled) return;
         setConnectInstance(instance);

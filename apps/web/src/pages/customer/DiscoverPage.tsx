@@ -998,6 +998,7 @@ export default function DiscoverPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const {
+    user,
     profile,
     signOut,
     restaurantRoles,
@@ -1649,47 +1650,67 @@ export default function DiscoverPage() {
               </PopoverContent>
             </Popover>
 
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            {user ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
+                    aria-label={t("routes.account.title")}
+                  >
+                    <Avatar className="size-11">
+                      <AvatarImage src={profile?.avatar_url ?? undefined} />
+                      <AvatarFallback className="bg-gold/10 text-sm text-gold">{initials}</AvatarFallback>
+                    </Avatar>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 min-w-56">
+                  <DropdownMenuLabel className="truncate">
+                    {profile?.full_name ?? profile?.email ?? t("routes.account.title")}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => void navigate("/account")}>
+                    <User className="size-4" />
+                    {t("routes.account.title")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void navigate("/setup")}>
+                    <Plus className="size-4" />
+                    {t("dashboard.shell.setupRestaurant")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void navigate("/account")}>
+                    <Settings className="size-4" />
+                    Settings
+                  </DropdownMenuItem>
+                  <StaffWorkspaceMenuItems
+                    restaurants={staffRestaurants}
+                    restaurantRoles={restaurantRoles}
+                  />
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
+                    <LogOut className="size-4" />
+                    {t("dashboard.shell.signOut")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
-                  aria-label={t("routes.account.title")}
+                  onClick={() => void navigate("/login?from=/discover")}
+                  className="text-sm font-medium text-text-secondary transition-colors hover:text-white"
                 >
-                  <Avatar className="size-11">
-                    <AvatarImage src={profile?.avatar_url ?? undefined} />
-                    <AvatarFallback className="bg-gold/10 text-sm text-gold">{initials}</AvatarFallback>
-                  </Avatar>
+                  Log in
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 min-w-56">
-                <DropdownMenuLabel className="truncate">
-                  {profile?.full_name ?? profile?.email ?? t("routes.account.title")}
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => void navigate("/account")}>
-                  <User className="size-4" />
-                  {t("routes.account.title")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void navigate("/setup")}>
-                  <Plus className="size-4" />
-                  {t("dashboard.shell.setupRestaurant")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void navigate("/account")}>
-                  <Settings className="size-4" />
-                  Settings
-                </DropdownMenuItem>
-                <StaffWorkspaceMenuItems
-                  restaurants={staffRestaurants}
-                  restaurantRoles={restaurantRoles}
-                />
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
-                  <LogOut className="size-4" />
-                  {t("dashboard.shell.signOut")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="rounded-full px-5 font-semibold"
+                  onClick={() => void navigate("/register?from=/discover")}
+                >
+                  Sign up
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </header>

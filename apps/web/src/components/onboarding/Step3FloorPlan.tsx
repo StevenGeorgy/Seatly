@@ -129,7 +129,7 @@ export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange
 
       <div className="flex items-center justify-between">
         <span className="text-xs text-text-muted">{tables.length} table{tables.length === 1 ? "" : "s"}</span>
-        <Button onClick={onSubmit} disabled={submitting || tables.length === 0} className="px-6">
+        <Button id="wizard-step-submit" onClick={onSubmit} disabled={submitting || tables.length === 0} className="px-6">
           {submitting ? "Saving…" : "Continue to booking rules"}
         </Button>
       </div>

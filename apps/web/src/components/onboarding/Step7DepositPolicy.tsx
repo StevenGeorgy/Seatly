@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -234,8 +235,15 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
         </div>
       </section>
 
-      {choice === "take" ? (
-        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
+      <AnimatePresence initial={false}>
+        {choice === "take" ? (
+        <motion.section
+          key="deposit-tiers"
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          exit={{ opacity: 0, height: 0 }}
+          transition={{ duration: 0.2 }}
+          className="flex flex-col gap-3 overflow-hidden rounded-2xl border border-border bg-bg-surface p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Tiers</h2>
             <Button type="button" variant="outline" size="sm" onClick={addTier} className="gap-1.5">
@@ -308,8 +316,9 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
           {"error" in parsed ? (
             <p className="text-xs text-warning">{parsed.error}</p>
           ) : null}
-        </section>
-      ) : null}
+        </motion.section>
+        ) : null}
+      </AnimatePresence>
 
       <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
         <div>
@@ -342,7 +351,7 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
       </p>
 
       <div className="flex items-center justify-end">
-        <Button onClick={onSubmit} disabled={submitting} className="px-6">
+        <Button id="wizard-step-submit" onClick={onSubmit} disabled={submitting} className="px-6">
           {submitting ? "Saving…" : "Continue"}
         </Button>
       </div>

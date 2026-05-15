@@ -136,11 +136,14 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // Use type: "express" — Custom accounts require Stripe platform approval
+    // most new platforms don't have. Express works out of the box and is fully
+    // compatible with the ConnectAccountOnboarding embedded component (the
+    // owner stays inside Cenaiva for KYC).
     const account = await stripe.accounts.create({
-      type: "custom",
+      type: "express",
       country: "CA",
       email: row.email ?? undefined,
-      business_type: "company",
       capabilities: {
         card_payments: { requested: true },
         transfers: { requested: true },
@@ -150,7 +153,6 @@ Deno.serve(async (req: Request) => {
         mcc: "5812",
       },
       metadata: { restaurant_id: row.id, platform: "cenaiva" },
-      settings: { payouts: { schedule: { interval: "daily" } } },
     });
 
     const { error: updateErr } = await supabaseAdmin

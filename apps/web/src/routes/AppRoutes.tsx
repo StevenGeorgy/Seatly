@@ -93,15 +93,9 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
+        <Route path="/setup-legacy" element={<Navigate to="/setup" replace />} />
 
-        <Route
-          path="/discover"
-          element={
-            <RequireAuth>
-              <DiscoverPage />
-            </RequireAuth>
-          }
-        />
+        <Route path="/discover" element={<DiscoverPage />} />
         <Route
           path="/account"
           element={

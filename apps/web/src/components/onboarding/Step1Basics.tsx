@@ -468,7 +468,7 @@ export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
         </div>
       </section>
 
-      <Button type="submit" disabled={submitting} className="self-end gap-2 px-6">
+      <Button id="wizard-step-submit" type="submit" disabled={submitting} className="self-end gap-2 px-6">
         {submitting ? "Creating restaurant…" : "Continue to hours"}
       </Button>
     </form>

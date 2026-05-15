@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { PreviewAsDinerButton } from "@/components/onboarding/PreviewAsDinerButton";
@@ -179,28 +179,34 @@ export default function SetupPage() {
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [resumeChecked, setResumeChecked] = useState(false);
+  // Track which profile.id we've already attempted resume for. If profile
+  // transitions from null → a value (e.g. inline-signup completes on Step 1),
+  // we re-run resume so the wizard hydrates the just-created restaurant
+  // instead of showing Step 1 again on a refresh mid-flow.
+  const lastResumedProfileIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (resumeChecked) return;
+    const profileId = profile?.id ?? null;
     if (!user) {
-      setResumeChecked(true);
+      lastResumedProfileIdRef.current = null;
       return;
     }
+    if (profileId === null) return;
+    if (lastResumedProfileIdRef.current === profileId) return;
+    lastResumedProfileIdRef.current = profileId;
     let cancelled = false;
     void (async () => {
-      const resume = await loadInProgressRestaurant(profile?.id ?? null);
+      const resume = await loadInProgressRestaurant(profileId);
       if (cancelled) return;
       if (resume) {
         setState(resume.state);
         setStep(resume.startAtStep);
       }
-      setResumeChecked(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [profile?.id, resumeChecked, user]);
+  }, [profile?.id, user]);
 
   const handleStep1Complete = useCallback((result: Step1Result) => {
     setState((prev) => ({
@@ -256,13 +262,16 @@ export default function SetupPage() {
   }, [navigate, state.restaurantId]);
 
   const handleNextFromShell = useCallback(() => {
-    const form = document.querySelector<HTMLFormElement>("#onboarding-step-1-form");
-    if (step === 1 && form) {
-      form.requestSubmit();
+    // Each step renders its primary action button with id="wizard-step-submit".
+    // The footer Next is a parallel control that triggers the same submission,
+    // so users can advance from either button.
+    const submitButton = document.getElementById("wizard-step-submit");
+    if (submitButton instanceof HTMLButtonElement && !submitButton.disabled) {
+      submitButton.click();
       return;
     }
     setStep((s) => Math.min(WIZARD_TOTAL_STEPS, s + 1));
-  }, [step]);
+  }, []);
 
   const nextLabel = useMemo(() => {
     if (step === 1) return "Continue";
@@ -371,9 +380,10 @@ export default function SetupPage() {
         onNext={handleNextFromShell}
         onSaveAndExit={handleSaveAndExit}
         onPreviewClick={() => setPreviewOpen(true)}
-        canGoNext={step === 1}
+        canGoNext={step !== WIZARD_TOTAL_STEPS}
         nextLabel={nextLabel}
         busy={busy}
+        hideFooterNext={step !== WIZARD_TOTAL_STEPS}
       >
         {stepContent}
       </WizardShell>
