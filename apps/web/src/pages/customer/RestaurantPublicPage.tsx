@@ -2026,15 +2026,26 @@ export default function RestaurantPublicPage() {
         if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
           throw new Error(prepBody.error ?? "Couldn't prepare deposit");
         }
-        // Mark the just-created payment row as 'charged' now that Stripe is paid.
-        await client
-          .from("reservation_deposit_payments")
-          .update({
-            status: "charged",
-            stripe_payment_intent_id: paymentIntentId,
-            paid_at: new Date().toISOString(),
-          })
-          .eq("id", prepBody.payments[0].id);
+        // Mark the just-created payment row as 'charged' now that Stripe
+        // confirmed the PaymentIntent. reservation_deposit_payments RLS
+        // doesn't let diners UPDATE directly (only service-role + staff),
+        // so this MUST go through the confirm-deposit-paid edge fn, which
+        // re-validates the PI with Stripe before writing.
+        const confirmRes = await fetch(
+          `${getSupabaseProjectUrl()}/functions/v1/confirm-deposit-paid`,
+          {
+            method: "POST",
+            headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+            body: JSON.stringify({
+              payment_id: prepBody.payments[0].id,
+              payment_intent_id: paymentIntentId,
+            }),
+          },
+        );
+        if (!confirmRes.ok) {
+          const confirmBody = (await confirmRes.json().catch(() => ({}))) as { error?: string };
+          throw new Error(confirmBody.error ?? `confirm-deposit-paid ${confirmRes.status}`);
+        }
       } catch (err) {
         // Don't fail the whole flow — the user paid and got a reservation.
         // Log for ops follow-up; webhook + reconciliation can catch this.

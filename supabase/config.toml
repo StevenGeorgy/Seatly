@@ -74,6 +74,9 @@ verify_jwt = false
 [functions.confirm-deposit-stub]
 verify_jwt = false
 
+[functions.confirm-deposit-paid]
+verify_jwt = false
+
 [functions.create-public-payment-intent]
 verify_jwt = false
 

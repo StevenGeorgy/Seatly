@@ -144,6 +144,34 @@ edits here propagate to both agents in one step.
   `supabase/functions/refund-payment-intent/index.ts`,
   `apps/web/src/pages/customer/BookingDetailsPage.tsx`.
 
+- **Deposits: real Stripe charge confirmation (2026-05-15 late).** Up
+  to today the diner-side deposit flow had a subtle bug: after Stripe
+  confirmed the PaymentIntent, the client tried to UPDATE
+  `reservation_deposit_payments.status='charged'` directly. The table's
+  RLS policies (`rdp_diner_select` + `rdp_owner_select`) permit SELECT
+  for diners and staff, but UPDATE only via service-role + staff. So
+  for a non-staff diner that client UPDATE silently failed — the row
+  stayed `pending`, the settle trigger never fired, the reservation
+  was stuck at `pending_payment` even though Stripe had charged the
+  card. Mark didn't catch this in earlier tests because as owner of
+  Mark Testing he hits the staff RLS branch. Fix: new edge function
+  `supabase/functions/confirm-deposit-paid/index.ts` mirrors the
+  `mark-order-paid` pattern — accepts `{ payment_id, payment_intent_id }`,
+  re-fetches the PI from Stripe, verifies status is
+  `succeeded`/`processing` AND amount >= deposit amount (anti-fraud,
+  because the PI can be larger when it bundles a pre-order), then
+  flips the row via service-role. Idempotent: a retried call with the
+  same PI returns success without re-writing. Anon-callable (verify_jwt
+  = false), security comes from re-verifying the PI with Stripe.
+  Client-side: `RestaurantPublicPage.tsx` (~line 2030) now POSTs to
+  `/functions/v1/confirm-deposit-paid` instead of the broken raw
+  UPDATE. The deposit money itself was already real Stripe — the PI
+  for `totalNow = total + previewDepositDollars` was already
+  destination-charged to the restaurant's connected account; only the
+  DB bookkeeping was broken. `confirm-deposit-stub` stays in the repo
+  for local-dev / harness use (not called from production code paths).
+  Settle trigger unchanged.
+
 - **Reservation-after-payment fix (2026-05-15).** The diner checkout used
   to eagerly create the reservation on entry to the Review & Pay step so
   Stripe Elements could mount with a `clientSecret`. That meant a diner
@@ -552,11 +580,12 @@ edits here propagate to both agents in one step.
   (target a specific draft). Implicit fallback (no params) UPDATEs the
   most-recent unpublished draft. When in doubt, route through
   `/setup?new=1` to force a fresh row.
-- Never deploy `confirm-deposit-stub` to production without flipping
-  `DEPOSIT_STRIPE_STUB_MODE=false`. The stub flips deposits to 'charged'
-  with no real money movement — leaving it on in prod would mean every
-  customer gets a free deposit waive. Search `// STRIPE STUB` to find
-  every spot the future real-Stripe wiring must replace.
+- Never call `confirm-deposit-stub` from production code paths. As of
+  2026-05-15 the diner deposit flow runs through `confirm-deposit-paid`
+  (real Stripe, service-role write, validates the PI). The stub stays
+  in the repo for local dev / harness scenarios only. If you need to
+  flip a deposit row to charged from anywhere else, route through
+  `confirm-deposit-paid` so the Stripe re-verification happens.
 - Never create migrations or run `DROP` / `DELETE` on the live project
   without explicit instruction.
 - Never run `tmp-e2e/concurrent-booking.mjs` unmodified — it jams the DB
