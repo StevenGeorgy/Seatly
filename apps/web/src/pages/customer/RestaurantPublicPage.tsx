@@ -20,6 +20,7 @@ import {
   Trash2,
   CreditCard,
   Lock,
+  Loader2,
   AlertTriangle,
   Split,
   Heart,
@@ -48,6 +49,7 @@ import {
   type AvailabilitySlot,
 } from "@/hooks/useAvailability";
 import { AvailabilityPanel } from "@/components/booking/AvailabilityPanel";
+import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
@@ -169,14 +171,6 @@ function roundMoney(n: number): number {
 function isCardFilled(num: string, exp: string, cvc: string): boolean {
   const digits = num.replace(/\D/g, "");
   return digits.length >= 15 && exp.trim().length >= 4 && cvc.replace(/\D/g, "").length >= 3;
-}
-
-function formatCardPanInput(value: string): string {
-  return value
-    .replace(/\D/g, "")
-    .slice(0, 16)
-    .replace(/(.{4})/g, "$1 ")
-    .trim();
 }
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
@@ -1433,10 +1427,10 @@ export default function RestaurantPublicPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [cardNumber, setCardNumber] = useState("");
-  const [cardExpiry, setCardExpiry] = useState("");
-  const [cardCvc, setCardCvc] = useState("");
   const [paymentSplitMode, setPaymentSplitMode] = useState<"single" | "split">("single");
+  // True between the Stripe form submit and the post-payment reservation
+  // creation. Disables Place Order to prevent double-submits.
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
   /** Raw input so the field can be cleared while typing; clamped on blur. Parsed as `splitPartyCount`. */
   const [splitPartyCountInput, setSplitPartyCountInput] = useState("2");
   const splitPartyCountParse = useMemo(() => {
@@ -1747,6 +1741,51 @@ export default function RestaurantPublicPage() {
     );
   };
 
+  // Refund a successful Stripe charge when the reservation couldn't be
+  // created (slot was taken in the race window between Stripe success and
+  // create-public-booking). Returns true if the refund went through.
+  async function refundPayment(paymentIntentId: string, reason: string): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `${getSupabaseProjectUrl()}/functions/v1/refund-payment-intent`,
+        {
+          method: "POST",
+          headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+          body: JSON.stringify({ payment_intent_id: paymentIntentId, reason }),
+        },
+      );
+      const body = await res.json().catch(() => ({}));
+      return res.ok && Boolean((body as { refund_id?: string }).refund_id);
+    } catch {
+      return false;
+    }
+  }
+
+  // Called by the Stripe form after the card has been successfully charged.
+  // Creates the reservation; if create-public-booking 409s (slot just taken),
+  // auto-refunds the card and surfaces a clean error.
+  async function handlePaidBooking(paymentIntentId: string) {
+    setPaymentProcessing(true);
+    try {
+      await createReservationCore({ paymentIntentId });
+      setStep("confirmed");
+      toast.success(
+        "Payment received — your reservation will appear in My Bookings in a few seconds.",
+        { duration: 6000 },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Reservation failed after payment";
+      const refundOk = await refundPayment(paymentIntentId, "slot_taken");
+      const fullMsg = refundOk
+        ? `${msg} — your card has been refunded.`
+        : `${msg} — please contact support@cenaiva.ai to refund your card.`;
+      setOrderError(fullMsg);
+      toast.error(fullMsg);
+    } finally {
+      setPaymentProcessing(false);
+    }
+  }
+
   async function handlePlaceOrder() {
     if (placingRef.current) return;
     if (!restaurant) return;
@@ -1755,24 +1794,51 @@ export default function RestaurantPublicPage() {
       return;
     }
 
-    // Local mirrors of the deposit-related response fields. We can't read the
-    // matching React state right after the setter inside the same function
-    // turn (state updates aren't flushed yet), so track here for the routing
-    // decision below.
-    let depositCentsLocal = 0;
-    let depositReservationLocal: string | null = null;
+    const totalToChargeCents = Math.round(totalNow * 100);
+    if (totalToChargeCents > 0) {
+      // Paid path is driven by the inline Stripe form's submit handler. The
+      // Place Order button submits that form via form="diner-pay-form", and
+      // its onPaid callback (handlePaidBooking) creates the reservation
+      // post-payment. We should never end up here for paid bookings.
+      return;
+    }
 
     placingRef.current = true;
     setPlacing(true);
     setOrderError(null);
 
     try {
-      const client = getSupabaseBrowserClient();
+      await createReservationCore({ paymentIntentId: null });
+      setStep("confirmed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to place order";
+      setOrderError(message);
+      toast.error(message);
+    } finally {
+      placingRef.current = false;
+      setPlacing(false);
+    }
+  }
 
-      // Contact info from dine-in reservation form
-      const contactName = dineIn.name;
-      const contactEmail = dineIn.email;
-      const contactPhone = dineIn.phone;
+  // Shared reservation-creation routine. Called by handlePlaceOrder (free
+  // path) and handlePaidBooking (after Stripe success).
+  async function createReservationCore({
+    paymentIntentId,
+  }: {
+    paymentIntentId: string | null;
+  }): Promise<void> {
+    if (!restaurant) throw new Error("Restaurant not loaded");
+    let depositCentsLocal = 0;
+    let depositReservationLocal: string | null = null;
+
+    const client = getSupabaseBrowserClient();
+
+    // Contact info from dine-in reservation form
+    const contactName = dineIn.name;
+    const contactEmail = dineIn.email;
+    const contactPhone = dineIn.phone;
+    let createdReservationId: string | null = existingReservationId ?? null;
+    let createdOrderId: string | null = existingOrderId ?? null;
 
       // 1. Create or reuse the reservation. When we arrived via a Cenaiva
       //    order_id deep-link, both the reservation and the order already
@@ -1893,6 +1959,8 @@ export default function RestaurantPublicPage() {
           depositCentsLocal = body.deposit_amount_cents ?? 0;
           depositReservationLocal = body.reservation_id ?? null;
         }
+        createdReservationId = body.reservation_id ?? createdReservationId;
+        createdOrderId = body.order_id ?? createdOrderId;
       }
 
       // 2. Update an existing Cenaiva preorder, if this page was opened from a
@@ -1930,66 +1998,76 @@ export default function RestaurantPublicPage() {
       // next view without waiting for the realtime channel to fire.
       if (restaurant?.id) invalidateAvailabilityCache(restaurant.id);
 
-      // Deposit auto-collection. We're now on the checkout step (where the
-      // customer entered single/split tender card info). The split-tender
-      // card inputs are STRIPE STUB — no real card processing — so we just
-      // record one reservation_deposit_payments row for the full deposit
-      // amount and immediately mark it 'charged'. The settle trigger flips
-      // the reservation to 'confirmed'. When real Stripe is wired, the
-      // split-tender will create N PaymentIntents, one per card row.
-      if (depositReservationLocal && depositCentsLocal > 0) {
-        try {
-          const prepRes = await fetch(
-            `${getSupabaseProjectUrl()}/functions/v1/prepare-deposit`,
-            {
-              method: "POST",
-              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
-              body: JSON.stringify({
-                reservation_id: depositReservationLocal,
-                payers: [{
-                  email: dineIn.email ?? "",
-                  full_name: dineIn.name ?? "",
-                  amount_cents: depositCentsLocal,
-                }],
-              }),
-            },
-          );
-          const prepBody = (await prepRes.json().catch(() => ({}))) as {
-            payments?: Array<{ id: string }>;
-            error?: string;
-          };
-          if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
-            throw new Error(prepBody.error ?? "Couldn't prepare deposit");
-          }
-          await fetch(
-            `${getSupabaseProjectUrl()}/functions/v1/confirm-deposit-stub`,
-            {
-              method: "POST",
-              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
-              body: JSON.stringify({ payment_id: prepBody.payments[0].id }),
-            },
-          );
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Deposit failed";
-          setOrderError(message);
-          toast.error(message);
-          return;
+    // If a deposit is required AND we just paid for it, record the deposit
+    // payment row marked 'charged' so the existing settle trigger flips the
+    // reservation to 'confirmed'. For free bookings (paymentIntentId === null)
+    // there's no deposit by definition (totalNow === 0).
+    if (paymentIntentId && depositReservationLocal && depositCentsLocal > 0) {
+      try {
+        const prepRes = await fetch(
+          `${getSupabaseProjectUrl()}/functions/v1/prepare-deposit`,
+          {
+            method: "POST",
+            headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+            body: JSON.stringify({
+              reservation_id: depositReservationLocal,
+              payers: [{
+                email: dineIn.email ?? "",
+                full_name: dineIn.name ?? "",
+                amount_cents: depositCentsLocal,
+              }],
+            }),
+          },
+        );
+        const prepBody = (await prepRes.json().catch(() => ({}))) as {
+          payments?: Array<{ id: string }>;
+          error?: string;
+        };
+        if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
+          throw new Error(prepBody.error ?? "Couldn't prepare deposit");
         }
+        // Mark the just-created payment row as 'charged' now that Stripe is paid.
+        await client
+          .from("reservation_deposit_payments")
+          .update({
+            status: "charged",
+            stripe_payment_intent_id: paymentIntentId,
+            paid_at: new Date().toISOString(),
+          })
+          .eq("id", prepBody.payments[0].id);
+      } catch (err) {
+        // Don't fail the whole flow — the user paid and got a reservation.
+        // Log for ops follow-up; webhook + reconciliation can catch this.
+        console.error("[checkout] post-payment deposit recording failed", err);
       }
-
-      setStep("confirmed");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to place order";
-      setOrderError(message);
-      // The inline `orderError` strip only renders on the checkout step. The
-      // "Skip preorder · Confirm booking" button on the menu step also calls
-      // this handler, so we surface a toast so that path can never fail
-      // silently.
-      toast.error(message);
-    } finally {
-      placingRef.current = false;
-      setPlacing(false);
     }
+
+    // Mark the order row as paid for pre-order checkouts (food + tax). The
+    // booking edge function creates it with status='pending'; mark-order-paid
+    // (service-role) flips it to 'paid' now that Stripe cleared. orders RLS
+    // only allows staff to UPDATE rows, so this must go through the edge fn.
+    if (paymentIntentId && createdOrderId) {
+      try {
+        const markRes = await fetch(
+          `${getSupabaseProjectUrl()}/functions/v1/mark-order-paid`,
+          {
+            method: "POST",
+            headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+            body: JSON.stringify({
+              order_id: createdOrderId,
+              payment_intent_id: paymentIntentId,
+            }),
+          },
+        );
+        if (!markRes.ok) {
+          const markBody = (await markRes.json().catch(() => ({}))) as { error?: string };
+          throw new Error(markBody.error ?? `mark-order-paid ${markRes.status}`);
+        }
+      } catch (err) {
+        console.error("[checkout] post-payment order paid-update failed", err);
+      }
+    }
+
   }
 
   if (loading) {
@@ -2708,132 +2786,27 @@ export default function RestaurantPublicPage() {
                   <Lock className="ml-auto size-3 text-text-muted" />
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
-                <div className="space-y-3">
-                  {paymentSplitMode === "single" ? (
-                    <>
-                      <div>
-                        <Label htmlFor="card-num" className="mb-1.5 block text-xs text-text-muted">
-                          {t("customerPublic.checkout.cardNumber")}
-                        </Label>
-                        <Input
-                          id="card-num"
-                          value={cardNumber}
-                          onChange={(e) => setCardNumber(formatCardPanInput(e.target.value))}
-                          placeholder="4242 4242 4242 4242"
-                          maxLength={19}
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <Label htmlFor="card-exp" className="mb-1.5 block text-xs text-text-muted">
-                            {t("customerPublic.checkout.cardExpiry")}
-                          </Label>
-                          <Input
-                            id="card-exp"
-                            value={cardExpiry}
-                            onChange={(e) => setCardExpiry(e.target.value)}
-                            placeholder="MM / YY"
-                            maxLength={7}
-                          />
-                        </div>
-                        <div>
-                          <Label htmlFor="card-cvc" className="mb-1.5 block text-xs text-text-muted">
-                            {t("customerPublic.checkout.cardCvc")}
-                          </Label>
-                          <Input
-                            id="card-cvc"
-                            value={cardCvc}
-                            onChange={(e) =>
-                              setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4))
-                            }
-                            placeholder="•••"
-                            maxLength={4}
-                          />
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex flex-col gap-6 sm:gap-8">
-                      {splitCardRows.map((row, i) => (
-                        <div
-                          key={i}
-                          className="space-y-4 rounded-xl border border-border bg-bg-surface p-4 sm:p-5"
-                        >
-                          <p className="text-[11px] font-semibold uppercase tracking-widest text-text-muted sm:text-xs">
-                            {t("customerPublic.checkout.cardNumberedLabel", { n: i + 1 })}
-                          </p>
-                          <div className="space-y-4">
-                            <div>
-                              <Label
-                                htmlFor={`split-card-${i}-num`}
-                                className="mb-2 block text-xs text-text-muted"
-                              >
-                                {t("customerPublic.checkout.cardNumber")}
-                              </Label>
-                              <Input
-                                id={`split-card-${i}-num`}
-                                value={row.number}
-                                onChange={(e) => {
-                                  const number = formatCardPanInput(e.target.value);
-                                  setSplitCardRows((rows) =>
-                                    rows.map((r, j) => (j === i ? { ...r, number } : r)),
-                                  );
-                                }}
-                                placeholder="4242 4242 4242 4242"
-                                maxLength={19}
-                                className="h-11"
-                              />
-                            </div>
-                            <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                              <div>
-                                <Label
-                                  htmlFor={`split-card-${i}-exp`}
-                                  className="mb-2 block text-xs text-text-muted"
-                                >
-                                  {t("customerPublic.checkout.cardExpiry")}
-                                </Label>
-                                <Input
-                                  id={`split-card-${i}-exp`}
-                                  value={row.expiry}
-                                  onChange={(e) => {
-                                    const expiry = e.target.value;
-                                    setSplitCardRows((rows) =>
-                                      rows.map((r, j) => (j === i ? { ...r, expiry } : r)),
-                                    );
-                                  }}
-                                  placeholder="MM / YY"
-                                  maxLength={7}
-                                  className="h-11"
-                                />
-                              </div>
-                              <div>
-                                <Label
-                                  htmlFor={`split-card-${i}-cvc`}
-                                  className="mb-2 block text-xs text-text-muted"
-                                >
-                                  {t("customerPublic.checkout.cardCvc")}
-                                </Label>
-                                <Input
-                                  id={`split-card-${i}-cvc`}
-                                  value={row.cvc}
-                                  onChange={(e) => {
-                                    const cvc = e.target.value.replace(/\D/g, "").slice(0, 4);
-                                    setSplitCardRows((rows) =>
-                                      rows.map((r, j) => (j === i ? { ...r, cvc } : r)),
-                                    );
-                                  }}
-                                  placeholder="•••"
-                                  maxLength={4}
-                                  className="h-11"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                {Math.round(totalNow * 100) > 0 && restaurant?.id ? (
+                  <StripePaymentForm
+                    restaurantId={restaurant.id}
+                    amountCents={Math.round(totalNow * 100)}
+                    formId="diner-pay-form"
+                    hideInternalSubmit
+                    onPaid={async (paymentIntentId) => {
+                      await handlePaidBooking(paymentIntentId);
+                    }}
+                    onError={(msg) => {
+                      setOrderError(msg);
+                    }}
+                  />
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border bg-bg-elevated/40 p-4 text-sm text-text-muted">
+                    <p className="font-medium text-text-secondary">No payment required.</p>
+                    <p className="mt-1 text-xs">
+                      Click <span className="font-semibold text-gold">Place Order</span> to confirm your reservation.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {orderError && (
@@ -2841,15 +2814,35 @@ export default function RestaurantPublicPage() {
                   {orderError}
                 </div>
               )}
-              <Button
-                size="lg"
-                className="mt-6 h-16 w-full rounded-2xl text-lg font-semibold tracking-wide [&_svg:not([class*='size-'])]:size-5"
-                disabled={(paymentSplitMode === "split" && !splitCheckoutValid) || placing}
-                onClick={() => void handlePlaceOrder()}
-              >
-                <Lock className="mr-2" />
-                {placing ? "Placing order…" : "Place Order"}
-              </Button>
+              {Math.round(totalNow * 100) > 0 ? (
+                <Button
+                  type="submit"
+                  form="diner-pay-form"
+                  size="lg"
+                  disabled={paymentProcessing || (paymentSplitMode === "split" && !splitCheckoutValid)}
+                  className="mt-6 h-16 w-full rounded-2xl text-lg font-semibold tracking-wide [&_svg:not([class*='size-'])]:size-5"
+                >
+                  {paymentProcessing ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" /> Processing payment…
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="mr-2" /> Place Order
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  size="lg"
+                  className="mt-6 h-16 w-full rounded-2xl text-lg font-semibold tracking-wide [&_svg:not([class*='size-'])]:size-5"
+                  disabled={placing}
+                  onClick={() => void handlePlaceOrder()}
+                >
+                  <Lock className="mr-2" />
+                  {placing ? "Placing order…" : "Place Order"}
+                </Button>
+              )}
               <p className="mt-2 text-center text-[11px] text-text-muted">
                 By placing your order you agree to our terms.{" "}
                 {tipOption === "after"
@@ -2912,9 +2905,6 @@ export default function RestaurantPublicPage() {
                         setTipOption("18");
                         setPaymentSplitMode("single");
                         setSplitPartyCountInput("2");
-                        setCardNumber("");
-                        setCardExpiry("");
-                        setCardCvc("");
                         setConfirmationCode("");
                         setConfirmationDelivery({ status: "skipped", channel: null });
                         setOrderError(null);
@@ -2935,6 +2925,7 @@ export default function RestaurantPublicPage() {
 
         <div className="h-10" />
       </div>
+
     </div>
   );
 }

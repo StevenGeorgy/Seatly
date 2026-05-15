@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
 export async function fetchPublicMenuCategories(restaurantId: string): Promise<MenuCategoryRow[]> {
   if (!isSupabaseConfigured()) return [];
@@ -431,6 +432,7 @@ export function useMenuItems(categoryId?: string) {
 
     const image = resolveMenuItemImage(file);
     if (!image) return MENU_IMAGE_SUPPORT_MESSAGE;
+    if (!assertImageSizeOk(file)) return "Image too large.";
 
     const client = getSupabaseBrowserClient();
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");

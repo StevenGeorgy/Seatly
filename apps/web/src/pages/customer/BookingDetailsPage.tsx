@@ -8,6 +8,7 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock,
+  CreditCard,
   MapPin,
   PencilLine,
   Phone,
@@ -27,7 +28,9 @@ import {
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
-import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
+import { type MyReservationRow } from "@/hooks/useMyReservations";
+import { useReservationById } from "@/hooks/useReservationById";
+import { useReservationPayments } from "@/hooks/useReservationPayments";
 import { useUser } from "@/hooks/useUser";
 import {
   getSupabaseAnonKey,
@@ -81,7 +84,21 @@ function DetailRow({
   );
 }
 
-async function cancelReservation(reservationId: string): Promise<void> {
+type CancelRefundReport = {
+  kind: "preorder" | "deposit";
+  ok: boolean;
+  amount_cents: number;
+  error?: string;
+};
+
+type CancelResult = {
+  refund_total_cents: number;
+  forfeit_total_cents: number;
+  within_24h: boolean;
+  refunds: CancelRefundReport[];
+};
+
+async function cancelReservation(reservationId: string): Promise<CancelResult> {
   if (!isSupabaseConfigured()) {
     throw new Error("Authentication is not available. Configure Supabase first.");
   }
@@ -105,10 +122,58 @@ async function cancelReservation(reservationId: string): Promise<void> {
   const body = (await res.json().catch(() => ({}))) as {
     ok?: boolean;
     error?: string;
+    refund_total_cents?: number;
+    forfeit_total_cents?: number;
+    within_24h?: boolean;
+    refunds?: CancelRefundReport[];
   };
   if (!res.ok || body.error || body.ok !== true) {
     throw new Error(body.error ?? `Could not cancel reservation (${res.status}).`);
   }
+  return {
+    refund_total_cents:
+      typeof body.refund_total_cents === "number" ? body.refund_total_cents : 0,
+    forfeit_total_cents:
+      typeof body.forfeit_total_cents === "number" ? body.forfeit_total_cents : 0,
+    within_24h: Boolean(body.within_24h),
+    refunds: Array.isArray(body.refunds) ? body.refunds : [],
+  };
+}
+
+function PaymentStatusBadge({ status }: { status: string }) {
+  const normalized = status.toLowerCase();
+  const variants: Record<string, { label: string; className: string }> = {
+    paid: {
+      label: "Paid",
+      className: "border-success/30 bg-success/10 text-success",
+    },
+    refunded: {
+      label: "Refunded",
+      className: "border-border bg-bg-elevated text-text-secondary",
+    },
+    pending: {
+      label: "Pending",
+      className: "border-gold/30 bg-gold/10 text-gold",
+    },
+    failed: {
+      label: "Failed",
+      className: "border-danger/30 bg-danger/10 text-danger",
+    },
+  };
+  const v = variants[normalized] ?? {
+    label: normalized.charAt(0).toUpperCase() + normalized.slice(1),
+    className: "border-border bg-bg-elevated text-text-secondary",
+  };
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full border px-2.5 py-0.5 text-[11px] font-medium",
+        v.className,
+      )}
+    >
+      {v.label}
+    </span>
+  );
 }
 
 async function modifyReservation(
@@ -169,8 +234,15 @@ export default function BookingDetailsPage() {
   const navigate = useNavigate();
   const { reservationId } = useParams<{ reservationId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { upcoming, past, loading, refresh } = useMyReservations();
+  const {
+    reservation: reservationRow,
+    loading,
+    refresh,
+  } = useReservationById(reservationId ?? null);
   const { profile } = useUser();
+  const { data: paymentData, refresh: refreshPayments } = useReservationPayments(
+    reservationId ?? null,
+  );
   const [cancelling, setCancelling] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
@@ -184,9 +256,7 @@ export default function BookingDetailsPage() {
     reasonKind: null,
   });
 
-  const reservation = useMemo(() => {
-    return [...upcoming, ...past].find((row) => row.id === reservationId) ?? null;
-  }, [past, reservationId, upcoming]);
+  const reservation: MyReservationRow | null = reservationRow;
 
   const status = reservation ? statusFor(reservation) : null;
   const reservedAt = useMemo(
@@ -195,6 +265,13 @@ export default function BookingDetailsPage() {
   );
   const canCancel = Boolean(reservation && (status === "upcoming" || status === "current"));
   const canModify = canCancel;
+  // Mirror the edge-fn 24h cliff so the cancel-confirm dialog can warn the
+  // diner BEFORE they cancel that they're about to forfeit any paid amount.
+  const hoursToReservation = reservedAt
+    ? (reservedAt.getTime() - Date.now()) / (1000 * 60 * 60)
+    : Infinity;
+  const willForfeit =
+    hoursToReservation < 24 && (paymentData?.totalPaidCents ?? 0) > 0;
   const restaurantName = reservation?.restaurant?.name ?? "Restaurant";
   const cuisineLine = [reservation?.restaurant?.cuisine_type, reservation?.restaurant?.city]
     .filter(Boolean)
@@ -247,16 +324,34 @@ export default function BookingDetailsPage() {
     if (!reservation || !canCancel || cancelling) return;
     setCancelling(true);
     try {
-      await cancelReservation(reservation.id);
-      await refresh();
-      // Drop cached availability so this device sees the freed-up slot
-      // immediately without waiting for realtime / DB cache TTL.
-      if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
+      const result = await cancelReservation(reservation.id);
+      // The edge fn returned — DB is consistent. Close the dialog and toast
+      // RIGHT NOW. Refetches + cache invalidation run in the background so
+      // the user isn't left staring at "Cancelling…" while the data layer
+      // catches up.
       setCancelConfirmOpen(false);
-      toast.success("Reservation cancelled.");
+      setCancelling(false);
+      const failedRefunds = result.refunds.filter((r) => !r.ok);
+      if (result.within_24h && result.forfeit_total_cents > 0) {
+        toast.warning(
+          `Reservation cancelled. $${(result.forfeit_total_cents / 100).toFixed(2)} forfeited per the 24h cancellation policy.`,
+        );
+      } else if (result.refund_total_cents > 0 && failedRefunds.length === 0) {
+        toast.success(
+          `Reservation cancelled. $${(result.refund_total_cents / 100).toFixed(2)} refunded to your card.`,
+        );
+      } else if (failedRefunds.length > 0) {
+        toast.warning(
+          "Reservation cancelled. Some refunds are still processing — we'll email you once they complete.",
+        );
+      } else {
+        toast.success("Reservation cancelled.");
+      }
+      void refresh();
+      void refreshPayments();
+      if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
-    } finally {
       setCancelling(false);
     }
   };
@@ -439,6 +534,98 @@ export default function BookingDetailsPage() {
                     <DetailRow icon={Phone} label="Phone" value={reservation.restaurant.phone} />
                   )}
                 </div>
+
+                {paymentData &&
+                  (paymentData.orders.length > 0 || paymentData.deposits.length > 0) && (
+                    <div className="mt-10">
+                      <div className="flex items-center gap-2">
+                        <CreditCard className="size-4 text-gold" />
+                        <h2 className="font-serif text-2xl text-white">Payment summary</h2>
+                      </div>
+
+                      {paymentData.orders.map((order) => (
+                        <div
+                          key={order.id}
+                          className="mt-4 rounded-2xl border border-border bg-bg-surface/60 p-5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-white">
+                              {order.is_preorder ? "Pre-ordered items" : "Order"}
+                            </p>
+                            <PaymentStatusBadge status={order.status} />
+                          </div>
+                          {order.order_items.length > 0 && (
+                            <ul className="mt-3 space-y-2">
+                              {order.order_items.map((it) => (
+                                <li
+                                  key={it.id}
+                                  className="flex justify-between text-sm text-text-secondary"
+                                >
+                                  <span>
+                                    {it.quantity} × {it.name}
+                                  </span>
+                                  <span>
+                                    ${(Number(it.unit_price) * Number(it.quantity)).toFixed(2)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="mt-4 flex justify-between border-t border-border pt-3 text-sm">
+                            <span className="text-text-muted">Total</span>
+                            <span
+                              className={cn(
+                                "font-semibold",
+                                order.status === "refunded"
+                                  ? "text-text-muted line-through"
+                                  : "text-white",
+                              )}
+                            >
+                              ${Number(order.total_amount ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+
+                      {paymentData.deposits.map((dep) => (
+                        <div
+                          key={dep.id}
+                          className="mt-4 rounded-2xl border border-border bg-bg-surface/60 p-5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-white">Deposit</p>
+                            <PaymentStatusBadge
+                              status={dep.status === "charged" ? "paid" : dep.status}
+                            />
+                          </div>
+                          {dep.payer_full_name && (
+                            <p className="mt-1 text-xs text-text-muted">{dep.payer_full_name}</p>
+                          )}
+                          <div className="mt-4 flex justify-between border-t border-border pt-3 text-sm">
+                            <span className="text-text-muted">Amount</span>
+                            <span
+                              className={cn(
+                                "font-semibold",
+                                dep.status === "refunded"
+                                  ? "text-text-muted line-through"
+                                  : "text-white",
+                              )}
+                            >
+                              ${(dep.amount_cents / 100).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+
+                      {paymentData.totalRefundedCents > 0 && (
+                        <p className="mt-3 text-xs text-text-muted">
+                          ${(paymentData.totalRefundedCents / 100).toFixed(2)} refunded to your
+                          original payment method. Refunds typically appear within 5–10 business
+                          days.
+                        </p>
+                      )}
+                    </div>
+                  )}
               </section>
 
               <aside className="space-y-3 rounded-2xl border border-border bg-bg-base/40 p-4">
@@ -576,9 +763,28 @@ export default function BookingDetailsPage() {
           <DialogHeader>
             <DialogTitle>Cancel this reservation?</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-text-secondary">
-            The restaurant will be notified and your table will be released. This can't be undone.
-          </p>
+          {willForfeit ? (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+                <p className="text-sm font-semibold text-warning">
+                  Heads up — this reservation is within 24 hours.
+                </p>
+                <p className="mt-2 text-sm text-text-secondary">
+                  Cancelling now will release your table, but you'll forfeit the{" "}
+                  <span className="font-semibold text-white">
+                    ${((paymentData?.totalPaidCents ?? 0) / 100).toFixed(2)}
+                  </span>{" "}
+                  you paid (per our 24h cancellation policy). This can't be undone.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary">
+              {paymentData && paymentData.totalPaidCents > 0
+                ? `The restaurant will be notified, your table will be released, and $${(paymentData.totalPaidCents / 100).toFixed(2)} will be refunded to your original payment method. This can't be undone.`
+                : "The restaurant will be notified and your table will be released. This can't be undone."}
+            </p>
+          )}
           <DialogFooter>
             <Button
               type="button"

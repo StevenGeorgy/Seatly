@@ -51,7 +51,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import {
   reservationDisplayStatus,
   reservationDisplayStatusKey,
@@ -418,16 +423,26 @@ async function cancelReservation(reservationId: string): Promise<void> {
     throw new Error("Authentication is not available. Configure Supabase first.");
   }
 
+  // Raw fetch (not client.functions.invoke) so we can read body.error on
+  // non-2xx responses. functions.invoke wraps any 4xx/5xx as a generic
+  // "Edge Function returned a non-2xx status code" message and discards
+  // the JSON body the edge function uses to explain why (e.g.
+  // "Past reservations cannot be cancelled").
   const client = getSupabaseBrowserClient();
-  const { error, data } = await client.functions.invoke<{ ok?: boolean; error?: string }>(
-    "cancel-reservation",
-    {
-      body: { reservation_id: reservationId },
+  const { data: sessionData } = await client.auth.getSession();
+  const token = sessionData.session?.access_token ?? null;
+  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/cancel-reservation`, {
+    method: "POST",
+    headers: {
+      apikey: getSupabaseAnonKey(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Content-Type": "application/json",
     },
-  );
-
-  if (error || data?.error || data?.ok !== true) {
-    throw new Error(data?.error ?? error?.message ?? "Could not cancel reservation.");
+    body: JSON.stringify({ reservation_id: reservationId }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!res.ok || body.error || body.ok !== true) {
+    throw new Error(body.error ?? `Could not cancel reservation (${res.status}).`);
   }
 }
 
@@ -503,6 +518,10 @@ export default function BookingsPage() {
   const [tab, setTab] = useState<Tab>("upcoming");
   const [search, setSearch] = useState("");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // Cancel-confirm dialog state. Holds the booking card the user clicked
+  // Cancel on (null = closed). Lets us show a 24h-policy warning before
+  // the cancel fires — matches the same UX in BookingDetailsPage.
+  const [cancelConfirm, setCancelConfirm] = useState<BookingCard | null>(null);
   // Leave-a-review modal state. Holds the booking card the user clicked
   // "Leave a review" on; null = closed. We pull guest_id + restaurant_id
   // from the reservations table at submit time to satisfy the NOT NULL
@@ -616,17 +635,24 @@ export default function BookingsPage() {
     navigate(`/bookings/${b.id}?modify=1`);
   };
 
-  const handleCancel = async (b: BookingCard) => {
+  const handleCancel = (b: BookingCard) => {
     if (cancellingId) return;
+    setCancelConfirm(b);
+  };
+
+  const confirmCancel = async () => {
+    const b = cancelConfirm;
+    if (!b || cancellingId) return;
     setCancellingId(b.id);
     try {
       await cancelReservation(b.id);
-      await refresh();
+      setCancelConfirm(null);
+      setCancellingId(null);
       setTab("cancelled");
       toast.success("Reservation cancelled.");
+      void refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
-    } finally {
       setCancellingId(null);
     }
   };
@@ -678,7 +704,7 @@ export default function BookingsPage() {
                   <User className="size-4" />
                   {t("routes.account.title")}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void navigate("/setup")}>
+                <DropdownMenuItem onClick={() => void navigate("/setup?new=1")}>
                   <Plus className="size-4" />
                   {t("dashboard.shell.setupRestaurant")}
                 </DropdownMenuItem>
@@ -959,6 +985,60 @@ export default function BookingsPage() {
             >
               <Star className="size-4" />
               {reviewSubmitting ? "Posting..." : "Post review"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel-confirm dialog. Same 24h policy warning as
+          BookingDetailsPage. We don't know exact payment amounts at the
+          list level (would be too expensive to join per-card), so the
+          warning is generic — the success toast surfaces the precise
+          forfeited / refunded amount returned by the edge fn. */}
+      <Dialog
+        open={cancelConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open && !cancellingId) setCancelConfirm(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel this reservation?</DialogTitle>
+          </DialogHeader>
+          {cancelConfirm && (cancelConfirm.reservedAt.getTime() - Date.now()) < 24 * 60 * 60 * 1000 ? (
+            <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+              <p className="text-sm font-semibold text-warning">
+                Heads up — this reservation is within 24 hours.
+              </p>
+              <p className="mt-2 text-sm text-text-secondary">
+                Cancelling now will release your table, but any deposit or pre-order you've
+                paid will be forfeited (per our 24h cancellation policy). This can't be
+                undone.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary">
+              The restaurant will be notified and your table will be released. Any deposit
+              or pre-order will be refunded to your original payment method. This can't be
+              undone.
+            </p>
+          )}
+          <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCancelConfirm(null)}
+              disabled={!!cancellingId}
+            >
+              Keep booking
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void confirmCancel()}
+              disabled={!!cancellingId}
+              className="bg-danger text-white hover:bg-danger/90"
+            >
+              {cancellingId ? "Cancelling..." : "Cancel booking"}
             </Button>
           </DialogFooter>
         </DialogContent>

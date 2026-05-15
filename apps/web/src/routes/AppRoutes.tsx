@@ -29,6 +29,7 @@ const LoginPage = lazy(() => import("@/pages/auth/LoginPage"));
 const RegisterPage = lazy(() => import("@/pages/auth/RegisterPage"));
 const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage"));
 const SetupPage = lazy(() => import("@/pages/auth/SetupPage"));
+const DraftsPage = lazy(() => import("@/pages/auth/DraftsPage"));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage"));
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
@@ -94,6 +95,14 @@ export function AppRoutes() {
           }
         />
         <Route path="/setup-legacy" element={<Navigate to="/setup" replace />} />
+        <Route
+          path="/drafts"
+          element={
+            <RequireAuth>
+              <DraftsPage />
+            </RequireAuth>
+          }
+        />
 
         <Route path="/discover" element={<DiscoverPage />} />
         <Route

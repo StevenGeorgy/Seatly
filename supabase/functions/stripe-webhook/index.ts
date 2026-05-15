@@ -68,6 +68,14 @@ type SubscriptionLike = {
   trial_end?: number | null;
 };
 
+type PaymentIntentLike = {
+  id?: string;
+  amount?: number;
+  status?: string;
+  metadata?: Record<string, string>;
+  last_payment_error?: { message?: string } | null;
+};
+
 async function handleAccountUpdated(account: AccountLike): Promise<void> {
   if (!account.id) return;
   const { error } = await supabaseAdmin
@@ -107,6 +115,54 @@ async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
     })
     .eq("stripe_customer_id", sub.customer);
   if (error) console.error("[stripe-webhook] subscription upsert failed", error);
+}
+
+async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void> {
+  if (!pi.id) return;
+  const reservationId = pi.metadata?.reservation_id ?? null;
+  const orderId = pi.metadata?.order_id ?? null;
+  if (!reservationId) {
+    console.log(`[stripe-webhook] payment_intent.succeeded ${pi.id} — no reservation_id in metadata, skipping`);
+    return;
+  }
+  // Mark all pending deposit payment rows for this reservation as 'charged'.
+  // The reservation_deposit_payments settle trigger then flips the reservation
+  // to 'confirmed' (see supabase/migrations/*_deposit_policy.sql).
+  const { error: depErr } = await supabaseAdmin
+    .from("reservation_deposit_payments")
+    .update({ status: "charged", stripe_payment_intent_id: pi.id, paid_at: new Date().toISOString() })
+    .eq("reservation_id", reservationId)
+    .eq("status", "pending");
+  if (depErr) console.error("[stripe-webhook] deposit row update failed", depErr);
+  // If there's an associated pre-order, mark it paid too.
+  if (orderId) {
+    const { error: ordErr } = await supabaseAdmin
+      .from("orders")
+      .update({ status: "paid", stripe_payment_intent_id: pi.id })
+      .eq("id", orderId);
+    if (ordErr) console.error("[stripe-webhook] order paid update failed", ordErr);
+  }
+  // If the reservation has no deposit (pre-order-only), make sure the
+  // reservation is confirmed manually since the deposit trigger won't fire.
+  await supabaseAdmin
+    .from("reservations")
+    .update({ status: "confirmed" })
+    .eq("id", reservationId)
+    .in("status", ["pending", "pending_payment"]);
+}
+
+async function handlePaymentIntentFailed(pi: PaymentIntentLike): Promise<void> {
+  if (!pi.id) return;
+  const reservationId = pi.metadata?.reservation_id ?? null;
+  if (!reservationId) return;
+  const message = pi.last_payment_error?.message ?? "Card was declined";
+  const { error } = await supabaseAdmin
+    .from("reservation_deposit_payments")
+    .update({ status: "failed", stripe_payment_intent_id: pi.id })
+    .eq("reservation_id", reservationId)
+    .eq("status", "pending");
+  if (error) console.error("[stripe-webhook] payment_intent.failed update failed", error);
+  console.log(`[stripe-webhook] payment_intent.failed for ${reservationId}: ${message}`);
 }
 
 async function handleSubscriptionDeleted(sub: SubscriptionLike): Promise<void> {
@@ -190,7 +246,11 @@ Deno.serve(async (req: Request) => {
         console.log(`[stripe-webhook] trial_will_end for ${event.id}`);
         break;
       case "payment_intent.succeeded":
+        await handlePaymentIntentSucceeded(event.data.object as PaymentIntentLike);
+        break;
       case "payment_intent.payment_failed":
+        await handlePaymentIntentFailed(event.data.object as PaymentIntentLike);
+        break;
       case "invoice.payment_failed":
         console.log(`[stripe-webhook] ${event.type} (${event.id}) — logged, no DB write`);
         break;

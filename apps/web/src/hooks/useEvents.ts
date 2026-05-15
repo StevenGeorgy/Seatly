@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
 export type EventRow = {
   id: string;
@@ -226,6 +227,7 @@ export function useEvents() {
 
     const media = resolveEventMedia(file);
     if (!media) return EVENT_MEDIA_SUPPORT_MESSAGE;
+    if (!assertImageSizeOk(file)) return "Image too large.";
 
     const client = getSupabaseBrowserClient();
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");

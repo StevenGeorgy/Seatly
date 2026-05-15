@@ -238,15 +238,23 @@ export function DashboardSidebar() {
                   const isSelected = restaurant.id === selectedRestaurantId;
                   const restaurantName = restaurant.name ?? restaurant.slug;
                   const restaurantRole = restaurantRoleLabel(restaurant.id);
+                  const isDraft = restaurant.is_published === false;
 
                   return (
                     <button
                       key={restaurant.id}
                       type="button"
                       onClick={() => {
-                        setSelectedRestaurantId(restaurant.id);
                         setWorkspaceOpen(false);
                         setMobileOpen(false);
+                        if (isDraft) {
+                          // Drafts route to the wizard so the owner can
+                          // resume setup. Dashboard would just show empty
+                          // data for an unfinished restaurant.
+                          void navigate(`/setup?restaurant_id=${restaurant.id}`);
+                          return;
+                        }
+                        setSelectedRestaurantId(restaurant.id);
                       }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
@@ -260,11 +268,15 @@ export function DashboardSidebar() {
                       />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{restaurantName}</span>
-                        {restaurantRole ? (
+                        {isDraft ? (
+                          <span className="block truncate text-xs font-medium text-gold">
+                            Draft — finish setup
+                          </span>
+                        ) : restaurantRole ? (
                           <span className="block truncate text-xs text-text-muted">{restaurantRole}</span>
                         ) : null}
                       </span>
-                      {isSelected ? <Check className="size-4 shrink-0 text-gold" /> : null}
+                      {isSelected && !isDraft ? <Check className="size-4 shrink-0 text-gold" /> : null}
                     </button>
                   );
                 })
@@ -276,7 +288,7 @@ export function DashboardSidebar() {
                 onClick={() => {
                   setWorkspaceOpen(false);
                   setMobileOpen(false);
-                  void navigate("/setup");
+                  void navigate("/setup?new=1");
                 }}
                 className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-gold transition-colors hover:bg-gold/10"
               >
@@ -284,6 +296,18 @@ export function DashboardSidebar() {
                   <Plus className="size-4" />
                 </span>
                 <span>{t("dashboard.shell.addRestaurant")}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceOpen(false);
+                  setMobileOpen(false);
+                  void navigate("/drafts");
+                }}
+                className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-xs text-text-muted transition-colors hover:bg-bg-elevated hover:text-text-primary"
+              >
+                <span className="size-9 shrink-0" />
+                View all drafts
               </button>
             </div>
           </PopoverContent>

@@ -6,6 +6,15 @@ import {
 } from "../_shared/reservation-notifications.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
+import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+
+type RefundOutcomeReport = {
+  kind: "preorder" | "deposit";
+  ok: boolean;
+  payment_intent_id: string | null;
+  amount_cents: number;
+  error?: string;
+};
 
 // Status semantics: this function permits cancelling reservations in any
 // status except an already-`cancelled` one (idempotent OK) or a past one
@@ -172,6 +181,17 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Past reservations cannot be cancelled" }, 400);
     }
 
+    // 24h cancellation cliff. Bookings within 24 hours of the reserved
+    // time are non-refundable — the cancel still goes through (slot opens
+    // back up for the next diner), but any paid pre-orders or charged
+    // deposits stay with the restaurant. This both prevents the
+    // "block-a-section, dump-it-last-minute" abuse pattern and matches
+    // industry norms (Resy, Tock). Free reservations are unaffected since
+    // there's nothing to refund either way.
+    const HOURS_BEFORE_NONREFUNDABLE = 24;
+    const hoursToReservation = (reservedAt.getTime() - Date.now()) / (1000 * 60 * 60);
+    const withinCliff = hoursToReservation < HOURS_BEFORE_NONREFUNDABLE;
+
     const { data: restaurant } = await adminClient
       .from("restaurants")
       .select("name, timezone")
@@ -244,15 +264,197 @@ Deno.serve(async (req: Request) => {
       });
     };
 
+    const cancellationReason = withinCliff
+      ? "Cancelled by diner (within 24h — non-refundable)"
+      : "Cancelled by diner";
     const { error: updateError } = await adminClient
       .from("reservations")
       .update({
         status: "cancelled",
         cancelled_at: new Date().toISOString(),
-        cancellation_reason: "Cancelled by diner",
+        cancellation_reason: cancellationReason,
       })
       .eq("id", reservationId);
     if (updateError) return json({ error: updateError.message }, 400);
+
+    // ─── Refund phase ───────────────────────────────────────────────────
+    // After the reservation flips to 'cancelled', refund any paid pre-order
+    // and any charged deposits attached to this reservation — UNLESS the
+    // cancellation falls within the 24h non-refundable cliff (see above).
+    //
+    // Idempotency: the status filters ('paid' for orders, 'charged' for
+    // deposits) plus the helper's `charge_already_refunded` backstop mean a
+    // retried cancel won't double-refund. Failed refunds NEVER block the
+    // cancel response — the outcomes list tells the client which refunds
+    // went through so the UI can toast accordingly.
+    //
+    // Stub-mode deposits: when DEPOSIT_STRIPE_STUB_MODE=true,
+    // confirm-deposit-stub flips status='charged' without minting a real PI,
+    // so stripe_payment_intent_id is null. We still want the UI to show
+    // "Refunded" — flip those rows to 'refunded' in DB without a Stripe call.
+    const refundOutcomes: RefundOutcomeReport[] = [];
+    let forfeitTotalCents = 0;
+
+    if (withinCliff) {
+      // Within 24h: total up what WOULD have been refunded so the UI can
+      // tell the diner exactly how much they forfeited per policy. Leave
+      // orders.status='paid' and reservation_deposit_payments.status='charged'
+      // untouched — the restaurant keeps the money.
+      const { data: paidOrdersForfeit } = await adminClient
+        .from("orders")
+        .select("total_amount")
+        .eq("reservation_id", reservationId)
+        .eq("status", "paid");
+      for (const o of paidOrdersForfeit ?? []) {
+        forfeitTotalCents += Math.round(
+          Number((o as { total_amount: number | string | null }).total_amount ?? 0) * 100,
+        );
+      }
+      const { data: chargedDepositsForfeit } = await adminClient
+        .from("reservation_deposit_payments")
+        .select("amount_cents")
+        .eq("reservation_id", reservationId)
+        .eq("status", "charged");
+      for (const d of chargedDepositsForfeit ?? []) {
+        forfeitTotalCents += (d as { amount_cents: number | null }).amount_cents ?? 0;
+      }
+    } else {
+    // Stub-deposit DB-only sweep: must run BEFORE the PI-based loop so the
+    // status='charged' filter on the real-PI query doesn't pick them back up.
+    const { data: stubDeposits } = await adminClient
+      .from("reservation_deposit_payments")
+      .select("id, amount_cents")
+      .eq("reservation_id", reservationId)
+      .eq("status", "charged")
+      .is("stripe_payment_intent_id", null);
+    if (stubDeposits && stubDeposits.length > 0) {
+      await adminClient
+        .from("reservation_deposit_payments")
+        .update({ status: "refunded" })
+        .eq("reservation_id", reservationId)
+        .eq("status", "charged")
+        .is("stripe_payment_intent_id", null);
+      for (const dep of stubDeposits) {
+        refundOutcomes.push({
+          kind: "deposit",
+          ok: true,
+          payment_intent_id: null,
+          amount_cents: (dep as { amount_cents: number | null }).amount_cents ?? 0,
+        });
+      }
+    }
+
+    // No-PI orders silent sweep: legacy/comped orders sometimes landed in
+    // 'paid' status without a Stripe PI on the row (mark-order-paid wasn't
+    // enforced in older flows). Without this, the order stays 'paid' after
+    // cancel — confusing UX (the diner sees "Paid" on a cancelled booking).
+    // Flip them to 'refunded' in DB so the UI shows "Refunded", but DO NOT
+    // add to refundOutcomes — no real money moved, so the toast shouldn't
+    // claim a refund. The diner just gets "Reservation cancelled."
+    await adminClient
+      .from("orders")
+      .update({ status: "refunded" })
+      .eq("reservation_id", reservationId)
+      .eq("status", "paid")
+      .is("stripe_payment_intent_id", null);
+
+    const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+    if (stripeKey) {
+      const { default: Stripe } = await import("npm:stripe@17");
+      const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+
+      // Pre-order refunds. orders.total_amount is a numeric dollar value,
+      // not cents — convert at report time.
+      const { data: paidOrders } = await adminClient
+        .from("orders")
+        .select("id, stripe_payment_intent_id, total_amount")
+        .eq("reservation_id", reservationId)
+        .eq("status", "paid")
+        .not("stripe_payment_intent_id", "is", null);
+      for (const order of paidOrders ?? []) {
+        const row = order as {
+          id: string;
+          stripe_payment_intent_id: string | null;
+          total_amount: number | string | null;
+        };
+        const piId = row.stripe_payment_intent_id;
+        const amountCents = Math.round(Number(row.total_amount ?? 0) * 100);
+        if (!piId) continue;
+        const outcome = await refundPaymentIntent(stripe, piId, "reservation_cancelled");
+        if (outcome.ok) {
+          await adminClient
+            .from("orders")
+            .update({ status: "refunded" })
+            .eq("id", row.id);
+          refundOutcomes.push({
+            kind: "preorder",
+            ok: true,
+            payment_intent_id: piId,
+            amount_cents: amountCents,
+          });
+        } else {
+          refundOutcomes.push({
+            kind: "preorder",
+            ok: false,
+            payment_intent_id: piId,
+            amount_cents: amountCents,
+            error: outcome.error,
+          });
+          console.warn(
+            `[cancel-reservation] preorder refund failed for order ${row.id}:`,
+            outcome.error,
+          );
+        }
+      }
+
+      // Deposit refunds backed by a real Stripe PI.
+      const { data: chargedDeposits } = await adminClient
+        .from("reservation_deposit_payments")
+        .select("id, stripe_payment_intent_id, amount_cents")
+        .eq("reservation_id", reservationId)
+        .eq("status", "charged")
+        .not("stripe_payment_intent_id", "is", null);
+      for (const dep of chargedDeposits ?? []) {
+        const row = dep as {
+          id: string;
+          stripe_payment_intent_id: string | null;
+          amount_cents: number | null;
+        };
+        const piId = row.stripe_payment_intent_id;
+        const amountCents = row.amount_cents ?? 0;
+        if (!piId) continue;
+        const outcome = await refundPaymentIntent(stripe, piId, "reservation_cancelled");
+        if (outcome.ok) {
+          await adminClient
+            .from("reservation_deposit_payments")
+            .update({ status: "refunded" })
+            .eq("id", row.id);
+          refundOutcomes.push({
+            kind: "deposit",
+            ok: true,
+            payment_intent_id: piId,
+            amount_cents: amountCents,
+          });
+        } else {
+          refundOutcomes.push({
+            kind: "deposit",
+            ok: false,
+            payment_intent_id: piId,
+            amount_cents: amountCents,
+            error: outcome.error,
+          });
+          console.warn(
+            `[cancel-reservation] deposit refund failed for payment ${row.id}:`,
+            outcome.error,
+          );
+        }
+      }
+    }
+    } // end of !withinCliff branch
+
+    const refundTotalCents = refundOutcomes
+      .filter((r) => r.ok)
+      .reduce((sum, r) => sum + r.amount_cents, 0);
 
     // Notify Me fan-out: when a slot frees up we ping any active
     // `availability_alerts` rows that match this restaurant + date + party.
@@ -309,6 +511,10 @@ Deno.serve(async (req: Request) => {
         status: "cancelled",
         notification_delivery: notification.status,
         notification_delivery_channel: notification.channel,
+        refunds: refundOutcomes,
+        refund_total_cents: refundTotalCents,
+        forfeit_total_cents: forfeitTotalCents,
+        within_24h: withinCliff,
       });
     }
 
@@ -360,6 +566,10 @@ Deno.serve(async (req: Request) => {
       status: "cancelled",
       notification_delivery: notification.status,
       notification_delivery_channel: notification.channel,
+      refunds: refundOutcomes,
+      refund_total_cents: refundTotalCents,
+      forfeit_total_cents: forfeitTotalCents,
+      within_24h: withinCliff,
     });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);

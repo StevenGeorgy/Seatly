@@ -1673,7 +1673,7 @@ export default function DiscoverPage() {
                     <User className="size-4" />
                     {t("routes.account.title")}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => void navigate("/setup")}>
+                  <DropdownMenuItem onClick={() => void navigate("/setup?new=1")}>
                     <Plus className="size-4" />
                     {t("dashboard.shell.setupRestaurant")}
                   </DropdownMenuItem>

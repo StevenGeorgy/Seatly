@@ -117,7 +117,99 @@ Deno.serve(async (req: Request) => {
       userFullName = fullName;
     }
 
-    // ── Create the restaurant ─────────────────────────────────────────────────
+    // ── Settings payload (dietary tags live here per existing schema) ─────────
+    const dietaryTags = Array.isArray(body.dietary_tags)
+      ? body.dietary_tags.filter((t: unknown): t is string => typeof t === "string")
+      : [];
+    const settingsJson = dietaryTags.length > 0 ? { dietaryTags } : null;
+
+    // ── Draft reuse: if the caller already has an unpublished draft, update
+    // it instead of inserting a new row. Honors force_new=true (the
+    // workspace "+ Add restaurant" path) and explicit restaurant_id (the
+    // /drafts picker continue-this-draft path).
+    const forceNew = body.force_new === true;
+    const targetDraftId =
+      typeof body.restaurant_id === "string" && body.restaurant_id.trim()
+        ? body.restaurant_id.trim()
+        : null;
+
+    if (!forceNew) {
+      const { data: profileRow } = await adminClient
+        .from("user_profiles")
+        .select("id")
+        .eq("auth_user_id", userId)
+        .maybeSingle();
+
+      if (profileRow) {
+        const profileId = (profileRow as { id: string }).id;
+        let draftId: string | null = null;
+
+        if (targetDraftId) {
+          // User explicitly named a draft — verify ownership AND unpublished.
+          const { data: ownedDraft } = await adminClient
+            .from("user_restaurant_roles")
+            .select("restaurant_id, restaurants!inner(id, is_published)")
+            .eq("user_id", profileId)
+            .eq("role", "owner")
+            .eq("restaurant_id", targetDraftId)
+            .maybeSingle();
+          const ownedRestaurant = (ownedDraft as
+            | { restaurants?: { is_published?: boolean } }
+            | null
+          )?.restaurants;
+          if (ownedDraft && ownedRestaurant?.is_published === false) {
+            draftId = targetDraftId;
+          }
+        } else {
+          // Implicit fallback: most-recent unpublished draft.
+          const { data: existingDraft } = await adminClient
+            .from("user_restaurant_roles")
+            .select("restaurant_id, restaurants!inner(id, is_published, created_at)")
+            .eq("user_id", profileId)
+            .eq("role", "owner")
+            .eq("restaurants.is_published", false)
+            .order("created_at", { ascending: false, foreignTable: "restaurants" })
+            .limit(1)
+            .maybeSingle();
+          if (existingDraft) {
+            draftId = (existingDraft as { restaurant_id: string | null }).restaurant_id ?? null;
+          }
+        }
+
+        if (draftId) {
+          const { error: updateErr } = await adminClient
+            .from("restaurants")
+            .update({
+              name: restaurantName,
+              address: body.address ?? null,
+              city: body.city ?? null,
+              province: body.province ?? null,
+              country: body.country ?? "Canada",
+              lat: typeof body.lat === "number" ? body.lat : null,
+              lng: typeof body.lng === "number" ? body.lng : null,
+              phone: body.phone ?? null,
+              description: body.description ?? null,
+              cuisine_type: body.cuisine_type ?? null,
+              business_type: body.business_type ?? null,
+              accepts_walkins: body.accepts_walkins ?? true,
+              settings_json: settingsJson,
+            })
+            .eq("id", draftId);
+          if (updateErr) {
+            return new Response(
+              JSON.stringify({ error: updateErr.message }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({ ok: true, restaurant_id: draftId, user_id: userId, reused_draft: true }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+      }
+    }
+
+    // ── Create the restaurant (fresh insert path) ─────────────────────────────
     const baseSlug = slugify(restaurantName);
     const slug = await findUniqueSlug(adminClient, baseSlug);
 
@@ -130,12 +222,6 @@ Deno.serve(async (req: Request) => {
       enabled: body.loyalty_enabled ?? false,
       points_per_dollar: body.loyalty_points_per_dollar ?? 1,
     };
-
-    // ── Settings payload (dietary tags live here per existing schema) ─────────
-    const dietaryTags = Array.isArray(body.dietary_tags)
-      ? body.dietary_tags.filter((t: unknown): t is string => typeof t === "string")
-      : [];
-    const settingsJson = dietaryTags.length > 0 ? { dietaryTags } : null;
 
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")

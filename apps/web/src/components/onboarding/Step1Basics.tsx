@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -39,7 +39,7 @@ const DIETARY_LABEL: Record<RestaurantDietaryTag, string> = {
   nut_free: "Nut-free",
 };
 
-const baseSchemaObj = z.object({
+const formSchema = z.object({
   restaurantName: z.string().trim().min(1, "Required"),
   address: z.string().trim().min(1, "Required"),
   city: z.string().trim().min(1, "Required"),
@@ -52,26 +52,9 @@ const baseSchemaObj = z.object({
   description: z.string().max(DESCRIPTION_MAX),
   acceptsWalkins: z.boolean(),
   dietaryTags: z.array(z.string()),
-  email: z.string(),
-  password: z.string(),
-  confirmPassword: z.string(),
 });
 
-type Step1FormValues = z.infer<typeof baseSchemaObj>;
-
-const loggedInSchema = baseSchemaObj;
-
-const loggedOutSchema = baseSchemaObj.superRefine((d, ctx) => {
-  if (!d.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email.trim())) {
-    ctx.addIssue({ code: "custom", path: ["email"], message: "Enter a valid email" });
-  }
-  if (d.password.length < 8) {
-    ctx.addIssue({ code: "custom", path: ["password"], message: "Min 8 characters" });
-  }
-  if (d.password !== d.confirmPassword) {
-    ctx.addIssue({ code: "custom", path: ["confirmPassword"], message: "Passwords do not match" });
-  }
-});
+type Step1FormValues = z.infer<typeof formSchema>;
 
 export type Step1Result = {
   restaurantId: string;
@@ -82,17 +65,25 @@ export type Step1Result = {
 type Step1BasicsProps = {
   initial?: Partial<WizardBasics>;
   onComplete: (result: Step1Result) => void;
+  /** When true, edge fn skips draft reuse and always inserts. */
+  forceNew?: boolean;
+  /** When set, edge fn targets this specific draft. */
+  targetRestaurantId?: string | null;
 };
 
-export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
-  const { user, refreshUser } = useUser();
-  const isLoggedOut = user === null;
+export function Step1Basics({
+  initial,
+  onComplete,
+  forceNew = false,
+  targetRestaurantId = null,
+}: Step1BasicsProps) {
+  const { refreshUser } = useUser();
   const [submitting, setSubmitting] = useState(false);
   const [lat, setLat] = useState<number | null>(initial?.lat ?? null);
   const [lng, setLng] = useState<number | null>(initial?.lng ?? null);
 
   const form = useForm<Step1FormValues>({
-    resolver: zodResolver(isLoggedOut ? loggedOutSchema : loggedInSchema),
+    resolver: zodResolver(formSchema),
     defaultValues: {
       restaurantName: initial?.restaurantName ?? "",
       address: initial?.address ?? "",
@@ -106,11 +97,40 @@ export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
       description: initial?.description ?? "",
       acceptsWalkins: initial?.acceptsWalkins ?? true,
       dietaryTags: initial?.dietaryTags ?? [],
-      email: "",
-      password: "",
-      confirmPassword: "",
     },
   });
+
+  // react-hook-form captures defaultValues only on first mount. When the
+  // parent's resume effect populates `initial` *after* mount (the common
+  // case for users returning to /setup mid-flow), we have to push the
+  // values into the form imperatively. Guard on a stable key so we only
+  // reset when the resumed restaurant actually changes.
+  useEffect(() => {
+    if (!initial) return;
+    form.reset({
+      restaurantName: initial.restaurantName ?? "",
+      address: initial.address ?? "",
+      city: initial.city ?? "",
+      province: initial.province ?? "",
+      country: initial.country ?? "Canada",
+      postalCode: initial.postalCode ?? "",
+      businessType: initial.businessType ?? "Restaurant",
+      cuisineType: initial.cuisineType ?? "",
+      phone: initial.phone ?? "",
+      description: initial.description ?? "",
+      acceptsWalkins: initial.acceptsWalkins ?? true,
+      dietaryTags: initial.dietaryTags ?? [],
+    });
+    setLat(initial.lat ?? null);
+    setLng(initial.lng ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    initial?.restaurantName,
+    initial?.address,
+    initial?.phone,
+    initial?.cuisineType,
+    initial?.businessType,
+  ]);
 
   const watchedDescription = form.watch("description") ?? "";
   const watchedDietary = form.watch("dietaryTags");
@@ -124,25 +144,6 @@ export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
     setSubmitting(true);
     try {
       const client = getSupabaseBrowserClient();
-
-      if (isLoggedOut) {
-        const { error: signUpError } = await client.auth.signUp({
-          email: (values.email ?? "").trim().toLowerCase(),
-          password: values.password ?? "",
-          options: {
-            data: { full_name: values.restaurantName },
-          },
-        });
-        if (signUpError) {
-          const msg = signUpError.message.toLowerCase();
-          if (msg.includes("already") || msg.includes("registered")) {
-            form.setError("email", { message: "An account with this email already exists" });
-          } else {
-            form.setError("email", { message: signUpError.message });
-          }
-          return;
-        }
-      }
 
       const tags = (values.dietaryTags ?? []).filter((tag): tag is RestaurantDietaryTag =>
         (RESTAURANT_DIETARY_TAGS as readonly string[]).includes(tag),
@@ -173,6 +174,10 @@ export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
           accepts_walkins: values.acceptsWalkins,
           dietary_tags: tags,
           tables: tablesPayload,
+          // Draft routing: workspace "+ Add restaurant" → force_new=true.
+          // /drafts continue-this-draft → restaurant_id=<id>.
+          force_new: forceNew,
+          restaurant_id: targetRestaurantId,
         },
       });
 
@@ -230,53 +235,6 @@ export function Step1Basics({ initial, onComplete }: Step1BasicsProps) {
           We'll use this to set up your public page. You can change anything later.
         </p>
       </div>
-
-      {isLoggedOut ? (
-        <section className="flex flex-col gap-4 rounded-2xl border border-border bg-bg-surface/60 p-4 sm:p-5">
-          <div>
-            <h2 className="text-sm font-semibold text-text-primary">Create your account</h2>
-            <p className="text-xs text-text-muted">You'll manage your restaurant from this login.</p>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                {...form.register("email")}
-              />
-              {errors.email ? (
-                <p className="text-xs text-danger">{errors.email.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="new-password"
-                {...form.register("password")}
-              />
-              {errors.password ? (
-                <p className="text-xs text-danger">{errors.password.message}</p>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <Label htmlFor="confirmPassword">Confirm password</Label>
-              <Input
-                id="confirmPassword"
-                type="password"
-                autoComplete="new-password"
-                {...form.register("confirmPassword")}
-              />
-              {errors.confirmPassword ? (
-                <p className="text-xs text-danger">{errors.confirmPassword.message}</p>
-              ) : null}
-            </div>
-          </div>
-        </section>
-      ) : null}
 
       <section className="flex flex-col gap-4">
         <div className="grid gap-4 sm:grid-cols-2">

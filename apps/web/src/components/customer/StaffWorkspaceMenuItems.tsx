@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { LayoutDashboard } from "lucide-react";
+import { FileText, LayoutDashboard } from "lucide-react";
 
 import {
   DropdownMenuItem,
@@ -46,29 +46,47 @@ export function StaffWorkspaceMenuItems({
   );
 
   if (workspaces.length === 0) return null;
+  const hasDrafts = workspaces.some(({ restaurant }) => restaurant.is_published === false);
 
   return (
     <>
       <DropdownMenuSeparator />
       <DropdownMenuLabel>{t("dashboard.shell.workspaces")}</DropdownMenuLabel>
-      {workspaces.map(({ restaurant, scopedRoles, role }) => (
-        <DropdownMenuItem
-          key={restaurant.id}
-          onClick={() => {
-            localStorage.setItem("cenaiva.selectedRestaurantId", restaurant.id);
-            switchToStaffView();
-            void navigate(getStaffDefaultPath(getStaffRoleSet(scopedRoles), scopedRoles));
-          }}
-        >
-          <LayoutDashboard className="size-4" />
-          <span className="min-w-0 flex-1 truncate">{restaurant.name ?? restaurant.slug}</span>
-          {role ? (
-            <span className="shrink-0 text-xs capitalize text-text-muted">
-              {t(`dashboard.shell.staffRole.${role}`)}
-            </span>
-          ) : null}
+      {workspaces.map(({ restaurant, scopedRoles, role }) => {
+        const isDraft = restaurant.is_published === false;
+        return (
+          <DropdownMenuItem
+            key={restaurant.id}
+            onClick={() => {
+              if (isDraft) {
+                // Resume the wizard for unfinished restaurants instead of
+                // dumping the owner into an empty dashboard.
+                void navigate(`/setup?restaurant_id=${restaurant.id}`);
+                return;
+              }
+              localStorage.setItem("cenaiva.selectedRestaurantId", restaurant.id);
+              switchToStaffView();
+              void navigate(getStaffDefaultPath(getStaffRoleSet(scopedRoles), scopedRoles));
+            }}
+          >
+            <LayoutDashboard className="size-4" />
+            <span className="min-w-0 flex-1 truncate">{restaurant.name ?? restaurant.slug}</span>
+            {isDraft ? (
+              <span className="shrink-0 text-xs font-medium text-gold">Draft</span>
+            ) : role ? (
+              <span className="shrink-0 text-xs capitalize text-text-muted">
+                {t(`dashboard.shell.staffRole.${role}`)}
+              </span>
+            ) : null}
+          </DropdownMenuItem>
+        );
+      })}
+      {hasDrafts ? (
+        <DropdownMenuItem onClick={() => void navigate("/drafts")}>
+          <FileText className="size-4" />
+          <span className="min-w-0 flex-1 truncate">View all drafts</span>
         </DropdownMenuItem>
-      ))}
+      ) : null}
     </>
   );
 }

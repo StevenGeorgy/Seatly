@@ -36,6 +36,7 @@ import { Switch } from "@/components/ui/switch";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { useRestaurantSeatTotal } from "@/hooks/useRestaurantSeatTotal";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
@@ -885,6 +886,7 @@ export default function SettingsPage() {
       toast.error(t("dashboard.settings.invalidRestaurantImage", { formats: RESTAURANT_IMAGE_FORMATS }));
       return null;
     }
+    if (!assertImageSizeOk(file)) return null;
 
     const client = getSupabaseBrowserClient();
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");

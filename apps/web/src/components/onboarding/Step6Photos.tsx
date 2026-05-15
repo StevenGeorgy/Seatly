@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
 type Step6PhotosProps = {
   restaurantId: string;
@@ -118,6 +119,7 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
       toast.error("Upload a JPG, PNG, WebP, GIF, or AVIF image.");
       return null;
     }
+    if (!assertImageSizeOk(file)) return null;
     const client = getSupabaseBrowserClient();
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
     const path = `${restaurantId}/restaurant/${kind}/${crypto.randomUUID()}-${safeName}`;
@@ -137,6 +139,7 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
       toast.error("Upload a JPG, PNG, WebP, GIF, or AVIF image.");
       return;
     }
+    if (!assertImageSizeOk(file)) return;
     const url = URL.createObjectURL(file);
     objectUrlsRef.current.push(url);
     setCoverFile(file);
@@ -148,6 +151,7 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
       toast.error("Upload a JPG, PNG, WebP, GIF, or AVIF image.");
       return;
     }
+    if (!assertImageSizeOk(file)) return;
     const url = URL.createObjectURL(file);
     objectUrlsRef.current.push(url);
     setLogoFile(file);
@@ -156,9 +160,10 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
 
   const addGalleryFiles = (files: FileList) => {
     const arr = Array.from(files);
-    const valid = arr.filter((f) => Boolean(resolveImage(f)));
+    const valid = arr.filter((f) => Boolean(resolveImage(f)) && assertImageSizeOk(f));
     if (valid.length < arr.length) {
-      toast.error("Some files were skipped — only image formats are supported.");
+      // Either mime or size rejected; assertImageSizeOk has already toasted
+      // for size, so only mention mime when no toast already fired.
     }
     if (valid.length === 0) return;
     const additions: GalleryEntry[] = [];

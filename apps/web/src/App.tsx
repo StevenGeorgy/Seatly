@@ -62,6 +62,10 @@ function CustomerVoiceOrbFAB() {
 
   // /discover has a "Hey Cenaiva" button in the header — no floating FAB needed
   if (pathname === "/discover") return null;
+  // Owner onboarding wizard owns the screen; the diner-side mic is distracting
+  // and overlaps the footer buttons.
+  if (pathname.startsWith("/setup")) return null;
+  if (pathname.startsWith("/drafts")) return null;
   // Hide FAB while shell is open
   if (state.isOpen) return null;
 
@@ -100,6 +104,7 @@ export default function App() {
                 <Toaster
                   richColors
                   position="top-center"
+                  duration={6000}
                   toastOptions={{
                     style: {
                       background: "#1A1A1A",

@@ -7,6 +7,7 @@ import {
   type EventMediaUpload,
 } from "@/hooks/useEvents";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
 export type PromoType = "bogo" | "percentage" | "fixed" | "free_item";
 export type AppliesTo = "all" | "dine_in";
@@ -182,6 +183,7 @@ export function usePromotions() {
 
     const media = resolveEventMedia(file);
     if (!media) return EVENT_MEDIA_SUPPORT_MESSAGE;
+    if (!assertImageSizeOk(file)) return "Image too large.";
 
     const client = getSupabaseBrowserClient();
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");

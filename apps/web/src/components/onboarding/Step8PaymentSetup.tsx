@@ -14,6 +14,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Rocket } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
+
 import {
   loadConnectAndInitialize,
   type StripeConnectInstance,
@@ -183,14 +185,31 @@ function StripeConnectEmbeddedKYC({
           appearance: {
             overlays: "dialog",
             variables: {
+              // Core palette — matches the wizard's gold-on-black aesthetic.
               colorPrimary: "#D4AF37",
               colorBackground: "#0A0A0A",
               colorText: "#FFFFFF",
+              colorSecondaryText: "#B0B0B0",
               colorDanger: "#EF4444",
+              // Buttons mirror the wizard's primary CTA (gold pill, dark text).
               buttonPrimaryColorBackground: "#D4AF37",
               buttonPrimaryColorText: "#0A0A0A",
+              buttonPrimaryColorBorder: "#D4AF37",
+              buttonSecondaryColorBackground: "#1A1A1A",
+              buttonSecondaryColorText: "#FFFFFF",
+              buttonSecondaryColorBorder: "#2A2A2A",
+              // Form controls (inputs, selects) match the wizard's elevated
+              // surface tokens so fields don't pop visually.
+              formAccentColor: "#D4AF37",
+              formHighlightColorBorder: "#D4AF37",
+              colorBorder: "#2A2A2A",
+              offsetBackgroundColor: "#121212",
+              actionPrimaryColorText: "#D4AF37",
+              // Typography + shape match the wizard's tokens.
               fontFamily: "system-ui, -apple-system, sans-serif",
-              borderRadius: "8px",
+              fontSizeBase: "14px",
+              borderRadius: "10px",
+              spacingUnit: "4px",
             },
           },
         });
@@ -299,7 +318,22 @@ function SubscriptionCardInner({
 
   return (
     <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
-      <PaymentElement options={{ layout: "tabs" }} />
+      {/* Owners paying their monthly subscription won't benefit from Stripe
+          Link (they pay once and forget). paymentMethodOrder=['card'] hides
+          the "Secure, fast checkout with Link" badge and the Apple/Google
+          Pay tabs — clean card-only form. Diner-side payments
+          (StripePaymentForm.tsx) keep Link + wallets enabled for future
+          returning-customer conversion uplift. */}
+      <PaymentElement
+        options={{
+          layout: "tabs",
+          paymentMethodOrder: ["card"],
+          // Hide all wallet upsells including the Link "save your card" prompt
+          // that mounts above the card form even when payment_method_types is
+          // restricted to ["card"].
+          wallets: { applePay: "never", googlePay: "never", link: "never" },
+        }}
+      />
       {error ? (
         <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
           {error}
@@ -370,7 +404,21 @@ function SubscriptionCard({
   return (
     <Elements
       stripe={stripePromiseRef}
-      options={{ clientSecret, appearance: { theme: "night" } }}
+      options={{
+        clientSecret,
+        appearance: {
+          theme: "night",
+          variables: {
+            colorPrimary: "#D4AF37",
+            colorBackground: "#0A0A0A",
+            colorText: "#FFFFFF",
+            colorDanger: "#EF4444",
+            fontFamily: "system-ui, -apple-system, sans-serif",
+            borderRadius: "10px",
+            spacingUnit: "4px",
+          },
+        },
+      }}
     >
       <SubscriptionCardInner
         restaurantId={restaurantId}
@@ -542,10 +590,10 @@ export function Step8PaymentSetup({
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-bold sm:text-3xl">Payment setup &amp; publish</h1>
+        <h1 className="text-2xl font-bold sm:text-3xl">Payments &amp; publish</h1>
         <p className="mt-1 text-sm text-text-muted">
-          Connect Stripe so you can accept deposits and pre-orders, and add a card for your
-          monthly subscription. Free for 90 days, then $200 CAD/month.
+          Set up where your money lands and add a card for your monthly Cenaiva subscription.
+          Free for 90 days, then $200 CAD/month.
         </p>
       </div>
 
@@ -645,10 +693,10 @@ export function Step8PaymentSetup({
         <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">A. Receiving payments</h2>
+              <h2 className="text-lg font-semibold">Set up payouts to your bank</h2>
               <p className="text-sm text-text-muted">
-                Stripe needs business details + a bank account so you can receive payouts from
-                deposits and pre-orders. This stays on the Cenaiva site — no Stripe redirect.
+                Tell us where to send your money. We'll need your business details and a bank
+                account so deposits and pre-orders can land in your account automatically.
               </p>
             </div>
             {kycVerified ? (
@@ -663,14 +711,14 @@ export function Step8PaymentSetup({
           </div>
           {kycVerified ? (
             <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              Your Stripe account is verified and ready to accept payments.
+              You're verified and ready to accept payments.
             </div>
           ) : summary?.stripe_details_submitted && !kycVerified ? (
             <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
               <p className="font-semibold text-warning">Almost there.</p>
               <p className="mt-1">
-                Stripe is still verifying your details. This usually takes a few minutes — you
-                can come back to this page later.
+                We're still verifying your details. This usually takes a few minutes — you can
+                come back to this page later.
               </p>
             </div>
           ) : publishableKey ? (
@@ -688,7 +736,7 @@ export function Step8PaymentSetup({
         <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">B. Your subscription</h2>
+              <h2 className="text-lg font-semibold">Your Cenaiva subscription</h2>
               <p className="text-sm text-text-muted">
                 $200 CAD/month. Free for the first 90 days — no charge until{" "}
                 {formatTrialEnd(summary?.trial_ends_at ?? null)}. Cancel anytime.
@@ -718,24 +766,41 @@ export function Step8PaymentSetup({
       ) : null}
 
       {/* Publish button */}
-      <div className="flex flex-col items-end gap-2">
-        <Button
-          type="button"
-          size="lg"
-          onClick={() => void publish()}
-          disabled={publishing || loading || !publishReady}
-          className="gap-2 px-8"
-        >
-          <Rocket className="size-4" />
-          {publishing ? "Publishing…" : "Publish my restaurant"}
-        </Button>
+      <div className="flex flex-col gap-3">
         {!loading && !publishReady ? (
-          <PublishHints
-            kycVerified={kycVerified}
-            subscriptionActive={subscriptionActive}
-            hasCover={Boolean(summary?.cover_photo_url)}
-          />
+          <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+            <p className="mb-2 text-sm font-semibold text-warning">
+              Almost there — to publish:
+            </p>
+            <PublishHints
+              kycVerified={kycVerified}
+              subscriptionActive={subscriptionActive}
+              hasCover={Boolean(summary?.cover_photo_url)}
+            />
+          </div>
         ) : null}
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="lg"
+            onClick={() => {
+              if (publishing || loading) return;
+              if (!publishReady) {
+                toast.error("Complete the steps above first.");
+                return;
+              }
+              void publish();
+            }}
+            disabled={publishing || loading}
+            className={cn(
+              "gap-2 px-8",
+              !publishReady && !loading && "opacity-60",
+            )}
+          >
+            <Rocket className="size-4" />
+            {publishing ? "Publishing…" : "Publish my restaurant"}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -759,7 +824,7 @@ function PublishHints({
   }, [hasCover, kycVerified, subscriptionActive]);
   if (missing.length === 0) return null;
   return (
-    <ul className="text-right text-xs text-warning">
+    <ul className="list-disc space-y-1 pl-5 text-sm text-warning">
       {missing.map((m) => (
         <li key={m}>{m}</li>
       ))}

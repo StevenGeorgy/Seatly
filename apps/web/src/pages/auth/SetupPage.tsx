@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 
 import { PreviewAsDinerButton } from "@/components/onboarding/PreviewAsDinerButton";
 import { Step1Basics, type Step1Result } from "@/components/onboarding/Step1Basics";
@@ -44,7 +45,19 @@ type ResumeResult = {
   startAtStep: number;
 };
 
-async function loadInProgressRestaurant(userProfileId: string | null): Promise<ResumeResult | null> {
+type LoadResumeOptions = {
+  /**
+   * If provided, target this specific unpublished restaurant instead of
+   * picking the most recent one. Returns null if the user doesn't own it
+   * or if it's already published — caller should redirect to /drafts.
+   */
+  targetRestaurantId?: string | null;
+};
+
+async function loadInProgressRestaurant(
+  userProfileId: string | null,
+  options: LoadResumeOptions = {},
+): Promise<ResumeResult | null> {
   if (!userProfileId) return null;
   if (!isSupabaseConfigured()) return null;
   const client = getSupabaseBrowserClient();
@@ -57,12 +70,20 @@ async function loadInProgressRestaurant(userProfileId: string | null): Promise<R
     .filter((id): id is string => Boolean(id));
   if (restaurantIds.length === 0) return null;
 
+  // When targeting a specific restaurant, narrow restaurantIds to just that
+  // one — if it's not in the user's owned set, the query returns nothing and
+  // the caller redirects to /drafts.
+  const idsForQuery = options.targetRestaurantId
+    ? restaurantIds.filter((id) => id === options.targetRestaurantId)
+    : restaurantIds;
+  if (idsForQuery.length === 0) return null;
+
   const { data: restaurants } = await client
     .from("restaurants")
     .select(
       "id, name, address, city, province, country, lat, lng, phone, description, cuisine_type, business_type, hours_json, accepts_walkins, settings_json, is_published, cover_photo_url, deposit_tiers",
     )
-    .in("id", restaurantIds)
+    .in("id", idsForQuery)
     .eq("is_published", false)
     .order("created_at", { ascending: false })
     .limit(1);
@@ -160,12 +181,29 @@ async function loadInProgressRestaurant(userProfileId: string | null): Promise<R
   else if (!hasDepositPolicy) startAtStep = 7;
   else startAtStep = 8;
 
+  const hydratedTables: WizardTable[] | null = hasTables
+    ? (tableRows ?? []).map((row) => {
+        const r = row as { id: string; label: string | null; table_number: string | null; capacity: number | null; shape: string | null };
+        const shapeRaw = (r.shape ?? "round").toLowerCase();
+        const shape: WizardTable["shape"] =
+          shapeRaw === "square" || shapeRaw === "rectangle" || shapeRaw === "booth"
+            ? shapeRaw
+            : "round";
+        return {
+          id: r.id,
+          label: r.label ?? r.table_number ?? "T",
+          capacity: typeof r.capacity === "number" && r.capacity > 0 ? r.capacity : 2,
+          shape,
+        };
+      })
+    : null;
+
   return {
     state: {
       restaurantId: restaurant.id,
       basics,
       hours: hasHours ? hours : null,
-      tables: hasTables ? null : null,
+      tables: hydratedTables,
       shift: null,
     },
     startAtStep,
@@ -174,39 +212,63 @@ async function loadInProgressRestaurant(userProfileId: string | null): Promise<R
 
 export default function SetupPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user, profile } = useUser();
   const [step, setStep] = useState(1);
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Track which profile.id we've already attempted resume for. If profile
-  // transitions from null → a value (e.g. inline-signup completes on Step 1),
-  // we re-run resume so the wizard hydrates the just-created restaurant
-  // instead of showing Step 1 again on a refresh mid-flow.
-  const lastResumedProfileIdRef = useRef<string | null>(null);
+
+  // Query-param-driven entry modes:
+  //   ?new=1            → skip resume entirely, fresh Step 1
+  //   ?restaurant_id=X  → resume that specific draft (or redirect if not owned)
+  // Captured on mount so a later URL change doesn't disrupt the in-progress
+  // wizard.
+  const forceNewRef = useRef(searchParams.get("new") === "1");
+  const targetRestaurantIdRef = useRef(searchParams.get("restaurant_id"));
+  const forceNew = forceNewRef.current;
+  const targetRestaurantId = targetRestaurantIdRef.current;
+
+  // One resume attempt per mount. Reset on unmount so a remount (StrictMode
+  // double-mount or route revisit) re-fetches.
+  const resumeAttemptedRef = useRef(false);
 
   useEffect(() => {
     const profileId = profile?.id ?? null;
     if (!user) {
-      lastResumedProfileIdRef.current = null;
+      resumeAttemptedRef.current = false;
       return;
     }
     if (profileId === null) return;
-    if (lastResumedProfileIdRef.current === profileId) return;
-    lastResumedProfileIdRef.current = profileId;
+    if (state.restaurantId !== null) return;
+    if (resumeAttemptedRef.current) return;
+    // Honor ?new=1 — skip the DB resume so the wizard starts at Step 1 with
+    // an empty form. Step 1's submit will pass force_new=true to the edge fn.
+    if (forceNew) {
+      resumeAttemptedRef.current = true;
+      return;
+    }
+    resumeAttemptedRef.current = true;
     let cancelled = false;
     void (async () => {
-      const resume = await loadInProgressRestaurant(profileId);
+      const resume = await loadInProgressRestaurant(profileId, {
+        targetRestaurantId,
+      });
       if (cancelled) return;
       if (resume) {
         setState(resume.state);
         setStep(resume.startAtStep);
+      } else if (targetRestaurantId) {
+        // Caller asked for a specific draft but it's not owned / not unpublished.
+        toast.error("That restaurant isn't available.");
+        navigate("/drafts", { replace: true });
       }
     })();
     return () => {
       cancelled = true;
+      resumeAttemptedRef.current = false;
     };
-  }, [profile?.id, user]);
+  }, [profile?.id, state.restaurantId, user, forceNew, targetRestaurantId, navigate]);
 
   const handleStep1Complete = useCallback((result: Step1Result) => {
     setState((prev) => ({
@@ -282,7 +344,12 @@ export default function SetupPage() {
   const stepContent = useMemo(() => {
     if (step === 1) {
       return (
-        <Step1Basics initial={state.basics ?? undefined} onComplete={handleStep1Complete} />
+        <Step1Basics
+          initial={state.basics ?? undefined}
+          onComplete={handleStep1Complete}
+          forceNew={forceNew}
+          targetRestaurantId={targetRestaurantId}
+        />
       );
     }
     if (step === 2 && state.restaurantId) {
@@ -354,6 +421,7 @@ export default function SetupPage() {
     }
     return null;
   }, [
+    forceNew,
     handlePublished,
     handleStep1Complete,
     handleStep2Complete,
@@ -368,6 +436,7 @@ export default function SetupPage() {
     state.shift,
     state.tables,
     step,
+    targetRestaurantId,
   ]);
 
   return (

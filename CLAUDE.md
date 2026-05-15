@@ -25,6 +25,153 @@ If a task does NOT touch any of those, no update is needed — don't
 churn the file. Codex sees this file via the `AGENTS.md` symlink, so
 edits here propagate to both agents in one step.
 
+## Headline state (2026-05-15)
+
+- **Onboarding wizard — multi-restaurant + polish (2026-05-15 evening).**
+  Six issues plus drafts-as-a-product surface, all shipped:
+  - **Server-side publish gate (DB trigger).** New
+    `enforce_publish_gate()` trigger on `restaurants` BEFORE UPDATE blocks
+    `is_published=false→true` transitions unless `is_active=true` +
+    `stripe_charges_enabled=true` + `subscription_status IN
+    ('trialing','active')` + `cover_photo_url` is non-empty. Raises
+    `P0007` with a HINT identifying the missing gate. The client-side
+    check in `Step8PaymentSetup.tsx` stays as first-line UX; the
+    trigger is the trust boundary. Migration:
+    `20260516000000_publish_gate_trigger.sql` (applied).
+  - **30-day TTL cleanup pg_cron job.**
+    `cleanup_stale_restaurant_drafts()` + cron entry
+    `cleanup_restaurant_drafts` running daily at 03:00 UTC. Migration:
+    `20260516000010_cleanup_old_draft_restaurants.sql`.
+  - **Drafts as a real product surface.**
+    - New `/drafts` page (`apps/web/src/pages/auth/DraftsPage.tsx`)
+      under `<RequireAuth>`. Lists all `is_published=false` restaurants
+      the user owns, each with name, location, "Draft · Step N of 8 ·
+      Updated …" subtitle, [Continue setup] + trash icon.
+      **Bulk-select multi-delete** via checkboxes + "Delete N" action;
+      delete confirms via `Dialog` + uses RLS-permitted client-side
+      DELETE with `is_published=false` guard.
+    - New `restaurants_delete_owner_draft` RLS policy permits owners to
+      delete their own unpublished drafts (published rows stay
+      protected). Migration:
+      `20260516000020_restaurants_delete_owner_draft_policy.sql`.
+    - Workspace switcher (sidebar + customer account dropdown) tags
+      `is_published=false` rows with "Draft — finish setup". Clicking
+      a draft routes to `/setup?restaurant_id=<id>` (not `/dashboard`).
+      "+ Add restaurant" / "+ Set up your restaurant" buttons now route
+      to `/setup?new=1`. Sidebar has a "View all drafts" footer link
+      → `/drafts`.
+    - `SetupPage.tsx` reads `?new=1` (skip resume, fresh Step 1) and
+      `?restaurant_id=<id>` (resume that specific draft, with ownership
+      check via `user_restaurant_roles`; mismatch → redirect to
+      `/drafts` with toast). `Step1Basics.tsx` passes `force_new` +
+      `restaurant_id` in the edge-fn body.
+    - `signup-restaurant-owner` edge fn honors `force_new=true` (always
+      INSERT) and explicit `restaurant_id` (UPDATE that draft). Implicit
+      fallback: most-recent unpublished draft for the user is UPDATEd.
+    - Shared helper:
+      `apps/web/src/lib/onboarding/computeDraftStep.ts` —
+      `computeDraftStep({ hours_json, cover_photo_url, deposit_tiers,
+      hasTables, hasShift, tierItemCount })` returns 2..8. Used by
+      `SetupPage.tsx`'s resume effect, `DraftsPage`, and (future)
+      workspace-switcher inline step display.
+  - **Cuisine typeahead.** `CuisineSelect.tsx` refactored to a Combobox
+    using `Popover` + `cmdk` `Command*`. Same `value` / `onValueChange`
+    props — no caller changes. Headless Chrome MCP can't always render
+    the popover (Radix Popper positioning relies on
+    requestAnimationFrame/ResizeObserver that headless mode sometimes
+    skips); works in real browsers. See `DashboardTopBar` for a
+    confirmed-working sibling pattern.
+  - **Finish-button feedback.** Step 8's `PublishHints` now appears in
+    a prominent yellow callout *above* the Publish button (was tiny
+    grey text below). Disabled-button click shows
+    `toast.error("Complete the steps above first.")`. The
+    disabled-attribute is gone; the click handler branches on
+    `publishReady` to either toast or call `publish()`.
+  - **Save & exit confirm dialog.** `WizardShell.tsx` wraps the Save
+    & exit click in a confirm `Dialog`: "Save and exit?" with "Keep
+    working" and "Save & exit" buttons. Steps already auto-save, so
+    the dialog is pure accident guard.
+  - **5 MB image size cap.** Shared
+    `apps/web/src/lib/images/assertImageSize.ts` →
+    `assertImageSizeOk(file): boolean` that toasts and returns false
+    on >5 MB. Applied in `Step6Photos.tsx` (cover/logo/gallery),
+    `usePromotions.ts`, `useEvents.ts`, `useMenuItems.ts`, and
+    `SettingsPage.tsx` (any uploader writing to the `event-media`
+    storage bucket).
+  - **Dead inline-signup branch removed.** `Step1Basics.tsx` no longer
+    carries the `isLoggedOut` / `loggedOutSchema` / email+password
+    block — `/setup` is `<RequireAuth>`-gated so the path was
+    unreachable. Schema is now a single `formSchema` with no
+    `superRefine`.
+  - **Voice mic FAB hidden on `/setup` and `/drafts`.** `App.tsx`
+    `CustomerVoiceOrbFAB` early-returns on those paths.
+
+- **Reservation payments — show + refund on cancel (2026-05-15 late).**
+  The diner's `BookingDetailsPage` (`/bookings/:reservationId`) now
+  surfaces a "Payment summary" section listing pre-ordered items (qty ×
+  name × price + total) and any deposit cards, each with a coloured
+  status badge: green Paid, grey Refunded (struck-through), amber
+  Pending, red Failed. Section hides entirely when there are no
+  payments. Data comes from new hook
+  `apps/web/src/hooks/useReservationPayments.ts` which fires two
+  parallel queries against `orders` (joined to `order_items`) and
+  `reservation_deposit_payments` for the current reservation; RLS
+  enforces diner-owns-the-row via the existing `orders_select_own` +
+  `rdp_diner_select` policies. `cancel-reservation` was upgraded to
+  automatically refund every associated `orders.status='paid'` (via
+  `stripe.refunds.create`, marks row `'refunded'`) and every
+  `reservation_deposit_payments.status='charged'` row with a real PI.
+  Stub-mode deposits (`stripe_payment_intent_id` IS NULL, current state
+  per `DEPOSIT_STRIPE_STUB_MODE=true`) get flipped to `'refunded'` in
+  DB without a Stripe call so the UI reflects reality. New shared
+  helper `supabase/functions/_shared/stripe-refund.ts` (`refundPaymentIntent`)
+  is used by BOTH the upgraded `cancel-reservation` AND the existing
+  `refund-payment-intent` race-recovery path — identical idempotency
+  (Stripe `charge_already_refunded` treated as success). Refund
+  failures NEVER block cancel; the response carries a `refunds[]`
+  array + `refund_total_cents` and the diner toast surfaces either
+  `"Reservation cancelled. $X.XX refunded to your card."` or
+  `"Reservation cancelled. Some refunds are still processing — we'll
+  email you once they complete."` Cancel-confirm dialog body text
+  switches to mention the refund amount when payments exist. Refunds
+  rely on destination-charge behavior (`transfer_data.destination =
+  stripe_account_id`) — Stripe automatically pulls funds back from the
+  connected restaurant account; Cenaiva keeps its 5% application fee
+  by default (`refund_application_fee` defaults to false). Files
+  touched: `supabase/functions/_shared/stripe-refund.ts` (new),
+  `apps/web/src/hooks/useReservationPayments.ts` (new),
+  `supabase/functions/cancel-reservation/index.ts`,
+  `supabase/functions/refund-payment-intent/index.ts`,
+  `apps/web/src/pages/customer/BookingDetailsPage.tsx`.
+
+- **Reservation-after-payment fix (2026-05-15).** The diner checkout used
+  to eagerly create the reservation on entry to the Review & Pay step so
+  Stripe Elements could mount with a `clientSecret`. That meant a diner
+  who bailed mid-checkout left a `pending_payment` reservation holding
+  their slot, AND the user saw an in-progress booking in My Bookings
+  before they'd paid. Now the reservation is only created after the
+  Stripe PaymentIntent succeeds. Card form mounts on Review & Pay
+  WITHOUT a reservation existing via **Stripe deferred PaymentIntent
+  mode** (`<Elements options={{ mode: "payment", amount, currency }}>`
+  with no clientSecret). On Place Order: `elements.submit()` validates,
+  then `create-public-payment-intent` is called JIT to mint the PI,
+  `stripe.confirmPayment` charges the card, then `onPaid(piId)` calls
+  `createReservationCore` to write the reservation + order, then
+  `mark-order-paid` flips the order to `status='paid'` with the PI id.
+  If the slot was taken in the race window after Stripe but before
+  `create-public-booking` returns, `refund-payment-intent` auto-refunds
+  the card and surfaces "your card has been refunded." Free reservations
+  (`totalNow === 0`) skip Stripe entirely. Three edge functions
+  involved: `create-public-payment-intent` (updated to v2 — accepts
+  `restaurant_id` only, no `reservation_id`); `refund-payment-intent`
+  and `mark-order-paid` are new. Verified end-to-end in Chrome with
+  Mark's real account (Georgy Inc): three bookings created, declined
+  card produces zero rows, approved cards produce `confirmed`
+  reservations + `paid` orders with PI ids stored. Order RLS only
+  permits restaurant staff to UPDATE rows; that's why the order
+  paid-state has to go through a service-role edge function instead of
+  client-side.
+
 ## Headline state (2026-05-14)
 
 - **Phase D Stripe wire-up shipped (2026-05-14).** Restaurant onboarding
@@ -359,6 +506,52 @@ edits here propagate to both agents in one step.
   settle trigger that flips reservations to 'confirmed' fires only on
   rows it manages, so writing rows from random places breaks the state
   machine.
+- Never UPDATE `orders` from the diner-facing client. RLS policy
+  `orders_update_staff` restricts UPDATE to restaurant staff only;
+  diner-side calls silently fail with zero rows affected (no error
+  thrown). To flip an order to `status='paid'` post-payment, use the
+  `mark-order-paid` edge function which validates the Stripe
+  PaymentIntent and writes with service-role.
+- Never leave paid orders or charged deposits unrefunded when a diner
+  cancels OUTSIDE the 24h cliff. `cancel-reservation` owns the
+  diner-side refund path: when `reservedAt - now >= 24h` it
+  Stripe-refunds every `orders.status='paid'` row and every
+  `reservation_deposit_payments.status='charged'` row tied to the
+  reservation, then marks each as `'refunded'`. Stub-mode deposits
+  (null PI) get DB-only marked refunded so the UI matches reality.
+  When the cancel falls **within 24h** of the reservation, the refund
+  phase is SKIPPED — the diner forfeits their pre-order + deposit per
+  the cancellation policy. The reservation still cancels (slot reopens
+  for the next diner), `cancellation_reason` is set to "Cancelled by
+  diner (within 24h — non-refundable)", and the response carries
+  `forfeit_total_cents` + `within_24h: true` so the UI can toast
+  "$X.XX forfeited per the 24h cancellation policy." If you add a new
+  diner-cancel surface (e.g. a voice "cancel my reservation" shortcut),
+  route it through `cancel-reservation` — never raw-UPDATE
+  `reservations.status='cancelled'` and skip the refund/forfeit phase.
+  Refund failures NEVER block the cancel; the response carries
+  `refunds[]` + `refund_total_cents` so the UI can toast the
+  partial-refund case. Shared helper:
+  `supabase/functions/_shared/stripe-refund.ts` (`refundPaymentIntent`).
+  Both confirm dialogs (BookingDetailsPage + BookingsPage) MUST show
+  the 24h policy warning before the cancel fires — no surprise
+  forfeits.
+- Never drop or weaken the `restaurants_publish_gate` trigger. It is
+  the trust boundary preventing a savvy actor from flipping
+  `is_published=true` via direct supabase-js writes. The client-side
+  check in `Step8PaymentSetup.tsx` is good UX; the trigger is the
+  real gate. If gate conditions change, update the trigger AND the
+  client gate in lock-step.
+- Never bypass `assertImageSizeOk` when uploading to the `event-media`
+  storage bucket. The 5 MB cap prevents diner-side page bloat and
+  storage cost runaways. If a use case truly needs larger files,
+  bump the constant in `apps/web/src/lib/images/assertImageSize.ts` —
+  don't carve out exceptions in individual call sites.
+- Never silently overwrite existing drafts in `signup-restaurant-owner`.
+  Honor `body.force_new=true` (always INSERT) and `body.restaurant_id`
+  (target a specific draft). Implicit fallback (no params) UPDATEs the
+  most-recent unpublished draft. When in doubt, route through
+  `/setup?new=1` to force a fresh row.
 - Never deploy `confirm-deposit-stub` to production without flipping
   `DEPOSIT_STRIPE_STUB_MODE=false`. The stub flips deposits to 'charged'
   with no real money movement — leaving it on in prod would mean every
