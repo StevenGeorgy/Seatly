@@ -75,6 +75,7 @@ type RestaurantPreviewModalProps = {
   preferredTime?: string;
   currencyCode?: string;
   availabilityNotice?: string | null;
+  previewBannerText?: string;
   onClose: () => void;
   onToggleFavorite: () => void;
   onReserve: (
@@ -160,6 +161,7 @@ export function RestaurantPreviewModal({
   preferredTime,
   currencyCode = "cad",
   availabilityNotice,
+  previewBannerText,
   onClose,
   onToggleFavorite,
   onReserve,
@@ -501,6 +503,11 @@ export function RestaurantPreviewModal({
             </div>
 
             <div className="mx-auto -mt-16 w-full px-4 pb-10 sm:px-6 lg:px-8">
+              {previewBannerText ? (
+                <div className="mb-3 rounded-xl border border-yellow-500/40 bg-yellow-500/10 px-4 py-2 text-xs font-medium text-yellow-200">
+                  {previewBannerText}
+                </div>
+              ) : null}
               <section className="relative rounded-2xl border border-border bg-bg-surface/95 p-5 shadow-2xl shadow-black/30 backdrop-blur">
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                   <div className="flex gap-4">

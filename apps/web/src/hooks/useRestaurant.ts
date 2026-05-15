@@ -25,6 +25,7 @@ export type Restaurant = {
   settings_json: RestaurantSettings | null;
   plan: string;
   is_active: boolean;
+  is_published: boolean;
   timezone: string;
   currency: string;
   tax_rate: number;
@@ -32,7 +33,13 @@ export type Restaurant = {
   deposit_tiers: Array<{ min_party_size: number; amount_per_person_cents: number }> | null;
   loyalty_config_json: Record<string, unknown> | null;
   stripe_account_id: string | null;
+  stripe_customer_id: string | null;
+  subscription_status: string | null;
+  trial_ends_at: string | null;
   stripe_onboarding_complete: boolean | null;
+  stripe_charges_enabled: boolean | null;
+  stripe_payouts_enabled: boolean | null;
+  stripe_details_submitted: boolean | null;
   avg_rating: number | null;
   total_reviews: number | null;
   price_range: number | null;
@@ -130,6 +137,7 @@ async function fetchPublicRestaurants(): Promise<Restaurant[]> {
     .from("restaurants")
     .select("*")
     .eq("is_active", true)
+    .eq("is_published", true)
     .order("avg_rating", { ascending: false, nullsFirst: false });
 
   const rows = (data ?? []) as Restaurant[];

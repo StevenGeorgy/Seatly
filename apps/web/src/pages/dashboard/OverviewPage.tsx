@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { format } from "date-fns";
+import { useNavigate } from "react-router-dom";
 import {
   CalendarDays,
   DollarSign,
@@ -15,13 +16,16 @@ import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { EventAttendeesDialog } from "@/components/dashboard/EventAttendeesDialog";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import {
   useTonightEvents,
   type EventTimelineRow,
 } from "@/hooks/useEventAttendees";
 import { useOverviewStats, type OverviewOrderStats } from "@/hooks/useOverviewStats";
 import { useReservations, type ReservationRow } from "@/hooks/useReservations";
+import { useRestaurant } from "@/hooks/useRestaurant";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useRestaurantSetupCompletion } from "@/hooks/useRestaurantSetupCompletion";
 import {
   reservationDisplayStatus,
   reservationDisplayStatusKey,
@@ -494,7 +498,11 @@ function ServiceSummary({
 }
 
 export default function OverviewPage() {
+  const navigate = useNavigate();
   const { selectedRestaurant } = useRestaurantScope();
+  const { restaurant: scopedRestaurant } = useRestaurant(selectedRestaurant?.id);
+  const setupCompletion = useRestaurantSetupCompletion(selectedRestaurant?.id ?? null);
+  const isUnpublished = scopedRestaurant?.is_published === false;
   const currency = selectedRestaurant?.currency ?? "cad";
   const timezone = selectedRestaurant?.timezone ?? null;
   const now = useMemo(() => new Date(), []);
@@ -543,6 +551,25 @@ export default function OverviewPage() {
 
   return (
     <AnimatedPage className="space-y-6">
+      {isUnpublished && !setupCompletion.loading ? (
+        <div className="flex flex-col gap-3 rounded-2xl border border-yellow-500/40 bg-yellow-500/10 p-4 text-sm text-yellow-100 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold">🟡 Your restaurant is in setup</p>
+            <p className="text-xs text-yellow-100/80">
+              {setupCompletion.stepsComplete} of {setupCompletion.totalSteps} steps complete — finish setup to publish to diners.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="self-start border-yellow-400/40 text-yellow-100 hover:bg-yellow-500/20 sm:self-auto"
+            onClick={() => navigate("/setup")}
+          >
+            Resume setup →
+          </Button>
+        </div>
+      ) : null}
+
       <header className="flex flex-col gap-4 border-b border-border/50 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">

@@ -131,6 +131,12 @@ Deno.serve(async (req: Request) => {
       points_per_dollar: body.loyalty_points_per_dollar ?? 1,
     };
 
+    // ── Settings payload (dietary tags live here per existing schema) ─────────
+    const dietaryTags = Array.isArray(body.dietary_tags)
+      ? body.dietary_tags.filter((t: unknown): t is string => typeof t === "string")
+      : [];
+    const settingsJson = dietaryTags.length > 0 ? { dietaryTags } : null;
+
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")
       .insert({
@@ -149,12 +155,14 @@ Deno.serve(async (req: Request) => {
         phone: body.phone ?? null,
         description: body.description ?? null,
         cuisine_type: body.cuisine_type ?? null,
+        business_type: body.business_type ?? null,
         hours_json: body.hours_json ?? null,
         accepts_walkins: body.accepts_walkins ?? true,
         no_show_fee: body.no_show_fee ?? null,
         cancellation_hours: body.cancellation_hours ?? 24,
         deposit_policy_json: depositPolicyJson,
         loyalty_config_json: loyaltyConfigJson,
+        settings_json: settingsJson,
       })
       .select("id")
       .single();
@@ -164,6 +172,119 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ error: restaurantError?.message ?? "Failed to create restaurant" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
+    }
+
+    // ── Default shift + floor plan + tables ───────────────────────────────────
+    // Wrapped in try/catch — failures here are logged but do NOT roll back the
+    // restaurant row. The owner can edit these later from the dashboard.
+    try {
+      const hoursJson = (body.hours_json ?? null) as Record<string, { open: string; close: string } | null> | null;
+      const dayKeys = [
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+      ] as const;
+      let daysOfWeek: number[] = [];
+      let startTime = "17:00";
+      let endTime = "22:00";
+      if (hoursJson) {
+        const opens: string[] = [];
+        const closes: string[] = [];
+        dayKeys.forEach((day, idx) => {
+          const value = hoursJson[day];
+          if (value && typeof value.open === "string" && typeof value.close === "string") {
+            daysOfWeek.push(idx);
+            opens.push(value.open);
+            closes.push(value.close);
+          }
+        });
+        opens.sort();
+        closes.sort();
+        if (opens.length > 0) startTime = opens[0];
+        if (closes.length > 0) endTime = closes[closes.length - 1];
+      }
+      if (daysOfWeek.length === 0) daysOfWeek = [0, 1, 2, 3, 4, 5, 6];
+
+      const { error: shiftError } = await adminClient.from("shifts").insert({
+        restaurant_id: restaurant.id,
+        name: "Dinner",
+        days_of_week: daysOfWeek,
+        start_time: startTime,
+        end_time: endTime,
+        turn_time_minutes: 90,
+        slot_duration_minutes: 30,
+        advance_booking_days: 3650,
+        max_covers: null,
+        is_active: true,
+      });
+      if (shiftError) {
+        console.error("[signup-restaurant-owner] shift insert failed", shiftError);
+      }
+
+      // Default floor plan (Main Floor) + section row
+      const { data: sectionRow, error: sectionError } = await adminClient
+        .from("restaurant_sections")
+        .insert({
+          restaurant_id: restaurant.id,
+          name: "Main Floor",
+          sort_order: 0,
+          is_active: true,
+        })
+        .select("id")
+        .single();
+      let sectionId: string | null = sectionRow ? (sectionRow.id as string) : null;
+      if (sectionError) {
+        console.error("[signup-restaurant-owner] section insert failed", sectionError);
+      }
+      if (sectionId) {
+        const { error: floorPlanError } = await adminClient.from("floor_plans").insert({
+          restaurant_id: restaurant.id,
+          section_id: sectionId,
+          name: "Main Floor",
+          canvas_width: 720,
+          canvas_height: 480,
+          layout: { walls: [], doors: [], windows: [], tableTransforms: {}, decorations: [], zones: [] },
+          is_active: true,
+        });
+        if (floorPlanError) {
+          console.error("[signup-restaurant-owner] floor_plan insert failed", floorPlanError);
+        }
+      }
+
+      const inputTables = Array.isArray(body.tables) ? body.tables : [];
+      const tableRows = inputTables
+        .map((entry: unknown, idx: number) => {
+          if (!entry || typeof entry !== "object") return null;
+          const row = entry as { label?: string; capacity?: number; shape?: string };
+          const label = typeof row.label === "string" && row.label.trim() ? row.label.trim() : `T${idx + 1}`;
+          const capacity = typeof row.capacity === "number" && row.capacity > 0 ? Math.min(30, row.capacity) : 2;
+          const shape = typeof row.shape === "string" && row.shape.length > 0 ? row.shape : "round";
+          return {
+            restaurant_id: restaurant.id,
+            table_number: label,
+            label,
+            capacity,
+            shape,
+            section_id: sectionId,
+            section: sectionId ? "Main Floor" : null,
+            position_x: 0,
+            position_y: 0,
+            is_active: true,
+          };
+        })
+        .filter((row: unknown): row is Record<string, unknown> => row !== null);
+      if (tableRows.length > 0) {
+        const { error: tableError } = await adminClient.from("tables").insert(tableRows);
+        if (tableError) {
+          console.error("[signup-restaurant-owner] tables insert failed", tableError);
+        }
+      }
+    } catch (defaultsErr) {
+      console.error("[signup-restaurant-owner] defaults creation failed", defaultsErr);
     }
 
     // ── Upsert the user profile ───────────────────────────────────────────────

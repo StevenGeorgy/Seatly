@@ -199,10 +199,10 @@ function MarketingFooter() {
     {
       heading: "Restaurants",
       links: [
-        { label: "Product", to: "/#for-restaurants" },
-        { label: "Pricing", to: "/#pricing" },
+        { label: "List your restaurant", to: "/setup" },
+        { label: "Pricing", to: "/restaurants#pricing" },
         { label: "Customers", to: "/about" },
-        { label: "Demo", to: "/register" },
+        { label: "Book a demo", to: "/book-a-demo" },
       ],
     },
     {

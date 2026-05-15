@@ -25,6 +25,67 @@ If a task does NOT touch any of those, no update is needed — don't
 churn the file. Codex sees this file via the `AGENTS.md` symlink, so
 edits here propagate to both agents in one step.
 
+## Headline state (2026-05-14)
+
+- **Phase D Stripe wire-up shipped (2026-05-14).** Restaurant onboarding
+  wizard Step 8 now mounts Stripe Connect Embedded onboarding + a Stripe
+  Elements SetupIntent card form for the $200 CAD/mo subscription with 90-day
+  trial. Publish gate requires KYC verification (`stripe_charges_enabled`)
+  AND an active `trialing`/`active` subscription before the "Publish my
+  restaurant" button enables. Four new edge functions:
+  - `supabase/functions/create-stripe-account` — idempotent Connect Custom
+    account creation. country=CA, business_type=company, mcc=5812 (Eating
+    Places), card_payments + transfers capabilities, daily payout schedule.
+    If `restaurants.stripe_account_id` already set, retrieves and returns
+    current state.
+  - `supabase/functions/create-account-session` — short-lived Account Session
+    for the embedded `ConnectAccountOnboarding` component (called every time
+    the component mounts).
+  - `supabase/functions/create-subscription` — creates platform-level Stripe
+    Customer (NOT on the connected account), attaches the payment method,
+    sets it as default, then `subscriptions.create` with
+    `STRIPE_SUBSCRIPTION_PRICE_ID`, `trial_period_days=90`,
+    `payment_behavior=default_incomplete`. Persists `stripe_customer_id`,
+    `subscription_status`, `trial_ends_at` to the restaurant row.
+  - `supabase/functions/stripe-webhook` — `constructEventAsync` signature
+    verification, in-memory dedupe of recent event ids. Handles
+    `account.updated` (syncs charges/payouts/details flags),
+    `account.application.deauthorized` (clears stripe_account_id + flags),
+    `customer.subscription.created/updated` (mirrors status + trial_end),
+    `customer.subscription.deleted` (status=canceled, flips
+    `is_published=false` for graceful unpublish),
+    `customer.subscription.trial_will_end` + `payment_intent.*` +
+    `invoice.payment_failed` (log only — deposit flow has its own
+    webhook layer for those).
+  - Follow-up migration `20260514213000_add_stripe_kyc_state.sql` adds three
+    boolean columns `restaurants.stripe_charges_enabled /
+    stripe_payouts_enabled / stripe_details_submitted` (default false)
+    mirrored from Stripe via the webhook. The publish gate UI polls the
+    restaurant row for ~30s after the embedded onboarding's `onExit` fires.
+  - New web component `Step8PaymentSetup.tsx` replaces the interim
+    `Step8InterimPublish.tsx` (deleted). It mounts
+    `<ConnectComponentsProvider><ConnectAccountOnboarding /></ConnectComponentsProvider>`
+    from `@stripe/react-connect-js` + `loadConnectAndInitialize` from
+    `@stripe/connect-js`, plus `<Elements><PaymentElement /></Elements>` from
+    `@stripe/react-stripe-js` for the subscription card. Submit flow calls
+    `stripe.confirmSetup({ redirect: "if_required" })` to tokenize the card
+    → passes the resulting `payment_method` id to `create-subscription`.
+  - `useRestaurantSetupCompletion` now requires all four (stripe_account_id
+    non-null + charges_enabled + active sub + is_published) for Step 8 to
+    count as complete (previously just `is_published`).
+  - `supabase/config.toml` updated with `verify_jwt = false` for all four
+    new functions (JWT decode happens inside the handler for the three
+    owner-auth functions; the webhook verifies via Stripe signature).
+  - Legacy `/setup-legacy` route + `SetupPageLegacy.tsx` deleted. New
+    `Restaurant` type fields in `useRestaurant.ts`:
+    `stripe_charges_enabled`, `stripe_payouts_enabled`,
+    `stripe_details_submitted` (all `boolean | null`).
+  - npm packages added in `apps/web/`: `@stripe/connect-js`,
+    `@stripe/react-connect-js` (runtime, NOT devDependencies).
+  - Stripe SDK version pinned to `npm:stripe@17` (matches
+    `stripe-setup-intent`, `stripe-charge-order`); apiVersion
+    `2024-11-20.acacia`.
+
 ## Headline state (2026-05-13)
 
 - **17-capability /goal verification pass (v304–v309, 2026-05-13 late

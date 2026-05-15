@@ -73,3 +73,18 @@ verify_jwt = false
 
 [functions.confirm-deposit-stub]
 verify_jwt = false
+
+[functions.submit-demo-request]
+verify_jwt = false
+
+[functions.create-stripe-account]
+verify_jwt = false
+
+[functions.create-account-session]
+verify_jwt = false
+
+[functions.create-subscription]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false

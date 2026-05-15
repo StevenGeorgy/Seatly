@@ -266,14 +266,18 @@ export default function RestaurantsPage() {
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row">
               <Button asChild className="h-11 rounded-md px-6 font-semibold">
-                <Link to="/register">
-                  Book a demo <ArrowRight className="ml-1 size-4" />
+                <Link to="/setup">
+                  List your restaurant <ArrowRight className="ml-1 size-4" />
                 </Link>
               </Button>
               <Button asChild variant="outline" className="h-11 rounded-md px-6">
-                <a href="#pricing">See pricing</a>
+                <Link to="/book-a-demo">Book a demo</Link>
               </Button>
             </div>
+            <p className="mt-5 text-sm text-text-muted">
+              <span className="text-gold">Free 3 months</span>, then $200 CAD/month.
+              {" "}{bookingFee} per reservation + 5% on pre-orders &amp; deposits.
+            </p>
           </motion.div>
         </div>
       </section>
@@ -316,12 +320,12 @@ export default function RestaurantsPage() {
 
             <div className="mt-10 flex flex-col gap-3 sm:flex-row">
               <Button asChild className="h-11 rounded-md px-6 font-semibold">
-                <Link to="/register">
-                  Book a demo <ArrowRight className="ml-1 size-4" />
+                <Link to="/setup">
+                  List your restaurant <ArrowRight className="ml-1 size-4" />
                 </Link>
               </Button>
               <Button asChild variant="outline" className="h-11 rounded-md px-6">
-                <a href="#pricing">See pricing</a>
+                <Link to="/book-a-demo">Book a demo</Link>
               </Button>
             </div>
           </motion.div>
@@ -472,12 +476,12 @@ export default function RestaurantsPage() {
           </h2>
           <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Button asChild className="h-12 rounded-md px-8 font-semibold">
-              <Link to="/register">
-                Book a 30-min demo <ArrowRight className="ml-1 size-4" />
+              <Link to="/setup">
+                List your restaurant <ArrowRight className="ml-1 size-4" />
               </Link>
             </Button>
             <Button asChild variant="outline" className="h-12 rounded-md px-8">
-              <Link to="/about">Talk to a chef who switched</Link>
+              <Link to="/book-a-demo">Book a 30-min demo</Link>
             </Button>
           </div>
           <p className="mt-8 font-mono text-[10px] uppercase tracking-[0.28em] text-text-muted sm:text-xs">

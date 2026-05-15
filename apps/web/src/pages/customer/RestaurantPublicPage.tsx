@@ -1183,7 +1183,10 @@ export default function RestaurantPublicPage() {
   // params just pre-fill the panel's date and party controls.
   const bookingLockedFromPreview = Boolean(searchParams.get("slot"));
   const { restaurant, loading } = useRestaurant(restaurantSlug);
-  const { profile } = useUser();
+  const { profile, restaurantRoles } = useUser();
+  const viewerIsStaffOfRestaurant = Boolean(
+    restaurant && restaurantRoles.some((r) => r.restaurant_id === restaurant.id),
+  );
   const { promotions: allPromos } = useAllActivePromotions();
   const [step, setStep] = useState<Step>("details");
   const menuQueriesEnabled = step === "menu" || step === "checkout";
@@ -2004,6 +2007,15 @@ export default function RestaurantPublicPage() {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-bg-base text-text-primary">
         <p className="text-lg font-semibold">Restaurant not found</p>
+        <Button variant="outline" asChild><Link to="/discover">Back to Discover</Link></Button>
+      </div>
+    );
+  }
+
+  if (restaurant.is_published === false && !viewerIsStaffOfRestaurant) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-bg-base text-text-primary">
+        <p className="text-lg font-semibold">This restaurant isn't accepting bookings yet.</p>
         <Button variant="outline" asChild><Link to="/discover">Back to Discover</Link></Button>
       </div>
     );

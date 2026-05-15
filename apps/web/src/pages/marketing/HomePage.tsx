@@ -761,14 +761,24 @@ export default function HomePage() {
 
             <div className="mt-12 flex flex-wrap items-center gap-4">
               <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
-                <Link to="/restaurants">
-                  Book a demo <ArrowRight className="ml-1.5 size-5" />
+                <Link to="/setup">
+                  List your restaurant <ArrowRight className="ml-1.5 size-5" />
                 </Link>
               </Button>
               <Button asChild variant="outline" className="h-12 rounded-md px-6 text-base">
-                <Link to="/restaurants#pricing">See pricing</Link>
+                <Link to="/book-a-demo">Book a demo</Link>
               </Button>
+              <Link
+                to="/restaurants#pricing"
+                className="text-sm text-text-secondary transition-colors hover:text-white"
+              >
+                See pricing →
+              </Link>
             </div>
+            <p className="mt-5 text-sm text-text-muted">
+              <span className="text-gold">Free 3 months</span>, then $200 CAD/month.
+              $1 per reservation + 5% on pre-orders &amp; deposits. Cancel any month.
+            </p>
           </div>
 
           {/* Live dashboard mock */}

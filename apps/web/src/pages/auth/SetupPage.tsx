@@ -1,790 +1,388 @@
-import { useState } from "react";
-import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import { Controller, useForm, useWatch } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { toast } from "sonner";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+import { PreviewAsDinerButton } from "@/components/onboarding/PreviewAsDinerButton";
+import { Step1Basics, type Step1Result } from "@/components/onboarding/Step1Basics";
+import { Step2Hours } from "@/components/onboarding/Step2Hours";
+import { Step3FloorPlan } from "@/components/onboarding/Step3FloorPlan";
+import { Step4BookingRules } from "@/components/onboarding/Step4BookingRules";
+import { Step5Menu } from "@/components/onboarding/Step5Menu";
+import { Step6Photos } from "@/components/onboarding/Step6Photos";
+import { Step7DepositPolicy } from "@/components/onboarding/Step7DepositPolicy";
+import { Step8PaymentSetup } from "@/components/onboarding/Step8PaymentSetup";
+import { WizardShell } from "@/components/onboarding/WizardShell";
 import {
-  Building2,
-  Clock,
-  LayoutGrid,
-  Users,
-  Settings,
-  ArrowRight,
-  ArrowLeft,
-  Check,
-  Plus,
-  Trash2,
-  UserPlus,
-  X,
-  Circle,
-  Square,
-  RectangleHorizontal,
-  ChevronDown,
-} from "lucide-react";
-
-import { Button } from "@/components/ui/button";
-import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
-import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+  STARTER_TABLES,
+  WIZARD_TOTAL_STEPS,
+  type HoursJson,
+  type WizardBasics,
+  type WizardShift,
+  type WizardTable,
+} from "@/components/onboarding/wizardTypes";
+import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
+import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
-import { formatCompactTimeLabel } from "@/lib/utils/time";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-const STEPS = [
-  { icon: Building2, labelKey: "Restaurant" },
-  { icon: Clock,     labelKey: "Hours"      },
-  { icon: LayoutGrid, labelKey: "Tables"    },
-  { icon: Users,     labelKey: "Team"       },
-  { icon: Settings,  labelKey: "Settings"   },
-] as const;
-
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const TIME_OPTIONS: string[] = [];
-for (let h = 0; h < 24; h++) {
-  for (const m of [0, 30]) {
-    const ampm = h < 12 ? "AM" : "PM";
-    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    const mStr = m === 0 ? "00" : "30";
-    TIME_OPTIONS.push(`${h12}:${mStr} ${ampm}`);
-  }
-}
-
-const ROLES = ["manager", "server", "host", "kitchen", "bar", "staff"] as const;
-type StaffRole = typeof ROLES[number];
-
-const ROLE_LABELS: Record<StaffRole, string> = {
-  manager: "Manager",
-  server:  "Server",
-  host:    "Host",
-  kitchen: "Kitchen",
-  bar:     "Bar",
-  staff:   "Staff",
+type WizardState = {
+  restaurantId: string | null;
+  basics: WizardBasics | null;
+  hours: HoursJson | null;
+  tables: WizardTable[] | null;
+  shift: WizardShift | null;
 };
 
-const TABLE_SHAPES = ["circle", "rectangle", "booth"] as const;
-type TableShape = typeof TABLE_SHAPES[number];
-
-// ─── Sub-types ───────────────────────────────────────────────────────────────
-type DayHours = {
-  open: boolean;
-  from: string;
-  to: string;
+const INITIAL_STATE: WizardState = {
+  restaurantId: null,
+  basics: null,
+  hours: null,
+  tables: null,
+  shift: null,
 };
 
-type TableEntry = {
-  id: string;
-  label: string;
-  capacity: number;
-  shape: TableShape;
-  section: string;
+type ResumeResult = {
+  state: WizardState;
+  startAtStep: number;
 };
 
-type TeamEntry = {
-  id: string;
-  email: string;
-  role: StaffRole;
-};
+async function loadInProgressRestaurant(userProfileId: string | null): Promise<ResumeResult | null> {
+  if (!userProfileId) return null;
+  if (!isSupabaseConfigured()) return null;
+  const client = getSupabaseBrowserClient();
+  const { data: roleRows } = await client
+    .from("user_restaurant_roles")
+    .select("restaurant_id")
+    .eq("user_id", userProfileId);
+  const restaurantIds = (roleRows ?? [])
+    .map((r) => (r as { restaurant_id: string | null }).restaurant_id)
+    .filter((id): id is string => Boolean(id));
+  if (restaurantIds.length === 0) return null;
 
-// ─── Form schema ─────────────────────────────────────────────────────────────
-const restaurantSchema = z.object({
-  name:         z.string().min(1, "Required"),
-  address:      z.string().min(1, "Required"),
-  city:         z.string().min(1, "Required"),
-  province:     z.string().min(1, "Required"),
-  cuisine_type: z.string().min(1, "Required"),
-  phone:        z.string().optional(),
-  description:  z.string().optional(),
-  currency:     z.string().min(1, "Required"),
-});
+  const { data: restaurants } = await client
+    .from("restaurants")
+    .select(
+      "id, name, address, city, province, country, lat, lng, phone, description, cuisine_type, business_type, hours_json, accepts_walkins, settings_json, is_published, cover_photo_url, deposit_tiers",
+    )
+    .in("id", restaurantIds)
+    .eq("is_published", false)
+    .order("created_at", { ascending: false })
+    .limit(1);
 
-type RestaurantFormValues = z.infer<typeof restaurantSchema>;
-
-const slideVariants = {
-  enter: (d: number) => ({ x: d > 0 ? 80 : -80, opacity: 0 }),
-  center: { x: 0, opacity: 1 },
-  exit:  (d: number) => ({ x: d > 0 ? -80 : 80, opacity: 0 }),
-};
-
-// ─── Default hours (Mon–Fri 11am–10pm, Sat–Sun 10am–11pm) ───────────────────
-function defaultHours(): DayHours[] {
-  return DAYS.map((_, i) => ({
-    open: true,
-    from: i < 5 ? "11:00 AM" : "10:00 AM",
-    to:   i < 5 ? "10:00 PM" : "11:00 PM",
-  }));
-}
-
-// ─── Helper: small time select ────────────────────────────────────────────────
-function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-xs text-text-primary outline-none focus:border-gold/40"
-      >
-        {TIME_OPTIONS.map((t) => <option key={t} value={t}>{formatCompactTimeLabel(t)}</option>)}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-export default function SetupPage() {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [step, setStep] = useState(0);
-  const [direction, setDirection] = useState(1);
-  const [submitting, setSubmitting] = useState(false);
-
-  // Step 2 — Hours
-  const [hours, setHours] = useState<DayHours[]>(defaultHours());
-
-  // Step 3 — Tables
-  const [tables, setTables] = useState<TableEntry[]>([
-    { id: "t1", label: "T1", capacity: 4, shape: "circle",    section: "Main Dining" },
-    { id: "t2", label: "T2", capacity: 2, shape: "circle",    section: "Main Dining" },
-    { id: "t3", label: "T3", capacity: 6, shape: "rectangle", section: "Main Dining" },
-  ]);
-  const [newSection, setNewSection] = useState("Main Dining");
-
-  // Step 4 — Team
-  const [team, setTeam] = useState<TeamEntry[]>([]);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<StaffRole>("server");
-  const [addressLat, setAddressLat] = useState<number | null>(null);
-  const [addressLng, setAddressLng] = useState<number | null>(null);
-
-  // Step 5 — Settings
-  const [depositEnabled, setDepositEnabled] = useState(false);
-  const [depositAmount, setDepositAmount] = useState("25");
-  const [acceptsWalkins, setAcceptsWalkins] = useState(true);
-  const [loyaltyEnabled, setLoyaltyEnabled] = useState(true);
-  const [pointsPerDollar, setPointsPerDollar] = useState("1");
-
-  const form = useForm<RestaurantFormValues>({
-    resolver: zodResolver(restaurantSchema),
-    defaultValues: { name: "", address: "", city: "", province: "", cuisine_type: "", phone: "", description: "", currency: "cad" },
-  });
-  const setupAddress = useWatch({ control: form.control, name: "address" });
-
-  const goNext = () => { setDirection(1);  setStep((s) => Math.min(s + 1, STEPS.length - 1)); };
-  const goBack = () => { setDirection(-1); setStep((s) => Math.max(s - 1, 0)); };
-  const exitSetup = () => {
-    if (location.key !== "default") {
-      navigate(-1);
-      return;
-    }
-    navigate("/discover", { replace: true });
-  };
-  const handleBack = () => {
-    if (step > 0) {
-      goBack();
-      return;
-    }
-    exitSetup();
-  };
-
-  // ── Tables helpers ──────────────────────────────────────────────────────────
-  function addTable() {
-    const n = tables.length + 1;
-    setTables((prev) => [...prev, { id: `t${Date.now()}`, label: `T${n}`, capacity: 2, shape: "circle", section: newSection }]);
-  }
-  function removeTable(id: string) { setTables((p) => p.filter((t) => t.id !== id)); }
-  function updateTable(id: string, patch: Partial<TableEntry>) {
-    setTables((p) => p.map((t) => t.id === id ? { ...t, ...patch } : t));
-  }
-
-  // ── Team helpers ────────────────────────────────────────────────────────────
-  function addInvite() {
-    if (!inviteEmail.trim()) return;
-    setTeam((p) => [...p, { id: Date.now().toString(), email: inviteEmail.trim(), role: inviteRole }]);
-    setInviteEmail("");
-  }
-  function removeInvite(id: string) { setTeam((p) => p.filter((m) => m.id !== id)); }
-
-  // ── Finish ──────────────────────────────────────────────────────────────────
-  const handleFinish = async () => {
-    if (!isSupabaseConfigured()) { toast.error(t("auth.errors.supabaseNotConfigured")); return; }
-    setSubmitting(true);
-    try {
-      const client = getSupabaseBrowserClient();
-      const { data: { session } } = await client.auth.getSession();
-      if (!session) { toast.error(t("auth.errors.loadProfileFailed")); return; }
-
-      const values = form.getValues();
-      const hoursJson = Object.fromEntries(
-        DAYS.map((day, i) => [day.toLowerCase(), hours[i].open
-          ? { open: hours[i].from, close: hours[i].to }
-          : null,
-        ])
-      );
-
-      const res = await client.functions.invoke("signup-restaurant-owner", {
-        body: {
-          restaurant_name: values.name,
-          address:         values.address,
-          city:            values.city,
-          province:        values.province,
-          lat:             addressLat,
-          lng:             addressLng,
-          cuisine_type:    values.cuisine_type,
-          phone:           values.phone || null,
-          description:     values.description || null,
-          currency:        values.currency,
-          hours_json:      hoursJson,
-          accepts_walkins: acceptsWalkins,
-        },
-      });
-
-      if (res.error) {
-        const msg = (res.data as { error?: string } | null)?.error ?? res.error.message ?? "Setup failed. Please try again.";
-        toast.error(msg);
-        return;
+  const restaurant = (restaurants ?? [])[0] as
+    | {
+        id: string;
+        name: string | null;
+        address: string | null;
+        city: string | null;
+        province: string | null;
+        country: string | null;
+        lat: number | null;
+        lng: number | null;
+        phone: string | null;
+        description: string | null;
+        cuisine_type: string | null;
+        business_type: string | null;
+        hours_json: HoursJson | null;
+        accepts_walkins: boolean | null;
+        settings_json: { dietaryTags?: string[] } | null;
+        cover_photo_url: string | null;
+        deposit_tiers: RestaurantDepositTier[] | null;
       }
-      toast.success("Restaurant created! Welcome to your dashboard.");
-      navigate("/dashboard", { replace: true });
-    } finally {
-      setSubmitting(false);
-    }
+    | undefined;
+  if (!restaurant) return null;
+
+  const [{ data: tableRows }, { data: shiftRows }, { data: tierCategoryRow }] = await Promise.all([
+    client
+      .from("tables")
+      .select("id, label, table_number, capacity, shape")
+      .eq("restaurant_id", restaurant.id)
+      .eq("is_active", true),
+    client
+      .from("shifts")
+      .select("id, name")
+      .eq("restaurant_id", restaurant.id)
+      .eq("is_active", true)
+      .limit(1),
+    client
+      .from("menu_categories")
+      .select("id")
+      .eq("restaurant_id", restaurant.id)
+      .eq("is_active", true)
+      .eq("is_pricing_tier_source", true)
+      .maybeSingle(),
+  ]);
+
+  let tierItemCount = 0;
+  if (tierCategoryRow) {
+    const { count } = await client
+      .from("menu_items")
+      .select("id", { count: "exact", head: true })
+      .eq("restaurant_id", restaurant.id)
+      .eq("category_id", (tierCategoryRow as { id: string }).id)
+      .eq("is_active", true);
+    tierItemCount = count ?? 0;
+  }
+
+  const basics: WizardBasics = {
+    restaurantName: restaurant.name ?? "",
+    address: restaurant.address ?? "",
+    city: restaurant.city ?? "",
+    province: restaurant.province ?? "",
+    country: restaurant.country ?? "Canada",
+    postalCode: "",
+    lat: restaurant.lat ?? null,
+    lng: restaurant.lng ?? null,
+    businessType: restaurant.business_type ?? "Restaurant",
+    cuisineType: restaurant.cuisine_type ?? "",
+    phone: restaurant.phone ?? "",
+    description: restaurant.description ?? "",
+    acceptsWalkins: restaurant.accepts_walkins ?? true,
+    dietaryTags: Array.isArray(restaurant.settings_json?.dietaryTags)
+      ? (restaurant.settings_json!.dietaryTags as WizardBasics["dietaryTags"])
+      : [],
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  const hours = (restaurant.hours_json as HoursJson | null) ?? null;
+  const hasHours = hours !== null && Object.values(hours).some((v) => v !== null);
+  const hasTables = (tableRows ?? []).length > 0;
+  const hasShift = (shiftRows ?? []).length > 0;
+  const hasMenuItems = tierItemCount >= 3;
+  const hasCover = Boolean(restaurant.cover_photo_url);
+  // Treat `deposit_tiers IS NULL` as Step 7 not done.
+  // Empty array means "explicit no deposits" and counts as done.
+  const hasDepositPolicy = restaurant.deposit_tiers !== null;
+
+  let startAtStep = 2;
+  if (!hasHours) startAtStep = 2;
+  else if (!hasTables) startAtStep = 3;
+  else if (!hasShift) startAtStep = 4;
+  else if (!hasMenuItems) startAtStep = 5;
+  else if (!hasCover) startAtStep = 6;
+  else if (!hasDepositPolicy) startAtStep = 7;
+  else startAtStep = 8;
+
+  return {
+    state: {
+      restaurantId: restaurant.id,
+      basics,
+      hours: hasHours ? hours : null,
+      tables: hasTables ? null : null,
+      shift: null,
+    },
+    startAtStep,
+  };
+}
+
+export default function SetupPage() {
+  const navigate = useNavigate();
+  const { user, profile } = useUser();
+  const [step, setStep] = useState(1);
+  const [state, setState] = useState<WizardState>(INITIAL_STATE);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [resumeChecked, setResumeChecked] = useState(false);
+
+  useEffect(() => {
+    if (resumeChecked) return;
+    if (!user) {
+      setResumeChecked(true);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const resume = await loadInProgressRestaurant(profile?.id ?? null);
+      if (cancelled) return;
+      if (resume) {
+        setState(resume.state);
+        setStep(resume.startAtStep);
+      }
+      setResumeChecked(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id, resumeChecked, user]);
+
+  const handleStep1Complete = useCallback((result: Step1Result) => {
+    setState((prev) => ({
+      ...prev,
+      restaurantId: result.restaurantId,
+      basics: result.basics,
+      tables: result.tables,
+    }));
+    setStep(2);
+  }, []);
+
+  const handleStep2Complete = useCallback((hours: HoursJson) => {
+    setState((prev) => ({ ...prev, hours }));
+    setStep(3);
+  }, []);
+
+  const handleStep3Complete = useCallback((tables: WizardTable[]) => {
+    setState((prev) => ({ ...prev, tables }));
+    setStep(4);
+  }, []);
+
+  const handleStep4Complete = useCallback((shift: WizardShift) => {
+    setState((prev) => ({ ...prev, shift }));
+    setStep(5);
+  }, []);
+
+  const handleStep5Complete = useCallback(() => {
+    setStep(6);
+  }, []);
+
+  const handleStep6Complete = useCallback(() => {
+    setStep(7);
+  }, []);
+
+  const handleStep7Complete = useCallback(() => {
+    setStep(8);
+  }, []);
+
+  const handlePublished = useCallback(() => {
+    navigate("/dashboard", { replace: true });
+  }, [navigate]);
+
+  const handleBack = useCallback(() => {
+    setStep((s) => Math.max(1, s - 1));
+  }, []);
+
+  const handleSaveAndExit = useCallback(() => {
+    if (state.restaurantId) {
+      navigate("/dashboard", { replace: true });
+    } else {
+      navigate("/discover", { replace: true });
+    }
+  }, [navigate, state.restaurantId]);
+
+  const handleNextFromShell = useCallback(() => {
+    const form = document.querySelector<HTMLFormElement>("#onboarding-step-1-form");
+    if (step === 1 && form) {
+      form.requestSubmit();
+      return;
+    }
+    setStep((s) => Math.min(WIZARD_TOTAL_STEPS, s + 1));
+  }, [step]);
+
+  const nextLabel = useMemo(() => {
+    if (step === 1) return "Continue";
+    if (step === WIZARD_TOTAL_STEPS) return "Finish";
+    return "Next";
+  }, [step]);
+
+  const stepContent = useMemo(() => {
+    if (step === 1) {
+      return (
+        <Step1Basics initial={state.basics ?? undefined} onComplete={handleStep1Complete} />
+      );
+    }
+    if (step === 2 && state.restaurantId) {
+      return (
+        <Step2Hours
+          restaurantId={state.restaurantId}
+          initial={state.hours}
+          onComplete={handleStep2Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 3 && state.restaurantId) {
+      return (
+        <Step3FloorPlan
+          restaurantId={state.restaurantId}
+          initial={state.tables ?? STARTER_TABLES}
+          onComplete={handleStep3Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 4 && state.restaurantId) {
+      return (
+        <Step4BookingRules
+          restaurantId={state.restaurantId}
+          hours={state.hours}
+          initial={state.shift}
+          onComplete={handleStep4Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 5 && state.restaurantId) {
+      return (
+        <Step5Menu
+          restaurantId={state.restaurantId}
+          onComplete={handleStep5Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 6 && state.restaurantId) {
+      return (
+        <Step6Photos
+          restaurantId={state.restaurantId}
+          onComplete={handleStep6Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 7 && state.restaurantId) {
+      return (
+        <Step7DepositPolicy
+          restaurantId={state.restaurantId}
+          onComplete={handleStep7Complete}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    if (step === 8 && state.restaurantId) {
+      return (
+        <Step8PaymentSetup
+          restaurantId={state.restaurantId}
+          onPublished={handlePublished}
+          onBusyChange={setBusy}
+        />
+      );
+    }
+    return null;
+  }, [
+    handlePublished,
+    handleStep1Complete,
+    handleStep2Complete,
+    handleStep3Complete,
+    handleStep4Complete,
+    handleStep5Complete,
+    handleStep6Complete,
+    handleStep7Complete,
+    state.basics,
+    state.hours,
+    state.restaurantId,
+    state.shift,
+    state.tables,
+    step,
+  ]);
+
   return (
-    <div className="flex min-h-screen flex-col bg-bg-base text-text-primary">
-      {/* Header */}
-      <header className="border-b border-border bg-bg-surface/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-2xl items-center justify-between px-6 py-4">
-          <button
-            type="button"
-            onClick={exitSetup}
-            className="text-sm font-bold tracking-[0.2em] text-gold transition-opacity hover:opacity-80"
-            aria-label="Leave setup"
-          >
-            CENAIVA
-          </button>
-          <span className="text-sm text-text-muted">Restaurant Setup</span>
-        </div>
-      </header>
-
-      {/* Progress */}
-      <div className="mx-auto w-full max-w-2xl px-6 pt-8">
-        <div className="flex items-center">
-          {STEPS.map((s, i) => (
-            <div key={s.labelKey} className="flex flex-1 flex-col items-center">
-              <div className="flex items-center w-full">
-                <div className="flex-1">
-                  {i > 0 && <div className={`h-px w-full transition-colors ${i <= step ? "bg-gold" : "bg-border"}`} />}
-                </div>
-                <motion.div
-                  animate={{ scale: i === step ? 1.1 : 1, backgroundColor: i <= step ? "#C9A84C" : "#242424" }}
-                  transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                  className="flex size-10 shrink-0 items-center justify-center rounded-full"
-                >
-                  {i < step
-                    ? <Check className="size-4 text-bg-base" />
-                    : <s.icon className={`size-4 ${i <= step ? "text-bg-base" : "text-text-muted"}`} />
-                  }
-                </motion.div>
-                <div className="flex-1">
-                  {i < STEPS.length - 1 && <div className={`h-px w-full transition-colors ${i < step ? "bg-gold" : "bg-border"}`} />}
-                </div>
-              </div>
-              <span className={`mt-2 text-[10px] font-medium ${i <= step ? "text-gold" : "text-text-muted"}`}>
-                {s.labelKey}
-              </span>
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 h-1 w-full rounded-full bg-bg-elevated">
-          <motion.div
-            className="h-full rounded-full bg-gold"
-            animate={{ width: `${((step + 1) / STEPS.length) * 100}%` }}
-            transition={{ type: "spring", stiffness: 200, damping: 25 }}
-          />
-        </div>
-      </div>
-
-      {/* Step content */}
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-6 py-8">
-        <AnimatePresence mode="wait" custom={direction}>
-          <motion.div
-            key={step}
-            custom={direction}
-            variants={slideVariants}
-            initial="enter"
-            animate="center"
-            exit="exit"
-            transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] as const }}
-            className="flex flex-1 flex-col"
-          >
-
-            {/* ══════════════ STEP 1 — RESTAURANT INFO ══════════════ */}
-            {step === 0 && (
-              <div className="flex flex-col gap-5">
-                <div>
-                  <h2 className="text-xl font-bold">Tell us about your restaurant</h2>
-                  <p className="mt-1 text-sm text-text-muted">This is how customers will find and recognise you.</p>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex flex-col gap-2">
-                    <Label>Restaurant Name <span className="text-danger">*</span></Label>
-                    <Input {...form.register("name")} placeholder="e.g. The Golden Fork" />
-                    {form.formState.errors.name && <p className="text-xs text-danger">{form.formState.errors.name.message}</p>}
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label>Cuisine Type <span className="text-danger">*</span></Label>
-                    <Controller
-                      control={form.control}
-                      name="cuisine_type"
-                      render={({ field }) => (
-                        <CuisineSelect
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          placeholder={t("dashboard.settings.cuisineSelectPlaceholder")}
-                        />
-                      )}
-                    />
-                    {form.formState.errors.cuisine_type && (
-                      <p className="text-xs text-danger">{form.formState.errors.cuisine_type.message}</p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label>Street Address <span className="text-danger">*</span></Label>
-                  <GoogleAddressAutocompleteInput
-                    value={setupAddress}
-                    onChange={(value) => {
-                      form.setValue("address", value, { shouldDirty: true, shouldValidate: true });
-                      setAddressLat(null);
-                      setAddressLng(null);
-                    }}
-                    onAddressSelected={(parts) => {
-                      form.setValue("address", parts.address || form.getValues("address"), { shouldDirty: true, shouldValidate: true });
-                      if (parts.city) form.setValue("city", parts.city, { shouldDirty: true, shouldValidate: true });
-                      if (parts.province) form.setValue("province", parts.province, { shouldDirty: true, shouldValidate: true });
-                      setAddressLat(parts.lat);
-                      setAddressLng(parts.lng);
-                    }}
-                    placeholder="142 King St W"
-                  />
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex flex-col gap-2">
-                    <Label>City <span className="text-danger">*</span></Label>
-                    <Input {...form.register("city")} placeholder="Toronto" />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label>Province / State <span className="text-danger">*</span></Label>
-                    <Input {...form.register("province")} placeholder="ON" />
-                  </div>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex flex-col gap-2">
-                    <Label>Phone</Label>
-                    <Input {...form.register("phone")} placeholder="+1 (416) 555-0100" />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label>Currency</Label>
-                    <Select defaultValue={form.getValues("currency")} onValueChange={(v) => form.setValue("currency", v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cad">CAD — Canadian Dollar</SelectItem>
-                        <SelectItem value="usd">USD — US Dollar</SelectItem>
-                        <SelectItem value="eur">EUR — Euro</SelectItem>
-                        <SelectItem value="gbp">GBP — British Pound</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label>Description</Label>
-                  <Textarea {...form.register("description")} rows={3} placeholder="A short description guests will see on your public page." />
-                </div>
-              </div>
-            )}
-
-            {/* ══════════════ STEP 2 — HOURS ══════════════ */}
-            {step === 1 && (
-              <div className="flex flex-col gap-5">
-                <div>
-                  <h2 className="text-xl font-bold">Set your hours</h2>
-                  <p className="mt-1 text-sm text-text-muted">Toggle days on/off and set open and close times. You can edit these any time in Settings.</p>
-                </div>
-                <div className="flex flex-col gap-2">
-                  {DAYS.map((day, i) => (
-                    <div key={day} className="flex items-center gap-3 rounded-xl border border-border bg-bg-surface px-4 py-3">
-                      {/* Toggle */}
-                      <button
-                        type="button"
-                        onClick={() => setHours((h) => h.map((d, idx) => idx === i ? { ...d, open: !d.open } : d))}
-                        className={`relative flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${hours[i].open ? "bg-gold" : "bg-border"}`}
-                      >
-                        <motion.div
-                          animate={{ x: hours[i].open ? 16 : 2 }}
-                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                          className="size-4 rounded-full bg-white shadow"
-                        />
-                      </button>
-
-                      {/* Day name */}
-                      <span className={`w-24 text-sm font-medium ${hours[i].open ? "text-text-primary" : "text-text-muted"}`}>
-                        {day}
-                      </span>
-
-                      {hours[i].open ? (
-                        <div className="flex flex-1 items-center gap-2">
-                          <TimeSelect value={hours[i].from} onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, from: v } : d))} />
-                          <span className="text-xs text-text-muted">to</span>
-                          <TimeSelect value={hours[i].to} onChange={(v) => setHours((h) => h.map((d, idx) => idx === i ? { ...d, to: v } : d))} />
-                        </div>
-                      ) : (
-                        <span className="flex-1 text-sm text-text-muted">Closed</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* ══════════════ STEP 3 — TABLES ══════════════ */}
-            {step === 2 && (
-              <div className="flex flex-col gap-5">
-                <div>
-                  <h2 className="text-xl font-bold">Configure your tables</h2>
-                  <p className="mt-1 text-sm text-text-muted">Add tables with their capacity and shape. These power your floor plan and reservation system.</p>
-                </div>
-
-                {/* Section selector + add button */}
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={newSection}
-                    onChange={(e) => setNewSection(e.target.value)}
-                    placeholder="Section name"
-                    className="flex-1"
-                  />
-                  <Button type="button" onClick={addTable} className="gap-1.5 shrink-0">
-                    <Plus className="size-4" />
-                    Add Table
-                  </Button>
-                </div>
-
-                {/* Table list */}
-                {tables.length === 0 ? (
-                  <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border py-12 text-center">
-                    <LayoutGrid className="size-8 text-text-muted" />
-                    <p className="text-sm text-text-muted">No tables yet. Add your first one above.</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {/* Header */}
-                    <div className="grid grid-cols-[1fr_80px_110px_1fr_36px] gap-2 px-3 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-                      <span>Label</span>
-                      <span>Capacity</span>
-                      <span>Shape</span>
-                      <span>Section</span>
-                      <span />
-                    </div>
-                    {tables.map((tb) => (
-                      <div key={tb.id} className="grid grid-cols-[1fr_80px_110px_1fr_36px] items-center gap-2 rounded-xl border border-border bg-bg-surface px-3 py-2.5">
-                        <Input
-                          value={tb.label}
-                          onChange={(e) => updateTable(tb.id, { label: e.target.value })}
-                          className="h-8 text-sm"
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={tb.capacity}
-                          onChange={(e) => updateTable(tb.id, { capacity: parseInt(e.target.value, 10) || 1 })}
-                          className="h-8 w-full rounded-lg border border-border bg-bg-elevated px-2 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                        />
-                        {/* Shape picker */}
-                        <div className="flex gap-1">
-                          {TABLE_SHAPES.map((shape) => (
-                            <button
-                              key={shape}
-                              type="button"
-                              title={shape}
-                              onClick={() => updateTable(tb.id, { shape })}
-                              className={`flex flex-1 items-center justify-center rounded-md border py-1.5 text-xs transition-all ${
-                                tb.shape === shape
-                                  ? "border-gold bg-gold/10 text-gold"
-                                  : "border-border bg-bg-elevated text-text-muted hover:border-gold/30"
-                              }`}
-                            >
-                              {shape === "circle"    && <Circle className="size-3.5" />}
-                              {shape === "rectangle" && <RectangleHorizontal className="size-3.5" />}
-                              {shape === "booth"     && <Square className="size-3.5" />}
-                            </button>
-                          ))}
-                        </div>
-                        <Input
-                          value={tb.section}
-                          onChange={(e) => updateTable(tb.id, { section: e.target.value })}
-                          className="h-8 text-sm"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeTable(tb.id)}
-                          className="flex size-8 shrink-0 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <p className="text-xs text-text-muted">
-                  {tables.length} table{tables.length !== 1 ? "s" : ""} · You can add, remove, and reposition tables on the Floor Plan page at any time.
-                </p>
-              </div>
-            )}
-
-            {/* ══════════════ STEP 4 — TEAM ══════════════ */}
-            {step === 3 && (
-              <div className="flex flex-col gap-5">
-                <div>
-                  <h2 className="text-xl font-bold">Invite your team</h2>
-                  <p className="mt-1 text-sm text-text-muted">Optional — invite staff by email. They'll receive a link to join your restaurant. You can skip this and invite them later from the Staff page.</p>
-                </div>
-
-                {/* Invite row */}
-                <div className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <Label className="mb-1.5 block text-xs text-text-muted">Email address</Label>
-                    <Input
-                      type="email"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && addInvite()}
-                      placeholder="colleague@example.com"
-                    />
-                  </div>
-                  <div className="w-36">
-                    <Label className="mb-1.5 block text-xs text-text-muted">Role</Label>
-                    <div className="relative">
-                      <select
-                        value={inviteRole}
-                        onChange={(e) => setInviteRole(e.target.value as StaffRole)}
-                        className="h-10 w-full appearance-none rounded-lg border border-border bg-bg-elevated px-3 pr-7 text-sm text-text-primary outline-none focus:border-gold/40"
-                      >
-                        {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-                      </select>
-                      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
-                    </div>
-                  </div>
-                  <Button type="button" onClick={addInvite} className="gap-1.5 shrink-0">
-                    <UserPlus className="size-4" />
-                    Add
-                  </Button>
-                </div>
-
-                {/* Role explanations */}
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {(Object.entries(ROLE_LABELS) as [StaffRole, string][]).map(([key, label]) => (
-                    <div key={key} className="rounded-lg border border-border bg-bg-surface px-3 py-2">
-                      <p className="text-xs font-semibold text-text-primary">{label}</p>
-                      <p className="mt-0.5 text-[10px] text-text-muted">
-                        {key === "manager"  && "Full access except billing"}
-                        {key === "server"   && "Orders, reservations, floor"}
-                        {key === "host"     && "Reservations, waitlist, floor"}
-                        {key === "kitchen"  && "KDS and order status only"}
-                        {key === "bar"      && "Bar orders and KDS"}
-                        {key === "staff"    && "Limited read-only access"}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Invite list */}
-                {team.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <p className="text-xs font-semibold text-text-muted">Pending invites ({team.length})</p>
-                    {team.map((member) => (
-                      <div key={member.id} className="flex items-center gap-3 rounded-xl border border-border bg-bg-surface px-4 py-2.5">
-                        <div className="flex size-8 items-center justify-center rounded-full bg-gold/10 text-xs font-bold text-gold">
-                          {member.email[0].toUpperCase()}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="truncate text-sm font-medium text-text-primary">{member.email}</p>
-                        </div>
-                        <span className="shrink-0 rounded-full bg-bg-elevated px-2.5 py-1 text-[10px] font-semibold text-text-secondary">
-                          {ROLE_LABELS[member.role]}
-                        </span>
-                        <button type="button" onClick={() => removeInvite(member.id)} className="text-text-muted hover:text-danger transition-colors">
-                          <X className="size-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {team.length === 0 && (
-                  <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border py-10 text-center">
-                    <Users className="size-7 text-text-muted" />
-                    <p className="text-sm text-text-muted">No invites yet — you can always add team members later.</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ══════════════ STEP 5 — SETTINGS ══════════════ */}
-            {step === 4 && (
-              <div className="flex flex-col gap-6">
-                <div>
-                  <h2 className="text-xl font-bold">Booking & policy settings</h2>
-                  <p className="mt-1 text-sm text-text-muted">Configure how guests book and what happens if they don't show. Everything here can be changed later in Settings.</p>
-                </div>
-
-                {/* Walk-ins */}
-                <div className="rounded-2xl border border-border bg-bg-surface p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-text-primary">Accept walk-ins</p>
-                      <p className="text-xs text-text-muted">Allow guests without a reservation to be seated when space is available.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAcceptsWalkins((v) => !v)}
-                      className={`relative flex h-6 w-11 cursor-pointer items-center rounded-full transition-colors ${acceptsWalkins ? "bg-gold" : "bg-border"}`}
-                    >
-                      <motion.div
-                        animate={{ x: acceptsWalkins ? 22 : 2 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                        className="size-5 rounded-full bg-white shadow"
-                      />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Deposit */}
-                <div className="rounded-2xl border border-border bg-bg-surface p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-text-primary">Require deposit</p>
-                      <p className="text-xs text-text-muted">Charge a deposit at booking time to secure the reservation.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDepositEnabled((v) => !v)}
-                      className={`relative flex h-6 w-11 cursor-pointer items-center rounded-full transition-colors ${depositEnabled ? "bg-gold" : "bg-border"}`}
-                    >
-                      <motion.div
-                        animate={{ x: depositEnabled ? 22 : 2 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                        className="size-5 rounded-full bg-white shadow"
-                      />
-                    </button>
-                  </div>
-                  <AnimatePresence>
-                    {depositEnabled && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-4 flex items-center gap-3">
-                          <Label className="text-xs text-text-muted">Deposit amount ($)</Label>
-                          <input
-                            type="number"
-                            min={1}
-                            value={depositAmount}
-                            onChange={(e) => setDepositAmount(e.target.value)}
-                            className="h-10 w-28 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                          />
-                          <span className="text-xs text-text-muted">per reservation</span>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* Loyalty */}
-                <div className="rounded-2xl border border-border bg-bg-surface p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-text-primary">Enable loyalty program</p>
-                      <p className="text-xs text-text-muted">Reward guests with points on every visit.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setLoyaltyEnabled((v) => !v)}
-                      className={`relative flex h-6 w-11 cursor-pointer items-center rounded-full transition-colors ${loyaltyEnabled ? "bg-gold" : "bg-border"}`}
-                    >
-                      <motion.div
-                        animate={{ x: loyaltyEnabled ? 22 : 2 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                        className="size-5 rounded-full bg-white shadow"
-                      />
-                    </button>
-                  </div>
-                  <AnimatePresence>
-                    {loyaltyEnabled && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-4 flex items-center gap-3">
-                          <Label className="text-xs text-text-muted">Points per $1 spent</Label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={100}
-                            value={pointsPerDollar}
-                            onChange={(e) => setPointsPerDollar(e.target.value)}
-                            className="h-10 w-20 rounded-lg border border-border bg-bg-elevated px-3 text-sm text-text-primary outline-none focus:border-gold/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-                          />
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </div>
-            )}
-
-          </motion.div>
-        </AnimatePresence>
-
-        {/* Navigation */}
-        <div className="mt-auto flex items-center justify-between pt-8">
-          <Button variant="ghost" onClick={handleBack} className="gap-2">
-            <ArrowLeft className="size-4" />
-            Back
-          </Button>
-
-          <div className="flex items-center gap-3">
-            {step > 0 && step < STEPS.length - 1 && (
-              <Button variant="ghost" onClick={goNext} className="text-text-muted hover:text-white">
-                Skip
-              </Button>
-            )}
-            {step < STEPS.length - 1 ? (
-              <Button onClick={goNext} className="gap-2">
-                Continue
-                <ArrowRight className="size-4" />
-              </Button>
-            ) : (
-              <Button onClick={() => void handleFinish()} disabled={submitting} className="gap-2 px-8">
-                {submitting ? "Creating your restaurant…" : "Launch Restaurant 🚀"}
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+    <>
+      <WizardShell
+        currentStep={step}
+        totalSteps={WIZARD_TOTAL_STEPS}
+        restaurantId={state.restaurantId}
+        onBack={handleBack}
+        onNext={handleNextFromShell}
+        onSaveAndExit={handleSaveAndExit}
+        onPreviewClick={() => setPreviewOpen(true)}
+        canGoNext={step === 1}
+        nextLabel={nextLabel}
+        busy={busy}
+      >
+        {stepContent}
+      </WizardShell>
+      <PreviewAsDinerButton
+        restaurantId={state.restaurantId}
+        basics={state.basics}
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+      />
+    </>
   );
 }

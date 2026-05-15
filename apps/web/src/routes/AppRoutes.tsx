@@ -13,6 +13,7 @@ const FeaturesPage = lazy(() => import("@/pages/marketing/FeaturesPage"));
 const HeyCenaivaPage = lazy(() => import("@/pages/marketing/HeyCenaivaPage"));
 const LoyaltyPage = lazy(() => import("@/pages/marketing/LoyaltyPage"));
 const RestaurantsPage = lazy(() => import("@/pages/marketing/RestaurantsPage"));
+const BookDemoPage = lazy(() => import("@/pages/marketing/BookDemoPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
@@ -54,6 +55,7 @@ export function AppRoutes() {
         <Route path="/hey-cenaiva" element={<HeyCenaivaPage />} />
         <Route path="/loyalty" element={<LoyaltyPage />} />
         <Route path="/restaurants" element={<RestaurantsPage />} />
+        <Route path="/book-a-demo" element={<BookDemoPage />} />
         <Route path="/about" element={<AboutPage />} />
 
         <Route
