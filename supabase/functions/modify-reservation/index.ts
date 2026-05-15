@@ -8,6 +8,7 @@ import {
 } from "../_shared/reservation-notifications.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
+import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -65,6 +66,8 @@ type RestaurantRow = {
   timezone: string | null;
   hours_json: unknown;
   settings_json: RestaurantSettings | null;
+  stripe_account_id: string | null;
+  currency: string | null;
 };
 
 type ShiftRow = {
@@ -220,7 +223,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")
-      .select("name, timezone, hours_json, settings_json")
+      .select("name, timezone, hours_json, settings_json, stripe_account_id, currency")
       .eq("id", reservation.restaurant_id)
       .maybeSingle<RestaurantRow>();
     if (restaurantError) return json({ error: restaurantError.message }, 400);
@@ -431,6 +434,245 @@ Deno.serve(async (req: Request) => {
       .eq("id", reservationId);
     if (notesError) return json({ error: notesError.message }, 400);
 
+    // ─── Deposit recalc phase ─────────────────────────────────────────
+    // Phase 8 of diner auth overhaul (2026-05-15). When party_size
+    // changes, the deposit owed may change too (per the restaurant's
+    // `deposit_tiers`). Recompute and reconcile:
+    //   - delta > 0 → charge the diner's saved card for the difference
+    //   - delta < 0 → refund the difference via Stripe (partial refund
+    //                 on a real-PI row, DB-only adjust on a stub row)
+    //   - delta = 0 → nothing
+    // Non-fatal: a refund/charge failure logs a warning but doesn't
+    // block the modify response. The reservation has already been
+    // moved; the deposit reconciliation is best-effort. For the charge
+    // path, if there's no saved card on file we surface
+    // `modify_requires_card` and the client prompts the diner to add
+    // a card before retrying.
+    type DepositAdjustment =
+      | { kind: "none" }
+      | { kind: "charged"; amount_cents: number; payment_intent_id: string | null }
+      | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null }
+      | { kind: "failed"; reason: string };
+    let depositAdjustment: DepositAdjustment = { kind: "none" };
+
+    if (partySize !== reservation.party_size) {
+      const { data: newExpectedRaw } = await adminClient.rpc("compute_deposit_for_party", {
+        p_restaurant_id: reservation.restaurant_id,
+        p_party_size: partySize,
+      });
+      const newExpectedCents = Number(newExpectedRaw) || 0;
+
+      const { data: chargedRowsRaw } = await adminClient
+        .from("reservation_deposit_payments")
+        .select("id, amount_cents, stripe_payment_intent_id, status")
+        .eq("reservation_id", reservationId)
+        .eq("status", "charged")
+        .order("created_at", { ascending: false });
+      const chargedRows = (chargedRowsRaw ?? []) as Array<{
+        id: string;
+        amount_cents: number;
+        stripe_payment_intent_id: string | null;
+        status: string;
+      }>;
+      const currentCents = chargedRows.reduce(
+        (sum, r) => sum + (r.amount_cents ?? 0),
+        0,
+      );
+      const deltaCents = newExpectedCents - currentCents;
+
+      if (deltaCents > 0) {
+        // Need to charge more on the diner's saved card.
+        // Preflight: must be logged-in diner with a default saved card.
+        if (!reservation.user_profile_id) {
+          return json(
+            {
+              error: "This booking needs an additional deposit. Please contact the restaurant to update.",
+              unavailable_reason: "modify_requires_card",
+              delta_cents: deltaCents,
+            },
+            402,
+          );
+        }
+        const { data: profileRaw } = await adminClient
+          .from("user_profiles")
+          .select("id, stripe_customer_id")
+          .eq("id", reservation.user_profile_id)
+          .maybeSingle();
+        const profile = profileRaw as { id: string; stripe_customer_id: string | null } | null;
+        if (!profile?.stripe_customer_id) {
+          return json(
+            {
+              error: "Adding to your party size needs a card on file. Add one in Account → Payment.",
+              unavailable_reason: "modify_requires_card",
+              delta_cents: deltaCents,
+            },
+            402,
+          );
+        }
+        // Default card or fallback to most recent.
+        const { data: defaultRaw } = await adminClient
+          .from("saved_cards")
+          .select("stripe_payment_method_id")
+          .eq("user_profile_id", profile.id)
+          .eq("is_default", true)
+          .maybeSingle();
+        let pmId = (defaultRaw as { stripe_payment_method_id: string | null } | null)?.stripe_payment_method_id;
+        if (!pmId) {
+          const { data: anyCardRaw } = await adminClient
+            .from("saved_cards")
+            .select("stripe_payment_method_id")
+            .eq("user_profile_id", profile.id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          pmId = (anyCardRaw as { stripe_payment_method_id: string | null } | null)?.stripe_payment_method_id;
+        }
+        if (!pmId) {
+          return json(
+            {
+              error: "Adding to your party size needs a card on file. Add one in Account → Payment.",
+              unavailable_reason: "modify_requires_card",
+              delta_cents: deltaCents,
+            },
+            402,
+          );
+        }
+
+        const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+        if (!stripeKey) {
+          depositAdjustment = { kind: "failed", reason: "Stripe not configured" };
+        } else {
+          const { default: Stripe } = await import("npm:stripe@17");
+          const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+          const currency = (restaurant?.currency ?? "CAD").toLowerCase();
+          const applicationFeeCents = Math.round(deltaCents * 0.05);
+          const piParams: Record<string, unknown> = {
+            amount: deltaCents,
+            currency,
+            customer: profile.stripe_customer_id,
+            payment_method: pmId,
+            off_session: true,
+            confirm: true,
+            metadata: {
+              reservation_id: reservationId,
+              kind: "modify_deposit_delta",
+            },
+            description: `Additional deposit for ${restaurantName}`,
+          };
+          if (restaurant?.stripe_account_id) {
+            piParams.application_fee_amount = applicationFeeCents;
+            piParams.transfer_data = { destination: restaurant.stripe_account_id };
+          }
+
+          try {
+            const pi = await stripe.paymentIntents.create(piParams);
+            if (pi.status === "succeeded" || pi.status === "processing") {
+              const payerEmail =
+                reservation.guest_email?.trim() || guest?.email?.trim() || "diner@unknown";
+              const payerName =
+                reservation.guest_full_name?.trim() || guest?.full_name?.trim() || "Diner";
+              await adminClient
+                .from("reservation_deposit_payments")
+                .insert({
+                  reservation_id: reservationId,
+                  amount_cents: deltaCents,
+                  stripe_payment_intent_id: pi.id,
+                  status: "charged",
+                  payer_email: payerEmail,
+                  payer_full_name: payerName,
+                  paid_at: new Date().toISOString(),
+                  payer_user_profile_id: reservation.user_profile_id,
+                });
+              depositAdjustment = {
+                kind: "charged",
+                amount_cents: deltaCents,
+                payment_intent_id: pi.id,
+              };
+            } else if (pi.status === "requires_action") {
+              return json(
+                {
+                  error: "Your card needs additional verification. Please update the card in Account → Payment and try again.",
+                  unavailable_reason: "modify_requires_card",
+                  delta_cents: deltaCents,
+                },
+                402,
+              );
+            } else {
+              depositAdjustment = { kind: "failed", reason: `Unexpected PI status: ${pi.status}` };
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn("[modify-reservation] deposit delta charge failed:", msg);
+            depositAdjustment = { kind: "failed", reason: msg };
+          }
+        }
+      } else if (deltaCents < 0) {
+        // Refund the difference. Pick the most-recent charged row that
+        // can cover the refund. If no PI on the row, just adjust DB.
+        const refundCents = -deltaCents;
+        const target = chargedRows.find((r) => (r.amount_cents ?? 0) > 0);
+        if (!target) {
+          depositAdjustment = { kind: "none" };
+        } else {
+          const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+          const applyDbAdjust = async () => {
+            const remaining = (target.amount_cents ?? 0) - refundCents;
+            if (remaining <= 0) {
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ status: "refunded", amount_cents: 0 })
+                .eq("id", target.id);
+            } else {
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ amount_cents: remaining })
+                .eq("id", target.id);
+            }
+          };
+
+          if (stripeKey && target.stripe_payment_intent_id) {
+            const { default: Stripe } = await import("npm:stripe@17");
+            const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+            try {
+              const partialRefundCents = Math.min(refundCents, target.amount_cents ?? 0);
+              const outcome = await refundPaymentIntent(
+                stripe,
+                target.stripe_payment_intent_id,
+                "modify_deposit_delta_refund",
+                partialRefundCents,
+              );
+              if (outcome.ok) {
+                await applyDbAdjust();
+                depositAdjustment = {
+                  kind: "refunded",
+                  amount_cents: partialRefundCents,
+                  payment_intent_id: target.stripe_payment_intent_id,
+                };
+              } else {
+                console.warn(
+                  "[modify-reservation] refund failed:",
+                  outcome.error,
+                );
+                depositAdjustment = { kind: "failed", reason: outcome.error };
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn("[modify-reservation] refund errored:", msg);
+              depositAdjustment = { kind: "failed", reason: msg };
+            }
+          } else {
+            // Stub row (no PI) — adjust DB only.
+            await applyDbAdjust();
+            depositAdjustment = {
+              kind: "refunded",
+              amount_cents: Math.min(refundCents, target.amount_cents ?? 0),
+              payment_intent_id: null,
+            };
+          }
+        }
+      }
+    }
+
     const guestName =
       reservation.guest_full_name?.trim() ||
       guest?.full_name?.trim() ||
@@ -533,6 +775,7 @@ Deno.serve(async (req: Request) => {
       table_ids: nextTableIds,
       notification_delivery: notification.status,
       notification_delivery_channel: notification.channel,
+      deposit_adjustment: depositAdjustment,
     });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);

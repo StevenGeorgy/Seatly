@@ -657,6 +657,21 @@ export default function AccountPage() {
             →
           </span>
         </Link>
+
+        <Link
+          to="/account/connected-accounts"
+          className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">Connected accounts</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Sign in with Apple, Google, or your phone — all linked to one account.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
       </>
     );
   };

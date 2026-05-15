@@ -1177,7 +1177,7 @@ export default function RestaurantPublicPage() {
   // params just pre-fill the panel's date and party controls.
   const bookingLockedFromPreview = Boolean(searchParams.get("slot"));
   const { restaurant, loading } = useRestaurant(restaurantSlug);
-  const { profile, restaurantRoles } = useUser();
+  const { user, profile, restaurantRoles } = useUser();
   const viewerIsStaffOfRestaurant = Boolean(
     restaurant && restaurantRoles.some((r) => r.restaurant_id === restaurant.id),
   );
@@ -1428,6 +1428,17 @@ export default function RestaurantPublicPage() {
   }, []);
 
   const [paymentSplitMode, setPaymentSplitMode] = useState<"single" | "split">("single");
+  // Phase 7 of diner auth overhaul (2026-05-15): split the deposit
+  // with friends. Independent of `paymentSplitMode` above (which is
+  // split-tender = N cards at checkout). Here, only the deposit is
+  // shared. The diner pays preorder + their share inline; each entry
+  // in `splitDepositPayers` (a friend who'll pay via emailed link)
+  // gets a `reservation_deposit_payments` row at booking + an
+  // emailed magic link to /deposit/<id>. Reservation stays
+  // pending_payment until everyone pays.
+  type DepositPayerDraft = { name: string; email: string };
+  const [splitDepositOn, setSplitDepositOn] = useState(false);
+  const [splitDepositPayers, setSplitDepositPayers] = useState<DepositPayerDraft[]>([]);
   // True between the Stripe form submit and the post-payment reservation
   // creation. Disables Place Order to prevent double-submits.
   const [paymentProcessing, setPaymentProcessing] = useState(false);
@@ -1663,7 +1674,15 @@ export default function RestaurantPublicPage() {
     return (applicable.amount_per_person_cents * partySize) / 100;
   }, [restaurant?.deposit_tiers, dineIn.party_size]);
   const total              = discountedSubtotal + tax;
-  const totalNow = total + previewDepositDollars;
+  // Phase 7: when the diner toggles "split deposit with friends," they
+  // only pay their share inline. Each friend in splitDepositPayers
+  // gets emailed a magic link for their own share.
+  const depositPayerCount = splitDepositOn ? 1 + splitDepositPayers.length : 1;
+  const dinerDepositShareDollars =
+    previewDepositDollars > 0 && depositPayerCount > 0
+      ? previewDepositDollars / depositPayerCount
+      : previewDepositDollars;
+  const totalNow = total + dinerDepositShareDollars;
 
   const splitEachShare = useMemo(() => {
     if (paymentSplitMode !== "split") return NaN;
@@ -2004,6 +2023,40 @@ export default function RestaurantPublicPage() {
     // there's no deposit by definition (totalNow === 0).
     if (paymentIntentId && depositReservationLocal && depositCentsLocal > 0) {
       try {
+        // Phase 7: build the payers array. Diner is always payer #1
+        // (always at index 0 of the response — important because we
+        // confirm-deposit-paid that row with the PI id below). If the
+        // diner enabled split-deposit, friends are appended.
+        const friends = splitDepositOn
+          ? splitDepositPayers.filter(
+              (p) => p.email.trim() && p.name.trim(),
+            )
+          : [];
+        const totalPayers = 1 + friends.length;
+        const dinerShareCents = Math.round(depositCentsLocal / totalPayers);
+        const remainderCents = depositCentsLocal - dinerShareCents * totalPayers;
+        // Friends pay an exactly-even share; any rounding remainder gets
+        // added onto the diner's share so the sum equals the canonical
+        // deposit amount.
+        const friendShareCents = friends.length > 0
+          ? Math.floor(depositCentsLocal / totalPayers)
+          : 0;
+        const dinerFinalShareCents = depositCentsLocal - friendShareCents * friends.length;
+        void remainderCents; // reserved for future precision tracking
+
+        const payersBody = [
+          {
+            email: dineIn.email ?? "",
+            full_name: dineIn.name ?? "",
+            amount_cents: dinerFinalShareCents,
+          },
+          ...friends.map((p) => ({
+            email: p.email.trim(),
+            full_name: p.name.trim(),
+            amount_cents: friendShareCents,
+          })),
+        ];
+
         const prepRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/prepare-deposit`,
           {
@@ -2011,11 +2064,7 @@ export default function RestaurantPublicPage() {
             headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
             body: JSON.stringify({
               reservation_id: depositReservationLocal,
-              payers: [{
-                email: dineIn.email ?? "",
-                full_name: dineIn.name ?? "",
-                amount_cents: depositCentsLocal,
-              }],
+              payers: payersBody,
             }),
           },
         );
@@ -2026,11 +2075,9 @@ export default function RestaurantPublicPage() {
         if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
           throw new Error(prepBody.error ?? "Couldn't prepare deposit");
         }
-        // Mark the just-created payment row as 'charged' now that Stripe
-        // confirmed the PaymentIntent. reservation_deposit_payments RLS
-        // doesn't let diners UPDATE directly (only service-role + staff),
-        // so this MUST go through the confirm-deposit-paid edge fn, which
-        // re-validates the PI with Stripe before writing.
+        // Mark the diner's row (index 0) as 'charged' now that Stripe
+        // confirmed the PaymentIntent. Friends' rows stay 'pending'
+        // until they each pay via the emailed magic link.
         const confirmRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/confirm-deposit-paid`,
           {
@@ -2045,6 +2092,25 @@ export default function RestaurantPublicPage() {
         if (!confirmRes.ok) {
           const confirmBody = (await confirmRes.json().catch(() => ({}))) as { error?: string };
           throw new Error(confirmBody.error ?? `confirm-deposit-paid ${confirmRes.status}`);
+        }
+        // If the diner invited friends to split, dispatch email
+        // invites for each pending payer. Fire-and-forget — never
+        // block the booking confirmation on the email dispatch.
+        if (friends.length > 0) {
+          void fetch(
+            `${getSupabaseProjectUrl()}/functions/v1/dispatch-deposit-invites`,
+            {
+              method: "POST",
+              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
+              body: JSON.stringify({
+                reservation_id: depositReservationLocal,
+                app_origin: window.location.origin,
+                organizer_email: (dineIn.email ?? "").trim().toLowerCase(),
+              }),
+            },
+          ).catch((err) => {
+            console.warn("[checkout] dispatch-deposit-invites failed", err);
+          });
         }
       } catch (err) {
         // Don't fail the whole flow — the user paid and got a reservation.
@@ -2079,6 +2145,57 @@ export default function RestaurantPublicPage() {
       }
     }
 
+    // Phase 3 of diner auth overhaul (2026-05-15): write the diner's
+    // contact details back to user_profiles after a successful booking
+    // so future bookings pre-fill from the profile and the diner never
+    // has to retype this info. Skip if not logged in (guest checkout).
+    // Best-effort — never block the booking success on this.
+    if (user && profile) {
+      try {
+        const trimmedName = (dineIn.name ?? "").trim();
+        const trimmedEmail = (dineIn.email ?? "").trim().toLowerCase();
+        const trimmedPhone = (dineIn.phone ?? "").trim();
+        const trimmedAllergies = (dineIn.allergies ?? "").trim();
+        const trimmedSeating = (dineIn.seating_preference ?? "").trim();
+
+        const updates: Record<string, string | string[]> = {};
+        if (trimmedName && trimmedName !== (profile.full_name ?? "")) {
+          updates.full_name = trimmedName;
+        }
+        if (trimmedEmail && trimmedEmail !== (profile.email ?? "").toLowerCase()) {
+          updates.email = trimmedEmail;
+        }
+        if (trimmedPhone && trimmedPhone !== (profile.phone ?? "")) {
+          updates.phone = trimmedPhone;
+        }
+        if (
+          trimmedAllergies &&
+          trimmedAllergies !== ((profile.allergies ?? []).join(", "))
+        ) {
+          updates.allergies = trimmedAllergies
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+        }
+        if (trimmedSeating && trimmedSeating !== (profile.seating_preference ?? "")) {
+          updates.seating_preference = trimmedSeating;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          void client
+            .from("user_profiles")
+            .update(updates)
+            .eq("auth_user_id", user.id)
+            .then(({ error: pErr }) => {
+              if (pErr) {
+                console.warn("[checkout] profile write-back failed", pErr.message);
+              }
+            });
+        }
+      } catch (err) {
+        console.warn("[checkout] profile write-back errored", err);
+      }
+    }
   }
 
   if (loading) {
@@ -2797,6 +2914,134 @@ export default function RestaurantPublicPage() {
                   <Lock className="ml-auto size-3 text-text-muted" />
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
+                {previewDepositDollars > 0 && paymentSplitMode === "single" ? (
+                  <div className="mb-4 rounded-2xl border border-border bg-bg-elevated/40 p-4">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={splitDepositOn}
+                        onChange={(e) => {
+                          setSplitDepositOn(e.target.checked);
+                          if (e.target.checked && splitDepositPayers.length === 0) {
+                            // Default to 1 friend; cap at party_size - 1
+                            // (the diner takes one slot themselves).
+                            const partySize = Number(dineIn.party_size) || 2;
+                            const initial = Math.min(1, Math.max(0, partySize - 1));
+                            setSplitDepositPayers(
+                              Array.from({ length: initial }, () => ({ name: "", email: "" })),
+                            );
+                          }
+                        }}
+                        className="mt-1 size-4 accent-gold"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-white">
+                          Split deposit with friends
+                        </p>
+                        <p className="mt-0.5 text-xs text-text-muted">
+                          Each friend gets an email with a link to pay their share.
+                          The reservation isn't confirmed until everyone has paid.
+                        </p>
+                      </div>
+                    </label>
+
+                    {splitDepositOn ? (
+                      <div className="mt-4 space-y-3">
+                        <div className="flex items-center justify-between rounded-xl bg-bg-base/60 px-3 py-2">
+                          <span className="text-xs text-text-muted">
+                            Total deposit
+                          </span>
+                          <span className="text-sm text-white">
+                            {formatCurrency(previewDepositDollars, currency)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between rounded-xl bg-bg-base/60 px-3 py-2">
+                          <span className="text-xs text-text-muted">
+                            Each person pays
+                          </span>
+                          <span className="text-sm font-semibold text-gold">
+                            {formatCurrency(
+                              previewDepositDollars / (1 + splitDepositPayers.length),
+                              currency,
+                            )}{" "}
+                            × {1 + splitDepositPayers.length}
+                          </span>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          {splitDepositPayers.map((payer, idx) => (
+                            <div
+                              key={idx}
+                              className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 rounded-xl border border-border/60 bg-bg-surface/40 p-3"
+                            >
+                              <Input
+                                placeholder="Friend's name"
+                                value={payer.name}
+                                onChange={(e) => {
+                                  const next = [...splitDepositPayers];
+                                  next[idx] = { ...next[idx], name: e.target.value };
+                                  setSplitDepositPayers(next);
+                                }}
+                                className="h-10"
+                              />
+                              <Input
+                                type="email"
+                                placeholder="friend@example.com"
+                                value={payer.email}
+                                onChange={(e) => {
+                                  const next = [...splitDepositPayers];
+                                  next[idx] = { ...next[idx], email: e.target.value };
+                                  setSplitDepositPayers(next);
+                                }}
+                                className="h-10"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next = splitDepositPayers.filter(
+                                    (_, i) => i !== idx,
+                                  );
+                                  setSplitDepositPayers(next);
+                                  if (next.length === 0) setSplitDepositOn(false);
+                                }}
+                                className="text-xs font-medium text-text-secondary hover:text-danger"
+                                aria-label="Remove this payer"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        {splitDepositPayers.length < (Number(dineIn.party_size) || 2) - 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSplitDepositPayers((prev) => [
+                                ...prev,
+                                { name: "", email: "" },
+                              ])
+                            }
+                            className="w-full rounded-xl border border-dashed border-border bg-bg-surface/30 py-2 text-sm font-medium text-text-secondary hover:border-gold/40 hover:text-white"
+                          >
+                            + Add another friend
+                          </button>
+                        ) : (
+                          <p className="text-center text-xs text-text-muted">
+                            Up to {(Number(dineIn.party_size) || 2) - 1} friends can be invited
+                            (party of {Number(dineIn.party_size) || 2}).
+                          </p>
+                        )}
+
+                        <p className="text-xs text-text-muted">
+                          You'll pay your share now. Your friends will get emails right
+                          after you book.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 {Math.round(totalNow * 100) > 0 && restaurant?.id ? (
                   <StripePaymentForm
                     restaurantId={restaurant.id}

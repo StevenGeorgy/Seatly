@@ -114,7 +114,7 @@ export default function RegisterPage() {
     }
   };
 
-  const signUpWithGoogle = async () => {
+  const signUpWithProvider = async (provider: "google" | "apple") => {
     setSubmitting(true);
     try {
       if (!isSupabaseConfigured()) {
@@ -123,7 +123,7 @@ export default function RegisterPage() {
       }
       const client = getSupabaseBrowserClient();
       const { error } = await client.auth.signInWithOAuth({
-        provider: "google",
+        provider,
         options: {
           redirectTo: `${window.location.origin}/auth/callback${
             from ? `?from=${encodeURIComponent(from)}` : ""
@@ -138,8 +138,62 @@ export default function RegisterPage() {
     }
   };
 
+  const phoneTarget = from ? `/login/phone?from=${encodeURIComponent(from)}` : "/login/phone";
+  const [showEmailForm, setShowEmailForm] = useState(false);
+
   return (
     <AuthPageLayout titleKey="auth.register.title">
+      {/* Phase 2 (2026-05-15): providers first, email/password collapsed. */}
+      <div className="space-y-3">
+        <Button
+          className="h-12 w-full bg-white text-base font-semibold text-black hover:bg-white/90"
+          disabled={submitting}
+          type="button"
+          onClick={() => void signUpWithProvider("apple")}
+        >
+
+          Continue with Apple
+        </Button>
+        <Button
+          className="h-12 w-full"
+          disabled={submitting}
+          type="button"
+          variant="outline"
+          onClick={() => void signUpWithProvider("google")}
+        >
+          {t("auth.register.google")}
+        </Button>
+        <Button
+          asChild
+          className="h-12 w-full"
+          disabled={submitting}
+          type="button"
+          variant="outline"
+        >
+          <Link to={phoneTarget}>Continue with phone number</Link>
+        </Button>
+      </div>
+
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center">
+          <span className="border-border w-full border-t" />
+        </div>
+        <div className="relative flex justify-center text-xs uppercase">
+          <span className="bg-card text-muted-foreground px-2">or</span>
+        </div>
+      </div>
+
+      {!showEmailForm ? (
+        <p className="text-center text-sm">
+          <button
+            type="button"
+            onClick={() => setShowEmailForm(true)}
+            className="text-text-secondary underline-offset-4 hover:text-white hover:underline"
+          >
+            Sign up with email and password
+          </button>
+        </p>
+      ) : (
       <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
         <div className="space-y-2">
           <Label htmlFor="register-name">{t("auth.fields.fullName.label")}</Label>
@@ -209,26 +263,7 @@ export default function RegisterPage() {
           {t("auth.register.submit")}
         </Button>
       </form>
-
-      <div className="space-y-4">
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <span className="border-border w-full border-t" />
-          </div>
-          <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-card text-muted-foreground px-2">{t("auth.login.divider")}</span>
-          </div>
-        </div>
-        <Button
-          className="w-full"
-          disabled={submitting}
-          type="button"
-          variant="outline"
-          onClick={() => void signUpWithGoogle()}
-        >
-          {t("auth.register.google")}
-        </Button>
-      </div>
+      )}
 
       <p className="text-muted-foreground text-center text-sm">
         {t("auth.register.hasAccount")}{" "}

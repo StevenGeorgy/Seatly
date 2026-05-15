@@ -13,10 +13,27 @@
 //     a platform-only charge — Cenaiva collects the full amount; manual payout
 //     to the restaurant happens out-of-band.
 //
-// Anon-callable. No auth required — the diner may not have an account.
+// Two modes, fork on `saved_card_id`:
 //
-// Body: { restaurant_id: string, amount_cents: number }
-// Returns: { client_secret: string, payment_intent_id: string }
+//   Mode A — One-time card (anon-callable, default).
+//     Body: { restaurant_id, amount_cents }
+//     Returns: { client_secret, payment_intent_id, mode: "one_time" }
+//     Used by deferred-PaymentIntent / Stripe Elements flow. Client mounts
+//     PaymentElement, calls stripe.confirmPayment with the returned secret.
+//
+//   Mode B — Saved card (Phase 4, 2026-05-15, JWT-required).
+//     Body: { restaurant_id, amount_cents, saved_card_id }
+//     Server-side: looks up the diner's saved PM, creates the PI with
+//     payment_method + customer + confirm: true + off_session: true. The
+//     PI is charged immediately. No Stripe Elements mount needed.
+//     Returns one of:
+//       { mode: "saved_card", status: "succeeded", payment_intent_id }
+//       { mode: "saved_card", status: "requires_action",
+//         payment_intent_id, client_secret } — caller must call
+//         stripe.handleNextAction(clientSecret) for SCA.
+//       { mode: "saved_card", status: "failed", error } — declined.
+//
+// Body: { restaurant_id: string, amount_cents: number, saved_card_id?: string }
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -32,7 +49,21 @@ const corsHeaders = {
 type Payload = {
   restaurant_id?: unknown;
   amount_cents?: unknown;
+  saved_card_id?: unknown;
 };
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
 
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -75,6 +106,10 @@ Deno.serve(async (req: Request) => {
       typeof payload.amount_cents === "number" && Number.isFinite(payload.amount_cents)
         ? Math.round(payload.amount_cents)
         : null;
+    const savedCardId =
+      typeof payload.saved_card_id === "string" && payload.saved_card_id.trim()
+        ? payload.saved_card_id.trim()
+        : null;
 
     if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
     if (amountCents === null || amountCents < 50) {
@@ -112,6 +147,115 @@ Deno.serve(async (req: Request) => {
       platform: "cenaiva",
     };
 
+    // ── Mode B: Saved card (off-session confirm) ──
+    // Phase 4 of diner auth overhaul. JWT-required: we must verify the
+    // saved_cards row belongs to the requesting diner before we'd allow
+    // charging it. Otherwise anyone could provide any saved_card_id +
+    // amount and drain saved cards.
+    if (savedCardId) {
+      const authHeader = req.headers.get("authorization") ?? "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+      if (!token) return jsonRes({ error: "Authentication required for saved-card payment" }, 401);
+
+      const jwtPayload = decodeJwtPayload(token);
+      const authUserId = jwtPayload?.sub as string | undefined;
+      if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
+
+      const { data: profileRaw, error: profileErr } = await supabaseAdmin
+        .from("user_profiles")
+        .select("id, stripe_customer_id")
+        .eq("auth_user_id", authUserId)
+        .maybeSingle();
+      if (profileErr) return jsonRes({ error: profileErr.message }, 400);
+      if (!profileRaw) return jsonRes({ error: "User profile not found" }, 404);
+      const profile = profileRaw as { id: string; stripe_customer_id: string | null };
+      if (!profile.stripe_customer_id) {
+        return jsonRes({ error: "No Stripe customer on file. Re-add your card." }, 400);
+      }
+
+      const { data: savedCardRaw, error: cardErr } = await supabaseAdmin
+        .from("saved_cards")
+        .select("id, stripe_payment_method_id")
+        .eq("id", savedCardId)
+        .eq("user_profile_id", profile.id)
+        .maybeSingle();
+      if (cardErr) return jsonRes({ error: cardErr.message }, 400);
+      if (!savedCardRaw) {
+        return jsonRes({ error: "Saved card not found" }, 404);
+      }
+      const savedCard = savedCardRaw as { id: string; stripe_payment_method_id: string };
+
+      const savedCardParams: Record<string, unknown> = {
+        amount: amountCents,
+        currency,
+        customer: profile.stripe_customer_id,
+        payment_method: savedCard.stripe_payment_method_id,
+        off_session: true,
+        confirm: true,
+        metadata: { ...metadata, saved_card_id: savedCard.id },
+        description: `Reservation at ${row.name ?? "Cenaiva restaurant"}`,
+      };
+
+      if (row.stripe_account_id) {
+        // Same destination-charge pattern as the one-time path.
+        // Funds settle to the restaurant's Connect account; the 5%
+        // application fee stays with Cenaiva.
+        savedCardParams.application_fee_amount = applicationFeeCents;
+        savedCardParams.transfer_data = { destination: row.stripe_account_id };
+      }
+
+      let paymentIntent;
+      try {
+        paymentIntent = await stripe.paymentIntents.create(savedCardParams);
+      } catch (stripeErr) {
+        const code = (stripeErr as { code?: string }).code;
+        const msg = stripeErr instanceof Error ? stripeErr.message : String(stripeErr);
+        // SCA challenge case: Stripe attached the PI but it needs the
+        // user to re-authenticate (3D Secure). The error payload carries
+        // the PI's client_secret for handleNextAction.
+        const piFromError = (stripeErr as { raw?: { payment_intent?: { id?: string; client_secret?: string } } })
+          .raw?.payment_intent;
+        if (code === "authentication_required" && piFromError?.client_secret) {
+          return jsonRes({
+            mode: "saved_card",
+            status: "requires_action",
+            payment_intent_id: piFromError.id ?? null,
+            client_secret: piFromError.client_secret,
+          });
+        }
+        return jsonRes({
+          mode: "saved_card",
+          status: "failed",
+          error: msg,
+        }, 402);
+      }
+
+      if (paymentIntent.status === "requires_action") {
+        return jsonRes({
+          mode: "saved_card",
+          status: "requires_action",
+          payment_intent_id: paymentIntent.id,
+          client_secret: paymentIntent.client_secret,
+        });
+      }
+      if (paymentIntent.status === "succeeded" || paymentIntent.status === "processing") {
+        return jsonRes({
+          mode: "saved_card",
+          status: "succeeded",
+          payment_intent_id: paymentIntent.id,
+          amount_cents: amountCents,
+          application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
+          destination: row.stripe_account_id ?? null,
+        });
+      }
+      return jsonRes({
+        mode: "saved_card",
+        status: "failed",
+        error: `Unexpected PI status: ${paymentIntent.status}`,
+      }, 402);
+    }
+
+    // ── Mode A: One-time card (deferred PI, default path) ──
     const stripeParams: Record<string, unknown> = {
       amount: amountCents,
       currency,
@@ -132,6 +276,7 @@ Deno.serve(async (req: Request) => {
     const paymentIntent = await stripe.paymentIntents.create(stripeParams);
 
     return jsonRes({
+      mode: "one_time",
       client_secret: paymentIntent.client_secret,
       payment_intent_id: paymentIntent.id,
       amount_cents: amountCents,

@@ -249,6 +249,41 @@ export function useReservations(filters?: ReservationFilters) {
   const updateStatus = async (id: string, status: string, approvalToken?: string) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
+
+    // Phase 6 of diner auth overhaul (2026-05-15): owner-initiated
+    // cancels MUST refund any paid pre-orders + charged deposits.
+    // Route through cancel-reservation edge fn (actor=owner) which
+    // owns the refund logic and skips the 24h cliff. Other status
+    // transitions (seated, completed, no_show, etc.) keep using the
+    // staff RPC.
+    if (status === "cancelled") {
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const res = await fetch(
+        `${getSupabaseProjectUrl()}/functions/v1/cancel-reservation`,
+        {
+          method: "POST",
+          headers: {
+            apikey: getSupabaseAnonKey(),
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ reservation_id: id, actor: "owner" }),
+        },
+      );
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || body.error || body.ok !== true) {
+        throw new Error(
+          body.error ?? `Could not cancel reservation (${res.status}).`,
+        );
+      }
+      void fetchReservations();
+      return;
+    }
+
     const { error: statusError } = await client.rpc("update_staff_reservation_status", {
       p_reservation_id: id,
       p_status: status,

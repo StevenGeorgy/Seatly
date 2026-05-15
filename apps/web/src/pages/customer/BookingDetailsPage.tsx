@@ -176,6 +176,16 @@ function PaymentStatusBadge({ status }: { status: string }) {
   );
 }
 
+type ModifyDepositAdjustment =
+  | { kind: "none" }
+  | { kind: "charged"; amount_cents: number; payment_intent_id: string | null }
+  | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null }
+  | { kind: "failed"; reason: string };
+
+type ModifyResult = {
+  deposit_adjustment: ModifyDepositAdjustment;
+};
+
 async function modifyReservation(
   reservationId: string,
   payload: {
@@ -184,7 +194,7 @@ async function modifyReservation(
     partySize: number;
     specialRequest: string;
   },
-): Promise<void> {
+): Promise<ModifyResult> {
   if (!isSupabaseConfigured()) {
     throw new Error("Authentication is not available. Configure Supabase first.");
   }
@@ -223,10 +233,26 @@ async function modifyReservation(
     ok?: boolean;
     error?: string;
     unavailable_reason?: string;
+    deposit_adjustment?: ModifyDepositAdjustment;
+    delta_cents?: number;
   };
   if (!res.ok || body.error || body.ok !== true) {
+    // Surface the modify_requires_card case with a more actionable
+    // message so the diner knows what to do next.
+    if (body.unavailable_reason === "modify_requires_card") {
+      const dollars = typeof body.delta_cents === "number"
+        ? ` ($${(body.delta_cents / 100).toFixed(2)})`
+        : "";
+      throw new Error(
+        (body.error ?? `Increasing your party size needs a card on file${dollars}.`)
+        + " Add a card in Account → Payment and try again.",
+      );
+    }
     throw new Error(body.error ?? `Could not modify reservation (${res.status}).`);
   }
+  return {
+    deposit_adjustment: body.deposit_adjustment ?? { kind: "none" },
+  };
 }
 
 export default function BookingDetailsPage() {
@@ -363,18 +389,36 @@ export default function BookingDetailsPage() {
 
     setModifying(true);
     try {
-      await modifyReservation(reservation.id, {
+      const result = await modifyReservation(reservation.id, {
         date: modifyValues.date,
         time: modifyValues.time,
         partySize: modifyValues.partySize,
         specialRequest: modifyValues.notes.trim(),
       });
       await refresh();
+      void refreshPayments();
       // Drop cached availability so the previous slot reappears and the new
       // slot disappears for this device on the next view.
       if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
       setModifyOpen(false);
-      toast.success("Reservation modified.");
+      // Phase 8 (2026-05-15): tell the diner exactly what happened to
+      // their deposit when party size changed.
+      const adj = result.deposit_adjustment;
+      if (adj.kind === "charged") {
+        toast.success(
+          `Reservation modified. $${(adj.amount_cents / 100).toFixed(2)} added to your deposit on file.`,
+        );
+      } else if (adj.kind === "refunded") {
+        toast.success(
+          `Reservation modified. $${(adj.amount_cents / 100).toFixed(2)} refunded to your card.`,
+        );
+      } else if (adj.kind === "failed") {
+        toast.warning(
+          "Reservation modified, but we couldn't adjust your deposit automatically. The restaurant will reach out.",
+        );
+      } else {
+        toast.success("Reservation modified.");
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not modify reservation.");
     } finally {

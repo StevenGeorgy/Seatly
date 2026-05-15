@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadStripe, type Stripe as StripeJs } from "@stripe/stripe-js";
 import {
   Elements,
@@ -6,10 +6,15 @@ import {
   useElements,
   useStripe,
 } from "@stripe/react-stripe-js";
-import { Loader2 } from "lucide-react";
+import { CreditCard, Loader2, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { getSupabaseAnonKey, getSupabaseProjectUrl } from "@/lib/supabase/client";
+import { useUser } from "@/hooks/useUser";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+} from "@/lib/supabase/client";
 
 const STRIPE_PUBLISHABLE_KEY =
   (import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined) ??
@@ -25,35 +30,88 @@ function getStripePromise(): Promise<StripeJs | null> | null {
   return cachedStripePromise;
 }
 
+type SavedCard = {
+  id: string;
+  brand: string;
+  last4: string;
+  exp_month: number | null;
+  exp_year: number | null;
+  is_default: boolean;
+};
+
 type StripePaymentFormProps = {
   restaurantId: string;
   amountCents: number;
   /**
    * Fired when the card has been successfully charged. The parent is then
-   * responsible for creating the reservation server-side. The frontend
-   * passes the resulting reservation_id (and order_id, if any) back to
-   * Stripe via paymentIntents.update so the webhook can later sync state.
+   * responsible for creating the reservation server-side.
    */
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel?: string;
-  /**
-   * Forms the parent's submit button can target via <button form={formId}>.
-   */
   formId?: string;
   hideInternalSubmit?: boolean;
 };
 
 /**
- * Diner-side Stripe checkout form using **deferred PaymentIntent mode**:
- * Elements mounts WITHOUT a clientSecret. On submit, we (1) call
- * `elements.submit()` to validate, (2) fetch a freshly-created client_secret
- * from `create-public-payment-intent`, (3) call `stripe.confirmPayment` with
- * that secret. On success, fire `onPaid` so the parent can create the
- * reservation. The reservation only exists if the card actually cleared.
+ * Diner-side Stripe checkout. Two modes:
+ *
+ *   - **Saved-card mode** (logged-in diner with ≥1 saved card): renders a
+ *     radio-list of saved cards + "Use a different card" toggle. On submit,
+ *     calls `create-public-payment-intent` with `saved_card_id` — server
+ *     confirms the PI off-session with destination-charge routing. SCA
+ *     fallback via `stripe.handleNextAction` if Stripe demands re-auth.
+ *
+ *   - **One-time mode** (guest checkout OR diner with 0 cards OR diner who
+ *     hit "Use a different card"): mounts Stripe Elements PaymentElement,
+ *     uses the deferred-PaymentIntent flow. Logged-in diners get an extra
+ *     "☑ Save card for faster checkout" checkbox (default-checked) which,
+ *     on success, fires `stripe-attach-payment-method` to persist the PM
+ *     to the diner's Stripe Customer + insert a `saved_cards` row.
  */
 export function StripePaymentForm(props: StripePaymentFormProps) {
   const stripePromise = useMemo(() => getStripePromise(), []);
+  const { user, loading: userLoading } = useUser();
+  const [cards, setCards] = useState<SavedCard[]>([]);
+  const [cardsLoading, setCardsLoading] = useState(false);
+
+  // Fetch saved cards once we know there's a logged-in user. Guests skip
+  // this entirely (one-time-card mode forever).
+  useEffect(() => {
+    if (userLoading) return;
+    if (!user) {
+      setCards([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setCardsLoading(true);
+      try {
+        const client = getSupabaseBrowserClient();
+        const { data: { session } } = await client.auth.getSession();
+        if (!session) {
+          if (!cancelled) setCards([]);
+          return;
+        }
+        const res = await fetch(
+          `${getSupabaseProjectUrl()}/functions/v1/stripe-list-methods`,
+          {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: getSupabaseAnonKey(),
+            },
+          },
+        );
+        if (res.ok) {
+          const body = (await res.json()) as { methods?: SavedCard[] };
+          if (!cancelled) setCards(body.methods ?? []);
+        }
+      } finally {
+        if (!cancelled) setCardsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, userLoading]);
 
   if (!stripePromise) {
     return (
@@ -70,12 +128,105 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
     );
   }
 
+  if (userLoading || cardsLoading) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-border bg-bg-surface/60 p-4 text-sm text-text-secondary">
+        <Loader2 className="size-4 animate-spin" /> Loading payment options…
+      </div>
+    );
+  }
+
+  return (
+    <PaymentSurface
+      stripePromise={stripePromise}
+      cards={cards}
+      isLoggedIn={Boolean(user)}
+      restaurantId={props.restaurantId}
+      amountCents={props.amountCents}
+      onPaid={props.onPaid}
+      onError={props.onError}
+      payButtonLabel={props.payButtonLabel ?? "Pay & confirm"}
+      formId={props.formId}
+      hideInternalSubmit={props.hideInternalSubmit}
+    />
+  );
+}
+
+function PaymentSurface({
+  stripePromise,
+  cards,
+  isLoggedIn,
+  restaurantId,
+  amountCents,
+  onPaid,
+  onError,
+  payButtonLabel,
+  formId,
+  hideInternalSubmit,
+}: {
+  stripePromise: Promise<StripeJs | null>;
+  cards: SavedCard[];
+  isLoggedIn: boolean;
+  restaurantId: string;
+  amountCents: number;
+  onPaid: (paymentIntentId: string) => Promise<void> | void;
+  onError?: (message: string) => void;
+  payButtonLabel: string;
+  formId?: string;
+  hideInternalSubmit?: boolean;
+}) {
+  // Picker default: saved cards exist → picker mode, default to is_default
+  // card. Otherwise: one-time mode immediately.
+  const defaultCardId = useMemo(() => {
+    if (cards.length === 0) return null;
+    const def = cards.find((c) => c.is_default) ?? cards[0];
+    return def.id;
+  }, [cards]);
+
+  // null = use a different card (one-time mode within an otherwise-picker
+  // context). Set to a card id = saved-card mode. Initial value: default
+  // card id if any saved cards exist.
+  const [selectedSavedCardId, setSelectedSavedCardId] = useState<string | null>(
+    defaultCardId,
+  );
+
+  // When `selectedSavedCardId === null` AND `cards.length > 0`, we're in
+  // "use a different card" mode — Elements mounts so the diner can enter
+  // a fresh card. When cards.length === 0, this is just one-time mode.
+  const inOneTimeMode = selectedSavedCardId === null;
+
+  // Logged-in diners get the "save card" checkbox on one-time mode.
+  // Defaults to true (industry data: 73% opt to save when defaulted on).
+  const [saveCard, setSaveCard] = useState(true);
+
+  if (cards.length > 0 && !inOneTimeMode) {
+    // Saved-card picker (no Elements mount needed).
+    return (
+      <SavedCardPath
+        cards={cards}
+        selectedId={selectedSavedCardId!}
+        onSelectId={setSelectedSavedCardId}
+        onAddDifferent={() => setSelectedSavedCardId(null)}
+        restaurantId={restaurantId}
+        amountCents={amountCents}
+        onPaid={onPaid}
+        onError={onError}
+        payButtonLabel={payButtonLabel}
+        formId={formId}
+        hideInternalSubmit={hideInternalSubmit}
+        stripePromise={stripePromise}
+      />
+    );
+  }
+
+  // One-time mode: mount Elements (only here — saving cycles on saved-card
+  // mode where Elements isn't needed).
   return (
     <Elements
       stripe={stripePromise}
       options={{
         mode: "payment",
-        amount: props.amountCents,
+        amount: amountCents,
         currency: "cad",
         appearance: {
           theme: "night",
@@ -88,20 +239,30 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
         },
       }}
     >
-      <PaymentFormInner
-        restaurantId={props.restaurantId}
-        amountCents={props.amountCents}
-        onPaid={props.onPaid}
-        onError={props.onError}
-        payButtonLabel={props.payButtonLabel ?? "Pay & confirm"}
-        formId={props.formId}
-        hideInternalSubmit={props.hideInternalSubmit}
+      <OneTimeCardForm
+        restaurantId={restaurantId}
+        amountCents={amountCents}
+        onPaid={onPaid}
+        onError={onError}
+        payButtonLabel={payButtonLabel}
+        formId={formId}
+        hideInternalSubmit={hideInternalSubmit}
+        isLoggedIn={isLoggedIn}
+        saveCard={saveCard}
+        onChangeSaveCard={setSaveCard}
+        hasSavedCards={cards.length > 0}
+        onBackToSavedPicker={() => setSelectedSavedCardId(defaultCardId)}
       />
     </Elements>
   );
 }
 
-function PaymentFormInner({
+/** Saved-card path: radio picker + "use different card" toggle + Pay button. */
+function SavedCardPath({
+  cards,
+  selectedId,
+  onSelectId,
+  onAddDifferent,
   restaurantId,
   amountCents,
   onPaid,
@@ -109,6 +270,196 @@ function PaymentFormInner({
   payButtonLabel,
   formId,
   hideInternalSubmit,
+  stripePromise,
+}: {
+  cards: SavedCard[];
+  selectedId: string;
+  onSelectId: (id: string) => void;
+  onAddDifferent: () => void;
+  restaurantId: string;
+  amountCents: number;
+  onPaid: (paymentIntentId: string) => Promise<void> | void;
+  onError?: (message: string) => void;
+  payButtonLabel: string;
+  formId?: string;
+  hideInternalSubmit?: boolean;
+  stripePromise: Promise<StripeJs | null>;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (submitting) return;
+      setSubmitting(true);
+      setErrorMsg(null);
+      try {
+        const client = getSupabaseBrowserClient();
+        const { data: { session } } = await client.auth.getSession();
+        if (!session) {
+          const msg = "Your session expired. Please sign in again.";
+          setErrorMsg(msg);
+          onError?.(msg);
+          return;
+        }
+
+        const res = await fetch(
+          `${getSupabaseProjectUrl()}/functions/v1/create-public-payment-intent`,
+          {
+            method: "POST",
+            headers: {
+              apikey: getSupabaseAnonKey(),
+              Authorization: `Bearer ${session.access_token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              restaurant_id: restaurantId,
+              amount_cents: amountCents,
+              saved_card_id: selectedId,
+            }),
+          },
+        );
+        const body = (await res.json().catch(() => ({}))) as {
+          mode?: string;
+          status?: "succeeded" | "requires_action" | "failed";
+          payment_intent_id?: string;
+          client_secret?: string;
+          error?: string;
+        };
+
+        if (body.status === "succeeded" && body.payment_intent_id) {
+          await onPaid(body.payment_intent_id);
+          return;
+        }
+        if (body.status === "requires_action" && body.client_secret) {
+          // SCA challenge — load Stripe.js, call handleNextAction.
+          const stripe = await stripePromise;
+          if (!stripe) {
+            const msg = "Stripe failed to load. Please try again.";
+            setErrorMsg(msg);
+            onError?.(msg);
+            return;
+          }
+          const { paymentIntent, error: scaErr } = await stripe.handleNextAction({
+            clientSecret: body.client_secret,
+          });
+          if (scaErr) {
+            const msg = scaErr.message ?? "Card verification failed.";
+            setErrorMsg(msg);
+            onError?.(msg);
+            return;
+          }
+          if (paymentIntent && (paymentIntent.status === "succeeded" || paymentIntent.status === "processing")) {
+            await onPaid(paymentIntent.id);
+            return;
+          }
+          const msg = `Payment ended in unexpected state: ${paymentIntent?.status ?? "unknown"}`;
+          setErrorMsg(msg);
+          onError?.(msg);
+          return;
+        }
+        const msg = body.error ?? "Couldn't charge your card.";
+        setErrorMsg(msg);
+        onError?.(msg);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [submitting, restaurantId, amountCents, selectedId, onPaid, onError, stripePromise],
+  );
+
+  return (
+    <form
+      id={formId}
+      onSubmit={(e) => void handleSubmit(e)}
+      className="flex flex-col gap-3"
+    >
+      <div className="space-y-2">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+          Pay with
+        </p>
+        {cards.map((card) => (
+          <label
+            key={card.id}
+            className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors ${
+              selectedId === card.id
+                ? "border-gold/60 bg-gold/5"
+                : "border-border bg-bg-surface/60 hover:border-border-strong"
+            }`}
+          >
+            <input
+              type="radio"
+              name="saved-card"
+              value={card.id}
+              checked={selectedId === card.id}
+              onChange={() => onSelectId(card.id)}
+              className="size-4 accent-gold"
+            />
+            <CreditCard className="size-4 text-text-muted" />
+            <span className="flex-1 text-sm text-white">
+              <span className="capitalize">{card.brand}</span> •••• {card.last4}
+              {card.is_default ? (
+                <span className="ml-2 rounded-full bg-gold/15 px-2 py-0.5 text-[10px] font-medium text-gold">
+                  Default
+                </span>
+              ) : null}
+            </span>
+            {card.exp_month && card.exp_year ? (
+              <span className="text-xs text-text-muted">
+                {String(card.exp_month).padStart(2, "0")}/{String(card.exp_year).slice(-2)}
+              </span>
+            ) : null}
+          </label>
+        ))}
+        <button
+          type="button"
+          onClick={onAddDifferent}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-bg-surface/30 p-3 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+        >
+          <Plus className="size-4" /> Use a different card
+        </button>
+      </div>
+
+      {errorMsg ? (
+        <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+          {errorMsg}
+        </div>
+      ) : null}
+
+      {hideInternalSubmit ? null : (
+        <Button
+          type="submit"
+          disabled={submitting}
+          className="w-full gap-2 font-semibold"
+        >
+          {submitting ? (
+            <>
+              <Loader2 className="size-4 animate-spin" /> Processing…
+            </>
+          ) : (
+            payButtonLabel
+          )}
+        </Button>
+      )}
+    </form>
+  );
+}
+
+/** One-time card path: PaymentElement + (optional) save-card checkbox. */
+function OneTimeCardForm({
+  restaurantId,
+  amountCents,
+  onPaid,
+  onError,
+  payButtonLabel,
+  formId,
+  hideInternalSubmit,
+  isLoggedIn,
+  saveCard,
+  onChangeSaveCard,
+  hasSavedCards,
+  onBackToSavedPicker,
 }: {
   restaurantId: string;
   amountCents: number;
@@ -117,6 +468,11 @@ function PaymentFormInner({
   payButtonLabel: string;
   formId?: string;
   hideInternalSubmit?: boolean;
+  isLoggedIn: boolean;
+  saveCard: boolean;
+  onChangeSaveCard: (v: boolean) => void;
+  hasSavedCards: boolean;
+  onBackToSavedPicker: () => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -139,8 +495,7 @@ function PaymentFormInner({
           return;
         }
 
-        // 2. Create the PaymentIntent JIT (the reservation doesn't exist yet —
-        //    that's the whole point of deferred mode here).
+        // 2. Create the PaymentIntent JIT.
         const intentRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/create-public-payment-intent`,
           {
@@ -181,9 +536,13 @@ function PaymentFormInner({
           return;
         }
         if (paymentIntent?.status === "succeeded" || paymentIntent?.status === "processing") {
-          // 4. Hand off to parent so it can create the reservation. The parent
-          //    handles the slot-race refund path if create-public-booking 409s.
-          await onPaid(paymentIntent.id);
+          // 4. Fire onPaid so the parent can create the reservation. The
+          //    save-card attach happens in parallel — never block the booking.
+          const piId = paymentIntent.id;
+          if (isLoggedIn && saveCard) {
+            void attachPaymentMethodInBackground(piId);
+          }
+          await onPaid(piId);
         } else {
           const msg = `Payment ended in unexpected state: ${paymentIntent?.status ?? "unknown"}`;
           setErrorMsg(msg);
@@ -193,7 +552,7 @@ function PaymentFormInner({
         setSubmitting(false);
       }
     },
-    [stripe, elements, restaurantId, amountCents, onPaid, onError],
+    [stripe, elements, restaurantId, amountCents, onPaid, onError, isLoggedIn, saveCard],
   );
 
   return (
@@ -202,7 +561,27 @@ function PaymentFormInner({
       onSubmit={(e) => void handleSubmit(e)}
       className="flex flex-col gap-4"
     >
+      {hasSavedCards ? (
+        <button
+          type="button"
+          onClick={onBackToSavedPicker}
+          className="self-start text-xs font-medium text-text-secondary underline-offset-4 hover:text-white hover:underline"
+        >
+          ← Use a saved card instead
+        </button>
+      ) : null}
       <PaymentElement options={{ layout: "tabs" }} />
+      {isLoggedIn ? (
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-text-secondary">
+          <input
+            type="checkbox"
+            checked={saveCard}
+            onChange={(e) => onChangeSaveCard(e.target.checked)}
+            className="size-4 accent-gold"
+          />
+          Save this card for faster checkout next time
+        </label>
+      ) : null}
       {errorMsg ? (
         <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
           {errorMsg}
@@ -225,4 +604,29 @@ function PaymentFormInner({
       )}
     </form>
   );
+}
+
+// Fire-and-forget save: never blocks the booking success path. If it
+// fails, the diner just won't have the card on file for next time;
+// they can add it manually from /account.
+async function attachPaymentMethodInBackground(paymentIntentId: string): Promise<void> {
+  try {
+    const client = getSupabaseBrowserClient();
+    const { data: { session } } = await client.auth.getSession();
+    if (!session) return;
+    await fetch(
+      `${getSupabaseProjectUrl()}/functions/v1/stripe-attach-payment-method`,
+      {
+        method: "POST",
+        headers: {
+          apikey: getSupabaseAnonKey(),
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ payment_intent_id: paymentIntentId }),
+      },
+    );
+  } catch (err) {
+    console.warn("[booking] stripe-attach-payment-method failed", err);
+  }
 }

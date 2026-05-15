@@ -23,13 +23,22 @@ export async function refundPaymentIntent(
   stripe: Stripe,
   paymentIntentId: string,
   reason: string,
+  amountCents?: number,
 ): Promise<RefundOutcome> {
   try {
-    const refund = await stripe.refunds.create({
+    const refundParams: Record<string, unknown> = {
       payment_intent: paymentIntentId,
       reason: "requested_by_customer",
       metadata: { cenaiva_reason: reason },
-    });
+    };
+    // When amountCents is provided, do a partial refund. Used by Phase 8
+    // (modify-reservation deposit recalc) when the party size shrinks
+    // and only a portion of the deposit needs to be returned. Omit the
+    // amount for a full refund (the default Phase 5 cancel flow).
+    if (typeof amountCents === "number" && amountCents > 0) {
+      refundParams.amount = amountCents;
+    }
+    const refund = await stripe.refunds.create(refundParams);
     return {
       ok: true,
       refund_id: refund.id,

@@ -77,6 +77,18 @@ verify_jwt = false
 [functions.confirm-deposit-paid]
 verify_jwt = false
 
+[functions.stripe-attach-payment-method]
+verify_jwt = false
+
+[functions.merge-diner-accounts]
+verify_jwt = false
+
+[functions.get-deposit-payment-context]
+verify_jwt = false
+
+[functions.dispatch-deposit-invites]
+verify_jwt = false
+
 [functions.create-public-payment-intent]
 verify_jwt = false
 

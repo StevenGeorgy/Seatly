@@ -117,6 +117,14 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Live mode ──
+    // Phase 9 of diner auth overhaul (2026-05-15): Connect-aware
+    // refactor. The diner's `stripe_customer_id` lives on the platform
+    // account. To route money to the restaurant, we clone the
+    // PaymentMethod to the connected account (`stripeAccount` option)
+    // and create the PI directly on the connected account with a 5%
+    // application fee. 95% lands on the restaurant; 5% on Cenaiva's
+    // platform. Same economics as destination charges, simpler refund
+    // path. Mirrors Phase 4 saved-card-on-booking architecture.
     const { default: Stripe } = await import("npm:stripe@17");
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
@@ -146,30 +154,89 @@ Deno.serve(async (req: Request) => {
       return jsonRes({ ok: false, error: "No saved payment method found." }, 400);
     }
 
-    // Fetch restaurant currency
+    // Fetch restaurant currency + Stripe connected account
     const { data: restaurant } = await supabaseAdmin
       .from("restaurants")
-      .select("currency")
+      .select("currency, stripe_account_id, stripe_charges_enabled")
       .eq("id", order.restaurant_id)
       .single();
     const currency = (restaurant?.currency || "CAD").toLowerCase();
+    const stripeAccountId = restaurant?.stripe_account_id as string | null;
+    const chargesEnabled = restaurant?.stripe_charges_enabled === true;
+
+    if (!stripeAccountId || !chargesEnabled) {
+      return jsonRes({
+        ok: false,
+        error: "This restaurant cannot accept payments right now. Please contact them directly.",
+      }, 400);
+    }
+
+    const totalCents = Math.round(total * 100);
+    const applicationFeeCents = Math.max(Math.round(totalCents * 0.05), 1);
 
     let paymentIntent: any;
+    let clonedPmId: string | null = null;
     try {
-      paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(total * 100), // Stripe uses cents
-        currency,
-        customer: profile.stripe_customer_id,
-        payment_method: pmId,
-        off_session: true,
-        confirm: true,
-        metadata: { order_id, restaurant_id: order.restaurant_id, user_profile_id: profile.id },
-      });
+      // Step 1: clone the platform-account PaymentMethod onto the
+      // restaurant's connected account. The clone is single-use here;
+      // we don't persist its id (a future repeat charge would clone
+      // again from the same source PM).
+      const clonedPm = await stripe.paymentMethods.create(
+        {
+          customer: profile.stripe_customer_id!,
+          payment_method: pmId,
+        },
+        { stripeAccount: stripeAccountId },
+      );
+      clonedPmId = clonedPm.id;
+
+      // Step 2: create + confirm the PaymentIntent directly on the
+      // connected account. Money lands in the restaurant's Stripe
+      // balance; `application_fee_amount` is forwarded to the platform.
+      paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount: totalCents,
+          currency,
+          payment_method: clonedPmId,
+          off_session: true,
+          confirm: true,
+          application_fee_amount: applicationFeeCents,
+          metadata: {
+            order_id,
+            restaurant_id: order.restaurant_id,
+            user_profile_id: profile.id,
+            // Pointer back to the platform-side source for support /
+            // reconciliation. Cenaiva's audit trail can find the
+            // original PM by walking from this cloned PI.
+            platform_source_pm: pmId,
+            platform_source_customer: profile.stripe_customer_id!,
+          },
+        },
+        { stripeAccount: stripeAccountId },
+      );
     } catch (stripeErr: any) {
-      if (stripeErr?.code === "authentication_required") {
-        return jsonRes({ ok: false, error: "Your card requires additional verification. Please use the checkout page.", requires_action: true }, 402);
+      const code = stripeErr?.code as string | undefined;
+      if (code === "authentication_required") {
+        return jsonRes({
+          ok: false,
+          error: "Your card requires additional verification. Please use the checkout page.",
+          requires_action: true,
+          client_secret: stripeErr?.raw?.payment_intent?.client_secret ?? null,
+        }, 402);
       }
       return jsonRes({ ok: false, error: stripeErr?.message || "Card declined." }, 402);
+    }
+
+    // If the PI returns requires_action (3D Secure / SCA), the
+    // frontend needs the client_secret to call handleNextAction.
+    if (paymentIntent.status === "requires_action") {
+      return jsonRes({
+        ok: false,
+        requires_action: true,
+        client_secret: paymentIntent.client_secret,
+        stripe_account_id: stripeAccountId, // needed for SCA confirm
+        error: "Additional verification required for this card.",
+      }, 402);
     }
 
     await supabaseAdmin.from("orders").update({

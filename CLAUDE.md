@@ -27,6 +27,310 @@ edits here propagate to both agents in one step.
 
 ## Headline state (2026-05-15)
 
+- **Diner auth + profile foundation (Phases 1, 3, 6, 9 of the diner
+  auth overhaul shipped 2026-05-15 late evening).** Four standalone
+  pieces of the 10-phase plan, no external blockers:
+  - **Phase 1 — auto-create user_profiles trigger.** New trigger
+    `on_auth_user_created` (SECURITY DEFINER as `supabase_auth_admin`)
+    fires AFTER INSERT on `auth.users` and inserts a matching
+    `user_profiles` row, populating `email`, `phone`, `full_name`
+    (from `raw_user_meta_data->>'full_name'` or `name`), `role
+    = 'customer'`. ON CONFLICT (auth_user_id) DO NOTHING for
+    idempotency. Companion trigger `on_auth_user_updated` mirrors
+    `auth.users.email` / `phone` into the profile row WHEN the profile
+    field is currently NULL (preserves user edits). One-shot backfill
+    handled existing 17 owner-side rows (no-op for them; defends
+    against future divergence). Invariant: every `auth.users` row now
+    has a `user_profiles` row. Migrations:
+    `supabase/migrations/20260515170000_auto_create_user_profile.sql`
+    and `supabase/migrations/20260515170100_sync_user_profile_from_auth.sql`.
+  - **Phase 3 — onboarding page + booking write-back.** New page at
+    `apps/web/src/pages/auth/OnboardingPage.tsx` (registered at
+    `/onboarding`, gated by `<RequireAuth>`) surfaces ONLY missing
+    profile fields (`full_name` / `email` / `phone`). Pre-fills what
+    Google/Apple/phone-OTP gave us; asks for the rest. Handles
+    Apple's `@privaterelay.appleid.com` relay-email case with an
+    optional "Add a real email for receipts" field. New route guard
+    `apps/web/src/components/routing/RequireCompleteProfile.tsx`
+    redirects to `/onboarding?from=<path>` when fields are missing.
+    NOT wired into the booking checkout (the existing "details" step
+    already collects name/email/phone, so a double-prompt would be
+    annoying). Instead, the booking-form `createReservationCore`
+    (`RestaurantPublicPage.tsx` end of function) now writes
+    `dineIn.{name|email|phone|allergies|seating_preference}` back to
+    `user_profiles` on every successful booking. Fire-and-forget,
+    diffs against the existing profile, never blocks the success
+    path. After first booking, future bookings pre-fill completely.
+  - **Phase 6 — owner cancel + refund routing.** The dashboard
+    cancel button used to call `update_staff_reservation_status` RPC
+    with a raw status flip — bypassing all refund logic. Now
+    `apps/web/src/hooks/useReservations.ts` `updateStatus` forks: if
+    `status === "cancelled"` it routes through `cancel-reservation`
+    edge fn with `actor: "owner"`. Other status transitions
+    (`seated`, `completed`, etc.) keep using the RPC.
+    `cancel-reservation` edge function gained an `actor: "diner" |
+    "owner"` body param. When `actor === "owner"`: requires a bearer
+    JWT, verifies the caller has a role on
+    `user_restaurant_roles.restaurant_id = reservation.restaurant_id`,
+    SKIPS the 24h cliff entirely (restaurant-initiated cancels
+    always refund — diner shouldn't be punished),
+    `cancellation_reason = "Cancelled by restaurant"`, and the
+    cancellation SMS/email body uses an apologetic restaurant-side
+    opener ("…had to cancel your reservation…"). Both response
+    payloads (RPC-release + manual-fallback) now include `actor` so
+    the client can differentiate.
+  - **Phase 9 — `stripe-charge-order` Connect-aware.** Used to
+    create the PaymentIntent on the platform account only —
+    meaning money landed in Cenaiva's account, NOT the restaurant's.
+    Subtle bug since this function is for the post-meal pay-the-bill
+    flow. Refactored to mirror the Phase 4 booking pattern: clone the
+    diner's `saved_cards.stripe_payment_method_id` to the
+    restaurant's connected account (`stripeAccount` option on
+    `stripe.paymentMethods.create`), then create + confirm the PI
+    DIRECTLY on the connected account with
+    `application_fee_amount = round(totalCents * 0.05)` (5% to
+    Cenaiva, 95% to restaurant). PI metadata includes
+    `platform_source_pm` + `platform_source_customer` pointers for
+    reconciliation. Now also handles `requires_action` (SCA): returns
+    `client_secret` + `stripe_account_id` so the frontend can call
+    `stripe.handleNextAction` with the right account context.
+    Pre-charge guard rejects when restaurant has no
+    `stripe_account_id` or `stripe_charges_enabled=false`.
+  - **What's still pending from the diner-auth plan (phases 2, 5, 7,
+    8):** Apple/phone/WhatsApp auth providers (blocked on Apple
+    Developer Console + Twilio dashboard setup); cross-device account
+    linking (Phase 5); multi-payer deposit split UI (Phase 7);
+    modify-reservation deposit recalc (Phase 8). Plan at
+    `/Users/mark_habbi/.claude/plans/okay-make-a-plan-replicated-octopus.md`,
+    spec at `DINER_AUTH_SPEC.md`.
+
+- **Multi-payer deposit split UI (Phase 7, 2026-05-15 late evening).**
+  When a deposit applies to a booking, the diner can now invite
+  friends to chip in via email. Each friend pays their share
+  independently before the reservation confirms.
+  - **Checkout UI** — new "Split deposit with friends" checkbox in
+    `RestaurantPublicPage.tsx`, visible only when
+    `previewDepositDollars > 0`. Toggling reveals an inline form to
+    add up to `party_size - 1` friends (name + email each). Equal
+    split: each pays `previewDepositDollars / (1 + friends.length)`.
+    Rounding remainder lands on the diner's share so the sum equals
+    canonical `deposit_amount_cents`. Independent of the existing
+    `paymentSplitMode` (split-tender = N cards at checkout) — two
+    separate concepts.
+  - **Diner's payment** — they pay preorder + their share inline via
+    Stripe Elements (the deferred-PI flow). `totalNow` now equals
+    `total + dinerDepositShareDollars` (was `total + previewDepositDollars`).
+  - **Booking write-back** — `prepare-deposit` is called with the
+    full payers array (diner at index 0 + friends after). The
+    diner's row is `confirm-deposit-paid` immediately (Phase 4
+    pattern). Friends' rows stay `pending` until they pay via the
+    emailed link. Reservation stays `pending_payment` until the
+    settle trigger fires (all rows charged → confirmed).
+  - **New edge fn `dispatch-deposit-invites`** — service-role, fired
+    fire-and-forget from the client after `confirm-deposit-paid`.
+    Loads pending rows, sends Resend emails to non-organizer payers
+    with a magic link to `/deposit/<row_id>`. Email-only for v1
+    (`reservation_deposit_payments` schema doesn't have payer_phone;
+    SMS support is a future enhancement). Idempotent: only emails
+    rows with status='pending' AND `stripe_payment_intent_id IS NULL`,
+    so re-runs don't double-send. Rate-limited 10/60s.
+  - **New edge fn `get-deposit-payment-context`** — anon-callable
+    lookup powering the public `/deposit/:id` page. Service-role
+    join of `reservation_deposit_payments` → `reservations` →
+    `restaurants`. Returns only safe fields (no confirmation code,
+    no internal notes, no other payers). UUID is the security token.
+    Rate-limited 30/60s.
+  - **New public page `DepositPayPage`** at `/deposit/:id` —
+    no auth required. Fetches context, displays "Hi {payer}, {organizer}
+    booked dinner at {restaurant} on {date}, asked you to pay
+    {amount}". Mounts `StripePaymentForm` for that exact amount;
+    `onPaid` calls `confirm-deposit-paid` with the payment_id + PI
+    id. Idempotent — already-paid rows render the success state
+    without re-mounting Stripe.
+  - **Known limitation: email-only invites.** SMS support requires a
+    new `payer_phone` column on `reservation_deposit_payments` +
+    migration + UI input + Twilio wiring in dispatch-deposit-invites.
+    Documented as future enhancement.
+  - **Known limitation: no payer-payment timeout.** If a friend
+    doesn't pay, the reservation stays in `pending_payment`
+    indefinitely. The organizer or restaurant can cancel via the
+    existing cancel flow (which refunds the diner's share). A
+    future cron job could auto-cancel `pending_payment` reservations
+    older than X hours where any deposit row is still `pending`.
+
+- **Cross-device account linking (Phase 5, 2026-05-15 late evening).**
+  Two flows for keeping a diner from accidentally creating duplicate
+  accounts when they sign in with Apple on iPhone + Google on laptop:
+  - **Reactive merge prompt** at `/auth/callback`. After session is
+    established, queries `user_profiles` for another row with matching
+    `email` OR `phone` linked to a DIFFERENT `auth_user_id`. If found,
+    surfaces `<AccountLinkPrompt>` modal: "Welcome back — we found
+    another Cenaiva account using this email. Link them together?"
+    Diner picks Yes/No. On Yes, calls new `merge-diner-accounts` edge
+    fn (canonical = older profile by `created_at`), which re-points
+    every diner-relevant FK row (reservations, saved_cards, guests,
+    deposits, reviews, alerts, notifications, user_restaurant_roles,
+    chat_conversations, payments, waitlist), inserts an audit row to
+    `account_merge_audit`, then HARD-deletes the duplicate
+    `user_profiles` + `auth.users` rows (no 7-day undo — design
+    choice for v1 simplicity; audit log provides forensics).
+  - **Proactive linking** at `/account/connected-accounts`. New page
+    lists current `auth.users.identities` (Apple, Google, phone),
+    each with a Disconnect button. "Add another method" buttons fire
+    `client.auth.linkIdentity({ provider })` which redirects through
+    OAuth and attaches the new identity to the CURRENT auth.users
+    instead of creating a new one. Last-identity disconnect is
+    blocked (would lock the diner out).
+  - **`merge-diner-accounts` edge fn**: JWT-required; verifies caller
+    is signed in as one of the two accounts; verifies email/phone
+    match between profiles (anti-stranger-merge defense); re-points
+    FKs with service-role bypass of RLS; deletes duplicates via
+    `supabase.auth.admin.deleteUser`. Rate-limited 5/300s. Audit
+    table `account_merge_audit` records canonical+archived ids,
+    matched contact field, and counts of moved rows. RLS denies all
+    SELECT — only support via service-role can read.
+  - **New routes/files:** `apps/web/src/components/customer/AccountLinkPrompt.tsx`
+    (modal), `apps/web/src/pages/customer/ConnectedAccountsPage.tsx`,
+    `supabase/functions/merge-diner-accounts/`, migration
+    `20260515180000_account_merge_audit.sql`. AccountPage gets a new
+    "Connected accounts" link card alongside the existing voice
+    settings.
+  - **Known limitation:** Stripe customer merging. If both profiles
+    had a `stripe_customer_id`, we keep the canonical's; the
+    duplicate's Stripe Customer becomes orphaned. Cards on the
+    duplicate stay attached to the orphan and aren't surfaced
+    post-merge. Not fixing in v1; document for support to handle
+    manually if a diner reports a "lost card." `saved_cards` rows
+    DO get re-pointed at the user_profile level — but they reference
+    `stripe_payment_method_id`s attached to the duplicate's
+    `stripe_customer_id`, which Stripe won't let us charge from the
+    canonical's customer context. Practical effect: diner sees the
+    old card in their list but charging fails. Workaround: re-add
+    the card.
+
+- **Apple Sign-In + Phone OTP (SMS/WhatsApp) + login reorder
+  (Phase 2, 2026-05-15 late evening).** Diner login screen now shows
+  providers first (Apple → Google → Phone), email/password collapsed
+  behind a small "Sign in with email and password" link. Same
+  restructure on RegisterPage.
+  - **Apple Sign-In** — new `signInWithProvider("apple")` handler on
+    both LoginPage + RegisterPage. Routes to standard
+    `/auth/callback`. Manual Supabase Dashboard config done on
+    2026-05-15 (Apple Service ID, Team ID, Key ID, .p8 key). Apple
+    domain-association file at
+    `apps/web/public/.well-known/apple-developer-domain-association.txt`
+    needs to be added when Apple provides it.
+  - **Phone OTP** — new `/login/phone` route at
+    `apps/web/src/pages/auth/PhoneLoginPage.tsx`. Two-step: enter
+    phone → Supabase texts the 6-digit code → enter code → session
+    created. Uses `client.auth.signInWithOtp({ phone, channel })` and
+    `client.auth.verifyOtp({ phone, token, type: "sms" })`. Routes
+    through the same `loadUserContext` + `resolvePostLoginPath` as
+    other auth methods. The Phase 1 DB trigger creates the
+    `user_profiles` row with `phone` populated automatically.
+  - **WhatsApp transport** — inline "Send code via WhatsApp instead"
+    link on both the phone-entry page (alternative submit) and the
+    code-entry page (resend via the other transport). Same Supabase
+    call with `channel: "whatsapp"`. Twilio WhatsApp Business sender
+    config done on 2026-05-15.
+  - **AuthCallbackPage** — captures Apple's first-sign-in name. Apple
+    returns `user_metadata.name` / `full_name` ONLY on the very first
+    OAuth callback for a user; subsequent sign-ins return just the
+    user id. We write the name to `user_profiles` if profile.full_name
+    is currently NULL (the Phase 1 trigger may or may not have
+    captured it depending on metadata-populate timing).
+  - **Phone normalization** — new
+    `apps/web/src/lib/validation/phone-schemas.ts` with
+    `normalizeE164Phone()`, `isValidOtpCode()`, `formatE164ForDisplay()`.
+    NA-style numbers prefix with `+1` automatically. International
+    diners can paste with leading `+`. No libphonenumber-js dep
+    (avoided the 100 KB gzip cost).
+
+- **Modify-reservation deposit recalc (Phase 8, 2026-05-15 late
+  evening).** Changing the party size on an existing reservation now
+  reconciles the deposit automatically:
+  - Party UP → server computes the deposit delta, charges the diner's
+    default saved card off-session via destination charge to the
+    restaurant's Connect account (with 5% app fee). Inserts a new
+    `reservation_deposit_payments` row for the delta. If the diner has
+    no saved card on file (or guest checkout): returns 402 with
+    `unavailable_reason: "modify_requires_card"` and a
+    `delta_cents` hint. The diner-side toast surfaces "Add a card in
+    Account → Payment and try again."
+  - Party DOWN → server issues a partial Stripe refund (`amount` arg
+    on the refund helper) for the difference, REDUCES the existing
+    deposit row's `amount_cents` (or marks it 'refunded' if the row
+    is now fully refunded). Stub-mode deposits (no PI) get DB-only
+    amount adjustment.
+  - Party unchanged → no recalc, no Stripe call.
+  - Failure modes are non-fatal: the modify response carries
+    `deposit_adjustment: { kind: "charged"|"refunded"|"failed"|"none",
+    amount_cents, payment_intent_id }` so the client can toast
+    correctly. The slot move always happens; the deposit adjustment is
+    best-effort post-modify.
+  - SCA on the delta charge → returns 402 with
+    `unavailable_reason: "modify_requires_card"` for v1 simplicity
+    (rare in CA). Diner can update their card and retry.
+  - Shared helper `_shared/stripe-refund.ts` `refundPaymentIntent`
+    gained an optional `amountCents` param for partial refunds (used
+    here; defaults to full refund elsewhere — backwards compatible).
+  - `BookingDetailsPage.handleModify` calls `modifyReservation()`
+    which now returns the `deposit_adjustment` shape. Toast variants:
+    "$X added to your deposit", "$X refunded to your card",
+    "couldn't adjust automatically — restaurant will reach out" for
+    the `failed` case.
+
+- **Saved-card picker on booking (Phase 4, 2026-05-15 late evening).**
+  Logged-in diners with ≥1 saved card now see a radio-list picker
+  ("Pay with Visa •••• 4242 (default)" + "Use a different card")
+  instead of the card form on the booking checkout. One-tap repeat
+  bookings. Implementation:
+  - **`create-public-payment-intent` extended** with optional
+    `saved_card_id` + JWT auth on that branch. When provided, server
+    verifies the `saved_cards` row belongs to the requesting diner,
+    creates the PI with `payment_method` + `customer` + `confirm:
+    true` + `off_session: true` + `transfer_data.destination` + 5%
+    `application_fee_amount`. Returns `{ mode: "saved_card", status:
+    "succeeded" | "requires_action" | "failed", payment_intent_id,
+    client_secret? }`. Same destination-charge architecture as the
+    one-time path — diner's `stripe_customer_id` stays on the
+    platform, funds route to the restaurant's Connect account.
+    Decision: NOT using Stripe Connect's "Clone PaymentMethod to
+    connected account" pattern (that's for Direct Charges); destination
+    charges with attached customer PMs work for marketplace pattern.
+  - **`stripe-attach-payment-method` new edge fn**: called by the
+    booking checkout after a one-time PI confirms AND the diner ticked
+    "save card." JWT-required. Retrieves the PI's `payment_method`,
+    attaches it to the diner's platform Stripe Customer (lazy-creates
+    Customer if missing, same as `stripe-setup-intent`), inserts a
+    `saved_cards` row, sets `is_default=true` if it's the only card.
+    Idempotent: existing `saved_cards` row with same `pm_id` returns
+    the row unchanged. Handles `payment_method_already_attached`
+    Stripe error as success.
+  - **`StripePaymentForm.tsx` substantial refactor**: now dual-mode.
+    Fetches saved cards on mount (logged-in diners only — guests skip
+    entirely). If ≥1 card → renders `SavedCardPath` with radio list
+    + "Use a different card" toggle. If 0 cards OR diner clicked
+    "Use different" → renders `OneTimeCardForm` with `<Elements>` +
+    `<PaymentElement>` AND a "☑ Save this card for faster checkout"
+    checkbox (default-checked) for logged-in diners. After successful
+    one-time charge, fire-and-forget call to
+    `stripe-attach-payment-method` in background — never blocks
+    booking success. SCA fallback: when server returns
+    `requires_action`, client calls `stripe.handleNextAction
+    (clientSecret)` inline.
+  - **AccountPage's existing `PaymentMethodsSection` untouched** —
+    uses the same `stripe-list-methods` / `stripe-setup-intent`
+    endpoints; saved cards flow seamlessly between AccountPage and
+    booking.
+  - **Anonymous guest checkout path preserved** — no `saved_card_id`
+    means `create-public-payment-intent` runs the existing one-time
+    flow with no auth required. Critical: don't break guest checkouts.
+  - **Restaurants without Stripe Connect onboarding** (Mark Testing's
+    `stripe_account_id = null` at time of writing) fall back to
+    platform-only charges in BOTH modes — `application_fee_cents = 0`
+    and `destination = null`. Same pre-launch behavior as today.
+
 - **Onboarding wizard — multi-restaurant + polish (2026-05-15 evening).**
   Six issues plus drafts-as-a-product surface, all shipped:
   - **Server-side publish gate (DB trigger).** New
@@ -534,6 +838,30 @@ edits here propagate to both agents in one step.
   settle trigger that flips reservations to 'confirmed' fires only on
   rows it manages, so writing rows from random places breaks the state
   machine.
+- Never assume `user_profiles` might be NULL for an authenticated
+  diner. The `on_auth_user_created` trigger (Phase 1, 2026-05-15)
+  guarantees a profile row exists for every `auth.users` row. Profile
+  *fields* (full_name / email / phone) may still be NULL when the
+  provider didn't supply them — use `RequireCompleteProfile` to gate
+  on field completeness, not on profile existence.
+- Never call `cancel-reservation` from owner-side surfaces without
+  `actor: "owner"` in the body. Owner-cancels MUST refund regardless
+  of the 24h cliff, MUST set `cancellation_reason = "Cancelled by
+  restaurant"`, and require staff-role auth (verified inside the edge
+  fn against `user_restaurant_roles`). Diner-cancels stay as the
+  default `actor: "diner"`. The dashboard's `updateStatus(id,
+  "cancelled")` in `useReservations.ts` is the canonical owner-cancel
+  call site — anywhere else trying to flip a reservation to
+  `'cancelled'` from staff context must also route through
+  `cancel-reservation` with `actor: "owner"`, never a direct
+  `UPDATE` or the legacy `update_staff_reservation_status` RPC.
+- Never charge a diner via `stripe-charge-order` (post-meal pay-the-bill)
+  without the Connect-aware path: clone the platform-account PM to the
+  restaurant's `stripe_account_id` first, then create + confirm the PI
+  on the connected account with `application_fee_amount` = 5% of total.
+  As of Phase 9 (2026-05-15) this is the only way the restaurant
+  actually receives the money; the pre-Phase-9 platform-only path was
+  a silent bug.
 - Never UPDATE `orders` from the diner-facing client. RLS policy
   `orders_update_staff` restricts UPDATE to restaurant staff only;
   diner-side calls silently fail with zero rows affected (no error

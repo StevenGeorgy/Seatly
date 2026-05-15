@@ -36,6 +36,7 @@ type RequestBody = {
   reservationId?: unknown;
   confirmation_code?: unknown;
   confirmationCode?: unknown;
+  actor?: unknown; // "diner" (default) | "owner"
 };
 
 type ReservationRow = {
@@ -99,6 +100,8 @@ Deno.serve(async (req: Request) => {
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const reservationId = cleanString(body.reservation_id ?? body.reservationId);
     const providedCode = cleanString(body.confirmation_code ?? body.confirmationCode);
+    const rawActor = typeof body.actor === "string" ? body.actor.trim().toLowerCase() : "";
+    const actor: "diner" | "owner" = rawActor === "owner" ? "owner" : "diner";
     if (!reservationId) return json({ error: "reservation_id is required" }, 400);
 
     const { data: reservation, error: reservationError } = await adminClient
@@ -113,7 +116,49 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") ?? "";
     const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-    if (bearerToken) {
+    if (actor === "owner") {
+      // Owner-initiated cancel (from the restaurant dashboard). MUST be
+      // authenticated as a user with a role on this restaurant. We don't
+      // care which role — owner, manager, host, server, etc. all qualify
+      // since each can already see the reservation in their dashboard.
+      // The downstream cliff logic skips the 24h forfeit (restaurant-
+      // initiated → diner should always be refunded).
+      if (!bearerToken) {
+        return json({ error: "Owner cancel requires authentication" }, 401);
+      }
+      const {
+        data: { user },
+        error: userError,
+      } = await adminClient.auth.getUser(bearerToken);
+      if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
+
+      const { data: profile, error: profileError } = await adminClient
+        .from("user_profiles")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .maybeSingle();
+      if (profileError) return json({ error: profileError.message }, 400);
+      if (!profile) return json({ error: "User profile not found" }, 403);
+
+      const { data: roleRow, error: roleError } = await adminClient
+        .from("user_restaurant_roles")
+        .select("role")
+        .eq("user_id", profile.id)
+        .eq("restaurant_id", reservation.restaurant_id)
+        .maybeSingle<{ role: string }>();
+      if (roleError) return json({ error: roleError.message }, 400);
+      if (!roleRow) {
+        return json({ error: "You don't have permission to cancel reservations at this restaurant" }, 403);
+      }
+      // Look up the linked guest for the cancellation notification.
+      const { data: linkedGuest } = await adminClient
+        .from("guests")
+        .select("id, full_name, email, phone")
+        .eq("id", reservation.guest_id)
+        .maybeSingle<GuestRow>();
+      guest = linkedGuest;
+    } else if (bearerToken) {
+      // Diner-initiated cancel (logged-in path).
       const {
         data: { user },
         error: userError,
@@ -138,6 +183,7 @@ Deno.serve(async (req: Request) => {
       if (!ownedGuest) return json({ error: "You can only cancel your own reservations" }, 403);
       guest = ownedGuest;
     } else if (providedCode) {
+      // Diner-initiated cancel (guest path with confirmation code).
       const expectedCode = (reservation.confirmation_code ?? "").trim();
       if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
         return json({ error: "Invalid confirmation code" }, 401);
@@ -188,9 +234,14 @@ Deno.serve(async (req: Request) => {
     // "block-a-section, dump-it-last-minute" abuse pattern and matches
     // industry norms (Resy, Tock). Free reservations are unaffected since
     // there's nothing to refund either way.
+    //
+    // Owner-initiated cancels SKIP the cliff entirely — the diner
+    // shouldn't be punished when the restaurant decides to cancel.
+    // Always refund regardless of how close to reservation time.
     const HOURS_BEFORE_NONREFUNDABLE = 24;
     const hoursToReservation = (reservedAt.getTime() - Date.now()) / (1000 * 60 * 60);
-    const withinCliff = hoursToReservation < HOURS_BEFORE_NONREFUNDABLE;
+    const withinCliff =
+      actor === "owner" ? false : hoursToReservation < HOURS_BEFORE_NONREFUNDABLE;
 
     const { data: restaurant } = await adminClient
       .from("restaurants")
@@ -246,6 +297,16 @@ Deno.serve(async (req: Request) => {
         // No linked guest record — skip notification but report skipped status.
         return { status: "skipped" as const, channel: null };
       }
+      const opener =
+        actor === "owner"
+          ? `Hi ${guestName}, ${restaurantName} had to cancel your reservation for ${reservation.party_size} ` +
+            `${reservation.party_size === 1 ? "guest" : "guests"} on ${dateLabel}. Apologies for the inconvenience — please reach out to rebook.`
+          : `Hi ${guestName}, your reservation at ${restaurantName} for ${reservation.party_size} ` +
+            `${reservation.party_size === 1 ? "guest" : "guests"} on ${dateLabel} has been cancelled.`;
+      const subject =
+        actor === "owner"
+          ? `${restaurantName} cancelled your reservation`
+          : `Your reservation at ${restaurantName} was cancelled`;
       return await sendReservationNotification({
         supabase: adminClient,
         guestId: guest.id,
@@ -254,19 +315,17 @@ Deno.serve(async (req: Request) => {
         type: "reservation_cancellation",
         email: guestEmail,
         phone: guestPhone,
-        subject: `Your reservation at ${restaurantName} was cancelled`,
-        body:
-          `Hi ${guestName}, your reservation at ${restaurantName} for ${reservation.party_size} ` +
-          `${reservation.party_size === 1 ? "guest" : "guests"} on ${dateLabel} has been cancelled.` +
-          codeLine +
-          eventLine +
-          promoLine,
+        subject,
+        body: opener + codeLine + eventLine + promoLine,
       });
     };
 
-    const cancellationReason = withinCliff
-      ? "Cancelled by diner (within 24h — non-refundable)"
-      : "Cancelled by diner";
+    const cancellationReason =
+      actor === "owner"
+        ? "Cancelled by restaurant"
+        : withinCliff
+          ? "Cancelled by diner (within 24h — non-refundable)"
+          : "Cancelled by diner";
     const { error: updateError } = await adminClient
       .from("reservations")
       .update({
@@ -515,6 +574,7 @@ Deno.serve(async (req: Request) => {
         refund_total_cents: refundTotalCents,
         forfeit_total_cents: forfeitTotalCents,
         within_24h: withinCliff,
+        actor,
       });
     }
 
@@ -570,6 +630,7 @@ Deno.serve(async (req: Request) => {
       refund_total_cents: refundTotalCents,
       forfeit_total_cents: forfeitTotalCents,
       within_24h: withinCliff,
+      actor,
     });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);

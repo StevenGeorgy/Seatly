@@ -76,7 +76,7 @@ export default function LoginPage() {
     }
   };
 
-  const signInWithGoogle = async () => {
+  const signInWithProvider = async (provider: "google" | "apple") => {
     setSubmitting(true);
     try {
       if (!isSupabaseConfigured()) {
@@ -85,7 +85,7 @@ export default function LoginPage() {
       }
       const client = getSupabaseBrowserClient();
       const { error } = await client.auth.signInWithOAuth({
-        provider: "google",
+        provider,
         options: {
           redirectTo: `${window.location.origin}/auth/callback${
             from ? `?from=${encodeURIComponent(from)}` : ""
@@ -100,65 +100,103 @@ export default function LoginPage() {
     }
   };
 
+  const phoneTarget = from ? `/login/phone?from=${encodeURIComponent(from)}` : "/login/phone";
+  const [showEmailForm, setShowEmailForm] = useState(false);
+
   return (
     <AuthPageLayout titleKey="auth.login.title">
-      <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-        <div className="space-y-2">
-          <Label htmlFor="login-email">{t("auth.fields.email.label")}</Label>
-          <Input
-            id="login-email"
-            type="email"
-            autoComplete="email"
-            className="h-12 px-4 rounded-md"
-            aria-invalid={errors.email ? true : undefined}
-            {...register("email")}
-          />
-          {errors.email ? (
-            <p className="text-destructive text-sm" role="alert">
-              {errors.email.message}
-            </p>
-          ) : null}
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="login-password">{t("auth.fields.password.label")}</Label>
-          <Input
-            id="login-password"
-            type="password"
-            autoComplete="current-password"
-            className="h-12 px-4 rounded-md"
-            aria-invalid={errors.password ? true : undefined}
-            {...register("password")}
-          />
-          {errors.password ? (
-            <p className="text-destructive text-sm" role="alert">
-              {errors.password.message}
-            </p>
-          ) : null}
-        </div>
-        <Button className="w-full" disabled={submitting} type="submit">
-          {t("auth.login.submit")}
-        </Button>
-      </form>
-
-      <div className="space-y-4">
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <span className="border-border w-full border-t" />
-          </div>
-          <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-card text-muted-foreground px-2">{t("auth.login.divider")}</span>
-          </div>
-        </div>
+      {/* Phase 2 of diner auth overhaul (2026-05-15): providers first.
+          Apple HIG requires Apple Sign-In to be prominent when offered;
+          Google is the most-clicked desktop option; phone is universal.
+          Email/password is intentionally de-emphasized as a small link. */}
+      <div className="space-y-3">
         <Button
-          className="w-full"
+          className="h-12 w-full bg-white text-base font-semibold text-black hover:bg-white/90"
+          disabled={submitting}
+          type="button"
+          onClick={() => void signInWithProvider("apple")}
+        >
+
+          Continue with Apple
+        </Button>
+        <Button
+          className="h-12 w-full"
           disabled={submitting}
           type="button"
           variant="outline"
-          onClick={() => void signInWithGoogle()}
+          onClick={() => void signInWithProvider("google")}
         >
           {t("auth.login.google")}
         </Button>
+        <Button
+          asChild
+          className="h-12 w-full"
+          disabled={submitting}
+          type="button"
+          variant="outline"
+        >
+          <Link to={phoneTarget}>Continue with phone number</Link>
+        </Button>
       </div>
+
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center">
+          <span className="border-border w-full border-t" />
+        </div>
+        <div className="relative flex justify-center text-xs uppercase">
+          <span className="bg-card text-muted-foreground px-2">or</span>
+        </div>
+      </div>
+
+      {showEmailForm ? (
+        <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
+          <div className="space-y-2">
+            <Label htmlFor="login-email">{t("auth.fields.email.label")}</Label>
+            <Input
+              id="login-email"
+              type="email"
+              autoComplete="email"
+              className="h-12 px-4 rounded-md"
+              aria-invalid={errors.email ? true : undefined}
+              {...register("email")}
+            />
+            {errors.email ? (
+              <p className="text-destructive text-sm" role="alert">
+                {errors.email.message}
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="login-password">{t("auth.fields.password.label")}</Label>
+            <Input
+              id="login-password"
+              type="password"
+              autoComplete="current-password"
+              className="h-12 px-4 rounded-md"
+              aria-invalid={errors.password ? true : undefined}
+              {...register("password")}
+            />
+            {errors.password ? (
+              <p className="text-destructive text-sm" role="alert">
+                {errors.password.message}
+              </p>
+            ) : null}
+          </div>
+          <Button className="w-full" disabled={submitting} type="submit">
+            {t("auth.login.submit")}
+          </Button>
+        </form>
+      ) : (
+        <p className="text-center text-sm">
+          <button
+            type="button"
+            onClick={() => setShowEmailForm(true)}
+            className="text-text-secondary underline-offset-4 hover:text-white hover:underline"
+          >
+            Sign in with email and password
+          </button>
+        </p>
+      )}
 
       <p className="text-muted-foreground text-center text-sm">
         <Link className="text-primary underline-offset-4 hover:underline" to="/forgot-password">

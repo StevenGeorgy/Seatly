@@ -17,6 +17,8 @@ const BookDemoPage = lazy(() => import("@/pages/marketing/BookDemoPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
+const ConnectedAccountsPage = lazy(() => import("@/pages/customer/ConnectedAccountsPage"));
+const DepositPayPage = lazy(() => import("@/pages/customer/DepositPayPage"));
 const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
 const NotificationsPage = lazy(() => import("@/pages/customer/NotificationsPage"));
@@ -30,6 +32,8 @@ const RegisterPage = lazy(() => import("@/pages/auth/RegisterPage"));
 const ResetPasswordPage = lazy(() => import("@/pages/auth/ResetPasswordPage"));
 const SetupPage = lazy(() => import("@/pages/auth/SetupPage"));
 const DraftsPage = lazy(() => import("@/pages/auth/DraftsPage"));
+const OnboardingPage = lazy(() => import("@/pages/auth/OnboardingPage"));
+const PhoneLoginPage = lazy(() => import("@/pages/auth/PhoneLoginPage"));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage"));
 const DashboardLayout = lazy(() => import("@/pages/dashboard/DashboardLayout"));
 const OverviewPage = lazy(() => import("@/pages/dashboard/OverviewPage"));
@@ -68,6 +72,14 @@ export function AppRoutes() {
           }
         />
         <Route
+          path="/login/phone"
+          element={
+            <GuestOnly>
+              <PhoneLoginPage />
+            </GuestOnly>
+          }
+        />
+        <Route
           path="/register"
           element={
             <GuestOnly>
@@ -87,6 +99,14 @@ export function AppRoutes() {
         <Route path="/auth/callback" element={<AuthCallbackPage />} />
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
         <Route
+          path="/onboarding"
+          element={
+            <RequireAuth>
+              <OnboardingPage />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/setup"
           element={
             <RequireAuth>
@@ -105,6 +125,7 @@ export function AppRoutes() {
         />
 
         <Route path="/discover" element={<DiscoverPage />} />
+        <Route path="/deposit/:id" element={<DepositPayPage />} />
         <Route
           path="/account"
           element={
@@ -118,6 +139,14 @@ export function AppRoutes() {
           element={
             <RequireAuth>
               <AccountVoicePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/connected-accounts"
+          element={
+            <RequireAuth>
+              <ConnectedAccountsPage />
             </RequireAuth>
           }
         />
