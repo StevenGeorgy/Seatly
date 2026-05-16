@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
 
 // Phase 3 of diner auth overhaul: small "polite questions" screen
 // that surfaces ONLY missing profile fields. Diners hit this when
@@ -132,9 +133,15 @@ export default function OnboardingPage() {
         updates.email = values.real_email.trim().toLowerCase();
       }
       if (missingPhone && values.phone.trim()) {
-        // Naive normalization — accept whatever they type. Production
-        // libphonenumber-js validation comes in Phase 2.
-        updates.phone = values.phone.trim();
+        // Phase 11 (2026-05-15): phone is now required everywhere; normalize
+        // to E.164 via the same helper PhoneLoginPage uses, so SMS confirmations
+        // can route through Twilio without a follow-up reformat.
+        const normalized = normalizeE164Phone(values.phone);
+        if (!normalized) {
+          toast.error("That phone number doesn't look right. Try +1 416 555 1234.");
+          return;
+        }
+        updates.phone = normalized;
       }
 
       if (Object.keys(updates).length === 0) {

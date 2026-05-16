@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useReservationReviewRequests } from "@/hooks/useReservationReviewRequests";
+import { useUser } from "@/hooks/useUser";
 
 // Inline review prompt on the Discover page. Reads the same source of truth
 // as the global modal — submit from either UI, both close. Hides itself
@@ -17,11 +18,16 @@ import { useReservationReviewRequests } from "@/hooks/useReservationReviewReques
 // submits a review for the same reservation. See
 // useReservationReviewRequests for the dedup story.
 export function DiscoverReviewBanner() {
+  const { user, profile } = useUser();
   const { activeRequest, submit, dismiss } = useReservationReviewRequests();
   const [rating, setRating] = useState(0);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Auth gate: a review banner only makes sense for a signed-in diner whose
+  // profile is loaded. Without this guard, stale state in the singleton store
+  // from a prior session could leak after signout.
+  if (!user || !profile) return null;
   if (!activeRequest) return null;
 
   const handleSubmit = async () => {

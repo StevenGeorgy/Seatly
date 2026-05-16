@@ -101,6 +101,12 @@ verify_jwt = false
 [functions.submit-demo-request]
 verify_jwt = false
 
+[functions.loyalty-waitlist-signup]
+verify_jwt = false
+
+[functions.delete-account]
+verify_jwt = false
+
 [functions.create-stripe-account]
 verify_jwt = false
 
@@ -110,5 +116,17 @@ verify_jwt = false
 [functions.create-subscription]
 verify_jwt = false
 
+[functions.list-stripe-invoices]
+verify_jwt = false
+
+[functions.create-billing-portal-session]
+verify_jwt = false
+
 [functions.stripe-webhook]
+verify_jwt = false
+
+[functions.find-reservation]
+verify_jwt = false
+
+[functions.notify-deposit-payers-refunded]
 verify_jwt = false

@@ -5,9 +5,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
+  AlertTriangle,
   CalendarDays,
   CreditCard,
-  Gift,
+  Loader2,
   LogOut,
   MessageCircle,
   Settings,
@@ -20,9 +21,16 @@ import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
 
+import { AvatarUploadCard } from "@/components/customer/AvatarUploadCard";
 import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -48,7 +56,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
-type Section = "bookings" | "orders" | "reviews" | "loyalty" | "concierge" | "payment" | "preferences";
+type Section = "bookings" | "orders" | "reviews" | "concierge" | "payment" | "preferences";
 type BookingTab = "upcoming" | "past" | "cancelled";
 
 type BookingPreview = {
@@ -75,7 +83,6 @@ const ACCOUNT_NAV: { id: Section; label: string; icon: typeof CalendarDays }[] =
   { id: "bookings", label: "Bookings", icon: CalendarDays },
   { id: "orders", label: "Orders", icon: ShoppingBag },
   { id: "reviews", label: "Reviews", icon: Star },
-  { id: "loyalty", label: "Loyalty", icon: Gift },
   { id: "concierge", label: "Concierge", icon: MessageCircle },
   { id: "payment", label: "Payment", icon: CreditCard },
   { id: "preferences", label: "Preferences", icon: Settings },
@@ -308,7 +315,7 @@ function ReviewEntryRow({
 
 export default function AccountPage() {
   const navigate = useNavigate();
-  const { profile, signOut } = useUser();
+  const { user, profile, signOut } = useUser();
   const { upcoming, past, loading: reservationsLoading } = useMyReservations();
   const { orders, loading: ordersLoading } = useMyOrders();
   const { entries: reviewEntries, loading: reviewEntriesLoading, remove: removeReviewEntry } =
@@ -320,6 +327,13 @@ export default function AccountPage() {
   // delete promise is in flight.
   const [reviewToDelete, setReviewToDelete] = useState<MyReviewSnapEntry | null>(null);
   const [reviewDeleting, setReviewDeleting] = useState(false);
+
+  // Delete-account state. The dialog requires the diner to type their email
+  // exactly before the submit button enables; this prevents accidental clicks
+  // on what is a permanent, irreversible action.
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteAccountConfirm, setDeleteAccountConfirm] = useState("");
+  const [deleteAccountSubmitting, setDeleteAccountSubmitting] = useState(false);
 
   const [activeSection, setActiveSection] = useState<Section>("bookings");
   const [bookingTab, setBookingTab] = useState<BookingTab>("upcoming");
@@ -390,6 +404,70 @@ export default function AccountPage() {
       return;
     }
     navigate("/discover");
+  };
+
+  const upcomingReservationCount = upcoming?.length ?? 0;
+  const deleteEmailMatch =
+    user?.email && deleteAccountConfirm.trim().toLowerCase() === user.email.toLowerCase();
+
+  const handleDeleteAccount = async () => {
+    if (!user || !deleteEmailMatch || deleteAccountSubmitting) return;
+    if (!isSupabaseConfigured()) {
+      toast.error("Supabase is not configured.");
+      return;
+    }
+    setDeleteAccountSubmitting(true);
+    try {
+      const client = getSupabaseBrowserClient();
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        toast.error("Sign in expired — please refresh and try again.");
+        setDeleteAccountSubmitting(false);
+        return;
+      }
+      const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/delete-account`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          apikey: getSupabaseAnonKey(),
+        },
+        body: JSON.stringify({ email_confirmation: deleteAccountConfirm.trim() }),
+      });
+      let parsed:
+        | {
+            ok?: boolean;
+            error?: string;
+            blockers?: { owns_restaurants?: boolean };
+            cancelled_reservation_ids?: string[];
+            refund_total_cents?: number;
+          }
+        | null = null;
+      try {
+        parsed = await res.json();
+      } catch {
+        parsed = null;
+      }
+      if (!res.ok || !parsed?.ok) {
+        const msg = parsed?.error ?? `Request failed (${res.status})`;
+        toast.error(msg);
+        setDeleteAccountSubmitting(false);
+        return;
+      }
+      const refundDollars = (parsed.refund_total_cents ?? 0) / 100;
+      const cancelledCount = parsed.cancelled_reservation_ids?.length ?? 0;
+      const refundLine = refundDollars > 0
+        ? ` CA$${refundDollars.toFixed(2)} refunded across ${cancelledCount} reservation${cancelledCount === 1 ? "" : "s"}.`
+        : "";
+      toast.success(`Your account has been deleted.${refundLine}`);
+      setDeleteAccountOpen(false);
+      await signOut();
+      navigate("/");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't delete your account.");
+      setDeleteAccountSubmitting(false);
+    }
   };
 
   const renderMain = () => {
@@ -542,23 +620,6 @@ export default function AccountPage() {
       );
     }
 
-    if (activeSection === "loyalty") {
-      return (
-        <>
-          <SectionHeading title="Loyalty" body="Track rewards across Cenaiva partner restaurants." />
-          <div className="mt-5 rounded-2xl border border-border bg-bg-surface p-6">
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
-              Loyalty balance
-            </p>
-            <p className="mt-3 font-serif text-3xl text-white">No loyalty balance yet</p>
-            <p className="mt-2 text-sm text-text-secondary">
-              Points will appear here once loyalty records are connected to your account.
-            </p>
-          </div>
-        </>
-      );
-    }
-
     if (activeSection === "concierge") {
       return (
         <>
@@ -595,6 +656,9 @@ export default function AccountPage() {
     return (
       <>
         <SectionHeading title="Preferences" body="Update your profile and dining notes." />
+        <div className="mt-5">
+          <AvatarUploadCard />
+        </div>
         <form
           onSubmit={(event) => void handleSubmit(onSubmit)(event)}
           className="mt-5 space-y-5 rounded-2xl border border-border bg-bg-surface p-6"
@@ -672,6 +736,102 @@ export default function AccountPage() {
             →
           </span>
         </Link>
+
+        <div className="mt-5 rounded-2xl border border-destructive/30 bg-destructive/[0.04] p-5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1">
+              <p className="font-serif text-lg text-white">Danger zone</p>
+              <p className="mt-1 text-xs text-text-secondary">
+                Deleting your account is permanent. Any upcoming reservations will be cancelled
+                and their deposits/pre-orders refunded to your card. Your saved cards will be
+                removed. You'll need to sign up again to use Cenaiva.
+              </p>
+              {upcomingReservationCount > 0 && (
+                <p className="mt-2 text-xs text-text-muted">
+                  You currently have {upcomingReservationCount} upcoming
+                  reservation{upcomingReservationCount === 1 ? "" : "s"} that will be cancelled.
+                </p>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-3 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => {
+                  setDeleteAccountConfirm("");
+                  setDeleteAccountOpen(true);
+                }}
+              >
+                <Trash2 className="mr-1.5 size-3.5" /> Delete my account…
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <Dialog
+          open={deleteAccountOpen}
+          onOpenChange={(next) => {
+            if (!next && !deleteAccountSubmitting) setDeleteAccountOpen(false);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete your account?</DialogTitle>
+              <DialogDescription>
+                This action is permanent. Any upcoming reservations will be cancelled and their
+                deposits/pre-orders refunded. We'll detach your saved cards from Stripe and
+                remove your profile.
+              </DialogDescription>
+            </DialogHeader>
+            {upcomingReservationCount > 0 && (
+              <div className="rounded-md border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+                {upcomingReservationCount} upcoming
+                reservation{upcomingReservationCount === 1 ? "" : "s"} will be cancelled and any
+                eligible refunds processed.
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="delete-account-confirm">
+                Type <span className="font-mono text-text-primary">{user?.email ?? "your email"}</span> to confirm
+              </Label>
+              <Input
+                id="delete-account-confirm"
+                type="email"
+                autoComplete="off"
+                value={deleteAccountConfirm}
+                onChange={(event) => setDeleteAccountConfirm(event.target.value)}
+                placeholder={user?.email ?? "you@example.com"}
+                disabled={deleteAccountSubmitting}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setDeleteAccountOpen(false)}
+                disabled={deleteAccountSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                disabled={!deleteEmailMatch || deleteAccountSubmitting}
+                onClick={() => void handleDeleteAccount()}
+              >
+                {deleteAccountSubmitting ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-4 animate-spin" /> Deleting…
+                  </>
+                ) : (
+                  "Delete my account"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </>
     );
   };
@@ -700,16 +860,6 @@ export default function AccountPage() {
                 <p className="truncate text-base font-semibold text-white">{displayName}</p>
                 <p className="text-xs text-text-muted">{memberSince}</p>
               </div>
-            </div>
-
-            <div className="mt-5 rounded-2xl border border-gold/20 bg-gold/10 p-6">
-              <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-gold">
-                Loyalty balance
-              </p>
-              <p className="mt-3 font-serif text-3xl text-gold">Not connected</p>
-              <p className="mt-1 text-xs text-text-muted">
-                Loyalty points will show here when available.
-              </p>
             </div>
 
             <nav className="mt-6 space-y-2" aria-label="Account">

@@ -121,8 +121,6 @@ Deno.serve(async (req: Request) => {
       // authenticated as a user with a role on this restaurant. We don't
       // care which role — owner, manager, host, server, etc. all qualify
       // since each can already see the reservation in their dashboard.
-      // The downstream cliff logic skips the 24h forfeit (restaurant-
-      // initiated → diner should always be refunded).
       if (!bearerToken) {
         return json({ error: "Owner cancel requires authentication" }, 401);
       }
@@ -227,21 +225,9 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Past reservations cannot be cancelled" }, 400);
     }
 
-    // 24h cancellation cliff. Bookings within 24 hours of the reserved
-    // time are non-refundable — the cancel still goes through (slot opens
-    // back up for the next diner), but any paid pre-orders or charged
-    // deposits stay with the restaurant. This both prevents the
-    // "block-a-section, dump-it-last-minute" abuse pattern and matches
-    // industry norms (Resy, Tock). Free reservations are unaffected since
-    // there's nothing to refund either way.
-    //
-    // Owner-initiated cancels SKIP the cliff entirely — the diner
-    // shouldn't be punished when the restaurant decides to cancel.
-    // Always refund regardless of how close to reservation time.
-    const HOURS_BEFORE_NONREFUNDABLE = 24;
-    const hoursToReservation = (reservedAt.getTime() - Date.now()) / (1000 * 60 * 60);
-    const withinCliff =
-      actor === "owner" ? false : hoursToReservation < HOURS_BEFORE_NONREFUNDABLE;
+    // All cancels fully refund — the 24h cliff was removed 2026-05-15.
+    // Both diner-initiated and owner-initiated cancels run the refund
+    // block below; the only branch is on cancellation_reason wording.
 
     const { data: restaurant } = await adminClient
       .from("restaurants")
@@ -321,11 +307,7 @@ Deno.serve(async (req: Request) => {
     };
 
     const cancellationReason =
-      actor === "owner"
-        ? "Cancelled by restaurant"
-        : withinCliff
-          ? "Cancelled by diner (within 24h — non-refundable)"
-          : "Cancelled by diner";
+      actor === "owner" ? "Cancelled by restaurant" : "Cancelled by diner";
     const { error: updateError } = await adminClient
       .from("reservations")
       .update({
@@ -338,8 +320,9 @@ Deno.serve(async (req: Request) => {
 
     // ─── Refund phase ───────────────────────────────────────────────────
     // After the reservation flips to 'cancelled', refund any paid pre-order
-    // and any charged deposits attached to this reservation — UNLESS the
-    // cancellation falls within the 24h non-refundable cliff (see above).
+    // and any charged deposits attached to this reservation. The 24h cliff
+    // was removed 2026-05-15 — every cancel now refunds in full, regardless
+    // of how close to the reservation time and regardless of who initiated.
     //
     // Idempotency: the status filters ('paid' for orders, 'charged' for
     // deposits) plus the helper's `charge_already_refunded` backstop mean a
@@ -352,32 +335,8 @@ Deno.serve(async (req: Request) => {
     // so stripe_payment_intent_id is null. We still want the UI to show
     // "Refunded" — flip those rows to 'refunded' in DB without a Stripe call.
     const refundOutcomes: RefundOutcomeReport[] = [];
-    let forfeitTotalCents = 0;
+    const refundedDepositPayerIds: string[] = [];
 
-    if (withinCliff) {
-      // Within 24h: total up what WOULD have been refunded so the UI can
-      // tell the diner exactly how much they forfeited per policy. Leave
-      // orders.status='paid' and reservation_deposit_payments.status='charged'
-      // untouched — the restaurant keeps the money.
-      const { data: paidOrdersForfeit } = await adminClient
-        .from("orders")
-        .select("total_amount")
-        .eq("reservation_id", reservationId)
-        .eq("status", "paid");
-      for (const o of paidOrdersForfeit ?? []) {
-        forfeitTotalCents += Math.round(
-          Number((o as { total_amount: number | string | null }).total_amount ?? 0) * 100,
-        );
-      }
-      const { data: chargedDepositsForfeit } = await adminClient
-        .from("reservation_deposit_payments")
-        .select("amount_cents")
-        .eq("reservation_id", reservationId)
-        .eq("status", "charged");
-      for (const d of chargedDepositsForfeit ?? []) {
-        forfeitTotalCents += (d as { amount_cents: number | null }).amount_cents ?? 0;
-      }
-    } else {
     // Stub-deposit DB-only sweep: must run BEFORE the PI-based loop so the
     // status='charged' filter on the real-PI query doesn't pick them back up.
     const { data: stubDeposits } = await adminClient
@@ -394,12 +353,14 @@ Deno.serve(async (req: Request) => {
         .eq("status", "charged")
         .is("stripe_payment_intent_id", null);
       for (const dep of stubDeposits) {
+        const row = dep as { id: string; amount_cents: number | null };
         refundOutcomes.push({
           kind: "deposit",
           ok: true,
           payment_intent_id: null,
-          amount_cents: (dep as { amount_cents: number | null }).amount_cents ?? 0,
+          amount_cents: row.amount_cents ?? 0,
         });
+        refundedDepositPayerIds.push(row.id);
       }
     }
 
@@ -494,6 +455,7 @@ Deno.serve(async (req: Request) => {
             payment_intent_id: piId,
             amount_cents: amountCents,
           });
+          refundedDepositPayerIds.push(row.id);
         } else {
           refundOutcomes.push({
             kind: "deposit",
@@ -509,7 +471,30 @@ Deno.serve(async (req: Request) => {
         }
       }
     }
-    } // end of !withinCliff branch
+
+    // Notify non-organizer payers (friends who chipped in on a split
+    // deposit) that their share was refunded. Fire-and-forget; never
+    // blocks the cancel response. Skipped when no deposit payers got
+    // refunded — most cancels have no split deposit at all.
+    if (refundedDepositPayerIds.length > 0) {
+      const notifyUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-deposit-payers-refunded`;
+      const notifyPromise = fetch(notifyUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
+        },
+        body: JSON.stringify({
+          reservation_id: reservationId,
+          refunded_payer_ids: refundedDepositPayerIds,
+        }),
+      }).catch((err) => {
+        console.warn("[cancel-reservation] notify-deposit-payers-refunded dispatch failed:", err);
+      });
+      const edge = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } })
+        .EdgeRuntime;
+      if (edge?.waitUntil) edge.waitUntil(notifyPromise);
+    }
 
     const refundTotalCents = refundOutcomes
       .filter((r) => r.ok)
@@ -572,8 +557,6 @@ Deno.serve(async (req: Request) => {
         notification_delivery_channel: notification.channel,
         refunds: refundOutcomes,
         refund_total_cents: refundTotalCents,
-        forfeit_total_cents: forfeitTotalCents,
-        within_24h: withinCliff,
         actor,
       });
     }
@@ -628,8 +611,6 @@ Deno.serve(async (req: Request) => {
       notification_delivery_channel: notification.channel,
       refunds: refundOutcomes,
       refund_total_cents: refundTotalCents,
-      forfeit_total_cents: forfeitTotalCents,
-      within_24h: withinCliff,
       actor,
     });
   } catch (error) {

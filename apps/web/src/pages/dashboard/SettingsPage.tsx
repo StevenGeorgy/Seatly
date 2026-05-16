@@ -5,10 +5,12 @@ import { toast } from "sonner";
 import { format, parse, isValid, startOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import {
+  AlertCircle,
   Bell,
   CalendarDays,
-  CheckCircle2,
   CreditCard,
+  ExternalLink,
+  Loader2,
   Pencil,
   Plus,
   Settings as SettingsIcon,
@@ -35,7 +37,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { useRestaurantSeatTotal } from "@/hooks/useRestaurantSeatTotal";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
@@ -127,9 +134,9 @@ function isLight(hex: string): boolean {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
 }
 
-type SectionKey = "restaurant" | "hours" | "billing" | "notifications" | "theme";
+type SectionKey = "restaurant" | "hours" | "billing" | "notifications" | "theme" | "danger";
 type RestaurantInfoSectionKey = Extract<SectionKey, "restaurant" | "hours" | "theme">;
-type SettingsSectionKey = Extract<SectionKey, "billing" | "notifications">;
+type SettingsSectionKey = Extract<SectionKey, "billing" | "notifications" | "danger">;
 
 const RESTAURANT_INFO_NAV: { key: RestaurantInfoSectionKey; label: string }[] = [
   { key: "restaurant", label: "Restaurant info" },
@@ -140,6 +147,7 @@ const RESTAURANT_INFO_NAV: { key: RestaurantInfoSectionKey; label: string }[] = 
 const SETTINGS_NAV: { key: SettingsSectionKey; label: string; icon: typeof CreditCard }[] = [
   { key: "billing", label: "Billing", icon: CreditCard },
   { key: "notifications", label: "Notifications", icon: Bell },
+  { key: "danger", label: "Danger zone", icon: Trash2 },
 ];
 
 const SECTION_META: Record<SectionKey, { eyebrow: string; title: string; subtitle: string }> = {
@@ -167,6 +175,11 @@ const SECTION_META: Record<SectionKey, { eyebrow: string; title: string; subtitl
     eyebrow: "Configuration",
     title: "Theme",
     subtitle: "Customize the colors that brand the dashboard for your restaurant.",
+  },
+  danger: {
+    eyebrow: "Configuration",
+    title: "Danger zone",
+    subtitle: "Permanent actions that affect this entire restaurant.",
   },
 };
 
@@ -414,20 +427,120 @@ function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
 
-const PLAN_FEATURES = [
-  "Unlimited reservations",
-  "Full CRM & marketing",
-  "Floor plan + KDS",
-  "5 staff seats included",
-  "Priority support",
+// Cenaiva plan is a single tier: $200 CAD/month with a 90-day free trial.
+// In addition, $1 per confirmed reservation and 5% application fee on
+// pre-orders + deposits route to Cenaiva via Stripe Connect. Restaurants
+// absorb their own Stripe processing fees on the connected account.
+const PLAN_PRICE_CENTS = 20000;
+const PLAN_CURRENCY = "CAD";
+const PLAN_USAGE_FEES = [
+  "$1 per confirmed reservation",
+  "5% application fee on pre-orders",
+  "5% application fee on deposits",
 ];
 
-const INVOICES = [
-  { date: "Apr 1, 2026", id: "INV-04261", amount: "$280.00" },
-  { date: "Mar 1, 2026", id: "INV-03261", amount: "$280.00" },
-  { date: "Feb 1, 2026", id: "INV-02261", amount: "$280.00" },
-  { date: "Jan 1, 2026", id: "INV-01261", amount: "$280.00" },
-];
+type BillingSummary = {
+  subscription_status: string | null;
+  trial_ends_at: string | null;
+  stripe_customer_id: string | null;
+  stripe_charges_enabled: boolean | null;
+  currency: string;
+};
+
+type StripeInvoice = {
+  id: string;
+  number: string | null;
+  status: string | null;
+  amount_due_cents: number;
+  amount_paid_cents: number;
+  currency: string;
+  created_iso: string;
+  period_end_iso: string | null;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
+};
+
+type BillingPortalFlow = "default" | "payment_method_update" | "subscription_cancel";
+
+function formatInvoiceAmount(cents: number, currency: string): string {
+  const value = cents / 100;
+  try {
+    return new Intl.NumberFormat("en-CA", {
+      style: "currency",
+      currency: currency.toUpperCase(),
+      currencyDisplay: "narrowSymbol",
+    }).format(value);
+  } catch {
+    return `${currency.toUpperCase()} $${value.toFixed(2)}`;
+  }
+}
+
+function formatInvoiceDate(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function daysUntil(iso: string | null): number | null {
+  if (!iso) return null;
+  const target = new Date(iso).getTime();
+  if (!Number.isFinite(target)) return null;
+  const diffMs = target - Date.now();
+  return Math.ceil(diffMs / 86_400_000);
+}
+
+const SUBSCRIPTION_STATUS_LABEL: Record<string, { label: string; tone: "ok" | "warn" | "bad" | "muted" }> = {
+  trialing: { label: "Free trial", tone: "ok" },
+  active: { label: "Active", tone: "ok" },
+  past_due: { label: "Past due", tone: "warn" },
+  unpaid: { label: "Unpaid", tone: "bad" },
+  incomplete: { label: "Setup incomplete", tone: "warn" },
+  incomplete_expired: { label: "Setup expired", tone: "bad" },
+  canceled: { label: "Cancelled", tone: "muted" },
+  paused: { label: "Paused", tone: "warn" },
+};
+
+async function invokeBillingEdgeFunction<TResult>(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: true; data: TResult } | { ok: false; error: string }> {
+  if (!isSupabaseConfigured()) {
+    return { ok: false, error: "Supabase is not configured." };
+  }
+  const client = getSupabaseBrowserClient();
+  const { data: sessionData } = await client.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!token) return { ok: false, error: "You need to be signed in." };
+  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      apikey: getSupabaseAnonKey(),
+    },
+    body: JSON.stringify(body),
+  });
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const errMsg =
+      parsed && typeof parsed === "object" && parsed !== null && "error" in parsed
+        ? String((parsed as { error: unknown }).error)
+        : `Request failed (${res.status})`;
+    return { ok: false, error: errMsg };
+  }
+  return { ok: true, data: parsed as TResult };
+}
 
 const NOTIFICATION_GROUPS = [
   {
@@ -530,8 +643,13 @@ export default function SettingsPage() {
   const [specialDetailsId, setSpecialDetailsId] = useState<string | null>(null);
   const [savingHours, setSavingHours] = useState(false);
 
-  // Billing
-  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+  // Billing — driven by real Stripe subscription state, not the legacy
+  // `restaurants.plan` text column.
+  const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [invoices, setInvoices] = useState<StripeInvoice[]>([]);
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [portalLoading, setPortalLoading] = useState<BillingPortalFlow | null>(null);
 
   // Theme
   const existingTheme = selectedRestaurant?.settings_json?.theme;
@@ -591,7 +709,7 @@ export default function SettingsPage() {
     const client = getSupabaseBrowserClient();
     void client
       .from("restaurants")
-        .select("cuisine_type, address, email, phone, city, province, country, lat, lng, business_type, description, hours_json, plan, accepts_walkins, settings_json")
+        .select("cuisine_type, address, email, phone, city, province, country, lat, lng, business_type, description, hours_json, accepts_walkins, settings_json")
       .eq("id", selectedRestaurant.id)
       .single()
       .then(({ data }) => {
@@ -655,7 +773,6 @@ export default function SettingsPage() {
         const parsed = parseRestaurantHoursJson(data.hours_json as Record<string, unknown> | null);
         setHours(parsed.regular);
         setSpecialDays(parsed.special);
-        setCurrentPlan(data.plan ?? null);
       });
   }, [
     selectedRestaurant?.id,
@@ -663,6 +780,100 @@ export default function SettingsPage() {
     selectedRestaurant?.currency,
     selectedRestaurant?.accepts_walkins,
   ]);
+
+  // Billing summary + invoice list. The summary comes from `restaurants`
+  // (kept in sync by the stripe-webhook on every account/subscription event);
+  // invoices come from a live Stripe call so we don't have to mirror them in
+  // our own DB.
+  useEffect(() => {
+    const restaurantId = selectedRestaurant?.id ?? null;
+    if (!restaurantId || !isSupabaseConfigured()) {
+      setBillingSummary(null);
+      setInvoices([]);
+      return;
+    }
+    let cancelled = false;
+    setBillingLoading(true);
+    const client = getSupabaseBrowserClient();
+    void (async () => {
+      try {
+        const { data } = await client
+          .from("restaurants")
+          .select(
+            "subscription_status, trial_ends_at, stripe_customer_id, stripe_charges_enabled, currency",
+          )
+          .eq("id", restaurantId)
+          .single();
+        if (cancelled) return;
+        if (data) {
+          const row = data as {
+            subscription_status: string | null;
+            trial_ends_at: string | null;
+            stripe_customer_id: string | null;
+            stripe_charges_enabled: boolean | null;
+            currency: string | null;
+          };
+          setBillingSummary({
+            subscription_status: row.subscription_status,
+            trial_ends_at: row.trial_ends_at,
+            stripe_customer_id: row.stripe_customer_id,
+            stripe_charges_enabled: row.stripe_charges_enabled,
+            currency: row.currency ?? "cad",
+          });
+        }
+        setInvoicesLoading(true);
+        const result = await invokeBillingEdgeFunction<{
+          invoices: StripeInvoice[];
+          has_more: boolean;
+        }>("list-stripe-invoices", { restaurant_id: restaurantId, limit: 12 });
+        if (cancelled) return;
+        setInvoices(result.ok ? result.data.invoices : []);
+      } finally {
+        if (!cancelled) {
+          setBillingLoading(false);
+          setInvoicesLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRestaurant?.id]);
+
+  const openBillingPortal = async (flow: BillingPortalFlow): Promise<void> => {
+    if (!selectedRestaurant?.id) return;
+    if (portalLoading) return;
+    setPortalLoading(flow);
+    try {
+      const result = await invokeBillingEdgeFunction<{ url: string }>(
+        "create-billing-portal-session",
+        {
+          restaurant_id: selectedRestaurant.id,
+          flow,
+          return_url: `${window.location.origin}/dashboard/settings`,
+        },
+      );
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      window.location.href = result.data.url;
+    } finally {
+      setPortalLoading(null);
+    }
+  };
+
+  const subscriptionLabel = billingSummary?.subscription_status
+    ? SUBSCRIPTION_STATUS_LABEL[billingSummary.subscription_status] ?? {
+        label: billingSummary.subscription_status,
+        tone: "muted" as const,
+      }
+    : { label: "Not set up", tone: "muted" as const };
+  const trialDaysLeft = daysUntil(billingSummary?.trial_ends_at ?? null);
+  const hasSubscription = Boolean(billingSummary?.stripe_customer_id);
+  const canCancel = hasSubscription
+    && billingSummary?.subscription_status !== "canceled"
+    && billingSummary?.subscription_status !== "incomplete_expired";
 
   const restaurantDirty = useMemo(() => {
     if (!restaurantInitial) return false;
@@ -1261,7 +1472,7 @@ export default function SettingsPage() {
         <div className="min-w-0">
           {section === "restaurant" && (
             <div className="flex flex-col gap-6">
-              <SectionHeading title="Restaurant identity" subtitle="How Cenalva and your guests see you." />
+              <SectionHeading title="Restaurant identity" subtitle="How Cenaiva and your guests see you." />
               <Card>
                 <FieldRow label="Name">
                   <Input value={restaurantName} onChange={(e) => setRestaurantName(e.target.value)} />
@@ -1664,48 +1875,6 @@ export default function SettingsPage() {
                 ceilingHint={restaurantSeatTotal}
                 onSaved={() => refreshRestaurants()}
               />
-              <Card>
-                <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] sm:px-7">
-                  <div>
-                    <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-danger">
-                      <Trash2 className="size-3.5" />
-                      {t("dashboard.settings.dangerZone")}
-                    </p>
-                    <h3 className="mt-2 font-serif text-xl text-white">
-                      {t("dashboard.settings.deleteRestaurant")}
-                    </h3>
-                    <p className="mt-2 max-w-2xl text-sm text-text-muted">
-                      {t("dashboard.settings.deleteRestaurantHint")}
-                    </p>
-                    <p className="mt-3 text-xs text-danger">
-                      {t("dashboard.settings.deleteRestaurantWarning")}
-                    </p>
-                  </div>
-                  <div className="space-y-3 rounded-2xl border border-danger/30 bg-danger/5 p-4">
-                    <label className="block text-xs font-medium text-text-secondary" htmlFor="delete-restaurant-confirmation">
-                      {t("dashboard.settings.deleteRestaurantConfirmLabel", {
-                        name: selectedRestaurant?.name ?? "",
-                      })}
-                    </label>
-                    <Input
-                      id="delete-restaurant-confirmation"
-                      value={deleteConfirmationName}
-                      onChange={(event) => setDeleteConfirmationName(event.target.value)}
-                      placeholder={selectedRestaurant?.name ?? ""}
-                      disabled={deletingRestaurant || !selectedRestaurant}
-                    />
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      className="w-full"
-                      disabled={!deleteConfirmationMatches || deletingRestaurant || !selectedRestaurant}
-                      onClick={() => void deleteRestaurant()}
-                    >
-                      {deletingRestaurant ? t("routes.loading") : t("dashboard.settings.deleteRestaurantAction")}
-                    </Button>
-                  </div>
-                </div>
-              </Card>
             </div>
           )}
 
@@ -1965,35 +2134,191 @@ export default function SettingsPage() {
             </div>
           )}
 
+          {section === "danger" && (
+            <div className="flex flex-col gap-6">
+              <SectionHeading
+                title="Danger zone"
+                subtitle="Permanent actions that affect this entire restaurant."
+              />
+              <Card>
+                <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] sm:px-7">
+                  <div>
+                    <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-danger">
+                      <Trash2 className="size-3.5" />
+                      {t("dashboard.settings.dangerZone")}
+                    </p>
+                    <h3 className="mt-2 font-serif text-xl text-white">
+                      {t("dashboard.settings.deleteRestaurant")}
+                    </h3>
+                    <p className="mt-2 max-w-2xl text-sm text-text-muted">
+                      {t("dashboard.settings.deleteRestaurantHint")}
+                    </p>
+                    <p className="mt-3 text-xs text-danger">
+                      {t("dashboard.settings.deleteRestaurantWarning")}
+                    </p>
+                  </div>
+                  <div className="space-y-3 rounded-2xl border border-danger/30 bg-danger/5 p-4">
+                    <label className="block text-xs font-medium text-text-secondary" htmlFor="delete-restaurant-confirmation">
+                      {t("dashboard.settings.deleteRestaurantConfirmLabel", {
+                        name: selectedRestaurant?.name ?? "",
+                      })}
+                    </label>
+                    <Input
+                      id="delete-restaurant-confirmation"
+                      value={deleteConfirmationName}
+                      onChange={(event) => setDeleteConfirmationName(event.target.value)}
+                      placeholder={selectedRestaurant?.name ?? ""}
+                      disabled={deletingRestaurant || !selectedRestaurant}
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      className="w-full"
+                      disabled={!deleteConfirmationMatches || deletingRestaurant || !selectedRestaurant}
+                      onClick={() => void deleteRestaurant()}
+                    >
+                      {deletingRestaurant ? t("routes.loading") : t("dashboard.settings.deleteRestaurantAction")}
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )}
+
           {section === "billing" && (
             <div className="flex flex-col gap-6">
-              <SectionHeading title="Billing" subtitle="Your Cenalva subscription and invoices." />
+              <SectionHeading title="Billing" subtitle="Your Cenaiva subscription and invoices." />
+              {!hasSubscription && !billingLoading && (
+                <Card>
+                  <div className="flex items-start gap-4 px-6 py-5 sm:px-7">
+                    <AlertCircle className="mt-0.5 size-5 shrink-0 text-amber-400" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-text-primary">
+                        Subscription not started yet
+                      </p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Finish payment setup in the restaurant onboarding to activate billing. Your
+                        first 90 days are free — your card won't be charged until the trial ends.
+                      </p>
+                      <Button
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => navigate("/setup")}
+                      >
+                        Open setup
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
               <Card>
                 <div className="flex flex-col gap-6 px-6 py-7 sm:flex-row sm:items-start sm:justify-between sm:px-7">
                   <div className="min-w-0">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Current plan</p>
-                    <h3 className="mt-2 font-serif text-3xl text-white">Cenalva · Atelier</h3>
-                    <p className="mt-1 text-sm text-text-muted">For full-service restaurants up to 200 covers/night.</p>
-                    <p className="mt-6">
-                      <span className="font-serif text-4xl text-white">$280</span>
-                      <span className="ml-2 text-sm text-text-muted">/month, billed annually</span>
+                    <div className="flex items-center gap-3">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-gold">Current plan</p>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em]",
+                          subscriptionLabel.tone === "ok"
+                            && "border border-success/30 bg-success/10 text-success",
+                          subscriptionLabel.tone === "warn"
+                            && "border border-amber-400/30 bg-amber-400/10 text-amber-300",
+                          subscriptionLabel.tone === "bad"
+                            && "border border-destructive/30 bg-destructive/10 text-destructive",
+                          subscriptionLabel.tone === "muted"
+                            && "border border-border bg-bg-base text-text-muted",
+                        )}
+                      >
+                        {subscriptionLabel.label}
+                      </span>
+                    </div>
+                    <h3 className="mt-2 font-serif text-3xl text-white">Cenaiva · Standard</h3>
+                    <p className="mt-1 text-sm text-text-muted">
+                      Everything you need to run your restaurant on Cenaiva.
                     </p>
+                    <p className="mt-6">
+                      <span className="font-serif text-4xl text-white">
+                        {formatInvoiceAmount(PLAN_PRICE_CENTS, PLAN_CURRENCY)}
+                      </span>
+                      <span className="ml-2 text-sm text-text-muted">/month, billed monthly</span>
+                    </p>
+                    {billingSummary?.subscription_status === "trialing"
+                      && typeof trialDaysLeft === "number"
+                      && trialDaysLeft > 0 && (
+                        <p className="mt-2 text-xs text-success">
+                          Free trial: {trialDaysLeft} {trialDaysLeft === 1 ? "day" : "days"} left
+                          {billingSummary.trial_ends_at && (
+                            <>
+                              {" "}· first invoice {formatInvoiceDate(billingSummary.trial_ends_at)}
+                            </>
+                          )}
+                        </p>
+                      )}
+                    {billingSummary?.subscription_status === "past_due" && (
+                      <p className="mt-2 text-xs text-amber-300">
+                        We couldn't charge your card on the last invoice. Update your payment method
+                        below to keep your restaurant published.
+                      </p>
+                    )}
+                    {billingSummary?.subscription_status === "canceled" && (
+                      <p className="mt-2 text-xs text-text-muted">
+                        Your subscription is cancelled. Your restaurant has been unpublished.
+                      </p>
+                    )}
                   </div>
-                  <ul className="space-y-1.5 text-sm text-text-secondary">
-                    {PLAN_FEATURES.map((feature) => (
-                      <li key={feature} className="flex items-center gap-2">
-                        <CheckCircle2 className="size-4 text-gold" />
-                        {feature}
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="text-sm text-text-secondary">
+                    <div className="rounded-lg border border-border/60 bg-bg-base/60 px-3 py-2.5">
+                      <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
+                        Usage fees (on top)
+                      </p>
+                      <ul className="mt-1 space-y-0.5 text-xs text-text-muted">
+                        {PLAN_USAGE_FEES.map((fee) => (
+                          <li key={fee}>· {fee}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-6 py-4 sm:px-7">
-                  <Button size="sm">Upgrade to Maison</Button>
-                  <Button size="sm" variant="outline">Manage payment</Button>
-                  <Button size="sm" variant="ghost">Cancel plan</Button>
-                  {currentPlan && currentPlan !== "free" && (
-                    <span className="ml-auto text-xs text-text-muted">Stripe status: <span className="text-text-primary">active</span></span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!hasSubscription || portalLoading !== null}
+                    onClick={() => void openBillingPortal("payment_method_update")}
+                  >
+                    {portalLoading === "payment_method_update" ? (
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    ) : (
+                      <CreditCard className="mr-1.5 size-3.5" />
+                    )}
+                    Manage payment
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!hasSubscription || portalLoading !== null}
+                    onClick={() => void openBillingPortal("default")}
+                  >
+                    {portalLoading === "default" ? (
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    ) : (
+                      <ExternalLink className="mr-1.5 size-3.5" />
+                    )}
+                    Open billing portal
+                  </Button>
+                  {canCancel && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={portalLoading !== null}
+                      onClick={() => void openBillingPortal("subscription_cancel")}
+                    >
+                      {portalLoading === "subscription_cancel" ? (
+                        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                      ) : null}
+                      Cancel plan
+                    </Button>
                   )}
                 </div>
               </Card>
@@ -2001,25 +2326,82 @@ export default function SettingsPage() {
               <Card>
                 <div className="flex items-center justify-between px-6 py-5 sm:px-7">
                   <h3 className="font-serif text-xl text-white">Invoice history</h3>
-                  <Button variant="outline" size="sm">Download all</Button>
+                  {hasSubscription && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={portalLoading !== null}
+                      onClick={() => void openBillingPortal("default")}
+                    >
+                      View all in Stripe
+                    </Button>
+                  )}
                 </div>
                 <div className="divide-y divide-border/50">
-                  {INVOICES.map((inv) => (
-                    <div key={inv.id} className="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-4 px-6 py-4 text-sm sm:px-7">
-                      <span className="font-mono text-text-muted">{inv.date}</span>
-                      <span className="font-mono text-text-muted">{inv.id}</span>
-                      <span className="text-text-primary">{inv.amount}</span>
-                      <div className="flex items-center gap-3 justify-self-end">
-                        <span className="text-success">Paid</span>
-                        <button
-                          type="button"
-                          className="font-mono text-xs text-text-muted transition-colors hover:text-gold"
-                        >
-                          PDF
-                        </button>
-                      </div>
+                  {invoicesLoading && (
+                    <div className="flex items-center gap-2 px-6 py-5 text-sm text-text-muted sm:px-7">
+                      <Loader2 className="size-4 animate-spin" /> Loading invoices…
                     </div>
-                  ))}
+                  )}
+                  {!invoicesLoading && invoices.length === 0 && (
+                    <div className="px-6 py-6 text-sm text-text-muted sm:px-7">
+                      {hasSubscription
+                        ? "No invoices yet. Your first invoice will appear here once your free trial ends."
+                        : "No invoices yet — start your subscription to see billing history."}
+                    </div>
+                  )}
+                  {!invoicesLoading
+                    && invoices.map((inv) => {
+                      const isPaid = inv.status === "paid";
+                      const isOpen = inv.status === "open";
+                      const isFailed = inv.status === "uncollectible" || inv.status === "void";
+                      return (
+                        <div
+                          key={inv.id}
+                          className="grid grid-cols-[1fr_1fr_auto_auto] items-center gap-4 px-6 py-4 text-sm sm:px-7"
+                        >
+                          <span className="font-mono text-text-muted">
+                            {formatInvoiceDate(inv.created_iso)}
+                          </span>
+                          <span className="font-mono text-text-muted">
+                            {inv.number ?? inv.id.slice(-8).toUpperCase()}
+                          </span>
+                          <span className="text-text-primary">
+                            {formatInvoiceAmount(
+                              isPaid ? inv.amount_paid_cents : inv.amount_due_cents,
+                              inv.currency,
+                            )}
+                          </span>
+                          <div className="flex items-center gap-3 justify-self-end">
+                            <span
+                              className={cn(
+                                "text-xs",
+                                isPaid && "text-success",
+                                isOpen && "text-amber-300",
+                                isFailed && "text-destructive",
+                                !isPaid && !isOpen && !isFailed && "text-text-muted",
+                              )}
+                            >
+                              {(inv.status ?? "unknown")
+                                .replace(/_/g, " ")
+                                .replace(/\b\w/g, (c) => c.toUpperCase())}
+                            </span>
+                            {inv.invoice_pdf ? (
+                              <a
+                                href={inv.invoice_pdf}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono text-xs text-text-muted transition-colors hover:text-gold"
+                              >
+                                PDF
+                              </a>
+                            ) : (
+                              <span className="font-mono text-xs text-text-muted/40">PDF</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                 </div>
               </Card>
             </div>

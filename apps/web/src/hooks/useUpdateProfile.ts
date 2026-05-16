@@ -26,15 +26,21 @@ export function useUpdateProfile() {
       toast.info("Verification email sent — your email will update after you confirm it.");
     }
 
+    const updateRow: Record<string, unknown> = {
+      full_name: values.full_name,
+      phone: values.phone || null,
+      email: values.email,
+      dietary_restrictions: values.dietary_restrictions,
+      allergies: values.allergies,
+    };
+    // avatar_url is opt-in — only include when explicitly passed (string or
+    // null). Leaving it undefined means "don't touch the column."
+    if (values.avatar_url !== undefined) {
+      updateRow.avatar_url = values.avatar_url;
+    }
     const { error: dbErr } = await client
       .from("user_profiles")
-      .update({
-        full_name: values.full_name,
-        phone: values.phone || null,
-        email: values.email,
-        dietary_restrictions: values.dietary_restrictions,
-        allergies: values.allergies,
-      })
+      .update(updateRow)
       .eq("id", profile.id);
 
     if (dbErr) {

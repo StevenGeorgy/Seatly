@@ -519,8 +519,8 @@ export default function BookingsPage() {
   const [search, setSearch] = useState("");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   // Cancel-confirm dialog state. Holds the booking card the user clicked
-  // Cancel on (null = closed). Lets us show a 24h-policy warning before
-  // the cancel fires — matches the same UX in BookingDetailsPage.
+  // Cancel on (null = closed). Cancels always refund in full — no 24h
+  // forfeit policy. The dialog is purely an "are you sure?" confirm.
   const [cancelConfirm, setCancelConfirm] = useState<BookingCard | null>(null);
   // Leave-a-review modal state. Holds the booking card the user clicked
   // "Leave a review" on; null = closed. We pull guest_id + restaurant_id
@@ -990,11 +990,9 @@ export default function BookingsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Cancel-confirm dialog. Same 24h policy warning as
-          BookingDetailsPage. We don't know exact payment amounts at the
-          list level (would be too expensive to join per-card), so the
-          warning is generic — the success toast surfaces the precise
-          forfeited / refunded amount returned by the edge fn. */}
+      {/* Cancel-confirm dialog. Cancels always refund in full — the
+          success toast surfaces the exact refunded amount returned by
+          the edge fn. */}
       <Dialog
         open={cancelConfirm !== null}
         onOpenChange={(open) => {
@@ -1005,24 +1003,10 @@ export default function BookingsPage() {
           <DialogHeader>
             <DialogTitle>Cancel this reservation?</DialogTitle>
           </DialogHeader>
-          {cancelConfirm && (cancelConfirm.reservedAt.getTime() - Date.now()) < 24 * 60 * 60 * 1000 ? (
-            <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
-              <p className="text-sm font-semibold text-warning">
-                Heads up — this reservation is within 24 hours.
-              </p>
-              <p className="mt-2 text-sm text-text-secondary">
-                Cancelling now will release your table, but any deposit or pre-order you've
-                paid will be forfeited (per our 24h cancellation policy). This can't be
-                undone.
-              </p>
-            </div>
-          ) : (
-            <p className="text-sm text-text-secondary">
-              The restaurant will be notified and your table will be released. Any deposit
-              or pre-order will be refunded to your original payment method. This can't be
-              undone.
-            </p>
-          )}
+          <p className="text-sm text-text-secondary">
+            Cancelling this reservation will release your table. Any deposit or pre-order
+            you've paid will be refunded to your card. This can't be undone.
+          </p>
           <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
             <Button
               type="button"

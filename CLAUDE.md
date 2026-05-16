@@ -27,6 +27,91 @@ edits here propagate to both agents in one step.
 
 ## Headline state (2026-05-15)
 
+- **Cancellation policy overhaul + find-reservation + phone-everywhere
+  (2026-05-15, late).** Six related changes shipped together:
+  1. **24h cancellation cliff removed.** All cancels — diner, guest,
+     owner — now fully refund regardless of timing. The
+     `HOURS_BEFORE_NONREFUNDABLE` constant, `withinCliff` branch,
+     forfeit math, and `forfeit_total_cents` / `within_24h` response
+     fields are gone from `cancel-reservation` and from
+     `BookingDetailsPage` / `BookingsPage` / `AccountPage`. Confirm
+     dialogs no longer show a "within 24 hours" warning.
+  2. **Account deletion no longer auto-cancels meals in progress.**
+     `delete-account` auto-cancel sweep narrowed from
+     `['confirmed','pending_payment','arriving','seated']` to
+     `['confirmed','pending_payment']`. A separate UPDATE nulls
+     `user_profile_id` on any `seated`/`arriving` rows before the
+     `user_profiles` delete so the restaurant can close them out
+     normally with the row de-linked from the deleted account.
+  3. **Multi-payer refund notifications.** New edge fn
+     `notify-deposit-payers-refunded` (anon-callable, service-role
+     internally, 30/60s rate limit) fires fire-and-forget from
+     `cancel-reservation` after the deposit refund loop. Sends an HTML
+     Resend email (`#D4AF37` gold accent, matching
+     `dispatch-deposit-invites` style) to each non-organizer payer
+     whose row was just refunded: subject "Your $X refund —
+     {organizer}'s {restaurant} reservation was cancelled". Organizer
+     identified by `payer_email` matching the reservation's owner
+     email (case-insensitive). Failure of the notify call NEVER blocks
+     the cancel response.
+  4. **`/find-reservation` page** for guests who lost their
+     confirmation email. New page at
+     `apps/web/src/pages/customer/FindReservationPage.tsx` (anon, no
+     `<RequireAuth>`). Two side-by-side panels: **code lookup** (left,
+     primary) auto-uppercases input, accepts `SEAT-XXXX` or bare
+     `XXXX`, navigates to `/{slug}?confirmation={code}` on match;
+     **contact lookup** (right, secondary) takes email + last name,
+     re-sends the original confirmation email/SMS, ALWAYS responds
+     with the same generic toast to never reveal existence. New edge
+     fn `find-reservation` with discriminated body
+     `{lookup_type:"code",code} | {lookup_type:"contact",email,last_name}`,
+     rate-limited 10/IP/hour on the code path and 5/IP/hour on the
+     contact path. Linked from the marketing footer ("Diners" column
+     in `MarketingShell.tsx`), from `ManageBookingView`'s
+     invalid-code error state, and from the new "Lost this message?"
+     line in the confirmation email/SMS body. Both paths filter to
+     `reserved_at > now()` and `status IN ('confirmed','pending_payment')`.
+  5. **Confirmation message body upgraded.**
+     `create-public-booking` (and the voice-side mirror in
+     `_shared/booking.ts`) now produces a multi-line message:
+     "Hi {name}, / Your table at {restaurant} is booked for {party}
+     guests on {date}. / Confirmation code: {CODE} / Manage or
+     cancel: {URL} / Lost this message? Visit
+     https://cenaiva.com/find-reservation / Need to reach the
+     restaurant directly? Call {restaurant.phone}." Restaurant phone
+     is pulled into the restaurants SELECT and surfaces in the message
+     when set. Same body works for both SMS and email.
+  6. **Reminder URL pattern fixed.** `send-booking-reminder` was using
+     `cenaiva.com/r/{slug}?confirmation=` (a dead route) while
+     confirmations use `cenaiva.com/{slug}?confirmation=` (which
+     `ManageBookingView` mounts at). Reminder URL now drops the `/r/`
+     prefix and matches the confirmation pattern.
+  7. **Phone + email both required everywhere.** Server-side validation
+     in `create-public-booking` now requires `guest_phone` alongside
+     `guest_email`. Booking form on `RestaurantPublicPage` makes the
+     phone field required (label adds `*`, inline validation, E.164
+     normalization on submit). New `profileCompletenessSchema` +
+     `isProfileComplete()` helper in `profile-schemas.ts` requires
+     `full_name`, `email`, AND `phone` all non-empty.
+     `RequireCompleteProfile` already checked all three. The
+     `resolvePostLoginPath` helper now routes non-staff diners with
+     incomplete profile to `/onboarding?from=<path>`, which means
+     email/password Register, Google/Apple OAuth, and phone-OTP
+     signups all land on `/onboarding` when their profile is missing
+     any of the three fields. `OnboardingPage` normalizes the entered
+     phone to E.164 on submit.
+  - **Hard rule rewritten** in CLAUDE.md to drop the 24h cliff
+    language. New rule: all cancels fully refund; never raw-UPDATE
+    `reservations.status='cancelled'` outside `cancel-reservation`.
+  - **`supabase/config.toml`** registers both new edge fns with
+    `verify_jwt = false`.
+  - **Known limitation: no no-show penalty system.** Removing the 24h
+    forfeit removes the restaurant's soft no-show protection. Mark
+    explicitly declined building a penalty system in this push.
+    Restaurants may eventually ask for one (track no-show count per
+    diner, suspend after X strikes, require card-on-file, etc.) — file
+    as a separate ticket if the topic comes up.
+
 - **Diner auth + profile foundation (Phases 1, 3, 6, 9 of the diner
   auth overhaul shipped 2026-05-15 late evening).** Four standalone
   pieces of the 10-phase plan, no external blockers:
@@ -72,8 +157,6 @@ edits here propagate to both agents in one step.
     "owner"` body param. When `actor === "owner"`: requires a bearer
     JWT, verifies the caller has a role on
     `user_restaurant_roles.restaurant_id = reservation.restaurant_id`,
-    SKIPS the 24h cliff entirely (restaurant-initiated cancels
-    always refund — diner shouldn't be punished),
     `cancellation_reason = "Cancelled by restaurant"`, and the
     cancellation SMS/email body uses an apologetic restaurant-side
     opener ("…had to cancel your reservation…"). Both response
@@ -845,16 +928,16 @@ edits here propagate to both agents in one step.
   provider didn't supply them — use `RequireCompleteProfile` to gate
   on field completeness, not on profile existence.
 - Never call `cancel-reservation` from owner-side surfaces without
-  `actor: "owner"` in the body. Owner-cancels MUST refund regardless
-  of the 24h cliff, MUST set `cancellation_reason = "Cancelled by
-  restaurant"`, and require staff-role auth (verified inside the edge
-  fn against `user_restaurant_roles`). Diner-cancels stay as the
-  default `actor: "diner"`. The dashboard's `updateStatus(id,
-  "cancelled")` in `useReservations.ts` is the canonical owner-cancel
-  call site — anywhere else trying to flip a reservation to
-  `'cancelled'` from staff context must also route through
-  `cancel-reservation` with `actor: "owner"`, never a direct
-  `UPDATE` or the legacy `update_staff_reservation_status` RPC.
+  `actor: "owner"` in the body. Owner-cancels MUST set
+  `cancellation_reason = "Cancelled by restaurant"` and require
+  staff-role auth (verified inside the edge fn against
+  `user_restaurant_roles`). Diner-cancels stay as the default
+  `actor: "diner"`. The dashboard's `updateStatus(id, "cancelled")`
+  in `useReservations.ts` is the canonical owner-cancel call site —
+  anywhere else trying to flip a reservation to `'cancelled'` from
+  staff context must also route through `cancel-reservation` with
+  `actor: "owner"`, never a direct `UPDATE` or the legacy
+  `update_staff_reservation_status` RPC.
 - Never charge a diner via `stripe-charge-order` (post-meal pay-the-bill)
   without the Connect-aware path: clone the platform-account PM to the
   restaurant's `stripe_account_id` first, then create + confirm the PI
@@ -868,30 +951,24 @@ edits here propagate to both agents in one step.
   thrown). To flip an order to `status='paid'` post-payment, use the
   `mark-order-paid` edge function which validates the Stripe
   PaymentIntent and writes with service-role.
-- Never leave paid orders or charged deposits unrefunded when a diner
-  cancels OUTSIDE the 24h cliff. `cancel-reservation` owns the
-  diner-side refund path: when `reservedAt - now >= 24h` it
-  Stripe-refunds every `orders.status='paid'` row and every
-  `reservation_deposit_payments.status='charged'` row tied to the
-  reservation, then marks each as `'refunded'`. Stub-mode deposits
-  (null PI) get DB-only marked refunded so the UI matches reality.
-  When the cancel falls **within 24h** of the reservation, the refund
-  phase is SKIPPED — the diner forfeits their pre-order + deposit per
-  the cancellation policy. The reservation still cancels (slot reopens
-  for the next diner), `cancellation_reason` is set to "Cancelled by
-  diner (within 24h — non-refundable)", and the response carries
-  `forfeit_total_cents` + `within_24h: true` so the UI can toast
-  "$X.XX forfeited per the 24h cancellation policy." If you add a new
-  diner-cancel surface (e.g. a voice "cancel my reservation" shortcut),
-  route it through `cancel-reservation` — never raw-UPDATE
-  `reservations.status='cancelled'` and skip the refund/forfeit phase.
+- Never raw-UPDATE `reservations.status='cancelled'` outside
+  `cancel-reservation`. That edge fn owns the refund pipeline. All
+  cancels — diner, guest (confirmation-code path), and owner —
+  fully refund: every `orders.status='paid'` row gets Stripe-refunded
+  and flipped to `'refunded'`, every
+  `reservation_deposit_payments.status='charged'` row likewise. Stub-mode
+  deposits (null PI) get DB-only marked refunded so the UI matches
+  reality. The 24h forfeit policy was removed 2026-05-15 — there is
+  no longer a within-24h cliff and no `forfeit_total_cents` /
+  `within_24h` fields in the response. After the deposit refund loop,
+  `cancel-reservation` fires a fire-and-forget POST to
+  `notify-deposit-payers-refunded` so non-organizer payers on a
+  multi-payer reservation get a Resend email explaining their refund.
   Refund failures NEVER block the cancel; the response carries
-  `refunds[]` + `refund_total_cents` so the UI can toast the
-  partial-refund case. Shared helper:
+  `refunds[]` + `refund_total_cents`. Shared helper:
   `supabase/functions/_shared/stripe-refund.ts` (`refundPaymentIntent`).
-  Both confirm dialogs (BookingDetailsPage + BookingsPage) MUST show
-  the 24h policy warning before the cancel fires — no surprise
-  forfeits.
+  If you add a new cancel surface (voice shortcut, etc.), route it
+  through `cancel-reservation` — never raw-UPDATE.
 - Never drop or weaken the `restaurants_publish_gate` trigger. It is
   the trust boundary preventing a savvy actor from flipping
   `is_published=true` via direct supabase-js writes. The client-side

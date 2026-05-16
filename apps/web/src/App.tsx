@@ -14,7 +14,7 @@ import { useUser } from "@/hooks/useUser";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { ReservationReviewPrompt } from "@/components/customer/ReservationReviewPrompt";
 
-const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password", "/hey-cenaiva", "/loyalty", "/restaurants", "/book-a-demo", "/discover"]);
+const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password", "/hey-cenaiva", "/loyalty", "/restaurants", "/book-a-demo"]);
 const CenaivaVoiceShell = lazy(() =>
   import("@/components/cenaiva/CenaivaVoiceShell").then((module) => ({
     default: module.CenaivaVoiceShell,
@@ -51,6 +51,9 @@ function AuthedReservationReviewPrompt() {
 
   if (!user || !profile || PUBLIC_PATHS.has(pathname) || pathname.startsWith("/auth/")) return null;
   if (pathname.startsWith("/dashboard")) return null;
+  // /discover is the diner's browse surface — a review-prompt modal would
+  // compete with the voice shell. Keep it hidden here.
+  if (pathname === "/discover") return null;
 
   return <ReservationReviewPrompt />;
 }
@@ -60,7 +63,8 @@ function CustomerVoiceOrbFAB() {
   const { state } = useAssistantStore();
   const { pathname } = useLocation();
 
-  // /discover has a "Hey Cenaiva" button in the header — no floating FAB needed
+  // /discover has the "Concierge" nav button (CustomerNav.tsx) which calls
+  // assistant.open() — the floating FAB would be redundant there.
   if (pathname === "/discover") return null;
   // Owner onboarding wizard owns the screen; the diner-side mic is distracting
   // and overlaps the footer buttons.

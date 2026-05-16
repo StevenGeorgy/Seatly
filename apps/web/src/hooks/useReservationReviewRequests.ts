@@ -294,11 +294,18 @@ export function useReservationReviewRequests(): UseReservationReviewRequests {
 
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
+  // Defense in depth: when no user is signed in, the singleton may still hold
+  // requests from a prior session (it doesn't auto-clear on signout). Surface
+  // an empty view to every consumer so a stale row can never leak past the
+  // auth boundary, regardless of how the consumer mounts itself.
+  const requests = enabled ? snapshot.requests : [];
+
   const activeRequest = useMemo(() => {
+    if (!enabled) return null;
     return snapshot.requests.find((req) => (
       !snapshot.dismissedIds.has(req.reservation_id) && !hasDismissedPrompt(req.reservation_id)
     )) ?? null;
-  }, [snapshot.requests, snapshot.dismissedIds]);
+  }, [enabled, snapshot.requests, snapshot.dismissedIds]);
 
   const dismiss = useCallback((reservationId: string) => {
     markDismissed(reservationId);
@@ -311,5 +318,5 @@ export function useReservationReviewRequests(): UseReservationReviewRequests {
   const submit = useCallback(submitRpc, []);
   const refresh = useCallback(() => refreshFromRpc(), []);
 
-  return { requests: snapshot.requests, activeRequest, submit, dismiss, refresh, reactivate };
+  return { requests, activeRequest, submit, dismiss, refresh, reactivate };
 }

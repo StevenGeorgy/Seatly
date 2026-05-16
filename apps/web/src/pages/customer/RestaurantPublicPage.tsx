@@ -79,6 +79,7 @@ import {
   normalizeRestaurantPriceLevel,
 } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
+import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -1748,10 +1749,17 @@ export default function RestaurantPublicPage() {
   );
 
   const canProceedDetails = () => {
+    // Phase 11 (2026-05-15): phone is now required at the booking form
+    // alongside name + email. We need both contact channels on file so
+    // confirmation SMS goes through and email is the fallback. Validate
+    // the E.164 shape inline; the server enforces the same gate.
+    const phoneTrimmed = (dineIn.phone ?? "").trim();
+    const phoneValid = phoneTrimmed.length > 0 && normalizeE164Phone(phoneTrimmed) !== null;
     return (
       dineIn.date &&
       dineIn.name &&
       dineIn.email &&
+      phoneValid &&
       typeof dineIn.party_size === "number" &&
       dineIn.party_size >= 1 &&
       dineIn.party_size <= maxBookablePartySize &&
@@ -1852,10 +1860,13 @@ export default function RestaurantPublicPage() {
 
     const client = getSupabaseBrowserClient();
 
-    // Contact info from dine-in reservation form
+    // Contact info from dine-in reservation form.
+    // Phase 11 (2026-05-15): phone is required and normalized to E.164
+    // before the server call, mirroring PhoneLoginPage/OnboardingPage.
     const contactName = dineIn.name;
     const contactEmail = dineIn.email;
-    const contactPhone = dineIn.phone;
+    const contactPhoneRaw = (dineIn.phone ?? "").trim();
+    const contactPhone = normalizeE164Phone(contactPhoneRaw) ?? contactPhoneRaw;
     let createdReservationId: string | null = existingReservationId ?? null;
     let createdOrderId: string | null = existingOrderId ?? null;
 
@@ -2428,8 +2439,13 @@ export default function RestaurantPublicPage() {
                         <Input id="di-email" type="email" required value={dineIn.email} onChange={(e) => setDineIn((d) => ({ ...d, email: e.target.value }))} placeholder="jane@example.com" />
                       </div>
                       <div>
-                        <Label htmlFor="di-phone" className="mb-1.5 block text-xs text-text-muted">Phone</Label>
-                        <Input id="di-phone" type="tel" value={dineIn.phone} onChange={(e) => setDineIn((d) => ({ ...d, phone: e.target.value }))} placeholder="+1 (416) 555-0100" />
+                        <Label htmlFor="di-phone" className="mb-1.5 block text-xs text-text-muted">Phone <span className="text-danger">*</span></Label>
+                        <Input id="di-phone" type="tel" required value={dineIn.phone} onChange={(e) => setDineIn((d) => ({ ...d, phone: e.target.value }))} placeholder="+1 (416) 555-0100" />
+                        {dineIn.phone.trim().length > 0 && normalizeE164Phone(dineIn.phone) === null ? (
+                          <p className="mt-1 text-[11px] text-danger" role="alert">
+                            That phone number doesn't look right. Try +1 416 555 1234.
+                          </p>
+                        ) : null}
                       </div>
                     </div>
 

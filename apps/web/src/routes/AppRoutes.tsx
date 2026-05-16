@@ -25,6 +25,7 @@ const NotificationsPage = lazy(() => import("@/pages/customer/NotificationsPage"
 const DiscoverPage = lazy(() => import("@/pages/customer/DiscoverPage"));
 const DealsPage = lazy(() => import("@/pages/customer/DealsPage"));
 const RestaurantPublicPage = lazy(() => import("@/pages/customer/RestaurantPublicPage"));
+const FindReservationPage = lazy(() => import("@/pages/customer/FindReservationPage"));
 const AuthCallbackPage = lazy(() => import("@/pages/auth/AuthCallbackPage"));
 const ForgotPasswordPage = lazy(() => import("@/pages/auth/ForgotPasswordPage"));
 const LoginPage = lazy(() => import("@/pages/auth/LoginPage"));
@@ -126,6 +127,7 @@ export function AppRoutes() {
 
         <Route path="/discover" element={<DiscoverPage />} />
         <Route path="/deposit/:id" element={<DepositPayPage />} />
+        <Route path="/find-reservation" element={<FindReservationPage />} />
         <Route
           path="/account"
           element={

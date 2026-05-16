@@ -93,8 +93,6 @@ type CancelRefundReport = {
 
 type CancelResult = {
   refund_total_cents: number;
-  forfeit_total_cents: number;
-  within_24h: boolean;
   refunds: CancelRefundReport[];
 };
 
@@ -123,8 +121,6 @@ async function cancelReservation(reservationId: string): Promise<CancelResult> {
     ok?: boolean;
     error?: string;
     refund_total_cents?: number;
-    forfeit_total_cents?: number;
-    within_24h?: boolean;
     refunds?: CancelRefundReport[];
   };
   if (!res.ok || body.error || body.ok !== true) {
@@ -133,9 +129,6 @@ async function cancelReservation(reservationId: string): Promise<CancelResult> {
   return {
     refund_total_cents:
       typeof body.refund_total_cents === "number" ? body.refund_total_cents : 0,
-    forfeit_total_cents:
-      typeof body.forfeit_total_cents === "number" ? body.forfeit_total_cents : 0,
-    within_24h: Boolean(body.within_24h),
     refunds: Array.isArray(body.refunds) ? body.refunds : [],
   };
 }
@@ -291,13 +284,6 @@ export default function BookingDetailsPage() {
   );
   const canCancel = Boolean(reservation && (status === "upcoming" || status === "current"));
   const canModify = canCancel;
-  // Mirror the edge-fn 24h cliff so the cancel-confirm dialog can warn the
-  // diner BEFORE they cancel that they're about to forfeit any paid amount.
-  const hoursToReservation = reservedAt
-    ? (reservedAt.getTime() - Date.now()) / (1000 * 60 * 60)
-    : Infinity;
-  const willForfeit =
-    hoursToReservation < 24 && (paymentData?.totalPaidCents ?? 0) > 0;
   const restaurantName = reservation?.restaurant?.name ?? "Restaurant";
   const cuisineLine = [reservation?.restaurant?.cuisine_type, reservation?.restaurant?.city]
     .filter(Boolean)
@@ -358,11 +344,7 @@ export default function BookingDetailsPage() {
       setCancelConfirmOpen(false);
       setCancelling(false);
       const failedRefunds = result.refunds.filter((r) => !r.ok);
-      if (result.within_24h && result.forfeit_total_cents > 0) {
-        toast.warning(
-          `Reservation cancelled. $${(result.forfeit_total_cents / 100).toFixed(2)} forfeited per the 24h cancellation policy.`,
-        );
-      } else if (result.refund_total_cents > 0 && failedRefunds.length === 0) {
+      if (result.refund_total_cents > 0 && failedRefunds.length === 0) {
         toast.success(
           `Reservation cancelled. $${(result.refund_total_cents / 100).toFixed(2)} refunded to your card.`,
         );
@@ -807,28 +789,10 @@ export default function BookingDetailsPage() {
           <DialogHeader>
             <DialogTitle>Cancel this reservation?</DialogTitle>
           </DialogHeader>
-          {willForfeit ? (
-            <div className="space-y-3">
-              <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
-                <p className="text-sm font-semibold text-warning">
-                  Heads up — this reservation is within 24 hours.
-                </p>
-                <p className="mt-2 text-sm text-text-secondary">
-                  Cancelling now will release your table, but you'll forfeit the{" "}
-                  <span className="font-semibold text-white">
-                    ${((paymentData?.totalPaidCents ?? 0) / 100).toFixed(2)}
-                  </span>{" "}
-                  you paid (per our 24h cancellation policy). This can't be undone.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-text-secondary">
-              {paymentData && paymentData.totalPaidCents > 0
-                ? `The restaurant will be notified, your table will be released, and $${(paymentData.totalPaidCents / 100).toFixed(2)} will be refunded to your original payment method. This can't be undone.`
-                : "The restaurant will be notified and your table will be released. This can't be undone."}
-            </p>
-          )}
+          <p className="text-sm text-text-secondary">
+            Cancelling this reservation will release your table. Any deposit or pre-order
+            you've paid will be refunded to your card. This can't be undone.
+          </p>
           <DialogFooter>
             <Button
               type="button"

@@ -194,6 +194,7 @@ function MarketingFooter() {
         { label: "Discover", to: "/discover" },
         { label: "Loyalty", to: "/#loyalty" },
         { label: "Get the app", to: "/register" },
+        { label: "Find my reservation", to: "/find-reservation" },
       ],
     },
     {

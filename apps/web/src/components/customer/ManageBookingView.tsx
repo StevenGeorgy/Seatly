@@ -271,8 +271,16 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       )}
 
       {lookupState === "error" && (
-        <div className="rounded-2xl border border-danger/40 bg-danger/10 p-5 text-sm text-danger">
-          We couldn't load this reservation: {errorMessage}
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-danger/40 bg-danger/10 p-5 text-sm text-danger">
+            We couldn't load this reservation: {errorMessage}
+          </div>
+          <p className="text-sm text-text-secondary">
+            Can't find your booking?{" "}
+            <Link to="/find-reservation" className="text-gold underline-offset-4 hover:underline">
+              Try our reservation lookup →
+            </Link>
+          </p>
         </div>
       )}
 
@@ -281,6 +289,12 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
           <h1 className="font-serif text-2xl text-white">This booking can no longer be managed.</h1>
           <p className="mt-2 text-sm text-text-muted">
             The link may be invalid or the reservation may have already been cancelled or completed. If you believe this is a mistake, contact the restaurant directly.
+          </p>
+          <p className="mt-4 text-sm text-text-secondary">
+            Can't find your booking?{" "}
+            <Link to="/find-reservation" className="text-gold underline-offset-4 hover:underline">
+              Try our reservation lookup →
+            </Link>
           </p>
         </div>
       )}

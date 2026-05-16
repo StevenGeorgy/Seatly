@@ -141,8 +141,8 @@ Deno.serve(async (req: Request) => {
       asText(payload.confirmation_code) ?? `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const partySize = Math.max(1, Math.floor(asNumber(payload.party_size, 1)));
 
-    if (!restaurantId || !shiftId || !dateTime || !guestName || !guestEmail) {
-      return jsonResponse({ error: "restaurant_id, shift_id, date_time, guest_name, and guest_email are required." }, 400);
+    if (!restaurantId || !shiftId || !dateTime || !guestName || !guestEmail || !guestPhone) {
+      return jsonResponse({ error: "restaurant_id, shift_id, date_time, guest_name, guest_email, and guest_phone are required." }, 400);
     }
 
     const reservedAt = new Date(dateTime);
@@ -211,9 +211,12 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant } = await supabase
       .from("restaurants")
-      .select("id, name, slug, timezone, hours_json")
+      .select("id, name, slug, timezone, hours_json, phone")
       .eq("id", restaurantId)
       .maybeSingle();
+    const restaurantPhone = typeof restaurant?.phone === "string" && restaurant.phone.trim()
+      ? restaurant.phone.trim()
+      : null;
     const restaurantName = typeof restaurant?.name === "string" && restaurant.name.trim()
       ? restaurant.name.trim()
       : "the restaurant";
@@ -615,12 +618,23 @@ Deno.serve(async (req: Request) => {
     } else if (reservationPromoCode) {
       promoLine = ` Promo code: ${reservationPromoCode}.`;
     }
+    const guestLabel = partySize === 1 ? "guest" : "guests";
+    // Phase 11 (2026-05-15): multi-line confirmation body. The blank line
+    // after the booking summary separates the body from the confirmation
+    // code block; another blank line separates code+manage from the
+    // recovery hint + restaurant phone. Renders cleanly in both SMS
+    // (Twilio preserves \n) and email plaintext bodies.
+    const restaurantPhoneLine = restaurantPhone
+      ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.`
+      : "";
     const confirmationBody =
-      `Hi ${guestName}, your table at ${restaurantName} is booked for ${partySize} ` +
-      `${partySize === 1 ? "guest" : "guests"} on ${reservationDateLabel}.` +
-      eventLine + promoLine +
-      ` Confirmation code: ${savedConfirmationCode}.` +
-      (manageLink ? ` Manage: ${manageLink}` : "");
+      `Hi ${guestName},\n\n` +
+      `Your table at ${restaurantName} is booked for ${partySize} ${guestLabel} on ${reservationDateLabel}.` +
+      eventLine + promoLine + `\n\n` +
+      `Confirmation code: ${savedConfirmationCode}\n` +
+      (manageLink ? `Manage or cancel: ${manageLink}\n` : "") +
+      `\nLost this message? Visit https://cenaiva.com/find-reservation` +
+      restaurantPhoneLine;
     let confirmationChannel: "email" | "sms" | null = null;
     let confirmationStatus: "sent" | "skipped" | "failed" = "skipped";
 

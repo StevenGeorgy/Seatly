@@ -103,7 +103,7 @@ function emailBody(
     : `Hi ${firstName},\n\nYour reservation at ${restName} is in 2 hours, at ${time}. See you soon!`;
   const codeLine = code ? `\n\nConfirmation code: ${code}` : "";
   const link = slug
-    ? `\n\nManage your booking: https://cenaiva.com/r/${slug}${code ? `?confirmation=${code}` : ""}`
+    ? `\n\nManage your booking: https://cenaiva.com/${slug}${code ? `?confirmation=${code}` : ""}`
     : "";
   return `${lead}${codeLine}${link}\n\nThe ${restName} team`;
 }
