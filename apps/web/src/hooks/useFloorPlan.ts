@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { fetchFloorPlanBundle } from "@/lib/floor-plan-bundle-fetch";
 import type { FloorPlanRow, SectionRow, TableRow } from "@/lib/floor-plan-db-types";
 import { readFloorPlanCache, writeFloorPlanCache } from "@/lib/floor-plan-data-cache";
@@ -83,7 +84,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         if (seq !== fetchSeqRef.current) return;
 
         if (bundle.error) {
-          setError(bundle.error);
+          const friendly = toUserFacingError(bundle.error, "Couldn't load floor plan.");
+          setError(new Error(friendly.message));
+          console.error("[useFloorPlan.load]", friendly.code, friendly.technical ?? bundle.error);
         } else {
           setError(null);
           writeFloorPlanCache(selectedRestaurantId, bundle);
@@ -94,7 +97,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         setSections(bundle.sections);
       } catch (e) {
         if (seq !== fetchSeqRef.current) return;
-        setError(e instanceof Error ? e : new Error(String(e)));
+        const friendly = toUserFacingError(e, "Couldn't load floor plan.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.load]", friendly.code, friendly.technical ?? e);
         if (!silent) {
           setTables([]);
           setFloorPlans([]);
@@ -133,7 +138,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         .select("id")
         .single();
       if (sectionRes.error || !sectionRes.data) {
-        setError(new Error(sectionRes.error?.message ?? "Failed to create floor"));
+        const friendly = toUserFacingError(sectionRes.error, "Couldn't create the floor.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.createSection]", friendly.code, friendly.technical ?? sectionRes.error);
         return null;
       }
 
@@ -159,7 +166,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         .select("id")
         .single();
       if (floorPlanRes.error || !floorPlanRes.data) {
-        setError(new Error(floorPlanRes.error?.message ?? "Failed to create floor layout"));
+        const friendly = toUserFacingError(floorPlanRes.error, "Couldn't create the floor layout.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.createFloor]", friendly.code, friendly.technical ?? floorPlanRes.error);
         return null;
       }
 
@@ -214,7 +223,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         .select("*")
         .single();
       if (res.error || !res.data) {
-        setError(new Error(res.error?.message ?? "Failed to add table"));
+        const friendly = toUserFacingError(res.error, "Couldn't add the table.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.createTable]", friendly.code, friendly.technical ?? res.error);
         return null;
       }
       return res.data as TableRow;
@@ -235,7 +246,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         .update({ name: trimmedName })
         .eq("id", sectionId);
       if (sectionRes.error) {
-        setError(new Error(sectionRes.error.message));
+        const friendly = toUserFacingError(sectionRes.error, "Couldn't rename the floor.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.updateFloorName.section]", friendly.code, friendly.technical ?? sectionRes.error);
         return false;
       }
 
@@ -244,7 +257,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
         .update({ name: trimmedName })
         .eq("section_id", sectionId);
       if (planRes.error) {
-        setError(new Error(planRes.error.message));
+        const friendly = toUserFacingError(planRes.error, "Couldn't rename the floor layout.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.updateFloorName.plan]", friendly.code, friendly.technical ?? planRes.error);
         return false;
       }
 
@@ -287,7 +302,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     }
     const res = await client.from("tables").update(sanitized).eq("id", tableId);
     if (res.error) {
-      setError(new Error(res.error.message));
+      const friendly = toUserFacingError(res.error, "Couldn't update the table.");
+      setError(new Error(friendly.message));
+      console.error("[useFloorPlan.updateTable]", friendly.code, friendly.technical ?? res.error);
       return false;
     }
     return true;
@@ -316,7 +333,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
       });
 
       if (error) {
-        setError(new Error(error.message));
+        const friendly = toUserFacingError(error, "Couldn't update the table status.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.updateTableServiceStatus]", friendly.code, friendly.technical ?? error);
         return false;
       }
       return true;
@@ -335,7 +354,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     const client = getSupabaseBrowserClient();
     const res = await client.from("tables").update({ is_active: false }).eq("id", tableId);
     if (res.error) {
-      setError(new Error(res.error.message));
+      const friendly = toUserFacingError(res.error, "Couldn't delete the table.");
+      setError(new Error(friendly.message));
+      console.error("[useFloorPlan.deleteTable]", friendly.code, friendly.technical ?? res.error);
       return false;
     }
     if (refetchAfter) await fetchAll({ silent: true });
@@ -363,7 +384,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
 
       const error = tablesRes.error ?? plansRes.error ?? sectionRes.error;
       if (error) {
-        setError(new Error(error.message));
+        const friendly = toUserFacingError(error, "Couldn't delete the floor.");
+        setError(new Error(friendly.message));
+        console.error("[useFloorPlan.deleteFloor]", friendly.code, friendly.technical ?? error);
         return false;
       }
 
@@ -378,7 +401,9 @@ export function useFloorPlan(options?: { pauseRealtime?: boolean }) {
     const client = getSupabaseBrowserClient();
     const res = await client.from("floor_plans").update({ layout }).eq("id", floorPlanId);
     if (res.error) {
-      setError(new Error(res.error.message));
+      const friendly = toUserFacingError(res.error, "Couldn't save the layout.");
+      setError(new Error(friendly.message));
+      console.error("[useFloorPlan.updateLayout]", friendly.code, friendly.technical ?? res.error);
       return false;
     }
     return true;

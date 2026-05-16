@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type OrderItemRow = {
@@ -86,7 +87,9 @@ export function useOrders(filters?: OrderFilters) {
       .order("created_at", { ascending: true });
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load orders.");
+      setError(new Error(friendly.message));
+      console.error("[useOrders.fetch]", friendly.code, friendly.technical ?? qErr);
       setOrders([]);
     } else {
       let rows = (data ?? []) as OrderRow[];
@@ -134,13 +137,21 @@ export function useOrders(filters?: OrderFilters) {
       .from("order_items")
       .update({ status })
       .eq("order_id", orderId);
-    if (itemUpdateError) throw new Error(itemUpdateError.message);
+    if (itemUpdateError) {
+      const friendly = toUserFacingError(itemUpdateError, "Couldn't update order items.");
+      console.error("[useOrders.updateStatus.items]", friendly.code, friendly.technical ?? itemUpdateError);
+      throw new Error(friendly.message);
+    }
 
     const { error: updateError } = await client
       .from("orders")
       .update({ status })
       .eq("id", orderId);
-    if (updateError) throw new Error(updateError.message);
+    if (updateError) {
+      const friendly = toUserFacingError(updateError, "Couldn't update the order status.");
+      console.error("[useOrders.updateStatus.order]", friendly.code, friendly.technical ?? updateError);
+      throw new Error(friendly.message);
+    }
     void fetchOrders();
   };
 

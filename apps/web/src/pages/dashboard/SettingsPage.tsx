@@ -44,6 +44,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
+import { showErrorToast, toUserFacingError } from "@/lib/errors";
 import { applyRestaurantTheme } from "@/lib/theme";
 import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
@@ -855,7 +856,7 @@ export default function SettingsPage() {
         },
       );
       if (!result.ok) {
-        toast.error(result.error);
+        toast.error(result.error || "Couldn't open the billing portal. Try again in a moment.");
         return;
       }
       window.location.href = result.data.url;
@@ -929,7 +930,8 @@ export default function SettingsPage() {
     setDeletingRestaurant(false);
 
     if (error || data?.error) {
-      toast.error(data?.error ?? error?.message ?? t("dashboard.settings.deleteRestaurantFailed"));
+      const friendly = error ? toUserFacingError(error) : null;
+      toast.error(data?.error ?? friendly?.message ?? t("dashboard.settings.deleteRestaurantFailed"));
       return;
     }
 
@@ -1108,7 +1110,10 @@ export default function SettingsPage() {
       .upload(path, file, { cacheControl: "3600", contentType: image.mime, upsert: false });
 
     if (error) {
-      toast.error(error.message);
+      showErrorToast(error, {
+        fallback: "Couldn't upload that image. Try a smaller file or a different format.",
+        logTag: "[SettingsPage.uploadRestaurantMediaFile]",
+      });
       return null;
     }
 

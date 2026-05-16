@@ -9,6 +9,7 @@ import { useUpdateProfile } from "@/hooks/useUpdateProfile";
 import { useUser } from "@/hooks/useUser";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { useErrorToast } from "@/lib/errors";
 
 const AVATAR_BUCKET = "user-avatars";
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -38,6 +39,7 @@ function initialsFromName(name: string | null | undefined): string {
 export function AvatarUploadCard() {
   const { user, profile } = useUser();
   const { updateProfile } = useUpdateProfile();
+  const { errorToast } = useErrorToast();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pickedSourceUrl, setPickedSourceUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -91,7 +93,10 @@ export function AvatarUploadCard() {
           upsert: false,
         });
       if (uploadErr) {
-        toast.error("Couldn't upload the photo: " + uploadErr.message);
+        errorToast(uploadErr, {
+          fallback: "Couldn't upload the photo. Try again.",
+          logTag: "[AvatarUploadCard.upload]",
+        });
         return;
       }
       const { data: publicUrlData } = client.storage.from(AVATAR_BUCKET).getPublicUrl(path);

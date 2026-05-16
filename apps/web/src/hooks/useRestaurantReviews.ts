@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 // Diner-facing review shape — includes reviewer display info so the Reviews
@@ -57,7 +58,11 @@ async function fetchRestaurantReviews(restaurantId: string): Promise<ReviewsBund
       .limit(50),
   ]);
 
-  if (reviewsErr) throw new Error(reviewsErr.message);
+  if (reviewsErr) {
+    const friendly = toUserFacingError(reviewsErr, "Couldn't load reviews.");
+    console.error("[useRestaurantReviews.fetch]", friendly.code, friendly.technical ?? reviewsErr);
+    throw new Error(friendly.message);
+  }
 
   type RawReviewRow = {
     id: string;

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import type { AvailabilitySlot } from "@/hooks/useAvailability";
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -175,7 +176,9 @@ export function useReservations(filters?: ReservationFilters) {
     }
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load reservations.");
+      setError(new Error(friendly.message));
+      console.error("[useReservations.fetch]", friendly.code, friendly.technical ?? qErr);
       setReservations([]);
     } else {
       let rows = ((data ?? []) as ReservationRow[]).map((reservation) => {
@@ -276,9 +279,9 @@ export function useReservations(filters?: ReservationFilters) {
         error?: string;
       };
       if (!res.ok || body.error || body.ok !== true) {
-        throw new Error(
-          body.error ?? `Could not cancel reservation (${res.status}).`,
-        );
+        const friendly = toUserFacingEdgeError(res, body);
+        console.error("[useReservations.cancel]", friendly.code, friendly.technical ?? body);
+        throw new Error(friendly.message);
       }
       void fetchReservations();
       return;
@@ -290,7 +293,9 @@ export function useReservations(filters?: ReservationFilters) {
       p_approval_token: approvalToken ?? null,
     });
     if (statusError) {
-      throw new Error(statusError.message);
+      const friendly = toUserFacingError(statusError, "Couldn't update reservation status.");
+      console.error("[useReservations.updateStatus]", friendly.code, friendly.technical ?? statusError);
+      throw new Error(friendly.message);
     }
 
     void fetchReservations();
@@ -308,7 +313,9 @@ export function useReservations(filters?: ReservationFilters) {
       p_table_id: tableId,
     });
     if (seatError) {
-      throw new Error(seatError.message);
+      const friendly = toUserFacingError(seatError, "Couldn't seat the reservation.");
+      console.error("[useReservations.seat]", friendly.code, friendly.technical ?? seatError);
+      throw new Error(friendly.message);
     }
     void partySize;
     void fetchReservations();
@@ -337,7 +344,9 @@ export function useReservations(filters?: ReservationFilters) {
     });
 
     if (reservationError) {
-      throw new Error(reservationError.message);
+      const friendly = toUserFacingError(reservationError, "Couldn't create the reservation.");
+      console.error("[useReservations.create]", friendly.code, friendly.technical ?? reservationError);
+      throw new Error(friendly.message);
     }
 
     const reservationId = typeof data === "string" ? data : null;
@@ -347,7 +356,11 @@ export function useReservations(filters?: ReservationFilters) {
         .from("reservations")
         .update({ shift_id: payload.availability_slot.shift_id })
         .eq("id", reservationId);
-      if (shiftUpdateError) throw new Error(shiftUpdateError.message);
+      if (shiftUpdateError) {
+        const friendly = toUserFacingError(shiftUpdateError, "Couldn't link the reservation to a shift.");
+        console.error("[useReservations.create.shift]", friendly.code, friendly.technical ?? shiftUpdateError);
+        throw new Error(friendly.message);
+      }
 
       if (slotTableIds.length > 0) {
         const { data: activeAssignments, error: assignmentCheckError } = await client
@@ -355,14 +368,18 @@ export function useReservations(filters?: ReservationFilters) {
           .select("table_id")
           .eq("reservation_id", reservationId)
           .is("released_at", null);
-        if (assignmentCheckError) throw new Error(assignmentCheckError.message);
+        if (assignmentCheckError) {
+          const friendly = toUserFacingError(assignmentCheckError, "Couldn't verify table assignments.");
+          console.error("[useReservations.create.assignments]", friendly.code, friendly.technical ?? assignmentCheckError);
+          throw new Error(friendly.message);
+        }
         const assignedTableIds = (activeAssignments ?? [])
           .map((row) => row.table_id)
           .filter((id): id is string => Boolean(id));
         const expected = [...slotTableIds].sort().join(",");
         const actual = [...assignedTableIds].sort().join(",");
         if (expected !== actual) {
-          throw new Error("Reservation table assignment changed before booking completed. Refresh availability and try again.");
+          throw new Error("Tables for this slot changed while booking. Refresh and try again.");
         }
       }
 
@@ -386,7 +403,11 @@ export function useReservations(filters?: ReservationFilters) {
         },
         p_approval_profile_id: null,
       });
-      if (auditError) throw new Error(auditError.message);
+      if (auditError) {
+        const friendly = toUserFacingError(auditError, "Couldn't record the audit event.");
+        console.error("[useReservations.create.audit]", friendly.code, friendly.technical ?? auditError);
+        throw new Error(friendly.message);
+      }
     }
 
     void fetchReservations();
@@ -425,7 +446,9 @@ export function useReservations(filters?: ReservationFilters) {
       error?: string;
     };
     if (!res.ok) {
-      throw new Error(body.error ?? "Manager approval failed.");
+      const friendly = toUserFacingEdgeError(res, body);
+      console.error("[useReservations.requestManagerApproval]", friendly.code, friendly.technical ?? body);
+      throw new Error(friendly.message);
     }
     return body.approval_token ?? null;
   };

@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -118,6 +119,7 @@ function ExportDateButton({
 
 export default function ExportPage() {
   const { t } = useTranslation();
+  const { errorToast } = useErrorToast();
   const { selectedRestaurantId } = useRestaurantScope();
 
   const [selected, setSelected] = useState<Record<string, boolean>>({
@@ -226,7 +228,10 @@ export default function ExportPage() {
         toast.success(`${exported} file${exported > 1 ? "s" : ""} exported.`);
       }
     } catch (err) {
-      toast.error("Export failed: " + (err instanceof Error ? err.message : "unknown error"));
+      errorToast(err, {
+        fallback: "Couldn't generate that export. Try again in a moment.",
+        logTag: "[ExportPage.generateExport]",
+      });
     } finally {
       setGenerating(false);
     }

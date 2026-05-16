@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import {
   DEFAULT_DINNER_HOURS,
@@ -62,6 +63,7 @@ function TimePicker({
 }
 
 export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: Step2HoursProps) {
+  const { errorToast } = useErrorToast();
   const [hours, setHours] = useState<HoursJson>(initial ?? emptyHoursJson());
   const [submitting, setSubmitting] = useState(false);
 
@@ -106,7 +108,10 @@ export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: 
         .update({ hours_json: hours })
         .eq("id", restaurantId);
       if (error) {
-        toast.error(error.message);
+        errorToast(error, {
+          fallback: "Couldn't save hours. Try again.",
+          logTag: "[Step2Hours.saveHours]",
+        });
         return;
       }
       // Sync the default shift's days_of_week + service times so Step 4 doesn't

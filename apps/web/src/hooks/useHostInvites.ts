@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -95,7 +96,9 @@ export function useHostInvites() {
 
     if (queryError) {
       setInvites([]);
-      setError(new Error(queryError.message));
+      const friendly = toUserFacingError(queryError, "Couldn't load staff invites.");
+      setError(new Error(friendly.message));
+      console.error("[useHostInvites.fetch]", friendly.code, friendly.technical ?? queryError);
     } else {
       setInvites((data ?? []) as HostInviteRow[]);
     }

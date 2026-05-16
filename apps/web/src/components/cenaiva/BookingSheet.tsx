@@ -13,6 +13,7 @@ import { useUser } from "@/hooks/useUser";
 import { ExitButton } from "@/components/cenaiva/ExitButton";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { formatCompactTimeLabel, formatCompactTimeLabelInTz } from "@/lib/utils/time";
+import { toUserFacingError, useErrorToast } from "@/lib/errors";
 
 interface BookingSheetProps {
   onExit: () => void;
@@ -39,6 +40,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const availability = useAvailability();
   const navigate = useNavigate();
   const { profile } = useUser();
+  const { errorToast } = useErrorToast();
   const { booking, showExitX } = state;
   const [prepayBusy, setPrepayBusy] = useState(false);
   const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
@@ -128,9 +130,11 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       }
 
       dispatch({ type: "SET_BOOKING_STATUS", status: "collecting_minimum_fields" });
-      setAvailabilityNotice(
-        result.error ?? "I couldn't find available times for that date. Try another date or ask again.",
+      const friendly = toUserFacingError(
+        result.error ?? null,
+        "I couldn't find available times for that date. Try another date or ask again.",
       );
+      setAvailabilityNotice(friendly.message);
     },
     [
       availability.fetchSlots,
@@ -265,7 +269,10 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       assistant?.close();
       navigate(`/${rest.slug}?order_id=${order.id}&step=checkout`);
     } catch (err) {
-      console.error("Yes-prepay direct flow failed:", err);
+      errorToast(err, {
+        fallback: "Couldn't start prepay. Try again.",
+        logTag: "[BookingSheet.handleYesPrepay]",
+      });
       setPrepayBusy(false);
     }
   };

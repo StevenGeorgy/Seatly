@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { MOCK_STAFF } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { DashboardPermissionOverrides, StaffRole } from "@/types/auth";
@@ -57,7 +58,9 @@ export function useStaffRoster(options: UseStaffRosterOptions = {}) {
       .order("created_at");
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load the staff list.");
+      setError(new Error(friendly.message));
+      console.error("[useStaffRoster.fetch]", friendly.code, friendly.technical ?? qErr);
       setMembers([]);
     } else {
       const rows = (data ?? []) as StaffMemberRow[];
@@ -117,7 +120,11 @@ export function useStaffRoster(options: UseStaffRosterOptions = {}) {
         .select("id")
         .maybeSingle();
 
-      if (updateError) return { ok: false, error: updateError.message };
+      if (updateError) {
+        const friendly = toUserFacingError(updateError, "Couldn't update this staff member.");
+        console.error("[useStaffRoster.updateMember]", friendly.code, friendly.technical ?? updateError);
+        return { ok: false, error: friendly.message };
+      }
       if (!data) return { ok: false, error: "You do not have permission to update this staff member." };
 
       await fetchRoster();
@@ -141,7 +148,11 @@ export function useStaffRoster(options: UseStaffRosterOptions = {}) {
         .select("id")
         .maybeSingle();
 
-      if (deleteError) return { ok: false, error: deleteError.message };
+      if (deleteError) {
+        const friendly = toUserFacingError(deleteError, "Couldn't remove this staff member.");
+        console.error("[useStaffRoster.removeMember]", friendly.code, friendly.technical ?? deleteError);
+        return { ok: false, error: friendly.message };
+      }
       if (!data) return { ok: false, error: "You do not have permission to remove this staff member." };
 
       await fetchRoster();

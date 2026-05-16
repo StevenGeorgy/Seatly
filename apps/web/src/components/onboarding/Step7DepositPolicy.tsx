@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 type Step7DepositPolicyProps = {
@@ -46,6 +47,7 @@ function tiersToDraft(tiers: RestaurantDepositTier[] | null): DraftTier[] {
 }
 
 export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: Step7DepositPolicyProps) {
+  const { errorToast } = useErrorToast();
   const [choice, setChoice] = useState<DepositChoice>("none");
   const [draft, setDraft] = useState<DraftTier[]>([]);
   const [cancellationHours, setCancellationHours] = useState<string>("24");
@@ -171,7 +173,10 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
         })
         .eq("id", restaurantId);
       if (error) {
-        toast.error(`Couldn't save deposit policy: ${error.message}`);
+        errorToast(error, {
+          context: "Couldn't save deposit policy",
+          logTag: "[Step7DepositPolicy.saveRestaurant]",
+        });
         return;
       }
       toast.success(parsed.length === 0 ? "No deposits set." : "Deposit policy saved.");

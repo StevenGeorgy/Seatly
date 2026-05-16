@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import { reservationDisplayStatus } from "@/lib/reservations/displayStatus";
@@ -121,7 +122,9 @@ export function useMyReservations() {
 
     const rErr = activeRes.error ?? cancelledRes.error;
     if (rErr) {
-      setError(new Error(rErr.message));
+      const friendly = toUserFacingError(rErr, "Couldn't load your reservations.");
+      setError(new Error(friendly.message));
+      console.error("[useMyReservations.fetch]", friendly.code, friendly.technical ?? rErr);
       setLoading(false);
       return;
     }

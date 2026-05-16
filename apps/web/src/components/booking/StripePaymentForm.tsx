@@ -15,6 +15,7 @@ import {
   getSupabaseBrowserClient,
   getSupabaseProjectUrl,
 } from "@/lib/supabase/client";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 
 const STRIPE_PUBLISHABLE_KEY =
   (import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined) ??
@@ -42,6 +43,13 @@ type SavedCard = {
 type StripePaymentFormProps = {
   restaurantId: string;
   amountCents: number;
+  /**
+   * Optional active reservation_hold id. When present, gets passed to
+   * create-public-payment-intent so the PI's metadata.hold_id is stamped —
+   * required for the stripe-webhook fallback path to convert holds when
+   * the browser drops between Stripe success and confirm-hold-paid.
+   */
+  holdId?: string | null;
   /**
    * Fired when the card has been successfully charged. The parent is then
    * responsible for creating the reservation server-side.
@@ -143,6 +151,7 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
       isLoggedIn={Boolean(user)}
       restaurantId={props.restaurantId}
       amountCents={props.amountCents}
+      holdId={props.holdId ?? null}
       onPaid={props.onPaid}
       onError={props.onError}
       payButtonLabel={props.payButtonLabel ?? "Pay & confirm"}
@@ -158,6 +167,7 @@ function PaymentSurface({
   isLoggedIn,
   restaurantId,
   amountCents,
+  holdId,
   onPaid,
   onError,
   payButtonLabel,
@@ -169,6 +179,7 @@ function PaymentSurface({
   isLoggedIn: boolean;
   restaurantId: string;
   amountCents: number;
+  holdId: string | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -209,6 +220,7 @@ function PaymentSurface({
         onAddDifferent={() => setSelectedSavedCardId(null)}
         restaurantId={restaurantId}
         amountCents={amountCents}
+        holdId={holdId}
         onPaid={onPaid}
         onError={onError}
         payButtonLabel={payButtonLabel}
@@ -242,6 +254,7 @@ function PaymentSurface({
       <OneTimeCardForm
         restaurantId={restaurantId}
         amountCents={amountCents}
+        holdId={holdId}
         onPaid={onPaid}
         onError={onError}
         payButtonLabel={payButtonLabel}
@@ -265,6 +278,7 @@ function SavedCardPath({
   onAddDifferent,
   restaurantId,
   amountCents,
+  holdId,
   onPaid,
   onError,
   payButtonLabel,
@@ -278,6 +292,7 @@ function SavedCardPath({
   onAddDifferent: () => void;
   restaurantId: string;
   amountCents: number;
+  holdId: string | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -317,6 +332,7 @@ function SavedCardPath({
               restaurant_id: restaurantId,
               amount_cents: amountCents,
               saved_card_id: selectedId,
+              hold_id: holdId,
             }),
           },
         );
@@ -345,9 +361,10 @@ function SavedCardPath({
             clientSecret: body.client_secret,
           });
           if (scaErr) {
-            const msg = scaErr.message ?? "Card verification failed.";
-            setErrorMsg(msg);
-            onError?.(msg);
+            const friendly = toUserFacingError(scaErr, "Card verification failed.");
+            setErrorMsg(friendly.message);
+            onError?.(friendly.message);
+            console.error("[StripePaymentForm.savedCard.sca]", friendly.code, friendly.technical ?? scaErr);
             return;
           }
           if (paymentIntent && (paymentIntent.status === "succeeded" || paymentIntent.status === "processing")) {
@@ -357,6 +374,13 @@ function SavedCardPath({
           const msg = `Payment ended in unexpected state: ${paymentIntent?.status ?? "unknown"}`;
           setErrorMsg(msg);
           onError?.(msg);
+          return;
+        }
+        if (!res.ok) {
+          const friendly = toUserFacingEdgeError(res, body);
+          setErrorMsg(friendly.message);
+          onError?.(friendly.message);
+          console.error("[StripePaymentForm.savedCard.intent]", friendly.code, friendly.technical);
           return;
         }
         const msg = body.error ?? "Couldn't charge your card.";
@@ -450,6 +474,7 @@ function SavedCardPath({
 function OneTimeCardForm({
   restaurantId,
   amountCents,
+  holdId,
   onPaid,
   onError,
   payButtonLabel,
@@ -463,6 +488,7 @@ function OneTimeCardForm({
 }: {
   restaurantId: string;
   amountCents: number;
+  holdId: string | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -489,9 +515,10 @@ function OneTimeCardForm({
         // 1. Validate card fields locally before hitting the server.
         const { error: submitError } = await elements.submit();
         if (submitError) {
-          const msg = submitError.message ?? "Please check your card details.";
-          setErrorMsg(msg);
-          onError?.(msg);
+          const friendly = toUserFacingError(submitError, "Please check your card details.");
+          setErrorMsg(friendly.message);
+          onError?.(friendly.message);
+          console.error("[StripePaymentForm.oneTime.submit]", friendly.code, friendly.technical ?? submitError);
           return;
         }
 
@@ -507,6 +534,7 @@ function OneTimeCardForm({
             body: JSON.stringify({
               restaurant_id: restaurantId,
               amount_cents: amountCents,
+              hold_id: holdId,
             }),
           },
         );
@@ -516,9 +544,10 @@ function OneTimeCardForm({
           error?: string;
         };
         if (!intentRes.ok || !intentBody.client_secret) {
-          const msg = intentBody.error ?? "Couldn't start payment.";
-          setErrorMsg(msg);
-          onError?.(msg);
+          const friendly = toUserFacingEdgeError(intentRes, intentBody);
+          setErrorMsg(friendly.message);
+          onError?.(friendly.message);
+          console.error("[StripePaymentForm.oneTime.intent]", friendly.code, friendly.technical);
           return;
         }
 
@@ -530,9 +559,10 @@ function OneTimeCardForm({
           redirect: "if_required",
         });
         if (confirmError) {
-          const msg = confirmError.message ?? "Card was declined.";
-          setErrorMsg(msg);
-          onError?.(msg);
+          const friendly = toUserFacingError(confirmError, "Card was declined.");
+          setErrorMsg(friendly.message);
+          onError?.(friendly.message);
+          console.error("[StripePaymentForm.oneTime.confirm]", friendly.code, friendly.technical ?? confirmError);
           return;
         }
         if (paymentIntent?.status === "succeeded" || paymentIntent?.status === "processing") {

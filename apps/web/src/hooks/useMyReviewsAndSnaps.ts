@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 
@@ -90,8 +91,16 @@ async function fetchMyReviewsAndSnaps(
       .limit(100),
   ]);
 
-  if (rErr) throw new Error(rErr.message);
-  if (pErr) throw new Error(pErr.message);
+  if (rErr) {
+    const friendly = toUserFacingError(rErr, "Couldn't load your reviews.");
+    console.error("[useMyReviewsAndSnaps.reviews]", friendly.code, friendly.technical ?? rErr);
+    throw new Error(friendly.message);
+  }
+  if (pErr) {
+    const friendly = toUserFacingError(pErr, "Couldn't load your photos.");
+    console.error("[useMyReviewsAndSnaps.photos]", friendly.code, friendly.technical ?? pErr);
+    throw new Error(friendly.message);
+  }
 
   type WithJoin<T> = Omit<T, "restaurant"> & {
     restaurant:
@@ -214,7 +223,11 @@ export function useMyReviewsAndSnaps() {
           .from("visit_photos")
           .delete()
           .eq("id", entry.photo.id);
-        if (error) throw new Error(error.message);
+        if (error) {
+          const friendly = toUserFacingError(error, "Couldn't delete the photo.");
+          console.error("[useMyReviewsAndSnaps.deletePhoto]", friendly.code, friendly.technical ?? error);
+          throw new Error(friendly.message);
+        }
       }
       // 2) Delete the review row.
       if (entry.review) {
@@ -222,7 +235,11 @@ export function useMyReviewsAndSnaps() {
           .from("restaurant_reviews")
           .delete()
           .eq("id", entry.review.id);
-        if (error) throw new Error(error.message);
+        if (error) {
+          const friendly = toUserFacingError(error, "Couldn't delete the review.");
+          console.error("[useMyReviewsAndSnaps.deleteReview]", friendly.code, friendly.technical ?? error);
+          throw new Error(friendly.message);
+        }
       }
       // 3) Remove the storage object. Storage RLS lets the owner DELETE based
       //    on the {auth_user_id}/<file> path convention.

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 import { TablesListEditor } from "./TablesListEditor";
@@ -31,6 +32,7 @@ function toShape(value: string | null): WizardTableShape {
 }
 
 export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange }: Step3FloorPlanProps) {
+  const { errorToast } = useErrorToast();
   const [tables, setTables] = useState<WizardTable[]>(initial ?? STARTER_TABLES);
   const [hydrated, setHydrated] = useState(initial !== null);
   const [submitting, setSubmitting] = useState(false);
@@ -88,7 +90,10 @@ export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange
         .eq("restaurant_id", restaurantId)
         .eq("is_active", true);
       if (deactivateErr) {
-        toast.error(deactivateErr.message);
+        errorToast(deactivateErr, {
+          fallback: "Couldn't update tables. Try again.",
+          logTag: "[Step3FloorPlan.deactivateExisting]",
+        });
         return;
       }
 
@@ -105,7 +110,10 @@ export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange
 
       const { error: insertErr } = await client.from("tables").insert(rows);
       if (insertErr) {
-        toast.error(insertErr.message);
+        errorToast(insertErr, {
+          fallback: "Couldn't save tables. Try again.",
+          logTag: "[Step3FloorPlan.insertTables]",
+        });
         return;
       }
 

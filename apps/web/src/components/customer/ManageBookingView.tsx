@@ -17,6 +17,7 @@ import {
 } from "@/lib/supabase/client";
 import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
+import { toUserFacingError, toUserFacingEdgeError } from "@/lib/errors";
 
 type LookupRow = {
   id: string;
@@ -120,8 +121,10 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       });
       if (cancelled) return;
       if (error) {
+        const friendly = toUserFacingError(error, "Couldn't load this reservation. Try again.");
         setLookupState("error");
-        setErrorMessage(error.message);
+        setErrorMessage(friendly.message);
+        console.error("[ManageBookingView.lookup]", friendly.code, friendly.technical ?? error);
         return;
       }
       const rows = (data as LookupRow[] | null) ?? [];
@@ -184,7 +187,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
         refunds?: Array<{ ok?: boolean; amount_cents?: number }>;
       };
       if (!res.ok || body.error || body.ok !== true) {
-        setErrorMessage(body.error ?? `Could not cancel reservation (${res.status}).`);
+        const friendly = toUserFacingEdgeError(res, body as unknown as Record<string, unknown>);
+        setErrorMessage(friendly.message);
+        console.error("[ManageBookingView.cancel]", friendly.code, friendly.technical ?? body);
         setMode("view");
         return;
       }
@@ -206,7 +211,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       setDoneMessage(message);
       setMode("done");
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+      const friendly = toUserFacingError(err, "Couldn't cancel the reservation. Try again.");
+      setErrorMessage(friendly.message);
+      console.error("[ManageBookingView.cancel]", friendly.code, friendly.technical ?? err);
       setMode("view");
     } finally {
       setBusy(false);
@@ -253,7 +260,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
         unavailable_reason?: string;
       };
       if (!res.ok || body.error || body.ok !== true) {
-        setErrorMessage(body.error ?? `Could not modify reservation (${res.status}).`);
+        const friendly = toUserFacingEdgeError(res, body as unknown as Record<string, unknown>);
+        setErrorMessage(friendly.message);
+        console.error("[ManageBookingView.modify]", friendly.code, friendly.technical ?? body);
         return;
       }
       // Drop cached availability so the previous slot reappears + the new
@@ -262,7 +271,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       setDoneMessage("Your reservation has been updated. We've sent you a confirmation.");
       setMode("done");
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+      const friendly = toUserFacingError(err, "Couldn't update the reservation. Try again.");
+      setErrorMessage(friendly.message);
+      console.error("[ManageBookingView.modify]", friendly.code, friendly.technical ?? err);
     } finally {
       setBusy(false);
     }

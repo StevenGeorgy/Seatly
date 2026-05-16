@@ -10,6 +10,7 @@ import {
   getSupabaseAnonKey,
   getSupabaseProjectUrl,
 } from "@/lib/supabase/client";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 
 // Phase 7 of diner auth overhaul (2026-05-15): public landing page
 // for the magic links emailed to split-deposit payers. Anyone with
@@ -80,7 +81,12 @@ export default function DepositPayPage() {
           | { error: string };
         if (cancelled) return;
         if (!res.ok || "error" in body) {
-          setError(("error" in body ? body.error : null) ?? "Couldn't load payment details.");
+          const friendly = toUserFacingEdgeError(
+            res,
+            "error" in body ? { error: body.error } : null,
+          );
+          setError(friendly.message);
+          console.error("[DepositPayPage.loadContext]", friendly.code, friendly.technical);
           return;
         }
         setContext(body as DepositContext);
@@ -89,7 +95,9 @@ export default function DepositPayPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Couldn't load payment details.");
+          const friendly = toUserFacingError(err, "Couldn't load payment details.");
+          setError(friendly.message);
+          console.error("[DepositPayPage.loadContext]", friendly.code, friendly.technical ?? err);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -128,12 +136,20 @@ export default function DepositPayPage() {
       );
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok || body.error) {
-        toast.error(body.error ?? "Payment confirmed, but we couldn't link it. Contact support.");
+        const friendly = toUserFacingEdgeError(res, body);
+        toast.error(
+          friendly.code === "unknown"
+            ? "Payment confirmed, but we couldn't link it. Contact support."
+            : friendly.message,
+        );
+        console.error("[DepositPayPage.confirmPaid]", friendly.code, friendly.technical);
         // Still mark paid optimistically — Stripe has the money.
       }
       setPaid(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't finalize the payment.");
+      const friendly = toUserFacingError(err, "Couldn't finalize the payment.");
+      toast.error(friendly.message);
+      console.error("[DepositPayPage.confirmPaid]", friendly.code, friendly.technical ?? err);
       setPaid(true);
     }
   };

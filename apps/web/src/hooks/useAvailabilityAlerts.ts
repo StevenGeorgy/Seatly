@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 
@@ -38,7 +39,11 @@ async function fetchAlerts(userId: string): Promise<AvailabilityAlertWithJoins[]
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(100);
-  if (error) throw new Error(error.message);
+  if (error) {
+    const friendly = toUserFacingError(error, "Couldn't load your availability alerts.");
+    console.error("[useAvailabilityAlerts.fetch]", friendly.code, friendly.technical ?? error);
+    throw new Error(friendly.message);
+  }
   type Raw = Omit<AvailabilityAlertWithJoins, "restaurant" | "event"> & {
     restaurant: AvailabilityAlertWithJoins["restaurant"] | NonNullable<AvailabilityAlertWithJoins["restaurant"]>[];
     event: AvailabilityAlertWithJoins["event"] | NonNullable<AvailabilityAlertWithJoins["event"]>[];
@@ -95,7 +100,11 @@ export function useAvailabilityAlerts() {
     if (!isSupabaseConfigured()) return false;
     const client = getSupabaseBrowserClient();
     const { data, error: rpcErr } = await client.rpc("cancel_availability_alert", { p_id: id });
-    if (rpcErr) throw new Error(rpcErr.message);
+    if (rpcErr) {
+      const friendly = toUserFacingError(rpcErr, "Couldn't cancel that alert.");
+      console.error("[useAvailabilityAlerts.cancel]", friendly.code, friendly.technical ?? rpcErr);
+      throw new Error(friendly.message);
+    }
     queryClient.setQueryData<AvailabilityAlertWithJoins[]>(["availability_alerts", userId ?? null], (prev) =>
       (prev ?? []).map((a) => (a.id === id ? { ...a, status: "cancelled" as const } : a)),
     );

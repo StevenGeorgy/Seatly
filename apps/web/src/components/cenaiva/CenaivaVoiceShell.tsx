@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X, Keyboard, Mic, MicOff, ThumbsDown, ThumbsUp } from "lucide-react";
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useErrorToast } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
@@ -37,6 +38,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const voice = useCenaivaVoice();
   const { profile } = useUser();
   const { restaurants } = usePublicRestaurants();
+  const { errorToast } = useErrorToast();
 
   const [textInput, setTextInput] = useState("");
   const [showTextInput, setShowTextInput] = useState(false);
@@ -322,8 +324,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                     : "Thanks for the feedback — we'll review it.",
                 );
               } catch (err) {
-                console.error("[Cenaiva feedback] insert failed:", err);
-                toast.error("Couldn't send feedback. Try again later.");
+                errorToast(err, {
+                  fallback: "Couldn't send feedback. Try again later.",
+                  logTag: "[Cenaiva.feedback]",
+                });
               }
             };
             return (

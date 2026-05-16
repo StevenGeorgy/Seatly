@@ -52,7 +52,21 @@ type Payload = {
   restaurant_id?: unknown;
   amount_cents?: unknown;
   saved_card_id?: unknown;
+  // Reservation-hold linkage (CENAIVA_HOLDS_ENABLED). When present, the
+  // PI is created/retrieved against this hold; on success the hold row gets
+  // stripe_payment_intent_id stamped so the partial-unique-index serializes
+  // any concurrent PI creation for the same hold.
+  hold_id?: unknown;
 };
+
+interface ReservationHoldRow {
+  id: string;
+  deposit_amount_cents: number | null;
+  total_amount_cents: number | null;
+  stripe_payment_intent_id: string | null;
+  status: string | null;
+  expires_at: string | null;
+}
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
@@ -112,6 +126,11 @@ Deno.serve(async (req: Request) => {
       typeof payload.saved_card_id === "string" && payload.saved_card_id.trim()
         ? payload.saved_card_id.trim()
         : null;
+    const holdsEnabled = Deno.env.get("CENAIVA_HOLDS_ENABLED") === "true";
+    const holdId =
+      typeof payload.hold_id === "string" && payload.hold_id.trim()
+        ? payload.hold_id.trim()
+        : null;
 
     if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
     if (amountCents === null || amountCents < 50) {
@@ -148,6 +167,174 @@ Deno.serve(async (req: Request) => {
       restaurant_id: restaurantId,
       platform: "cenaiva",
     };
+
+    // ── Hold-aware branch (CENAIVA_HOLDS_ENABLED) ──
+    // When a hold_id is passed, we look up the hold, validate it, and either
+    // (a) return the already-attached PI (idempotent retry) or
+    // (b) create a new PI, stamp it onto the hold row via the partial unique
+    //     index (reservation_holds_pi_unique). The unique index serializes
+    //     concurrent creators — the loser retries the lookup and returns
+    //     the winner's PI.
+    if (holdsEnabled && holdId) {
+      const { data: holdRaw, error: holdLookupErr } = await supabaseAdmin
+        .from("reservation_holds")
+        .select(
+          "id, deposit_amount_cents, total_amount_cents, stripe_payment_intent_id, status, expires_at",
+        )
+        .eq("id", holdId)
+        .maybeSingle();
+      if (holdLookupErr) return jsonRes({ error: holdLookupErr.message }, 400);
+      if (!holdRaw) return jsonRes({ error: "hold_not_found" }, 404);
+      const hold = holdRaw as ReservationHoldRow;
+
+      // Status gate — only active/converting holds can accept payment.
+      if (hold.status !== "active" && hold.status !== "converting") {
+        return jsonRes(
+          { error: "hold_not_convertible", status: hold.status },
+          409,
+        );
+      }
+      if (hold.expires_at && new Date(hold.expires_at).getTime() < Date.now()) {
+        return jsonRes(
+          { error: "hold_expired", unavailable_reason: "hold_expired" },
+          410,
+        );
+      }
+
+      // Amount validation — must match deposit_amount_cents or
+      // total_amount_cents (caller picks which one applies based on whether
+      // this is a deposit-only or full-order hold).
+      const depositCents = Number(hold.deposit_amount_cents ?? 0);
+      const totalCents = Number(hold.total_amount_cents ?? 0);
+      const amountMatches =
+        (depositCents > 0 && amountCents === depositCents) ||
+        (totalCents > 0 && amountCents === totalCents);
+      if (!amountMatches) {
+        return jsonRes(
+          {
+            error: "amount_mismatch",
+            expected_deposit_cents: depositCents,
+            expected_total_cents: totalCents,
+            received_cents: amountCents,
+          },
+          400,
+        );
+      }
+
+      // Idempotency — hold already has a PI; retrieve & return it.
+      if (hold.stripe_payment_intent_id) {
+        const existingPi = await stripe.paymentIntents.retrieve(
+          hold.stripe_payment_intent_id,
+        );
+        return jsonRes({
+          mode: "hold",
+          status: existingPi.status,
+          payment_intent_id: existingPi.id,
+          client_secret: existingPi.client_secret,
+          amount_cents: amountCents,
+          application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
+          destination: row.stripe_account_id ?? null,
+          hold_id: hold.id,
+          idempotent: true,
+        });
+      }
+
+      // Create a fresh PI for this hold (Mode-A-style one-time card).
+      const holdStripeParams: Record<string, unknown> = {
+        amount: amountCents,
+        currency,
+        automatic_payment_methods: { enabled: true },
+        metadata: { ...metadata, hold_id: hold.id },
+        description: `Reservation hold at ${row.name ?? "Cenaiva restaurant"}`,
+      };
+      if (row.stripe_account_id) {
+        holdStripeParams.application_fee_amount = applicationFeeCents;
+        holdStripeParams.transfer_data = { destination: row.stripe_account_id };
+      }
+      const holdPi = await stripe.paymentIntents.create(holdStripeParams);
+
+      // Stamp the PI onto the hold row. The partial unique index
+      // (reservation_holds_pi_unique on stripe_payment_intent_id) means a
+      // concurrent writer hitting the same hold from the same code path
+      // would normally only conflict on the SAME PI id; but if two callers
+      // raced and both created different PIs, only one UPDATE succeeds — the
+      // loser re-fetches and returns the winner's PI (and the losing PI is
+      // orphaned in Stripe; it auto-expires unused).
+      const { error: updateErr } = await supabaseAdmin
+        .from("reservation_holds")
+        .update({ stripe_payment_intent_id: holdPi.id })
+        .eq("id", hold.id)
+        .is("stripe_payment_intent_id", null);
+      if (updateErr) {
+        // Conflict: another caller already stamped a PI. Re-fetch and
+        // return the winner's PI; the one we just created is orphaned.
+        console.warn(
+          "create-public-payment-intent: hold PI stamp conflict, recovering",
+          updateErr,
+        );
+        const { data: refetched } = await supabaseAdmin
+          .from("reservation_holds")
+          .select("stripe_payment_intent_id")
+          .eq("id", hold.id)
+          .maybeSingle();
+        const winningPiId = (refetched as { stripe_payment_intent_id: string | null } | null)
+          ?.stripe_payment_intent_id;
+        if (winningPiId) {
+          const winningPi = await stripe.paymentIntents.retrieve(winningPiId);
+          return jsonRes({
+            mode: "hold",
+            status: winningPi.status,
+            payment_intent_id: winningPi.id,
+            client_secret: winningPi.client_secret,
+            amount_cents: amountCents,
+            application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
+            destination: row.stripe_account_id ?? null,
+            hold_id: hold.id,
+            idempotent: true,
+          });
+        }
+        return jsonRes({ error: "hold_pi_stamp_failed" }, 500);
+      }
+
+      // Re-verify the row actually carries the PI we created (the .is()
+      // filter above silently no-ops if the row was updated between our
+      // SELECT and UPDATE — Postgres returns 0 rows affected without an
+      // error). If not, we lost the race; recover.
+      const { data: confirmRow } = await supabaseAdmin
+        .from("reservation_holds")
+        .select("stripe_payment_intent_id")
+        .eq("id", hold.id)
+        .maybeSingle();
+      const persistedPiId = (confirmRow as { stripe_payment_intent_id: string | null } | null)
+        ?.stripe_payment_intent_id;
+      if (persistedPiId && persistedPiId !== holdPi.id) {
+        // Lost the race; return the winner.
+        const winningPi = await stripe.paymentIntents.retrieve(persistedPiId);
+        return jsonRes({
+          mode: "hold",
+          status: winningPi.status,
+          payment_intent_id: winningPi.id,
+          client_secret: winningPi.client_secret,
+          amount_cents: amountCents,
+          application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
+          destination: row.stripe_account_id ?? null,
+          hold_id: hold.id,
+          idempotent: true,
+        });
+      }
+
+      return jsonRes({
+        mode: "hold",
+        status: holdPi.status,
+        payment_intent_id: holdPi.id,
+        client_secret: holdPi.client_secret,
+        amount_cents: amountCents,
+        application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
+        destination: row.stripe_account_id ?? null,
+        hold_id: hold.id,
+        idempotent: false,
+      });
+    }
 
     // ── Mode B: Saved card (off-session confirm) ──
     // Phase 4 of diner auth overhaul. JWT-required: we must verify the

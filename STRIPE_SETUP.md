@@ -247,4 +247,119 @@ Once all of the above is checked off, the Phase D (Stripe) implementation work c
 
 ---
 
-Last updated: 2026-05-14
+Last updated: 2026-05-16
+
+---
+
+## 9. Stripe + Reservation Holds (shipped 2026-05-16)
+
+The web booking flow now uses a **30-minute reservation hold** that precedes confirmed reservations for deposit and pre-order bookings (see `HAB_system_efficentsy.md` for full architecture). This section documents the Stripe-side changes — important reading for the mobile team.
+
+### What changed for Stripe
+
+Before this work, when a diner clicked "Place Order" on a deposit or pre-order booking:
+1. A `reservations` row was created with `status='confirmed'`, `deposit_status='pending'`.
+2. Then a Stripe PaymentIntent was created with metadata `{ reservation_id }`.
+3. If the diner abandoned mid-payment, the "confirmed" reservation was stuck forever.
+
+Now, with reservation holds:
+1. When the diner enters the booking flow, a `reservation_holds` row is created (NOT a reservation yet).
+2. When they reach the payment step, a Stripe PaymentIntent is created with metadata `{ hold_id }` (NOT `reservation_id`).
+3. On Stripe success → the hold is **converted** into a real confirmed reservation (one row insert + deposit row insert).
+4. On Stripe abandonment → the hold expires after 30 min via a cron job → slot frees up. No ghost reservations.
+
+### New Stripe-related edge function
+
+**`confirm-hold-paid`** (anon-callable, 60 req/min/IP)
+
+- Browser-side fast-path that converts a hold after Stripe confirms.
+- Body: `{ hold_id, payment_intent_id }`.
+- Action: re-verifies the PI with Stripe (`status === 'succeeded'`, `amount_received` covers expected total or deposit), then calls the `convert_reservation_hold_to_reservation` Postgres RPC.
+- Idempotent — if the webhook also runs, the second caller sees `idempotent: true` and returns the existing reservation.
+- Returns `{ reservation_id, confirmation_code, table_ids, duration_minutes, idempotent }`.
+
+### Modified: `create-public-payment-intent`
+
+Accepts a new `hold_id` field in the body. When present:
+- Looks up the hold to confirm it's still active and the requested amount matches the hold's `total_amount_cents` or `deposit_amount_cents`.
+- Stamps the created PI's `metadata` with `{ hold_id }`.
+- Stores `pi.id` on the hold row (`stripe_payment_intent_id` column with a partial unique index — only one PI per hold).
+- Idempotent — if the hold already has a PI, retrieves and returns that one instead of creating a duplicate.
+
+### Modified: `stripe-webhook`
+
+`handlePaymentIntentSucceeded` has a new branch at the top:
+- If `pi.metadata.hold_id` is set → calls `convert_reservation_hold_to_reservation` directly. This is the safety net for the case where the browser drops between Stripe success and `confirm-hold-paid`.
+- If the conversion fails with `P0011 hold_expired` (hold past 2-minute grace) → **fires a Stripe refund** (`stripe.refunds.create({ payment_intent: pi.id, reason: 'requested_by_customer' })`). This is critical: if the diner's payment succeeded but the hold expired (e.g., cron raced), we MUST refund — no silent payment-captures-without-booking.
+- Legacy `reservation_id` metadata path is preserved below the new branch — handles in-flight bookings from before the holds rollout.
+
+**Webhook event:** still just `payment_intent.succeeded`. No new events needed.
+
+### New env var
+
+`CENAIVA_HOLDS_ENABLED=true` — set on the Supabase project's edge function env. When `true`, `create-public-booking` and `_shared/booking.ts` (voice path) route through the hold flow. Set to `false` to revert to the legacy "confirm-on-place-order" flow (single-config rollback).
+
+Already set in production:
+```bash
+supabase secrets set CENAIVA_HOLDS_ENABLED=true --project-ref exbjodmnpdiayfzrdyux
+```
+
+### Mobile-side Stripe checklist
+
+To mirror this flow in the mobile app:
+
+1. **Pass `hold_id` when initializing payment.** The mobile Stripe React Native SDK initializes payment sheets / payment elements with a PaymentIntent client_secret. Before initializing, call `create-public-payment-intent` with `{ ...standard fields, hold_id }` and use the returned `client_secret`.
+
+2. **On Stripe success in the app:**
+   ```ts
+   const { paymentIntent, error } = await confirmPayment(clientSecret, ...);
+   if (paymentIntent?.status === 'Succeeded') {
+     await fetch(`${SUPABASE_URL}/functions/v1/confirm-hold-paid`, {
+       method: 'POST',
+       headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
+       body: JSON.stringify({ hold_id, payment_intent_id: paymentIntent.id }),
+     });
+   }
+   ```
+   The response gives you the new `reservation_id` and `confirmation_code` to show on the success screen.
+
+3. **Handle 410 hold_expired from `confirm-hold-paid`:** if the mobile call times out and the hold expired BEFORE the webhook arrived (rare but possible), the webhook will refund automatically. The app should show a "Sorry, your hold ended right as your payment went through — your card has been refunded" message. Don't try to re-charge; the webhook owns the refund path.
+
+4. **Handle 402 payment_amount_too_low:** means the Stripe PaymentIntent's `amount_received` didn't cover the hold's expected amount. Means either (a) the hold's `total_amount_cents` was bumped after the PI was created, or (b) a partial multi-payer deposit. The app should refresh the cart from the hold and re-initialize Stripe.
+
+5. **Multi-payer deposits (parties of 8+ splitting deposit):** the existing `prepare-deposit` + `confirm-deposit-paid` + `dispatch-deposit-invites` flow STILL works for multi-payer. The conversion logic respects the existing `reservation_deposit_payments` settle trigger. No mobile change needed for multi-payer beyond passing `hold_id` correctly.
+
+6. **Refund flow (cancel reservation):** unchanged. `cancel-reservation` edge fn already handles refunding deposits; it works against the converted reservation just like before. Cancelling a HOLD (not a confirmed reservation) doesn't refund anything because nothing has been charged yet — call `cancel-reservation-hold` instead.
+
+### Test cards (same as before)
+
+- Success: `4242 4242 4242 4242`
+- Auth required (3DS): `4000 0025 0000 3155`
+- Decline: `4000 0000 0000 0002`
+
+### Production verification (post-deploy)
+
+```bash
+# Confirm the new edge functions are deployed
+supabase functions list --project-ref exbjodmnpdiayfzrdyux | grep -E "hold|confirm-hold"
+
+# Confirm the env flag is set
+supabase secrets list --project-ref exbjodmnpdiayfzrdyux | grep CENAIVA_HOLDS_ENABLED
+
+# Confirm cron is healthy (every 5 min)
+# psql: SELECT jobname, schedule, active FROM cron.job WHERE jobname='cenaiva_expire_reservation_holds';
+```
+
+### One-liner sanity test
+
+```bash
+SUPABASE_URL="https://exbjodmnpdiayfzrdyux.supabase.co"
+ANON_KEY="<your anon key>"
+curl -s -X POST "${SUPABASE_URL}/functions/v1/create-reservation-hold" \
+  -H "apikey: ${ANON_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"restaurant_id":"<uuid>","shift_id":"<uuid>","date_time":"2026-05-20T22:00:00Z","party_size":2}' | jq
+# Expect: { "hold_id": "...", "expires_at": "...", "deposit_amount_cents": ... }
+```
+
+Then call cancel-reservation-hold with that `hold_id` to clean up.

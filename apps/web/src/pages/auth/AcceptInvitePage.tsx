@@ -5,6 +5,7 @@ import { CheckCircle2, Loader2, ShieldAlert, Store } from "lucide-react";
 
 import { AuthPageLayout } from "@/components/auth/AuthPageLayout";
 import { Button } from "@/components/ui/button";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseProjectUrl,
@@ -80,7 +81,8 @@ async function callAcceptInvite(
     redirect_to?: string;
   };
   if (!res.ok) {
-    throw new Error(payload.error ?? "Could not process this invite.");
+    const friendly = toUserFacingEdgeError(res, payload);
+    throw new Error(friendly.message);
   }
   return payload;
 }
@@ -116,7 +118,9 @@ export default function AcceptInvitePage() {
         setState(session ? "ready" : "needs-auth");
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : t("auth.acceptInvite.genericError"));
+        const friendly = toUserFacingError(err, t("auth.acceptInvite.genericError"));
+        setError(friendly.message);
+        console.error("[AcceptInvite]", friendly.code, friendly.technical ?? err);
         setState("failed");
       }
     });

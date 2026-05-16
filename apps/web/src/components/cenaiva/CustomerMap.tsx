@@ -10,6 +10,7 @@ import {
 } from "@/lib/google-maps";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
+import { toUserFacingError } from "@/lib/errors";
 
 // Local lightweight slice of `google.maps.Map` we actually call. Mirrors the
 // shape used in `DiscoverPage.tsx` so both consumers stay in lock-step.
@@ -82,7 +83,9 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
   useEffect(() => {
     const onError = (e: Event) => {
       const detail = (e as CustomEvent<string>).detail;
-      setLoadError(detail ?? "Google Maps failed to load.");
+      const friendly = toUserFacingError(detail ?? null, "Google Maps failed to load.");
+      setLoadError(friendly.message);
+      console.error("[CustomerMap.authFailure]", friendly.code, friendly.technical ?? detail);
     };
     window.addEventListener("cenaiva:google-maps-error", onError);
     return () => window.removeEventListener("cenaiva:google-maps-error", onError);
@@ -138,7 +141,9 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        setLoadError(err?.message ?? "Google Maps failed to load.");
+        const friendly = toUserFacingError(err, "Google Maps failed to load.");
+        setLoadError(friendly.message);
+        console.error("[CustomerMap.load]", friendly.code, friendly.technical ?? err);
       });
 
     return () => {

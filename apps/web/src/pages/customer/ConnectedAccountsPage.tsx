@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { toUserFacingError } from "@/lib/errors";
 
 // Phase 5 of diner auth overhaul (2026-05-15): the proactive linking
 // surface. Even outside the merge-on-sign-in flow, diners may want to
@@ -46,7 +47,9 @@ export default function ConnectedAccountsPage() {
     const client = getSupabaseBrowserClient();
     const { data, error } = await client.auth.getUserIdentities();
     if (error) {
-      toast.error(error.message || "Couldn't load your connected accounts.");
+      const friendly = toUserFacingError(error, "Couldn't load your connected accounts.");
+      toast.error(friendly.message);
+      console.error("[ConnectedAccountsPage.refresh]", friendly.code, friendly.technical ?? error);
       return;
     }
     setIdentities((data?.identities ?? []) as IdentityRow[]);
@@ -81,7 +84,9 @@ export default function ConnectedAccountsPage() {
         },
       });
       if (error) {
-        toast.error(error.message || `Couldn't link your ${provider} account.`);
+        const friendly = toUserFacingError(error, `Couldn't link your ${provider} account.`);
+        toast.error(friendly.message);
+        console.error("[ConnectedAccountsPage.link]", friendly.code, friendly.technical ?? error);
       }
       // On success the browser redirects to provider OAuth; nothing else to do here.
     } finally {
@@ -105,7 +110,9 @@ export default function ConnectedAccountsPage() {
         identity as unknown as Parameters<typeof client.auth.unlinkIdentity>[0],
       );
       if (error) {
-        toast.error(error.message || "Couldn't disconnect that account.");
+        const friendly = toUserFacingError(error, "Couldn't disconnect that account.");
+        toast.error(friendly.message);
+        console.error("[ConnectedAccountsPage.unlink]", friendly.code, friendly.technical ?? error);
         return;
       }
       toast.success(`${PROVIDER_LABELS[identity.provider]?.label ?? identity.provider} disconnected.`);

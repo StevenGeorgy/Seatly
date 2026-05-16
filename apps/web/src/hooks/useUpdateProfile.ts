@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { showErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import type { ProfileUpdateValues } from "@/lib/validation/profile-schemas";
@@ -19,7 +20,10 @@ export function useUpdateProfile() {
     if (values.email && values.email !== profile.email) {
       const { error: authErr } = await client.auth.updateUser({ email: values.email });
       if (authErr) {
-        toast.error("Could not update email: " + authErr.message);
+        showErrorToast(authErr, {
+          context: "Couldn't update email",
+          logTag: "[useUpdateProfile.email]",
+        });
         setSaving(false);
         return;
       }
@@ -44,7 +48,10 @@ export function useUpdateProfile() {
       .eq("id", profile.id);
 
     if (dbErr) {
-      toast.error("Could not save profile: " + dbErr.message);
+      showErrorToast(dbErr, {
+        context: "Couldn't save profile",
+        logTag: "[useUpdateProfile.save]",
+      });
       setSaving(false);
       return;
     }

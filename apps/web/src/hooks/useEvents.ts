@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
@@ -164,7 +165,11 @@ async function fetchEventsByRestaurant(restaurantId: string): Promise<EventRow[]
     .select("*")
     .eq("restaurant_id", restaurantId)
     .order("date", { ascending: true });
-  if (qErr) throw new Error(qErr.message);
+  if (qErr) {
+    const friendly = toUserFacingError(qErr, "Couldn't load events.");
+    console.error("[useEvents.fetch]", friendly.code, friendly.technical ?? qErr);
+    throw new Error(friendly.message);
+  }
   return (data ?? []) as EventRow[];
 }
 
@@ -206,7 +211,11 @@ export function useEvents() {
         is_private: payload.is_private ?? false,
       });
     setSaving(false);
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't create the event.");
+      console.error("[useEvents.create]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
     await invalidate();
     return null;
   }, [selectedRestaurantId, invalidate]);
@@ -217,7 +226,11 @@ export function useEvents() {
     const client = getSupabaseBrowserClient();
     const { error } = await client.from("events").update(payload).eq("id", id);
     setSaving(false);
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't update the event.");
+      console.error("[useEvents.update]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
     await invalidate();
     return null;
   }, [invalidate]);
@@ -236,7 +249,11 @@ export function useEvents() {
       .from("event-media")
       .upload(path, file, { cacheControl: "3600", contentType: media.mime, upsert: false });
 
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't upload the file.");
+      console.error("[useEvents.uploadMedia]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
 
     const { data } = client.storage.from("event-media").getPublicUrl(path);
     return {

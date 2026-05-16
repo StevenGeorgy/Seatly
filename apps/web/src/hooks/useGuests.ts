@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type GuestRow = {
@@ -68,7 +69,9 @@ export function useGuests(filters?: GuestFilters) {
     });
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load guests.");
+      setError(new Error(friendly.message));
+      console.error("[useGuests.fetch]", friendly.code, friendly.technical ?? qErr);
       setGuests([]);
     } else {
       let rows = (data ?? []) as GuestRow[];

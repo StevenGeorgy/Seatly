@@ -4,34 +4,8 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
-import { CenaivaProvider, useCenaiva } from "@/components/cenaiva/CenaivaProvider";
-import { CenaivaButton } from "@/components/cenaiva/CenaivaButton";
-import { CenaivaDrawer } from "@/components/cenaiva/CenaivaDrawer";
 import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
-
-// Syncs the dashboard's selected restaurant into CenaivaProvider and activates
-// owner mode. Resets both when the dashboard unmounts.
-function CenaivaDashboardSync() {
-  const { selectedRestaurantId } = useRestaurantScope();
-  const cenaiva = useCenaiva();
-
-  useEffect(() => {
-    if (!cenaiva) return;
-    cenaiva.setMode("owner");
-    cenaiva.setRestaurantId(selectedRestaurantId);
-  }, [selectedRestaurantId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!cenaiva) return;
-    return () => {
-      cenaiva.setMode("customer");
-      cenaiva.setRestaurantId(null);
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return null;
-}
 
 // Catches render errors in individual pages so the shell stays visible
 class PageErrorBoundary extends Component<
@@ -80,14 +54,7 @@ function PageSkeleton() {
 }
 
 export default function DashboardLayout() {
-  /** Legacy staff chat stack is scoped here so customer routes don't mount it. */
-  return (
-    <CenaivaProvider>
-      <DashboardShell />
-      <CenaivaButton />
-      <CenaivaDrawer />
-    </CenaivaProvider>
-  );
+  return <DashboardShell />;
 }
 
 function DashboardShell() {
@@ -111,7 +78,6 @@ function DashboardShell() {
         "bg-background",
       )}
     >
-      <CenaivaDashboardSync />
       <DashboardSidebar />
       <div
         className={cn(

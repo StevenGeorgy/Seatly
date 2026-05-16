@@ -47,6 +47,7 @@ import {
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
 import { matchesReservationSearch } from "@/lib/reservations/search";
+import { toUserFacingError, useErrorToast } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -2446,6 +2447,7 @@ function EditCard({
 // ─── Main page ─────────────────────────────────────────────────────────────
 export default function FloorPlanPage() {
   const { t } = useTranslation();
+  const { errorToast } = useErrorToast();
   const {
     tables: dbTables,
     floorPlans: dbFloorPlans,
@@ -2632,7 +2634,7 @@ export default function FloorPlanPage() {
     try {
       const result = await fetchAvailabilitySlots(selectedRestaurantId, hostQuickDate, nextPartySize);
       if (result.error) {
-        toast.error(result.error);
+        toast.error(result.error || "Couldn't load availability. Try again in a moment.");
         setHostQuickSlots([]);
       } else {
         setHostQuickSlots(result.slots);
@@ -2641,7 +2643,10 @@ export default function FloorPlanPage() {
         }
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not load availability.");
+      errorToast(error, {
+        fallback: "Couldn't load availability. Try again in a moment.",
+        logTag: "[FloorPlanPage.loadHostQuickAvailability]",
+      });
       setHostQuickSlots([]);
     } finally {
       setHostQuickLoading(false);
@@ -2684,7 +2689,7 @@ export default function FloorPlanPage() {
         p_reserved_at: hostQuickSelectedSlot.date_time,
         p_special_request: hostQuickSpecialRequest.trim() || null,
       });
-      if (error) throw new Error(error.message);
+      if (error) throw new Error(toUserFacingError(error).message);
       if (!reservationId || typeof reservationId !== "string") throw new Error("Reservation could not be created.");
 
       const slotTableIds = (hostQuickSelectedSlot.table_ids ?? []).filter(Boolean);
@@ -2692,14 +2697,14 @@ export default function FloorPlanPage() {
         .from("reservations")
         .update({ shift_id: hostQuickSelectedSlot.shift_id })
         .eq("id", reservationId);
-      if (shiftUpdateError) throw new Error(shiftUpdateError.message);
+      if (shiftUpdateError) throw new Error(toUserFacingError(shiftUpdateError).message);
 
       const { data: activeAssignments, error: assignmentCheckError } = await client
         .from("reservation_tables")
         .select("table_id")
         .eq("reservation_id", reservationId)
         .is("released_at", null);
-      if (assignmentCheckError) throw new Error(assignmentCheckError.message);
+      if (assignmentCheckError) throw new Error(toUserFacingError(assignmentCheckError).message);
 
       const assignedTableIds = (activeAssignments ?? [])
         .map((row) => row.table_id)
@@ -2732,7 +2737,7 @@ export default function FloorPlanPage() {
         },
         p_approval_profile_id: null,
       });
-      if (auditError) throw new Error(auditError.message);
+      if (auditError) throw new Error(toUserFacingError(auditError).message);
 
       setHostQuickGuestName("");
       setHostQuickGuestEmail("");
@@ -2743,7 +2748,10 @@ export default function FloorPlanPage() {
       await Promise.all([refreshHostQuickAvailability(), refetchReservations(), refetchFloorPlan({ silent: true })]);
       toast.success("Reservation added from the floor plan.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create reservation.");
+      errorToast(error, {
+        fallback: "Couldn't create that reservation. Try again.",
+        logTag: "[FloorPlanPage.createHostQuickReservation]",
+      });
     } finally {
       setHostQuickSaving(false);
     }
@@ -3049,7 +3057,7 @@ export default function FloorPlanPage() {
       .eq("table_id", tableId)
       .is("released_at", null);
 
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(toUserFacingError(error).message);
 
     const requestedStart = reservedAt.getTime();
     const requestedEnd = requestedStart + turnTimeMinutes * 60_000;
@@ -3092,13 +3100,13 @@ export default function FloorPlanPage() {
       p_special_request: values.specialRequest.trim() || null,
     });
 
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(toUserFacingError(error).message);
     if (!reservationId) throw new Error("Reservation could not be created.");
 
     const { error: releaseError } = await client.rpc("force_release_reservation_tables", {
       p_reservation_id: reservationId,
     });
-    if (releaseError) throw new Error(releaseError.message);
+    if (releaseError) throw new Error(toUserFacingError(releaseError).message);
 
     const { error: assignmentError } = await client.from("reservation_tables").insert({
       restaurant_id: selectedRestaurantId,
@@ -3106,13 +3114,13 @@ export default function FloorPlanPage() {
       table_id: tableId,
       is_primary: true,
     });
-    if (assignmentError) throw new Error(assignmentError.message);
+    if (assignmentError) throw new Error(toUserFacingError(assignmentError).message);
 
     const { error: reservationTableError } = await client
       .from("reservations")
       .update({ table_id: tableId, duration_minutes: turnTimeMinutes })
       .eq("id", reservationId);
-    if (reservationTableError) throw new Error(reservationTableError.message);
+    if (reservationTableError) throw new Error(toUserFacingError(reservationTableError).message);
 
     const { error: auditError } = await client.rpc("write_staff_audit_event", {
       p_restaurant_id: selectedRestaurantId,
@@ -3133,7 +3141,7 @@ export default function FloorPlanPage() {
       },
       p_approval_profile_id: null,
     });
-    if (auditError) throw new Error(auditError.message);
+    if (auditError) throw new Error(toUserFacingError(auditError).message);
 
     return reservationId;
   };
@@ -3163,7 +3171,10 @@ export default function FloorPlanPage() {
       setServiceDialog(null);
       toast.success("Reservation added.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save reservation.");
+      errorToast(error, {
+        fallback: "Couldn't save that reservation. Try again.",
+        logTag: "[FloorPlanPage.handleFloorReservationSubmit]",
+      });
     } finally {
       setSavingService(false);
     }
@@ -3187,7 +3198,10 @@ export default function FloorPlanPage() {
             await persistServiceStatus(t, "free", 0);
             await Promise.all([refetchReservations(), refetchFloorPlan({ silent: true })]);
           } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Could not mark no-show.");
+            errorToast(error, {
+              fallback: "Couldn't mark this guest as a no-show. Try again.",
+              logTag: "[FloorPlanPage.handleAction.cancel]",
+            });
           }
         })();
       } else {
@@ -3406,7 +3420,10 @@ export default function FloorPlanPage() {
       setEditing(false);
       toast.success("Floor plan saved.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save the floor plan.");
+      errorToast(error, {
+        fallback: "Couldn't save the floor plan. Try again.",
+        logTag: "[FloorPlanPage.saveFloorPlanLayout]",
+      });
     } finally {
       setSavingLayout(false);
     }

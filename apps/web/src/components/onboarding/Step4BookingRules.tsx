@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 import {
@@ -114,6 +115,7 @@ export function Step4BookingRules({
     return base;
   }, [hours, initial]);
 
+  const { errorToast } = useErrorToast();
   const [shift, setShift] = useState<WizardShift>(seed);
   const [shiftId, setShiftId] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -199,7 +201,10 @@ export function Step4BookingRules({
       if (shiftId) {
         const { error } = await client.from("shifts").update(payload).eq("id", shiftId);
         if (error) {
-          toast.error(error.message);
+          errorToast(error, {
+            fallback: "Couldn't update shift. Try again.",
+            logTag: "[Step4BookingRules.updateShift]",
+          });
           return;
         }
       } else {
@@ -207,7 +212,10 @@ export function Step4BookingRules({
           .from("shifts")
           .insert({ ...payload, restaurant_id: restaurantId });
         if (error) {
-          toast.error(error.message);
+          errorToast(error, {
+            fallback: "Couldn't create shift. Try again.",
+            logTag: "[Step4BookingRules.insertShift]",
+          });
           return;
         }
       }

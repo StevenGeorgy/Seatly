@@ -30,6 +30,7 @@ import {
   type EventRow,
 } from "@/hooks/useEvents";
 import { eventToDisplay, type EventPromotionDisplay, type RestaurantDisplayInfo } from "@/lib/customer/eventPromotionDisplay";
+import { getFriendlyMessage } from "@/lib/errors";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
@@ -649,7 +650,7 @@ function EventFormDialog({
     if (selectedFile) {
       const result = await uploadEventMedia(selectedFile);
       if (typeof result === "string") {
-        toast.error(result);
+        toast.error(getFriendlyMessage(new Error(result), "Couldn't upload that image. Try a smaller file or a different format."));
         return;
       }
       upload = result;
@@ -1175,7 +1176,7 @@ export default function EventsPage() {
       setPhase(isActive ? "active" : "draft");
       return true;
     } else {
-      toast.error(err || "Could not save event. Try again.");
+      toast.error(err ? getFriendlyMessage(new Error(err), "Couldn't save that event. Try again.") : "Couldn't save that event. Try again.");
       return false;
     }
   };
@@ -1212,7 +1213,7 @@ export default function EventsPage() {
       toast.success("Event posted");
     setPhase("active");
     } else {
-      toast.error(err || "Could not post event.");
+      toast.error(err ? getFriendlyMessage(new Error(err), "Couldn't post that event. Try again.") : "Couldn't post that event. Try again.");
     }
   };
 

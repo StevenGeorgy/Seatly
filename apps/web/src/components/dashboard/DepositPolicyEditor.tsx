@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { useErrorToast } from "@/lib/errors";
 
 type DraftTier = {
   /** stable key for React */
@@ -77,6 +78,7 @@ function tiersEqual(
 export function DepositPolicyEditor({ restaurantId, initialTiers, ceilingHint, onSaved }: Props) {
   const [draft, setDraft] = useState<DraftTier[]>(() => tiersToDraft(initialTiers));
   const [saving, setSaving] = useState(false);
+  const { errorToast } = useErrorToast();
   const restaurantKey = restaurantId ?? "none";
 
   // Reset draft when switching restaurants or when parent reloads tiers.
@@ -135,7 +137,10 @@ export function DepositPolicyEditor({ restaurantId, initialTiers, ceilingHint, o
       .eq("id", restaurantId);
     setSaving(false);
     if (error) {
-      toast.error(`Couldn't save deposit policy: ${error.message}`);
+      errorToast(error, {
+        fallback: "Couldn't save deposit policy. Try again.",
+        logTag: "[DepositPolicyEditor.save]",
+      });
       return;
     }
     toast.success(parsed.length === 0 ? "Deposit policy cleared." : "Deposit policy saved.");

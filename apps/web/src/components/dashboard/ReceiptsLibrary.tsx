@@ -8,11 +8,13 @@ import {
   FileText,
   ImageIcon,
   Pencil,
+  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -27,8 +29,23 @@ import {
   type ReceiptTransactionType,
   type ReceiptWithUrl,
 } from "@/hooks/useReceipts";
+import {
+  useExpenses,
+  type ExpenseRow,
+} from "@/hooks/useExpenses";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  SCAN_MAX_IMAGE_BYTES,
+  useScanReceipt,
+  type ScanReceiptDraft,
+} from "@/hooks/useScanReceipt";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
+import {
+  ReceiptScanReviewDialog,
+  type ReceiptScanReviewSubmit,
+} from "@/components/dashboard/ReceiptScanReviewDialog";
+import { useErrorToast } from "@/lib/errors";
 
 const TRANSACTION_FILTERS: Array<{ value: "all" | ReceiptTransactionType; label: string }> = [
   { value: "all", label: "All" },
@@ -63,9 +80,140 @@ function transactionLabel(type: ReceiptTransactionType | null | undefined): stri
   return "Unfiled";
 }
 
+const CATEGORY_LABELS: Record<string, string> = {
+  food_cost: "Food cost",
+  food_supplies: "Food supplies",
+  beverages: "Beverages",
+  utilities: "Utilities",
+  rent: "Rent",
+  equipment: "Equipment",
+  marketing: "Marketing",
+  staff: "Staff",
+  supplies: "Supplies",
+  maintenance: "Maintenance",
+  cleaning: "Cleaning",
+  sales: "Sales",
+  preorders: "Pre-orders",
+  events: "Events",
+  catering: "Catering",
+  delivery: "Delivery",
+  gift_cards: "Gift cards",
+  other: "Other",
+};
+
+function categoryLabel(value: string | null | undefined): string {
+  if (!value) return "—";
+  return CATEGORY_LABELS[value] ?? value;
+}
+
+type ReceiptDetailsPanelProps = {
+  receipt: ReceiptWithUrl | null;
+  expense: ExpenseRow | null;
+  loading: boolean;
+  fallbackCurrency: string;
+};
+
+function ReceiptDetailsPanel({ receipt, expense, loading, fallbackCurrency }: ReceiptDetailsPanelProps) {
+  if (!receipt) return null;
+  const expenseCurrency = expense?.currency || receipt.currency || fallbackCurrency;
+  const aiBlob = (expense?.ai_extracted_data ?? null) as Record<string, unknown> | null;
+  const paymentMethodRaw = aiBlob && typeof aiBlob.payment_method === "string" ? aiBlob.payment_method : null;
+  const hasExpense = expense !== null;
+
+  return (
+    <aside className="flex flex-col gap-4 overflow-y-auto border-l border-border bg-bg-surface/40 px-5 py-5">
+      <div>
+        <div className="flex items-center justify-between">
+          <h3 className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Details</h3>
+          {expense?.ai_categorized && (
+            <Badge className="gap-1 border border-gold/40 bg-gold/10 px-1.5 py-0 text-[9px] font-mono uppercase tracking-wider text-gold">
+              <Sparkles className="size-2.5" /> AI scanned
+            </Badge>
+          )}
+        </div>
+        <p className="mt-1 text-sm text-text-secondary">
+          {hasExpense
+            ? "Fields extracted from this receipt and saved to the expense."
+            : loading
+              ? "Loading details…"
+              : "This receipt isn't linked to an expense yet. Tap the pencil to add details."}
+        </p>
+      </div>
+
+      <dl className="grid gap-3 text-sm">
+        <DetailRow label="Vendor" value={expense?.vendor_name ?? receipt.description ?? "—"} />
+        <DetailRow label="Type" value={transactionLabel(receipt.transaction_type)} />
+        <DetailRow label="Category" value={categoryLabel(expense?.category)} />
+        <DetailRow label="Receipt date" value={readableDate(expense?.expense_date ?? receipt.receipt_date)} />
+        <DetailRow
+          label="Subtotal"
+          value={
+            expense?.amount != null
+              ? formatCurrency(expense.amount, expenseCurrency)
+              : receipt.amount != null
+                ? formatCurrency(receipt.amount, expenseCurrency)
+                : "—"
+          }
+        />
+        <DetailRow
+          label="Tax"
+          value={
+            expense?.tax_amount != null
+              ? formatCurrency(expense.tax_amount, expenseCurrency)
+              : "—"
+          }
+        />
+        <DetailRow
+          label="Total"
+          value={
+            expense?.total_amount != null
+              ? formatCurrency(expense.total_amount, expenseCurrency)
+              : receipt.amount != null
+                ? formatCurrency(receipt.amount, expenseCurrency)
+                : "—"
+          }
+          emphasis
+        />
+        <DetailRow label="Currency" value={(expenseCurrency || "").toUpperCase() || "—"} />
+        <DetailRow label="Payment method" value={paymentMethodRaw ?? "—"} />
+        {expense?.notes && <DetailRow label="Notes" value={expense.notes} multiline />}
+      </dl>
+    </aside>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  emphasis,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">{label}</dt>
+      <dd
+        className={cn(
+          multiline ? "whitespace-pre-wrap break-words text-text-secondary" : "truncate text-text-secondary",
+          emphasis && "font-mono text-base text-white",
+        )}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
 type ReceiptsLibraryProps = {
   currency: string;
   rangeCaption: string;
+  filterDateFrom?: string | null;
+  filterDateTo?: string | null;
+  onExpenseSaved?: (expenseDate: string | null) => void;
 };
 
 type EditState = {
@@ -76,14 +224,36 @@ type EditState = {
   amount: string;
 };
 
-export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps) {
+type ScanReview = {
+  receiptId: string;
+  fileName: string;
+  mime: string;
+  isImage: boolean;
+  filePreviewUrl: string | null;
+  draft: ScanReceiptDraft | null;
+  extractedFields: string[];
+};
+
+export function ReceiptsLibrary({
+  currency,
+  rangeCaption,
+  filterDateFrom,
+  filterDateTo,
+  onExpenseSaved,
+}: ReceiptsLibraryProps) {
   const { receipts, loading, saving, createReceipt, updateReceipt, deleteReceipt, refreshSignedUrl } = useReceipts();
+  const { createExpense, saving: savingExpense } = useExpenses();
+  const { scan } = useScanReceipt();
+  const { errorToast } = useErrorToast();
   const [transactionFilter, setTransactionFilter] = useState<"all" | ReceiptTransactionType>("all");
   const [previewTarget, setPreviewTarget] = useState<ReceiptWithUrl | null>(null);
   const [editTarget, setEditTarget] = useState<EditState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ReceiptWithUrl | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [scanReview, setScanReview] = useState<ScanReview | null>(null);
+  const [previewExpense, setPreviewExpense] = useState<ExpenseRow | null>(null);
+  const [previewExpenseLoading, setPreviewExpenseLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const filtered = useMemo(() => {
@@ -109,6 +279,34 @@ export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps
     });
   }, [previewTarget, refreshSignedUrl]);
 
+  useEffect(() => {
+    if (!previewTarget) {
+      setPreviewExpense(null);
+      setPreviewExpenseLoading(false);
+      return;
+    }
+    if (!previewTarget.expense_id || !isSupabaseConfigured()) {
+      setPreviewExpense(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewExpenseLoading(true);
+    const client = getSupabaseBrowserClient();
+    void client
+      .from("expenses")
+      .select("*")
+      .eq("id", previewTarget.expense_id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setPreviewExpense((data as ExpenseRow | null) ?? null);
+        setPreviewExpenseLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewTarget]);
+
   const uploadFile = async (file: File) => {
     const kind = resolveReceiptKind(file);
     if (!kind) {
@@ -118,12 +316,56 @@ export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps
     }
     const result = await createReceipt({ file, currency });
     if (fileInputRef.current) fileInputRef.current.value = "";
-    if (result) {
-      toast.error(result);
+    if (result.error) {
+      errorToast(result.error, { fallback: result.error, logTag: "[ReceiptsLibrary.upload]" });
       return;
     }
-    toast.success("Receipt uploaded.");
     setUploadOpen(false);
+
+    const isScanEligible =
+      kind.kind === "image" &&
+      file.size <= SCAN_MAX_IMAGE_BYTES &&
+      /^image\/(?:jpeg|jpg|png|webp|heic|heif)$/i.test(kind.mime);
+
+    if (!isScanEligible || !result.receiptId) {
+      if (kind.kind === "pdf") {
+        toast.success("Receipt uploaded. PDFs aren't auto-scanned — tap edit to add details.");
+      } else if (file.size > SCAN_MAX_IMAGE_BYTES) {
+        toast.success("Receipt uploaded. Image is too large for AI scan — tap edit to add details.");
+      } else {
+        toast.success("Receipt uploaded.");
+      }
+      return;
+    }
+
+    // Kick off AI scan in the background; show the review modal regardless of
+    // outcome so the user can still confirm/edit fields.
+    const previewableMime = /^image\/(?:jpeg|jpg|png|webp)$/i.test(kind.mime);
+    const localPreview = previewableMime ? URL.createObjectURL(file) : null;
+    toast.message("Scanning receipt with AI…");
+    const outcome = await scan(file, kind.mime);
+    if (!outcome.ok) {
+      errorToast(outcome.message, { fallback: outcome.message, logTag: "[ReceiptsLibrary.scan]" });
+      setScanReview({
+        receiptId: result.receiptId,
+        fileName: file.name,
+        mime: kind.mime,
+        isImage: previewableMime,
+        filePreviewUrl: localPreview,
+        draft: null,
+        extractedFields: [],
+      });
+      return;
+    }
+    setScanReview({
+      receiptId: result.receiptId,
+      fileName: file.name,
+      mime: kind.mime,
+      isImage: previewableMime,
+      filePreviewUrl: localPreview,
+      draft: outcome.draft,
+      extractedFields: outcome.extractedFields,
+    });
   };
 
   const handleFiles = (files: FileList | null) => {
@@ -142,18 +384,86 @@ export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps
       currency,
     });
     if (result) {
-      toast.error(result);
+      errorToast(result, { fallback: result, logTag: "[ReceiptsLibrary.submitEdit]" });
       return;
     }
     toast.success("Receipt updated.");
     setEditTarget(null);
   };
 
+  const closeScanReview = () => {
+    if (scanReview?.filePreviewUrl) URL.revokeObjectURL(scanReview.filePreviewUrl);
+    setScanReview(null);
+  };
+
+  const submitScanReview = async (values: ReceiptScanReviewSubmit) => {
+    if (!scanReview) return;
+    const createResult = await createExpense({
+      transaction_type: values.transaction_type,
+      category: values.category,
+      vendor_name: values.vendor_name,
+      description: scanReview.fileName,
+      notes: values.notes,
+      amount: values.amount,
+      tax_amount: values.tax_amount,
+      total_amount: values.total_amount,
+      currency: values.currency,
+      expense_date: values.expense_date,
+      payment_status: "paid",
+      frequency: "one_time",
+      ai_categorized: true,
+      ai_extracted_data: {
+        vendor: values.vendor_name,
+        category: values.category,
+        amount: values.amount,
+        tax_amount: values.tax_amount,
+        total_amount: values.total_amount,
+        currency: values.currency,
+        expense_date: values.expense_date,
+        payment_method: values.payment_method,
+        transaction_type: values.transaction_type,
+        scan_extracted_fields: scanReview.extractedFields,
+      },
+    });
+    if (createResult.error) {
+      errorToast(createResult.error, {
+        fallback: createResult.error,
+        logTag: "[ReceiptsLibrary.submitScanReview]",
+      });
+      return;
+    }
+
+    const linkError = await updateReceipt(scanReview.receiptId, {
+      transaction_type: values.transaction_type === "income" ? "income" : "expense",
+      description: values.vendor_name,
+      receipt_date: values.expense_date,
+      amount: values.total_amount,
+      currency: values.currency,
+      expense_id: createResult.id,
+    });
+
+    onExpenseSaved?.(values.expense_date);
+
+    const outsideRange =
+      values.expense_date &&
+      ((filterDateFrom && values.expense_date < filterDateFrom) ||
+        (filterDateTo && values.expense_date > filterDateTo));
+
+    if (linkError) {
+      toast.message("Expense saved. Couldn't refresh the receipt row — refresh to see it.");
+    } else if (outsideRange) {
+      toast.success(`${values.transaction_type === "income" ? "Income" : "Expense"} added for ${values.expense_date}. Date range expanded so it shows up in Entries.`);
+    } else {
+      toast.success(`Receipt scanned and ${values.transaction_type === "income" ? "income" : "expense"} added.`);
+    }
+    closeScanReview();
+  };
+
   const submitDelete = async () => {
     if (!deleteTarget) return;
     const result = await deleteReceipt(deleteTarget.id);
     if (result) {
-      toast.error(result);
+      errorToast(result, { fallback: result, logTag: "[ReceiptsLibrary.submitDelete]" });
       return;
     }
     toast.success("Receipt removed.");
@@ -379,8 +689,21 @@ export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps
         </DialogContent>
       </Dialog>
 
+      <ReceiptScanReviewDialog
+        open={scanReview !== null}
+        draft={scanReview?.draft ?? null}
+        extractedFields={scanReview?.extractedFields ?? []}
+        fileName={scanReview?.fileName ?? ""}
+        filePreviewUrl={scanReview?.filePreviewUrl ?? null}
+        isImagePreviewable={scanReview?.isImage ?? false}
+        defaultCurrency={currency}
+        saving={savingExpense || saving}
+        onCancel={closeScanReview}
+        onConfirm={submitScanReview}
+      />
+
       <Dialog open={previewTarget !== null} onOpenChange={(open) => !open && setPreviewTarget(null)}>
-        <DialogContent className="max-h-[92vh] overflow-hidden border-border bg-bg-base p-0 text-text-primary sm:max-w-3xl">
+        <DialogContent className="max-h-[92vh] overflow-hidden border-border bg-bg-base p-0 text-text-primary sm:max-w-5xl">
           <DialogHeader className="border-b border-border px-5 py-4">
             <DialogTitle className="truncate font-serif text-xl">
               {previewTarget?.file_name ?? "Receipt"}
@@ -391,26 +714,34 @@ export function ReceiptsLibrary({ currency, rangeCaption }: ReceiptsLibraryProps
                 : ""}
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[70vh] overflow-auto bg-bg-elevated/40">
-            {previewTarget?.signed_url ? (
-              previewTarget.file_type === "image" ? (
-                <img
-                  src={previewTarget.signed_url}
-                  alt={previewTarget.file_name}
-                  className="mx-auto block max-h-[70vh] w-auto object-contain"
-                />
+          <div className="grid max-h-[70vh] gap-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_minmax(0,360px)]">
+            <div className="max-h-[70vh] overflow-auto bg-bg-elevated/40">
+              {previewTarget?.signed_url ? (
+                previewTarget.file_type === "image" ? (
+                  <img
+                    src={previewTarget.signed_url}
+                    alt={previewTarget.file_name}
+                    className="mx-auto block max-h-[70vh] w-auto object-contain"
+                  />
+                ) : (
+                  <iframe
+                    src={previewTarget.signed_url}
+                    title={previewTarget.file_name}
+                    className="h-[70vh] w-full"
+                  />
+                )
               ) : (
-                <iframe
-                  src={previewTarget.signed_url}
-                  title={previewTarget.file_name}
-                  className="h-[70vh] w-full"
-                />
-              )
-            ) : (
-              <div className="flex h-40 items-center justify-center text-sm text-text-muted">
-                Generating secure preview link...
-              </div>
-            )}
+                <div className="flex h-40 items-center justify-center text-sm text-text-muted">
+                  Generating secure preview link...
+                </div>
+              )}
+            </div>
+            <ReceiptDetailsPanel
+              receipt={previewTarget}
+              expense={previewExpense}
+              loading={previewExpenseLoading}
+              fallbackCurrency={currency}
+            />
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
             {previewTarget?.signed_url && (

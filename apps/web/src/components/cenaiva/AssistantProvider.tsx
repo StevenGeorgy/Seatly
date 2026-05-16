@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useErrorToast } from "@/lib/errors";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
@@ -122,6 +123,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const latency = useCenaivaLatencyBudget();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { errorToast } = useErrorToast();
 
   // Customer voice stack (wake word, mic stream) only runs on authed customer routes.
   // Dashboard, landing, and auth routes skip all mic-related effects to keep memory flat.
@@ -614,7 +616,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
                 : "Something went wrong. Try again.";
           if (textModeRef.current) {
             dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
-            toast.error(friendly, { duration: 3000 });
+            errorToast(cause, { fallback: friendly, duration: 3000, logTag: "[Cenaiva.orchestrator]" });
           } else {
             await voice.speak("Sorry, I didn't catch that. Try again.");
           }
@@ -735,14 +737,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
       } catch (err) {
         processingRef.current = false;
         if (streamingActive) voice.discardStreamingSpeech();
-        console.error("sendTranscript error:", err);
         // Speak the retry prompt (voice mode) OR surface a banner + toast (text
         // mode). The red "error" voice status is reserved for mic-permission-denied.
         if (textModeRef.current) {
           const friendly = "Something went wrong. Try again.";
           dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
-          toast.error(friendly, { duration: 3000 });
+          errorToast(err, { fallback: friendly, duration: 3000, logTag: "[Cenaiva.send]" });
         } else {
+          console.error("[Cenaiva.send]", err);
           await voice.speak("Sorry, I didn't catch that. Try again.");
         }
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
@@ -765,6 +767,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       availability,
       voicePref.voiceId,
       finishLocalResponse,
+      errorToast,
     ],
   );
 
@@ -816,8 +819,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
         // failed (token-unavailable / http-401 / recorder-start-failed /
         // stream-unavailable / etc). The toast text is intentionally
         // generic for the user.
-        console.error("[cenaiva] STT unavailable:", msg, err);
-        toast.error("Voice transcription is unavailable right now.", { duration: 3000 });
+        errorToast(err, {
+          fallback: "Voice transcription is unavailable right now.",
+          duration: 3000,
+          logTag: "[Cenaiva.stt]",
+        });
         return;
       }
       emptyRelistenStreakRef.current += 1;
@@ -835,7 +841,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         }, RELISTEN_AFTER_ERROR_MS);
       }
     }
-  }, [voice, sendTranscript, dispatch]);
+  }, [voice, sendTranscript, dispatch, errorToast]);
 
   const shouldAutoListenOnOpen = useCallback(() => autoListenOnOpenRef.current, []);
 

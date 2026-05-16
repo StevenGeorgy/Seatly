@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type StaffAuditEventRow = {
@@ -56,7 +57,9 @@ export function useStaffAuditEvents(limit = 50) {
       .limit(limit);
 
     if (queryError) {
-      setError(new Error(queryError.message));
+      const friendly = toUserFacingError(queryError, "Couldn't load audit history.");
+      setError(new Error(friendly.message));
+      console.error("[useStaffAuditEvents.fetch]", friendly.code, friendly.technical ?? queryError);
       setEvents([]);
     } else {
       setEvents((data ?? []) as unknown as StaffAuditEventRow[]);

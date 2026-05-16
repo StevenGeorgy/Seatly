@@ -45,6 +45,7 @@ import {
   type EventPromotionDisplay,
   type RestaurantDisplayInfo,
 } from "@/lib/customer/eventPromotionDisplay";
+import { getFriendlyMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -1573,7 +1574,7 @@ export default function PromotionsPage() {
     if (file) {
       const result = await uploadPromotionMedia(file);
       if (typeof result === "string") {
-        toast.error(result);
+        toast.error(getFriendlyMessage(new Error(result), "Couldn't upload that image. Try a smaller file or a different format."));
         return;
       }
       upload = result;
@@ -1649,7 +1650,7 @@ export default function PromotionsPage() {
       setDrawerOpen(false);
       setEditTarget(null);
     } else {
-      toast.error(err || "Could not save promotion. Try again.");
+      toast.error(err ? getFriendlyMessage(new Error(err), "Couldn't save that promotion. Try again.") : "Couldn't save that promotion. Try again.");
     }
   };
 
@@ -1679,7 +1680,7 @@ export default function PromotionsPage() {
       toast.success("Promotion scheduled");
       setPhase("scheduled");
     } else {
-      toast.error(err || "Could not schedule promotion.");
+      toast.error(err ? getFriendlyMessage(new Error(err), "Couldn't schedule that promotion. Try again.") : "Couldn't schedule that promotion. Try again.");
     }
   };
 
@@ -1697,7 +1698,7 @@ export default function PromotionsPage() {
       toast.success("Promotion posted");
       setPhase("active");
     } else {
-      toast.error(err || "Could not post promotion.");
+      toast.error(err ? getFriendlyMessage(new Error(err), "Couldn't post that promotion. Try again.") : "Couldn't post that promotion. Try again.");
     }
   };
 

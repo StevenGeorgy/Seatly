@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingError } from "@/lib/errors";
 import { MOCK_EXPENSES } from "@/lib/mock-data";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
@@ -50,6 +51,7 @@ export type ExpenseRow = {
   receipt_url: string | null;
   receipt_type: string | null;
   ai_categorized: boolean;
+  ai_extracted_data?: Record<string, unknown> | null;
   created_at: string | null;
   updated_at?: string | null;
   deleted_at: string | null;
@@ -96,10 +98,16 @@ export type CreateExpensePayload = {
   payment_status: ExpenseStatus;
   frequency: ExpenseFrequency;
   recurring_end_date?: string | null;
+  ai_categorized?: boolean;
+  ai_extracted_data?: Record<string, unknown> | null;
 };
 
 export type UpdateExpensePayload = Omit<CreateExpensePayload, "frequency" | "recurring_end_date">;
 export type UpdateRecurringExpenseRulePayload = Omit<CreateExpensePayload, "payment_status" | "notes">;
+
+export type CreateExpenseResult =
+  | { error: string; id?: undefined }
+  | { error?: undefined; id: string | null };
 
 function addMonths(date: Date, months: number): Date {
   const next = new Date(date);
@@ -186,7 +194,9 @@ export function useExpenses(filters?: ExpenseFilters) {
 
     const combinedError = qErr ?? rulesErr;
     if (combinedError) {
-      setError(new Error(combinedError.message));
+      const friendly = toUserFacingError(combinedError, "Couldn't load expenses.");
+      setError(new Error(friendly.message));
+      console.error("[useExpenses.fetch]", friendly.code, friendly.technical ?? combinedError);
       setExpenses([]);
       setRecurringRules([]);
     } else {
@@ -199,10 +209,12 @@ export function useExpenses(filters?: ExpenseFilters) {
 
   useEffect(() => { void fetchExpenses(); }, [fetchExpenses]);
 
-  const createExpense = useCallback(async (payload: CreateExpensePayload): Promise<string | null> => {
-    if (!selectedRestaurantId) return "No restaurant selected.";
-    if (!profile?.id) return "Could not identify the current user profile.";
-    if (!isSupabaseConfigured()) return "Supabase not configured.";
+  const createExpense = useCallback(async (
+    payload: CreateExpensePayload,
+  ): Promise<CreateExpenseResult> => {
+    if (!selectedRestaurantId) return { error: "No restaurant selected." };
+    if (!profile?.id) return { error: "Could not identify the current user profile." };
+    if (!isSupabaseConfigured()) return { error: "Supabase not configured." };
 
     setSaving(true);
     const client = getSupabaseBrowserClient();
@@ -235,7 +247,9 @@ export function useExpenses(filters?: ExpenseFilters) {
 
       if (ruleError) {
         setSaving(false);
-        return ruleError.message;
+        const friendly = toUserFacingError(ruleError, "Couldn't save the recurring rule.");
+        console.error("[useExpenses.createRule]", friendly.code, friendly.technical ?? ruleError);
+        return { error: friendly.message };
       }
       recurringRuleId = (rule as { id: string }).id;
     }
@@ -256,19 +270,28 @@ export function useExpenses(filters?: ExpenseFilters) {
       payment_status: payload.payment_status,
       paid_at: payload.payment_status === "paid" ? new Date().toISOString() : null,
       recurring_rule_id: recurringRuleId,
+      ai_categorized: payload.ai_categorized ?? false,
+      ai_extracted_data: payload.ai_extracted_data ?? null,
     };
 
-    const { error: insertError } = await client.from("expenses").insert(expensePayload);
+    const { data: inserted, error: insertError } = await client
+      .from("expenses")
+      .insert(expensePayload)
+      .select("id")
+      .single();
     setSaving(false);
 
     if (insertError) {
       if (recurringRuleId) {
         await client.from("recurring_expense_rules").delete().eq("id", recurringRuleId);
       }
-      return insertError.message;
+      const friendly = toUserFacingError(insertError, "Couldn't save the expense.");
+      console.error("[useExpenses.insert]", friendly.code, friendly.technical ?? insertError);
+      return { error: friendly.message };
     }
     await fetchExpenses();
-    return null;
+    const row = inserted as { id: string } | null;
+    return { id: row?.id ?? null };
   }, [currency, fetchExpenses, profile?.id, selectedRestaurantId]);
 
   const updateExpense = useCallback(async (id: string, payload: UpdateExpensePayload): Promise<string | null> => {
@@ -298,7 +321,11 @@ export function useExpenses(filters?: ExpenseFilters) {
       .eq("restaurant_id", selectedRestaurantId);
 
     setSaving(false);
-    if (updateError) return updateError.message;
+    if (updateError) {
+      const friendly = toUserFacingError(updateError, "Couldn't update the expense.");
+      console.error("[useExpenses.update]", friendly.code, friendly.technical ?? updateError);
+      return friendly.message;
+    }
     await fetchExpenses();
     return null;
   }, [currency, fetchExpenses, selectedRestaurantId]);
@@ -331,7 +358,11 @@ export function useExpenses(filters?: ExpenseFilters) {
       .eq("restaurant_id", selectedRestaurantId);
 
     setSaving(false);
-    if (updateError) return updateError.message;
+    if (updateError) {
+      const friendly = toUserFacingError(updateError, "Couldn't update the recurring rule.");
+      console.error("[useExpenses.updateRule]", friendly.code, friendly.technical ?? updateError);
+      return friendly.message;
+    }
     await fetchExpenses();
     return null;
   }, [currency, fetchExpenses, selectedRestaurantId]);
@@ -349,7 +380,11 @@ export function useExpenses(filters?: ExpenseFilters) {
       .eq("restaurant_id", selectedRestaurantId);
 
     setSaving(false);
-    if (deleteError) return deleteError.message;
+    if (deleteError) {
+      const friendly = toUserFacingError(deleteError, "Couldn't delete the expense.");
+      console.error("[useExpenses.delete]", friendly.code, friendly.technical ?? deleteError);
+      return friendly.message;
+    }
     await fetchExpenses();
     return null;
   }, [fetchExpenses, selectedRestaurantId]);
@@ -367,7 +402,11 @@ export function useExpenses(filters?: ExpenseFilters) {
       .eq("restaurant_id", selectedRestaurantId);
 
     setSaving(false);
-    if (deleteError) return deleteError.message;
+    if (deleteError) {
+      const friendly = toUserFacingError(deleteError, "Couldn't delete the recurring rule.");
+      console.error("[useExpenses.deleteRule]", friendly.code, friendly.technical ?? deleteError);
+      return friendly.message;
+    }
     await fetchExpenses();
     return null;
   }, [fetchExpenses, selectedRestaurantId]);

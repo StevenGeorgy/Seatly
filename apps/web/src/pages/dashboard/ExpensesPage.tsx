@@ -370,7 +370,7 @@ export default function ExpensesPage() {
     const today = new Date();
     return { dateFrom: rangeStart(range, today), dateTo: rangeEnd(range, today) };
   }, [customDateFrom, customDateTo, range]);
-  const { expenses, recurringRules, loading, saving, createExpense, updateExpense, updateRecurringRule, deleteExpense, deleteRecurringRule } = useExpenses(filters);
+  const { expenses, recurringRules, loading, saving, refetch: refetchExpenses, createExpense, updateExpense, updateRecurringRule, deleteExpense, deleteRecurringRule } = useExpenses(filters);
   const form = useForm<ExpenseFormValues>({
     resolver: zodResolver(expenseSchema),
     defaultValues: {
@@ -589,13 +589,17 @@ export default function ExpensesPage() {
       currency,
       recurring_end_date: values.recurring_end_date || null,
     };
-    const result = recurringEditTarget
-      ? await updateRecurringRule(recurringEditTarget.id, payload)
-      : editTarget
-        ? await updateExpense(editTarget.id, payload)
-        : await createExpense(payload);
-    if (result) {
-      toast.error(result);
+    let resultError: string | null = null;
+    if (recurringEditTarget) {
+      resultError = await updateRecurringRule(recurringEditTarget.id, payload);
+    } else if (editTarget) {
+      resultError = await updateExpense(editTarget.id, payload);
+    } else {
+      const createResult = await createExpense(payload);
+      resultError = createResult.error ?? null;
+    }
+    if (resultError) {
+      toast.error(resultError);
       return;
     }
     toast.success(
@@ -859,7 +863,22 @@ export default function ExpensesPage() {
       )}
 
       {view === "receipts" && (
-        <ReceiptsLibrary currency={currency} rangeCaption={selectedRangeCaption} />
+        <ReceiptsLibrary
+          currency={currency}
+          rangeCaption={selectedRangeCaption}
+          filterDateFrom={filters.dateFrom ?? null}
+          filterDateTo={filters.dateTo ?? null}
+          onExpenseSaved={(expenseDate) => {
+            void refetchExpenses();
+            if (expenseDate && filters.dateFrom && expenseDate < filters.dateFrom) {
+              setRange("Custom");
+              setCustomDateFrom(expenseDate);
+            } else if (expenseDate && filters.dateTo && expenseDate > filters.dateTo) {
+              setRange("Custom");
+              setCustomDateTo(expenseDate);
+            }
+          }}
+        />
       )}
 
       <Dialog open={formOpen} onOpenChange={(open) => {

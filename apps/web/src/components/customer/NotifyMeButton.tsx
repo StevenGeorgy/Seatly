@@ -19,6 +19,7 @@ import { useUser } from "@/hooks/useUser";
 import { fetchNextAvailableDate } from "@/hooks/useAvailability";
 import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
+import { useErrorToast } from "@/lib/errors";
 
 // Default ±window when watching a slot. Mirrors OpenTable's "Notify Me" semantics
 // (they don't ask users for a window — they pick a sensible default and let the
@@ -82,6 +83,7 @@ export function NotifyMeButton({
   const { user } = useUser();
   const navigate = useNavigate();
   const location = useLocation();
+  const { errorToast } = useErrorToast();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -206,7 +208,10 @@ export function NotifyMeButton({
             };
       const { data, error } = await client.rpc("create_availability_alert", params);
       if (error) {
-        toast.error(error.message);
+        errorToast(error, {
+          fallback: "Couldn't create alert. Try again.",
+          logTag: "[NotifyMeButton.create_availability_alert]",
+        });
         return;
       }
       const result = data as {
@@ -237,18 +242,24 @@ export function NotifyMeButton({
             toast.error("Please sign in to set an alert.");
             return;
           default:
-            toast.error(result?.error ?? "Couldn't create alert.");
+            errorToast(result?.error ?? null, {
+              fallback: "Couldn't create alert.",
+              logTag: "[NotifyMeButton.alert_result]",
+            });
             return;
         }
       }
       toast.success("Got it. We'll ping you when a spot opens.");
       setOpen(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Couldn't create alert.");
+      errorToast(e, {
+        fallback: "Couldn't create alert.",
+        logTag: "[NotifyMeButton.submit]",
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [variant, restaurantId, eventId, date, partySize, time]);
+  }, [variant, restaurantId, eventId, date, partySize, time, errorToast]);
 
   // Build the one-line summary shown in the dialog body. Restaurant variant
   // shows date · time · party. Event variant just shows party (the event has

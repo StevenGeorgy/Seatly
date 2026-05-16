@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { isStripeConfigured, stripePromise } from "@/lib/stripe";
 import { getSupabaseAnonKey, getSupabaseBrowserClient, getSupabaseProjectUrl } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingError } from "@/lib/errors";
 
 type SavedCard = {
   id: string;
@@ -37,7 +38,9 @@ function StripeCardForm({ onSuccess }: { onSuccess: () => void }) {
     });
 
     if (result.error) {
-      setError(result.error.message || "Card setup failed.");
+      const friendly = toUserFacingError(result.error, "Card setup failed.");
+      setError(friendly.message);
+      console.error("[PaymentMethodsSection.confirmCardSetup]", friendly.code, friendly.technical ?? result.error);
     } else {
       onSuccess();
     }
@@ -89,7 +92,13 @@ function MockCardForm({ profileId, onSuccess }: { profileId: string; onSuccess: 
       exp_year: parseInt(expYear) || null,
       is_default: false,
     });
-    if (dbErr) { setError(dbErr.message); setSaving(false); return; }
+    if (dbErr) {
+      const friendly = toUserFacingError(dbErr, "Couldn't save the card. Try again.");
+      setError(friendly.message);
+      console.error("[PaymentMethodsSection.mockCardSave]", friendly.code, friendly.technical ?? dbErr);
+      setSaving(false);
+      return;
+    }
     onSuccess();
     setSaving(false);
   };

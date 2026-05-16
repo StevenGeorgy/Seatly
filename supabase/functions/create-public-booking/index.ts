@@ -47,6 +47,10 @@ type BookingPayload = {
   // reservation row gets tagged with event_id / promotion_id / applied_promo_code.
   event_id?: unknown;
   applied_promo_code?: unknown;
+  // Reservation-hold conversion (CENAIVA_HOLDS_ENABLED). When present, this
+  // endpoint converts the existing hold instead of creating a fresh
+  // reservation via book_reservation.
+  hold_id?: unknown;
 };
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
@@ -411,6 +415,76 @@ Deno.serve(async (req: Request) => {
           );
         }
       }
+    }
+
+    // Hold-conversion branch (CENAIVA_HOLDS_ENABLED). When the flag is on AND
+    // the request carries a hold_id, convert the existing hold instead of
+    // running book_reservation. The hold already owns the advisory lock /
+    // table assignment / cover-cap recheck from when it was created, so this
+    // path is purely a state transition + side-effect dispatch. No payment
+    // intent is attached here — this endpoint is the no-payment path; the
+    // payment-required path goes through confirm-hold-paid instead.
+    const holdsEnabled = Deno.env.get("CENAIVA_HOLDS_ENABLED") === "true";
+    const holdId = asUuid(payload.hold_id);
+
+    if (holdsEnabled && holdId) {
+      const { data: convertData, error: convertError } = await supabase.rpc(
+        "convert_reservation_hold_to_reservation",
+        { p_hold_id: holdId, p_payment_intent_id: null, p_grace_seconds: 120 },
+      );
+      if (convertError) {
+        const code = (convertError as { code?: string }).code;
+        if (code === "P0010") return jsonResponse({ error: "hold_not_found" }, 404);
+        if (code === "P0011") {
+          return jsonResponse(
+            { error: "hold_expired", unavailable_reason: "hold_expired" },
+            410,
+          );
+        }
+        if (code === "P0012") return jsonResponse({ error: "hold_not_convertible" }, 409);
+        if (code === "P0006" || code === "23P01") {
+          return jsonResponse(
+            { error: "diner_double_book", unavailable_reason: "diner_double_book" },
+            409,
+          );
+        }
+        console.error("convert_reservation_hold_to_reservation failed", convertError);
+        return jsonResponse(
+          { error: convertError.message ?? "conversion_failed" },
+          500,
+        );
+      }
+      const convertedRows = convertData as Array<{
+        reservation_id: string;
+        confirmation_code: string;
+        table_ids: string[];
+        duration_minutes: number;
+        idempotent: boolean;
+      }> | null;
+      const row = convertedRows?.[0];
+      if (!row) return jsonResponse({ error: "conversion_returned_empty" }, 500);
+
+      // Post-conversion side effects (orders/items + promotion usage) — only
+      // run on a fresh conversion; the idempotent path is a re-entry by the
+      // same caller, so the side effects have already fired.
+      if (!row.idempotent) {
+        const { runPostHoldConversion } = await import("../_shared/hold-conversion.ts");
+        await runPostHoldConversion({
+          supabase,
+          holdId,
+          reservationId: row.reservation_id,
+          paymentIntentId: null,
+        });
+      }
+
+      return jsonResponse({
+        reservation_id: row.reservation_id,
+        confirmation_code: row.confirmation_code,
+        table_ids: row.table_ids,
+        duration_minutes: row.duration_minutes,
+        deposit_required: false,
+        deposit_amount_cents: 0,
+      });
     }
 
     // Atomic booking: cover-cap re-check, table selection, reservation insert,

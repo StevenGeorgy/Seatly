@@ -571,22 +571,9 @@ export default function MenuPage() {
       </div>
 
       <div className="px-6 py-5">
-        {aiPanelOpen ? (
+        {aiPanelOpen && (
           <div className="mb-5">
             <MenuSuggestionsPanel onClose={() => setAiPanelOpen(false)} />
-          </div>
-        ) : (
-          <div className="mb-5 flex items-center justify-between rounded-xl border border-gold/20 bg-gold/5 px-4 py-3">
-            <p className="text-xs text-text-secondary">
-              <span className="font-mono uppercase tracking-[0.18em] text-gold">CenaIva AI</span>
-              {" "}Replace Sardines (0.4% order rate) with Burrata & stone fruit — trending in similar venues.
-            </p>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" className="h-8 text-xs text-text-muted">Dismiss</Button>
-              <Button size="sm" className="h-8 rounded-lg px-3 text-xs" onClick={() => setAiPanelOpen(true)}>
-                Try it
-              </Button>
-            </div>
           </div>
         )}
 

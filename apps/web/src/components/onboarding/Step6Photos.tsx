@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
@@ -49,6 +50,7 @@ type RestaurantSettingsWithGallery = RestaurantSettings & {
 };
 
 export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6PhotosProps) {
+  const { errorToast } = useErrorToast();
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState<string | null>(null);
@@ -127,7 +129,10 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
       .from("event-media")
       .upload(path, file, { cacheControl: "3600", contentType: image.mime, upsert: false });
     if (error) {
-      toast.error(error.message);
+      errorToast(error, {
+        fallback: "Couldn't upload image. Try again.",
+        logTag: "[Step6Photos.uploadFile]",
+      });
       return null;
     }
     const { data } = client.storage.from("event-media").getPublicUrl(path);
@@ -263,7 +268,10 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
         })
         .eq("id", restaurantId);
       if (error) {
-        toast.error(`Couldn't save photos: ${error.message}`);
+        errorToast(error, {
+          context: "Couldn't save photos",
+          logTag: "[Step6Photos.saveRestaurant]",
+        });
         return;
       }
       toast.success("Photos saved.");

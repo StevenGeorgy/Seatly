@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type ReceiptFileType = "image" | "pdf";
@@ -52,6 +53,16 @@ export type UpdateReceiptPayload = {
   amount?: number | null;
   currency?: string | null;
 };
+
+export type CreateReceiptResult =
+  | { error: string; receiptId?: undefined }
+  | {
+      error?: undefined;
+      receiptId: string | null;
+      filePath: string;
+      fileType: ReceiptFileType;
+      mime: string;
+    };
 
 const SUPPORTED_RECEIPT_TYPES: Array<{
   kind: ReceiptFileType;
@@ -136,7 +147,9 @@ export function useReceipts(filters?: ReceiptFilters) {
 
     const { data, error: queryError } = await query;
     if (queryError) {
-      setError(new Error(queryError.message));
+      const friendly = toUserFacingError(queryError, "Couldn't load receipts.");
+      setError(new Error(friendly.message));
+      console.error("[useReceipts.fetch]", friendly.code, friendly.technical ?? queryError);
       setReceipts([]);
       setLoading(false);
       return;
@@ -154,14 +167,14 @@ export function useReceipts(filters?: ReceiptFilters) {
     void fetchReceipts();
   }, [fetchReceipts]);
 
-  const createReceipt = useCallback(async (payload: CreateReceiptPayload): Promise<string | null> => {
-    if (!selectedRestaurantId) return "No restaurant selected.";
-    if (!profile?.id) return "Could not identify the current user profile.";
-    if (!isSupabaseConfigured()) return "Supabase not configured.";
+  const createReceipt = useCallback(async (payload: CreateReceiptPayload): Promise<CreateReceiptResult> => {
+    if (!selectedRestaurantId) return { error: "No restaurant selected." };
+    if (!profile?.id) return { error: "Could not identify the current user profile." };
+    if (!isSupabaseConfigured()) return { error: "Supabase not configured." };
 
     const kind = resolveReceiptKind(payload.file);
-    if (!kind) return RECEIPT_SUPPORT_MESSAGE;
-    if (payload.file.size > RECEIPT_MAX_BYTES) return "File is larger than 10MB.";
+    if (!kind) return { error: RECEIPT_SUPPORT_MESSAGE };
+    if (payload.file.size > RECEIPT_MAX_BYTES) return { error: "File is larger than 10MB." };
 
     setSaving(true);
     const client = getSupabaseBrowserClient();
@@ -178,7 +191,9 @@ export function useReceipts(filters?: ReceiptFilters) {
 
     if (uploadError) {
       setSaving(false);
-      return uploadError.message;
+      const friendly = toUserFacingError(uploadError, "Couldn't upload the receipt.");
+      console.error("[useReceipts.upload]", friendly.code, friendly.technical ?? uploadError);
+      return { error: friendly.message };
     }
 
     const insertPayload = {
@@ -196,16 +211,28 @@ export function useReceipts(filters?: ReceiptFilters) {
       currency: payload.currency ?? currency,
     };
 
-    const { error: insertError } = await client.from("receipts").insert(insertPayload);
+    const { data: inserted, error: insertError } = await client
+      .from("receipts")
+      .insert(insertPayload)
+      .select("id, file_path")
+      .single();
     setSaving(false);
 
     if (insertError) {
       await client.storage.from("receipts").remove([filePath]);
-      return insertError.message;
+      const friendly = toUserFacingError(insertError, "Couldn't save the receipt.");
+      console.error("[useReceipts.insert]", friendly.code, friendly.technical ?? insertError);
+      return { error: friendly.message };
     }
 
     await fetchReceipts();
-    return null;
+    const row = inserted as { id: string; file_path: string } | null;
+    return {
+      receiptId: row?.id ?? null,
+      filePath: row?.file_path ?? filePath,
+      fileType: kind.kind,
+      mime: kind.mime,
+    };
   }, [currency, fetchReceipts, profile?.id, selectedRestaurantId]);
 
   const updateReceipt = useCallback(async (id: string, payload: UpdateReceiptPayload): Promise<string | null> => {
@@ -228,7 +255,11 @@ export function useReceipts(filters?: ReceiptFilters) {
       .eq("restaurant_id", selectedRestaurantId);
 
     setSaving(false);
-    if (updateError) return updateError.message;
+    if (updateError) {
+      const friendly = toUserFacingError(updateError, "Couldn't update the receipt.");
+      console.error("[useReceipts.update]", friendly.code, friendly.technical ?? updateError);
+      return friendly.message;
+    }
     await fetchReceipts();
     return null;
   }, [fetchReceipts, selectedRestaurantId]);
@@ -249,7 +280,9 @@ export function useReceipts(filters?: ReceiptFilters) {
 
     if (updateError) {
       setSaving(false);
-      return updateError.message;
+      const friendly = toUserFacingError(updateError, "Couldn't delete the receipt.");
+      console.error("[useReceipts.delete]", friendly.code, friendly.technical ?? updateError);
+      return friendly.message;
     }
 
     if (target?.file_path) {

@@ -12,6 +12,7 @@ import {
   useReservationReviewRequests,
   type ReviewRequest,
 } from "@/hooks/useReservationReviewRequests";
+import { useErrorToast } from "@/lib/errors";
 
 function reviewRouteReservationId(pathname: string, search: string): string | null {
   const params = new URLSearchParams(search);
@@ -81,6 +82,7 @@ function ReviewPromptDialog({
   const [rating, setRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const { errorToast } = useErrorToast();
 
   const submitReview = async () => {
     if (!request || rating < 1 || submitting) return;
@@ -88,7 +90,10 @@ function ReviewPromptDialog({
     try {
       await onSubmit(request.reservation_id, rating, reviewText.trim() || null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not submit review.");
+      errorToast(error, {
+        fallback: "Could not submit review.",
+        logTag: "[ReservationReviewPrompt.submit]",
+      });
     } finally {
       setSubmitting(false);
     }

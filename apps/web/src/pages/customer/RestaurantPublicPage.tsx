@@ -49,7 +49,11 @@ import {
   type AvailabilitySlot,
 } from "@/hooks/useAvailability";
 import { AvailabilityPanel } from "@/components/booking/AvailabilityPanel";
+import { HoldExpiredDialog } from "@/components/booking/HoldExpiredDialog";
+import { HoldTimerBanner } from "@/components/booking/HoldTimerBanner";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
+import { useReservationHold } from "@/hooks/useReservationHold";
+import { toUserFacingError } from "@/lib/errors";
 import { useAllActiveEvents } from "@/hooks/useEvents";
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItems";
@@ -1766,6 +1770,66 @@ export default function RestaurantPublicPage() {
     typeof dineIn.party_size === "number" ? Math.max(200, dineIn.party_size) : 200
   );
 
+  // ── Reservation hold (Phase C of holds rollout, 2026-05-16) ────────────
+  // Owns the soft-hold lifecycle while the diner is inside the 3-step
+  // booking flow (details → menu → checkout). The hook gates on `enabled`
+  // and on the presence of a concrete restaurant + shift + slot. Conversion
+  // happens at Place Order — either through `create-public-booking` (with
+  // `hold_id` passed through) for free bookings, or through
+  // `confirm-hold-paid` once Stripe clears for deposit/pre-order flows.
+  // Voice hand-off may attach `?hold=<id>` — the hook hydrates from
+  // sessionStorage internally so we don't have to wire it explicitly here.
+  const holdEnabled = step === "details" || step === "menu" || step === "checkout";
+  const holdPartySize = typeof dineIn.party_size === "number" ? dineIn.party_size : 0;
+  const restaurantName = restaurant?.name ?? "the restaurant";
+  const hold = useReservationHold({
+    restaurantId: restaurant?.id ?? null,
+    shiftId: selectedBookingSlot?.shift_id ?? null,
+    dateTime: selectedBookingSlot?.date_time ?? null,
+    partySize: holdPartySize,
+    enabled: holdEnabled,
+    source: "web",
+    eventId: searchParams.get("event_id") ?? null,
+    promotionId: activePromoId ?? searchParams.get("promotion_id") ?? null,
+    appliedPromoCode: searchParams.get("promo_code") ?? null,
+  });
+
+  // Push cart changes into the hold (debounced) so the server keeps the
+  // line items in sync with what the diner sees. Only fires while the hold
+  // is active and the diner is past Step 1 (cart is meaningless on
+  // details). 500ms debounce prevents flooding on rapid +/- clicks.
+  const holdStatus = hold.state.status;
+  const holdUpdateCart = hold.updateCart;
+  useEffect(() => {
+    if (holdStatus !== "active") return;
+    if (step !== "menu" && step !== "checkout") return;
+    const timer = setTimeout(() => {
+      const snapshot = {
+        items: cart.map((item) => ({
+          menu_item_id: item.id,
+          name: item.name,
+          quantity: item.qty,
+          unit_price: roundMoney(item.price),
+        })),
+        subtotal: roundMoney(discountedSubtotal),
+        tax_amount: roundMoney(tax),
+        tip_amount: roundMoney(tipAmount),
+      };
+      void holdUpdateCart(snapshot, Math.round(totalNow * 100));
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- snapshot is rebuilt from primitives
+  }, [
+    holdStatus,
+    holdUpdateCart,
+    step,
+    cart,
+    discountedSubtotal,
+    tax,
+    tipAmount,
+    totalNow,
+  ]);
+
   const canProceedDetails = () => {
     // Phase 11 (2026-05-15): phone is now required at the booking form
     // alongside name + email. We need both contact channels on file so
@@ -1819,11 +1883,12 @@ export default function RestaurantPublicPage() {
         { duration: 6000 },
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Reservation failed after payment";
+      const friendly = toUserFacingError(err, "We couldn't finish your reservation after payment.");
+      console.error("[RestaurantPublicPage.handlePaidBooking]", friendly.code, friendly.technical ?? err);
       const refundOk = await refundPayment(paymentIntentId, "slot_taken");
       const fullMsg = refundOk
-        ? `${msg} — your card has been refunded.`
-        : `${msg} — please contact support@cenaiva.ai to refund your card.`;
+        ? `${friendly.message} Your card has been refunded.`
+        : `${friendly.message} Please contact support@cenaiva.ai to refund your card.`;
       setOrderError(fullMsg);
       toast.error(fullMsg);
     } finally {
@@ -1856,9 +1921,10 @@ export default function RestaurantPublicPage() {
       await createReservationCore({ paymentIntentId: null });
       setStep("confirmed");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to place order";
-      setOrderError(message);
-      toast.error(message);
+      const friendly = toUserFacingError(err, "Couldn't place your reservation. Try again.");
+      console.error("[RestaurantPublicPage.handlePlaceOrder]", friendly.code, friendly.technical ?? err);
+      setOrderError(friendly.message);
+      toast.error(friendly.message);
     } finally {
       placingRef.current = false;
       setPlacing(false);
@@ -1947,40 +2013,67 @@ export default function RestaurantPublicPage() {
         }));
         const { data: sessionData } = await client.auth.getSession();
         const token = sessionData.session?.access_token ?? null;
-        const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/create-public-booking`, {
-          method: "POST",
-          headers: {
-            apikey: getSupabaseAnonKey(),
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            restaurant_id: restaurant.id,
-            shift_id: selectedSlot.shift_id,
-            date_time: selectedSlot.date_time,
-            party_size: partySize,
-            guest_name: contactName,
-            guest_email: contactEmail,
-            guest_phone: contactPhone,
-            allergies: dineIn.allergies || null,
-            seating_preference: dineIn.seating_preference || null,
-            occasion: dineIn.occasion || null,
-            cart_items: cartItems,
-            subtotal: roundMoney(discountedSubtotal),
-            tax_amount: roundMoney(tax),
-            tip_amount: roundMoney(tipAmount),
-            total_amount: roundMoney(totalNow),
-            discount_amount: discount > 0 ? roundMoney(discount) : null,
-            discount_reason: activePromo?.title ?? null,
-            promotion_id: activePromo?.id ?? searchParams.get("promotion_id") ?? null,
-            payment_method: paymentSplitMode === "split" ? "split" : "card",
-            // When the diner came in via /deals → event/promotion card, the
-            // URL pre-fills `event_id` so the new reservation is tagged
-            // with the right event for owner-dashboard attendee lists.
-            event_id: searchParams.get("event_id") ?? null,
-            applied_promo_code: searchParams.get("promo_code") ?? null,
-          }),
-        });
+
+        // Hold conversion (Phase C, 2026-05-16): when a hold is active and
+        // we just cleared Stripe, prefer `confirm-hold-paid` — it converts
+        // the reservation_holds row into a real reservation atomically and
+        // settles the deposit row in one server hop. Free bookings (and
+        // paid bookings without an active hold, e.g. legacy paths) keep
+        // calling `create-public-booking` with `hold_id` so the server can
+        // still fork on hold presence behind the CENAIVA_HOLDS_ENABLED env
+        // flag.
+        const activeHoldId = hold.state.status === "active" ? hold.state.holdId : null;
+        const useConfirmHoldPaid = Boolean(paymentIntentId && activeHoldId);
+        const res = useConfirmHoldPaid
+          ? await fetch(`${getSupabaseProjectUrl()}/functions/v1/confirm-hold-paid`, {
+              method: "POST",
+              headers: {
+                apikey: getSupabaseAnonKey(),
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                hold_id: activeHoldId,
+                payment_intent_id: paymentIntentId,
+              }),
+            })
+          : await fetch(`${getSupabaseProjectUrl()}/functions/v1/create-public-booking`, {
+              method: "POST",
+              headers: {
+                apikey: getSupabaseAnonKey(),
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                restaurant_id: restaurant.id,
+                shift_id: selectedSlot.shift_id,
+                date_time: selectedSlot.date_time,
+                party_size: partySize,
+                guest_name: contactName,
+                guest_email: contactEmail,
+                guest_phone: contactPhone,
+                allergies: dineIn.allergies || null,
+                seating_preference: dineIn.seating_preference || null,
+                occasion: dineIn.occasion || null,
+                cart_items: cartItems,
+                subtotal: roundMoney(discountedSubtotal),
+                tax_amount: roundMoney(tax),
+                tip_amount: roundMoney(tipAmount),
+                total_amount: roundMoney(totalNow),
+                discount_amount: discount > 0 ? roundMoney(discount) : null,
+                discount_reason: activePromo?.title ?? null,
+                promotion_id: activePromo?.id ?? searchParams.get("promotion_id") ?? null,
+                payment_method: paymentSplitMode === "split" ? "split" : "card",
+                // When the diner came in via /deals → event/promotion card, the
+                // URL pre-fills `event_id` so the new reservation is tagged
+                // with the right event for owner-dashboard attendee lists.
+                event_id: searchParams.get("event_id") ?? null,
+                applied_promo_code: searchParams.get("promo_code") ?? null,
+                // Server forks on hold presence behind the
+                // CENAIVA_HOLDS_ENABLED env flag — passing null is safe.
+                hold_id: activeHoldId,
+              }),
+            });
         const body = await res.json().catch(() => ({})) as PublicBookingResponse;
         if (!res.ok || body.error || !body.reservation_id) {
           // Surface a friendlier prompt for the diner double-book case so the
@@ -2009,6 +2102,14 @@ export default function RestaurantPublicPage() {
         }
         createdReservationId = body.reservation_id ?? createdReservationId;
         createdOrderId = body.order_id ?? createdOrderId;
+
+        // Hold has been converted server-side (either via the
+        // hold-aware fork of create-public-booking or via
+        // confirm-hold-paid). Tell the hook to stop the countdown so
+        // the banner disappears and grabAgain is disarmed.
+        if (activeHoldId && createdReservationId) {
+          hold.confirmConverted(createdReservationId, body.confirmation_code ?? "");
+        }
       }
 
       // 2. Update an existing Cenaiva preorder, if this page was opened from a
@@ -2352,6 +2453,15 @@ export default function RestaurantPublicPage() {
           <StepBar current={step} onNavigate={setStep} />
         </div>
 
+        {/* ── Hold timer banner (visible on all 3 booking steps) ──────────────── */}
+        {hold.state.status === "active" && (
+          <HoldTimerBanner
+            secondsLeft={hold.state.secondsLeft}
+            visualState={hold.visualState}
+            className="-mx-4 sm:-mx-6 mb-4"
+          />
+        )}
+
         {/* ── Step content ─────────────────────────────────────────────────────── */}
         <AnimatePresence mode="wait">
 
@@ -2524,7 +2634,39 @@ export default function RestaurantPublicPage() {
               <Button
                 className="mt-5 h-12 w-full text-base font-semibold"
                 disabled={!canProceedDetails()}
-                onClick={() => setStep("menu")}
+                onClick={() => {
+                  // Mirror the diner's Step-1 inputs into the hold so the
+                  // server-side hold row matches what the diner sees on
+                  // Step 2/3. If the hold path returns a diner_double_book,
+                  // we surface a friendly error and stay on Step 1 instead
+                  // of advancing.
+                  if (hold.state.status === "active") {
+                    void (async () => {
+                      const result = await hold.updateDiner({
+                        name: dineIn.name,
+                        email: dineIn.email,
+                        phone: dineIn.phone,
+                        specialRequest: dineIn.allergies || null,
+                        dietaryNotes: dineIn.allergies || null,
+                        occasion: dineIn.occasion || null,
+                        seatingPreference: dineIn.seating_preference || null,
+                      });
+                      if (!result.ok) {
+                        if (result.reason === "diner_double_book") {
+                          toast.error(
+                            "You already have a reservation at this time. Cancel or modify it from My bookings first.",
+                          );
+                          return;
+                        }
+                        toast.error("Couldn't save your details. Please try again.");
+                        return;
+                      }
+                      setStep("menu");
+                    })();
+                  } else {
+                    setStep("menu");
+                  }
+                }}
               >
                 Continue — add preorder (optional)
                 <ChevronRight className="size-4 ml-1" />
@@ -3087,6 +3229,7 @@ export default function RestaurantPublicPage() {
                   <StripePaymentForm
                     restaurantId={restaurant.id}
                     amountCents={Math.round(totalNow * 100)}
+                    holdId={hold.state.status === "active" ? hold.state.holdId : null}
                     formId="diner-pay-form"
                     hideInternalSubmit
                     onPaid={async (paymentIntentId) => {
@@ -3223,6 +3366,21 @@ export default function RestaurantPublicPage() {
         <div className="h-10" />
       </div>
 
+      {/* ── Hold expired dialog ─────────────────────────────────────────────── */}
+      <HoldExpiredDialog
+        open={hold.state.status === "expired"}
+        restaurantName={restaurantName}
+        conflictReason={null}
+        grabbing={hold.state.status === "creating"}
+        onGrabAgain={async () => {
+          await hold.grabAgain();
+          // The hook reports failures via `state.status === "error"` —
+          // surfacing the toast/banner is owned by the hook & dialog UI.
+        }}
+        onPickDifferentTime={() => {
+          setStep("details");
+        }}
+      />
     </div>
   );
 }

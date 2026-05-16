@@ -43,6 +43,7 @@ import {
   type ReservationDisplayStatus,
 } from "@/lib/reservations/displayStatus";
 import { matchesReservationSearch } from "@/lib/reservations/search";
+import { useErrorToast } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { dateInTz, formatCompactTimeLabel, formatCompactTimeLabelInTz } from "@/lib/utils/time";
 
@@ -333,6 +334,7 @@ function buildTimelineRows(rows: ReservationBoardRow[]): TimelineTableRow[] {
 
 export default function ReservationsPage() {
   const { t } = useTranslation();
+  const { errorToast } = useErrorToast();
   const [viewMode, setViewMode] = useState<ViewMode>("day");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [search, setSearch] = useState("");
@@ -468,7 +470,10 @@ export default function ReservationsPage() {
       setDrawerOpen(false);
       resetForm();
     } catch (error) {
-      toast.error("Failed: " + (error instanceof Error ? error.message : "unknown error"));
+      errorToast(error, {
+        fallback: "Couldn't create that reservation. Try again.",
+        logTag: "[ReservationsPage.handleCreate]",
+      });
     } finally {
       setSaving(false);
     }
@@ -747,7 +752,10 @@ export default function ReservationsPage() {
                   setCancelTarget(null);
                   resetApprovalForm();
                 } catch (error) {
-                  toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
+                  errorToast(error, {
+                    fallback: "Couldn't cancel that reservation. Try again.",
+                    logTag: "[ReservationsPage.cancel]",
+                  });
                 }
               }}
             >

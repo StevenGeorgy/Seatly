@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -47,11 +48,15 @@ export function useMyStaffInvites() {
         error?: string;
       };
       if (!res.ok) {
-        throw new Error(payload.error ?? "Could not load staff invites.");
+        const friendly = toUserFacingEdgeError(res, payload);
+        console.error("[useMyStaffInvites.fetch]", friendly.code, friendly.technical ?? payload);
+        throw new Error(friendly.message);
       }
       setInvites(payload.invites ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
+      const friendly = toUserFacingError(err, "Couldn't load staff invites.");
+      setError(new Error(friendly.message));
+      console.error("[useMyStaffInvites.catch]", friendly.code, friendly.technical ?? err);
       setInvites([]);
     } finally {
       setLoading(false);

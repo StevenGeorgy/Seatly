@@ -6,6 +6,7 @@ import {
   resolveEventMedia,
   type EventMediaUpload,
 } from "@/hooks/useEvents";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
@@ -158,7 +159,11 @@ export function usePromotions() {
       .from("promotions")
       .insert({ ...payload, restaurant_id: selectedRestaurantId });
     setSaving(false);
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't create the promotion.");
+      console.error("[usePromotions.create]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
     await fetch();
     return null;
   }, [selectedRestaurantId, fetch]);
@@ -173,7 +178,11 @@ export function usePromotions() {
       .update(payload)
       .eq("id", id);
     setSaving(false);
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't update the promotion.");
+      console.error("[usePromotions.update]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
     await fetch();
     return null;
   }, [fetch]);
@@ -192,7 +201,11 @@ export function usePromotions() {
       .from("event-media")
       .upload(path, file, { cacheControl: "3600", contentType: media.mime, upsert: false });
 
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't upload the file.");
+      console.error("[usePromotions.uploadMedia]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
 
     const { data } = client.storage.from("event-media").getPublicUrl(path);
     return {

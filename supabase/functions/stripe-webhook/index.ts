@@ -119,6 +119,73 @@ async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
 
 async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void> {
   if (!pi.id) return;
+
+  // NEW BRANCH: hold-based PIs (reservation-hold feature, Phase B).
+  // PIs created against a reservation_hold carry `hold_id` in metadata.
+  // The browser confirm-hold-paid edge fn races us; whichever calls
+  // convert_reservation_hold_to_reservation first wins, the second is a
+  // no-op (idempotent: true). If the hold has already expired past the
+  // grace window we refund — the webhook is the source of truth for
+  // "payment actually happened", so refunds belong here, NOT in
+  // confirm-hold-paid.
+  const holdId = (pi.metadata as Record<string, string> | undefined)?.hold_id ?? null;
+  if (holdId) {
+    try {
+      const { data, error } = await supabaseAdmin.rpc(
+        "convert_reservation_hold_to_reservation",
+        { p_hold_id: holdId, p_payment_intent_id: pi.id, p_grace_seconds: 120 },
+      );
+      if ((error as { code?: string } | null)?.code === "P0011") {
+        // Hold expired past grace — initiate refund (best-effort, log on fail).
+        console.error("stripe-webhook: hold expired past grace, refunding", { hold_id: holdId, pi_id: pi.id });
+        try {
+          const stripeKeyForRefund = Deno.env.get("STRIPE_SECRET_KEY");
+          if (stripeKeyForRefund) {
+            const { default: StripeRefund } = await import("npm:stripe@17");
+            const stripeForRefund = new StripeRefund(stripeKeyForRefund, { apiVersion: "2024-11-20.acacia" });
+            await stripeForRefund.refunds.create({
+              payment_intent: pi.id,
+              reason: "requested_by_customer",
+            });
+          } else {
+            console.error("stripe-webhook: cannot refund expired hold, STRIPE_SECRET_KEY missing");
+          }
+        } catch (refundErr) {
+          console.error("refund failed", refundErr);
+        }
+        return;
+      }
+      if (error) {
+        console.error("convert_reservation_hold_to_reservation failed in webhook", error);
+        return;
+      }
+      // Post-conversion side effects (orders insert, promotion usage,
+      // notifications). Only on the first conversion — idempotent replays
+      // must not double-fire.
+      const row = (data as Array<{ reservation_id: string; idempotent: boolean }> | null)?.[0];
+      if (row && !row.idempotent) {
+        try {
+          const { runPostHoldConversion } = await import("../_shared/hold-conversion.ts");
+          await runPostHoldConversion({
+            supabase: supabaseAdmin,
+            holdId,
+            reservationId: row.reservation_id,
+            paymentIntentId: pi.id,
+          });
+        } catch (sideErr) {
+          console.error("[stripe-webhook] post-conversion side effect failed", sideErr);
+        }
+      }
+      return;
+    } catch (e) {
+      console.error("hold conversion path failed", e);
+      return;
+    }
+  }
+
+  // EXISTING reservation_id path — preserves Phase D legacy bookings whose
+  // PIs carry `reservation_id` metadata instead of `hold_id`. Both paths
+  // coexist while the reservation-hold rollout is in progress.
   const reservationId = pi.metadata?.reservation_id ?? null;
   const orderId = pi.metadata?.order_id ?? null;
   if (!reservationId) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type EventTimelineRow = {
@@ -67,7 +68,9 @@ export function useTonightEvents(targetDate: string) {
       .order("start_time", { ascending: true, nullsFirst: false });
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load tonight's events.");
+      setError(new Error(friendly.message));
+      console.error("[useEventAttendees.tonight]", friendly.code, friendly.technical ?? qErr);
       setEvents([]);
     } else {
       setEvents((data ?? []) as EventTimelineRow[]);
@@ -163,7 +166,9 @@ export function useEventAttendees(eventId: string | null) {
       .order("reserved_at", { ascending: true });
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load event attendees.");
+      setError(new Error(friendly.message));
+      console.error("[useEventAttendees.attendees]", friendly.code, friendly.technical ?? qErr);
       setAttendees([]);
     } else {
       const rows = (data ?? []) as unknown as RawAttendeeRow[];
@@ -223,7 +228,9 @@ export function usePromotionRedemptions(promotionId: string | null) {
       .order("reserved_at", { ascending: true });
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load promo redemptions.");
+      setError(new Error(friendly.message));
+      console.error("[useEventAttendees.redemptions]", friendly.code, friendly.technical ?? qErr);
       setRedemptions([]);
     } else {
       const rows = (data ?? []) as unknown as RawAttendeeRow[];

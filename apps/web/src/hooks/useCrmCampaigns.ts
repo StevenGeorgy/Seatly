@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { CampaignSegment } from "@/lib/crm/segments";
 
@@ -67,15 +68,17 @@ export function useCrmCampaigns() {
       });
 
       if (rpcError) {
-        const err = new Error(rpcError.message);
-        setError(err);
+        const friendly = toUserFacingError(rpcError, "Couldn't send the campaign.");
+        console.error("[useCrmCampaigns.send.rpc]", friendly.code, friendly.technical ?? rpcError);
+        setError(new Error(friendly.message));
         return null;
       }
 
       return adaptCampaignResult(data);
     } catch (caught) {
-      const err = caught instanceof Error ? caught : new Error("Could not send campaign.");
-      setError(err);
+      const friendly = toUserFacingError(caught, "Couldn't send the campaign.");
+      console.error("[useCrmCampaigns.send.catch]", friendly.code, friendly.technical ?? caught);
+      setError(new Error(friendly.message));
       return null;
     } finally {
       setSending(false);

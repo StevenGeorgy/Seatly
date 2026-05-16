@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { MyReservationRow } from "@/hooks/useMyReservations";
 
@@ -55,7 +56,9 @@ export function useReservationById(reservationId: string | null) {
       .eq("id", reservationId)
       .maybeSingle();
     if (rErr) {
-      setError(new Error(rErr.message));
+      const friendly = toUserFacingError(rErr, "Couldn't load that reservation.");
+      setError(new Error(friendly.message));
+      console.error("[useReservationById.fetch]", friendly.code, friendly.technical ?? rErr);
       setReservation(null);
       setLoading(false);
       return;

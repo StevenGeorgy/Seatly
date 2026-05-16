@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { resolvePostLoginPath } from "@/lib/auth/post-login-redirect";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import {
@@ -36,6 +37,7 @@ export default function PhoneLoginPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const from = params.get("from") ?? undefined;
+  const { errorToast } = useErrorToast();
 
   const [step, setStep] = useState<"enter-phone" | "enter-code">("enter-phone");
   const [phoneInput, setPhoneInput] = useState("");
@@ -48,12 +50,12 @@ export default function PhoneLoginPage() {
     if (e) e.preventDefault();
     if (submitting) return;
     if (!isSupabaseConfigured()) {
-      toast.error("Auth is not configured. Try again later.");
+      toast.error("Sign-in is unavailable right now. Try again in a minute.");
       return;
     }
     const normalized = normalizeE164Phone(phoneInput);
     if (!normalized) {
-      toast.error("That doesn't look like a phone number. Try +1 416 555 1234.");
+      toast.error("That doesn't look like a phone number. Try a format like +1 416 555 1234.");
       return;
     }
     setNormalizedPhone(normalized);
@@ -71,8 +73,10 @@ export default function PhoneLoginPage() {
         },
       });
       if (error) {
-        const msg = error.message || "Couldn't send the code. Try again.";
-        toast.error(msg);
+        errorToast(error, {
+          fallback: "Couldn't send the code. Try again in a minute.",
+          logTag: "[PhoneLogin.sendCode]",
+        });
         return;
       }
       setStep("enter-code");
@@ -94,7 +98,7 @@ export default function PhoneLoginPage() {
       return;
     }
     if (!isSupabaseConfigured()) {
-      toast.error("Auth is not configured. Try again later.");
+      toast.error("Sign-in is unavailable right now. Try again in a minute.");
       return;
     }
     setSubmitting(true);
@@ -106,16 +110,22 @@ export default function PhoneLoginPage() {
         type: "sms",
       });
       if (error) {
-        toast.error(error.message || "That code didn't work. Try again.");
+        errorToast(error, {
+          fallback: "That code didn't work. Try again or tap “Resend code”.",
+          logTag: "[PhoneLogin.verify]",
+        });
         return;
       }
       if (!data.session) {
-        toast.error("Verification failed — no session returned.");
+        toast.error("Sign-in didn't complete. Try again.");
         return;
       }
       const ctx = await loadUserContext(client, data.session);
       if (!ctx.ok) {
-        toast.error(ctx.error.message);
+        errorToast(ctx.error, {
+          fallback: "Signed in, but we couldn't load your profile. Refresh and try again.",
+          logTag: "[PhoneLogin.loadProfile]",
+        });
         return;
       }
       navigate(resolvePostLoginPath(from, ctx), { replace: true });

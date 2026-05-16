@@ -8,6 +8,7 @@ import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { Button } from "@/components/ui/button";
 import { useOrders, type OrderRow } from "@/hooks/useOrders";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useErrorToast } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -39,6 +40,7 @@ function tabStatusFor(status: string): Exclude<TabKey, "all"> {
 
 export default function OrdersPage() {
   const { t, i18n } = useTranslation();
+  const { errorToast } = useErrorToast();
   const [tab, setTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -114,7 +116,10 @@ export default function OrdersPage() {
       await updateOrderStatus(row.id, nextStatus);
       toast.success(t(nextStatus === "served" ? "dashboard.orders.markedServed" : "dashboard.orders.markedReady"));
     } catch (statusError) {
-      toast.error(statusError instanceof Error ? statusError.message : t("dashboard.orders.updateFailed"));
+      errorToast(statusError, {
+        fallback: t("dashboard.orders.updateFailed"),
+        logTag: "[OrdersPage.handleStatusClick]",
+      });
     } finally {
       setUpdatingId(null);
     }

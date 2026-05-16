@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useUser } from "@/hooks/useUser";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
 
@@ -35,6 +36,7 @@ const APPLE_RELAY_EMAIL = /@privaterelay\.appleid\.com$/i;
 
 export default function OnboardingPage() {
   const { user, profile, refreshUser, loading: userLoading } = useUser();
+  const { errorToast } = useErrorToast();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [submitting, setSubmitting] = useState(false);
@@ -113,7 +115,7 @@ export default function OnboardingPage() {
   const onSubmit = async (values: OnboardingFormValues) => {
     if (!user || !profile) return;
     if (!isSupabaseConfigured()) {
-      toast.error("Supabase is not configured.");
+      toast.error("Setup isn't available right now. Try again in a minute.");
       return;
     }
     setSubmitting(true);
@@ -156,7 +158,10 @@ export default function OnboardingPage() {
         .eq("auth_user_id", user.id);
 
       if (error) {
-        toast.error(error.message);
+        errorToast(error, {
+          context: "Couldn't save your details",
+          logTag: "[Onboarding.save]",
+        });
         return;
       }
 

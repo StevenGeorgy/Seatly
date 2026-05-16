@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 
@@ -28,7 +29,11 @@ async function fetchNotificationsForUser(userId: string): Promise<NotificationRo
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(50);
-  if (qErr) throw new Error(qErr.message);
+  if (qErr) {
+    const friendly = toUserFacingError(qErr, "Couldn't load notifications.");
+    console.error("[useNotifications.fetch]", friendly.code, friendly.technical ?? qErr);
+    throw new Error(friendly.message);
+  }
   return (data ?? []) as NotificationRow[];
 }
 

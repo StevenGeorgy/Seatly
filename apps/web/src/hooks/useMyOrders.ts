@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 
@@ -44,7 +45,9 @@ export function useMyOrders() {
       .eq("user_profile_id", profile.id);
 
     if (gErr) {
-      setError(new Error(gErr.message));
+      const friendly = toUserFacingError(gErr, "Couldn't load your orders.");
+      setError(new Error(friendly.message));
+      console.error("[useMyOrders.guests]", friendly.code, friendly.technical ?? gErr);
       setLoading(false);
       return;
     }
@@ -65,7 +68,9 @@ export function useMyOrders() {
       .order("created_at", { ascending: false });
 
     if (oErr) {
-      setError(new Error(oErr.message));
+      const friendly = toUserFacingError(oErr, "Couldn't load your orders.");
+      setError(new Error(friendly.message));
+      console.error("[useMyOrders.orders]", friendly.code, friendly.technical ?? oErr);
       setLoading(false);
       return;
     }

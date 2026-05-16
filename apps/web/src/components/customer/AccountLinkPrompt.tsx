@@ -16,6 +16,7 @@ import {
   getSupabaseBrowserClient,
   getSupabaseProjectUrl,
 } from "@/lib/supabase/client";
+import { showErrorToast } from "@/lib/errors";
 
 // Phase 5 of diner auth overhaul (2026-05-15). Shown after AuthCallback
 // detects another user_profiles row with matching email/phone but a
@@ -86,7 +87,10 @@ export function AccountLinkPrompt({ info, onDone }: Props) {
         };
       };
       if (!res.ok || body.ok !== true) {
-        toast.error(body.error ?? "Couldn't merge your accounts. Try again or contact support.");
+        showErrorToast(body.error ?? null, {
+          fallback: "Couldn't merge your accounts. Try again or contact support.",
+          logTag: "[AccountLinkPrompt.merge]",
+        });
         return;
       }
       const moved =

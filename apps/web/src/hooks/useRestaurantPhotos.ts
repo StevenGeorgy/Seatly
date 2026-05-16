@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 // Diner-facing snap shape — `visit_photos` row plus the poster's display info
@@ -78,8 +79,16 @@ async function fetchRestaurantPhotos(restaurantId: string): Promise<RestaurantPh
       .limit(200),
   ]);
 
-  if (photoErr) throw new Error(photoErr.message);
-  if (reviewsErr) throw new Error(reviewsErr.message);
+  if (photoErr) {
+    const friendly = toUserFacingError(photoErr, "Couldn't load restaurant photos.");
+    console.error("[useRestaurantPhotos.photos]", friendly.code, friendly.technical ?? photoErr);
+    throw new Error(friendly.message);
+  }
+  if (reviewsErr) {
+    const friendly = toUserFacingError(reviewsErr, "Couldn't load restaurant reviews.");
+    console.error("[useRestaurantPhotos.reviews]", friendly.code, friendly.technical ?? reviewsErr);
+    throw new Error(friendly.message);
+  }
 
   const photos = (photoRows ?? []) as RawPhotoRow[];
   const reviews = (reviewRows ?? []) as RawReviewRow[];

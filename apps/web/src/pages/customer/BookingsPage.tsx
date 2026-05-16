@@ -27,6 +27,7 @@ import {
 import { useUser } from "@/hooks/useUser";
 import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservations";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
+import { useErrorToast } from "@/lib/errors";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { CustomerBellDropdown } from "@/components/customer/CustomerBellDropdown";
@@ -511,6 +512,7 @@ export default function BookingsPage() {
     signOut,
     restaurantRoles,
   } = useUser();
+  const { errorToast } = useErrorToast();
   const { restaurants: staffRestaurants } = useStaffRestaurants(restaurantRoles);
   const { upcoming, past, loading, refresh } = useMyReservations();
   const assistant = useAssistant();
@@ -612,7 +614,10 @@ export default function BookingsPage() {
         if (error.code === "23505") {
           toast.error("You've already reviewed this visit.");
         } else {
-          toast.error(error.message);
+          errorToast(error, {
+            fallback: "Couldn't post your review. Try again.",
+            logTag: "[BookingsPage.reviewInsert]",
+          });
         }
         return;
       }
@@ -621,7 +626,10 @@ export default function BookingsPage() {
       setReviewRating(5);
       setReviewText("");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not post review.");
+      errorToast(e, {
+        fallback: "Couldn't post your review. Try again.",
+        logTag: "[BookingsPage.review]",
+      });
     } finally {
       setReviewSubmitting(false);
     }
@@ -652,7 +660,10 @@ export default function BookingsPage() {
       toast.success("Reservation cancelled.");
       void refresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
+      errorToast(error, {
+        fallback: "Couldn't cancel that reservation. Try again.",
+        logTag: "[BookingsPage.cancel]",
+      });
       setCancellingId(null);
     }
   };

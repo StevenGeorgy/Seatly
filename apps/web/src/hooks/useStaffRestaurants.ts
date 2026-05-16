@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { toUserFacingError } from "@/lib/errors";
 import { promiseWithTimeout } from "@/lib/promise-timeout";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
@@ -110,7 +111,9 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         if (cancelled) return;
 
         if (qErr) {
-          setError(new Error(qErr.message));
+          const friendly = toUserFacingError(qErr, "Couldn't load your restaurants.");
+          setError(new Error(friendly.message));
+          console.error("[useStaffRestaurants.fetch]", friendly.code, friendly.technical ?? qErr);
           setRestaurants([]);
           setLoading(false);
           return;
@@ -120,7 +123,9 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
-        setError(e instanceof Error ? e : new Error(String(e)));
+        const friendly = toUserFacingError(e, "Couldn't load your restaurants.");
+        setError(new Error(friendly.message));
+        console.error("[useStaffRestaurants.catch]", friendly.code, friendly.technical ?? e);
         setRestaurants([]);
         setLoading(false);
       }

@@ -7,6 +7,7 @@ import { AuthProvider } from "@/contexts/auth-context";
 import { CenaivaVoicePreferenceProvider } from "@/contexts/CenaivaVoicePreferenceProvider";
 import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
+import { AppErrorBoundary } from "@/components/error/AppErrorBoundary";
 import { DevSupabaseBanner } from "@/components/layout/DevSupabaseBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppRoutes } from "@/routes/AppRoutes";
@@ -95,33 +96,35 @@ const queryClient = new QueryClient({
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <CenaivaVoicePreferenceProvider>
-            <AssistantProvider>
-              <TooltipProvider delayDuration={300}>
-                <DevSupabaseBanner />
-                <AppRoutes />
-                <AuthedCenaivaUI />
-                <AuthedReservationReviewPrompt />
-                <Toaster
-                  richColors
-                  position="top-center"
-                  duration={6000}
-                  toastOptions={{
-                    style: {
-                      background: "#1A1A1A",
-                      border: "1px solid #2E2E2E",
-                      color: "#FFFFFF",
-                    },
-                  }}
-                />
-              </TooltipProvider>
-            </AssistantProvider>
-          </CenaivaVoicePreferenceProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
+            <CenaivaVoicePreferenceProvider>
+              <AssistantProvider>
+                <TooltipProvider delayDuration={300}>
+                  <DevSupabaseBanner />
+                  <AppRoutes />
+                  <AuthedCenaivaUI />
+                  <AuthedReservationReviewPrompt />
+                  <Toaster
+                    richColors
+                    position="top-center"
+                    duration={6000}
+                    toastOptions={{
+                      style: {
+                        background: "#1A1A1A",
+                        border: "1px solid #2E2E2E",
+                        color: "#FFFFFF",
+                      },
+                    }}
+                  />
+                </TooltipProvider>
+              </AssistantProvider>
+            </CenaivaVoicePreferenceProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </AppErrorBoundary>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type AnalyticsRow = {
@@ -97,7 +98,9 @@ export function useAnalytics(range?: AnalyticsDateRange) {
     const { data, error: qErr } = await query;
 
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load analytics.");
+      setError(new Error(friendly.message));
+      console.error("[useAnalytics.rows]", friendly.code, friendly.technical ?? qErr);
       setRows([]);
     } else {
       setRows((data ?? []) as AnalyticsRow[]);
@@ -151,7 +154,9 @@ export function useAnalyticsDishPerformance(range?: AnalyticsDateRange) {
 
     const { data, error: qErr } = await query;
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load dish performance.");
+      setError(new Error(friendly.message));
+      console.error("[useAnalytics.dishes]", friendly.code, friendly.technical ?? qErr);
       setDishes([]);
     } else {
       const totals = new Map<string, AnalyticsDishPerformance>();
@@ -206,7 +211,9 @@ export function useAnalyticsReservations(range?: AnalyticsDateRange) {
 
     const { data, error: qErr } = await query;
     if (qErr) {
-      setError(new Error(qErr.message));
+      const friendly = toUserFacingError(qErr, "Couldn't load reservation analytics.");
+      setError(new Error(friendly.message));
+      console.error("[useAnalytics.reservations]", friendly.code, friendly.technical ?? qErr);
       setReservations([]);
     } else {
       setReservations((data ?? []) as AnalyticsReservationPoint[]);

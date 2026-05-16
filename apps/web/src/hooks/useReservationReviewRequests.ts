@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 import { useUser } from "@/hooks/useUser";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type ReviewRequest = {
@@ -262,7 +263,9 @@ async function submitRpc(
       dispatchNotificationsChanged();
       return "already-reviewed";
     }
-    throw new Error(msg);
+    const friendly = toUserFacingError(error, "Couldn't submit your review.");
+    console.error("[useReservationReviewRequests.submit]", friendly.code, friendly.technical ?? error);
+    throw new Error(friendly.message);
   }
   dropReservationLocally(reservationId);
   clearDismissedPrompt(reservationId);

@@ -227,6 +227,102 @@ export async function completeBooking(
     ? Number(turnMinutesData)
     : 90;
 
+  // Hold-fork (CENAIVA_HOLDS_ENABLED). When the flag is on AND payment is
+  // required (deposit > 0 OR there's a preorder cart), create a hold row
+  // instead of writing the reservation directly. The caller (voice
+  // orchestrator) reads `requires_payment_url` and hands the diner off to
+  // the public restaurant page's checkout, which calls
+  // create-public-payment-intent with the hold_id and then confirm-hold-paid
+  // after Stripe succeeds.
+  const holdsEnabled = Deno.env.get("CENAIVA_HOLDS_ENABLED") === "true";
+  const { data: holdDepositCents } = holdsEnabled
+    ? await supabaseAdmin.rpc("compute_deposit_for_party", {
+      p_restaurant_id: restaurant_id,
+      p_party_size: party_size,
+    })
+    : { data: null };
+  const depositCentsForHold =
+    typeof holdDepositCents === "number" && holdDepositCents > 0 ? holdDepositCents : 0;
+  const paymentRequired = depositCentsForHold > 0 || items.length > 0;
+
+  if (holdsEnabled && paymentRequired) {
+    // Look up the slug for the hand-off URL.
+    const { data: slugRow } = await supabaseAdmin
+      .from("restaurants")
+      .select("slug")
+      .eq("id", restaurant_id)
+      .maybeSingle();
+    const slug = (slugRow as { slug: string | null } | null)?.slug ?? null;
+
+    const { data: holdRows, error: holdError } = await supabaseAdmin.rpc(
+      "create_reservation_hold",
+      {
+        p_restaurant_id: restaurant_id,
+        p_shift_id: shift_id,
+        p_reserved_at: date_time,
+        p_party_size: party_size,
+        p_turn_minutes: turnMinutes,
+        p_confirmation_code: confirmationCode,
+        p_source: "cenaiva",
+        p_user_profile_id: user_profile_id,
+        p_guest_id: guestId,
+        p_guest_full_name: guestFields.full_name,
+        p_guest_email: guestFields.email,
+        p_guest_phone: guestFields.phone,
+        p_event_id: event_id ?? null,
+        p_promotion_id: promotion_id ?? null,
+        p_applied_promo_code: applied_promo_code ?? null,
+        p_hold_minutes: 30,
+      },
+    );
+    if (holdError) {
+      const code = (holdError as { code?: string }).code;
+      const message = (holdError as { message?: string }).message ?? "";
+      const friendly =
+        code === "P0001"
+          ? "That time was just taken. Please pick another slot."
+          : code === "P0002"
+            ? "That time no longer has cover capacity."
+            : code === "P0006" || code === "23P01"
+              ? "You already have a reservation at that time."
+              : `Hold creation failed: ${message}`;
+      return failureResult(order_type, friendly, guestId ?? null);
+    }
+    const holdRow = Array.isArray(holdRows) ? holdRows[0] : holdRows;
+    if (!holdRow?.hold_id) {
+      return failureResult(order_type, "Hold creation failed: no hold returned.", guestId ?? null);
+    }
+    const handoffUrl = slug
+      ? `https://cenaiva.com/${slug}/checkout?hold=${holdRow.hold_id}`
+      : null;
+    // Use the failure-shape fields we don't normally populate to carry the
+    // hold metadata back to the voice orchestrator without changing the
+    // CompleteBookingResult schema. The orchestrator checks
+    // `checkout_url` (re-purposed as the hand-off URL) and reads
+    // `confirmation_code` for the spoken response.
+    return {
+      success: true,
+      confirmation_code: holdRow.confirmation_code ?? confirmationCode,
+      order_type,
+      reservation_id: null,
+      order_id: null,
+      guest_id: guestId ?? null,
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      currency: DEFAULT_CURRENCY,
+      checkout_url: handoffUrl,
+      // Extra fields beyond CompleteBookingResult — tolerated by callers.
+      hold_id: holdRow.hold_id,
+      requires_payment_url: handoffUrl,
+      expires_at: holdRow.expires_at,
+    } as CompleteBookingResult & {
+      hold_id: string;
+      requires_payment_url: string | null;
+      expires_at: string;
+    };
+  }
+
   let reservationId: string | null = null;
   let persistedConfirmationCode = confirmationCode;
   const { data: bookingRows, error: resvErr } = await supabaseAdmin.rpc(

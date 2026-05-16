@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 
@@ -230,7 +231,11 @@ export function useMenuCategories() {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't create the category.");
+      console.error("[useMenuItems.createCategory]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
     return data as MenuCategoryRow;
   }, [fetch, selectedRestaurantId]);
@@ -251,7 +256,11 @@ export function useMenuCategories() {
       .eq("id", id)
       .eq("restaurant_id", selectedRestaurantId);
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't rename the category.");
+      console.error("[useMenuItems.updateCategory]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
 
     const { error: itemError } = await client
       .from("menu_items")
@@ -259,7 +268,11 @@ export function useMenuCategories() {
       .eq("restaurant_id", selectedRestaurantId)
       .eq("category_id", id);
 
-    if (itemError) throw itemError;
+    if (itemError) {
+      const friendly = toUserFacingError(itemError, "Couldn't update items in this category.");
+      console.error("[useMenuItems.updateCategory.items]", friendly.code, friendly.technical ?? itemError);
+      throw new Error(friendly.message);
+    }
     await fetch();
   }, [fetch, selectedRestaurantId]);
 
@@ -275,7 +288,11 @@ export function useMenuCategories() {
       .eq("id", id)
       .eq("restaurant_id", selectedRestaurantId);
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't delete the category.");
+      console.error("[useMenuItems.deleteCategory]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
   }, [fetch, selectedRestaurantId]);
 
@@ -365,7 +382,11 @@ export function useMenuItems(categoryId?: string) {
       .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't add the menu item.");
+      console.error("[useMenuItems.createItem]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
     return data as MenuItemRow;
   }, [fetch, selectedRestaurantId]);
@@ -391,7 +412,11 @@ export function useMenuItems(categoryId?: string) {
       })
       .eq("id", id);
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't update the menu item.");
+      console.error("[useMenuItems.updateItem]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
   }, [fetch, selectedRestaurantId]);
 
@@ -406,7 +431,11 @@ export function useMenuItems(categoryId?: string) {
       .update({ is_available: isAvailable })
       .eq("id", id);
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't update item availability.");
+      console.error("[useMenuItems.setAvailability]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
   }, [fetch, selectedRestaurantId]);
 
@@ -421,7 +450,11 @@ export function useMenuItems(categoryId?: string) {
       .update({ is_active: false })
       .eq("id", id);
 
-    if (error) throw error;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't delete the menu item.");
+      console.error("[useMenuItems.deleteItem]", friendly.code, friendly.technical ?? error);
+      throw new Error(friendly.message);
+    }
     await fetch();
   }, [fetch, selectedRestaurantId]);
 
@@ -441,7 +474,11 @@ export function useMenuItems(categoryId?: string) {
       .from("event-media")
       .upload(path, file, { cacheControl: "3600", contentType: image.mime, upsert: false });
 
-    if (error) return error.message;
+    if (error) {
+      const friendly = toUserFacingError(error, "Couldn't upload the image.");
+      console.error("[useMenuItems.uploadImage]", friendly.code, friendly.technical ?? error);
+      return friendly.message;
+    }
 
     const { data } = client.storage.from("event-media").getPublicUrl(path);
     return data.publicUrl;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type OverviewStatsRange = {
@@ -79,7 +80,9 @@ export function useOverviewStats(range: OverviewStatsRange) {
 
     const queryError = createdErr ?? paidErr;
     if (queryError) {
-      setError(new Error(queryError.message));
+      const friendly = toUserFacingError(queryError, "Couldn't load overview stats.");
+      setError(new Error(friendly.message));
+      console.error("[useOverviewStats.fetch]", friendly.code, friendly.technical ?? queryError);
       setStats(EMPTY_STATS);
       setLoading(false);
       return;

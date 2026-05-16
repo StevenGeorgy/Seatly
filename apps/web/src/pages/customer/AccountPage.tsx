@@ -24,6 +24,7 @@ import { z } from "zod";
 import { AvatarUploadCard } from "@/components/customer/AvatarUploadCard";
 import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useErrorToast } from "@/lib/errors";
 import { toast } from "sonner";
 import {
   getSupabaseAnonKey,
@@ -316,6 +317,7 @@ function ReviewEntryRow({
 export default function AccountPage() {
   const navigate = useNavigate();
   const { user, profile, signOut } = useUser();
+  const { errorToast } = useErrorToast();
   const { upcoming, past, loading: reservationsLoading } = useMyReservations();
   const { orders, loading: ordersLoading } = useMyOrders();
   const { entries: reviewEntries, loading: reviewEntriesLoading, remove: removeReviewEntry } =
@@ -465,7 +467,10 @@ export default function AccountPage() {
       await signOut();
       navigate("/");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't delete your account.");
+      errorToast(err, {
+        fallback: "Couldn't delete your account. Try again or contact support.",
+        logTag: "[AccountPage.deleteAccount]",
+      });
       setDeleteAccountSubmitting(false);
     }
   };
@@ -604,7 +609,10 @@ export default function AccountPage() {
                       toast.success("Review deleted.");
                       setReviewToDelete(null);
                     } catch (e) {
-                      toast.error(e instanceof Error ? e.message : "Could not delete.");
+                      errorToast(e, {
+                        fallback: "Couldn't delete that review. Try again.",
+                        logTag: "[AccountPage.deleteReview]",
+                      });
                     } finally {
                       setReviewDeleting(false);
                     }

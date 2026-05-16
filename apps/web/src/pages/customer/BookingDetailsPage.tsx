@@ -32,6 +32,7 @@ import { type MyReservationRow } from "@/hooks/useMyReservations";
 import { useReservationById } from "@/hooks/useReservationById";
 import { useReservationPayments } from "@/hooks/useReservationPayments";
 import { useUser } from "@/hooks/useUser";
+import { useErrorToast } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -259,6 +260,7 @@ export default function BookingDetailsPage() {
     refresh,
   } = useReservationById(reservationId ?? null);
   const { profile } = useUser();
+  const { errorToast } = useErrorToast();
   const { data: paymentData, refresh: refreshPayments } = useReservationPayments(
     reservationId ?? null,
   );
@@ -359,7 +361,10 @@ export default function BookingDetailsPage() {
       void refreshPayments();
       if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not cancel reservation.");
+      errorToast(error, {
+        fallback: "Couldn't cancel that reservation. Try again.",
+        logTag: "[BookingDetailsPage.cancel]",
+      });
       setCancelling(false);
     }
   };
@@ -402,7 +407,10 @@ export default function BookingDetailsPage() {
         toast.success("Reservation modified.");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not modify reservation.");
+      errorToast(error, {
+        fallback: "Couldn't update that reservation. Try again.",
+        logTag: "[BookingDetailsPage.modify]",
+      });
     } finally {
       setModifying(false);
     }

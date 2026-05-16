@@ -18,6 +18,7 @@ import {
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
 import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
 import { useUser } from "@/hooks/useUser";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { RESTAURANT_BUSINESS_TYPE_OPTIONS } from "@/lib/restaurant-business-types";
 import {
@@ -78,6 +79,7 @@ export function Step1Basics({
   targetRestaurantId = null,
 }: Step1BasicsProps) {
   const { refreshUser } = useUser();
+  const { errorToast } = useErrorToast();
   const [submitting, setSubmitting] = useState(false);
   const [lat, setLat] = useState<number | null>(initial?.lat ?? null);
   const [lng, setLng] = useState<number | null>(initial?.lng ?? null);
@@ -182,9 +184,13 @@ export function Step1Basics({
       });
 
       if (error || !data || typeof (data as { restaurant_id?: string }).restaurant_id !== "string") {
-        const rawMsg =
-          (data as { error?: string } | null)?.error ?? error?.message ?? "Could not create restaurant.";
-        toast.error(rawMsg);
+        const dataErr = (data as { error?: string } | null)?.error;
+        // Prefer the edge fn's body error (more specific), then the invoke
+        // error, then a generic fallback.
+        errorToast(error ?? (dataErr ? new Error(dataErr) : null), {
+          fallback: "Could not create restaurant. Try again.",
+          logTag: "[Step1Basics.signupRestaurantOwner]",
+        });
         return;
       }
 

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { deriveRestaurantPriceLevel, type RestaurantPriceMenuItem } from "@/lib/restaurant-price-level";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
@@ -184,7 +185,12 @@ export async function fetchRestaurantBySlugOrId(slugOrId: string): Promise<Resta
     .single();
 
   if (qErr || !data) {
-    throw new Error(qErr?.message ?? "Not found");
+    if (!qErr) {
+      throw new Error("We couldn't find that restaurant.");
+    }
+    const friendly = toUserFacingError(qErr, "Couldn't load that restaurant.");
+    console.error("[useRestaurant.fetchBySlugOrId]", friendly.code, friendly.technical ?? qErr);
+    throw new Error(friendly.message);
   }
 
   const row = data as Restaurant;

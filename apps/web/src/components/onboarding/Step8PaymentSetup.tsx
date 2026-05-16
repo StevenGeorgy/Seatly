@@ -41,6 +41,10 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import {
+  toUserFacingEdgeError,
+  toUserFacingError,
+} from "@/lib/errors";
 
 type Step8PaymentSetupProps = {
   restaurantId: string;
@@ -131,11 +135,12 @@ async function invokeEdgeFunction<TResult>(
     parsed = null;
   }
   if (!res.ok) {
-    const errMsg =
-      parsed && typeof parsed === "object" && parsed !== null && "error" in parsed
-        ? String((parsed as { error: unknown }).error)
-        : `Request failed (${res.status})`;
-    return { ok: false, error: errMsg };
+    const friendly = toUserFacingEdgeError(
+      res,
+      parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null,
+    );
+    console.error(`[Step8PaymentSetup.invokeEdgeFunction:${path}]`, friendly.code, friendly.technical);
+    return { ok: false, error: friendly.message };
   }
   return { ok: true, data: parsed as TResult };
 }
@@ -217,7 +222,9 @@ function StripeConnectEmbeddedKYC({
         setConnectInstance(instance);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Couldn't initialize Stripe.");
+        const friendly = toUserFacingError(err, "Couldn't initialize Stripe.");
+        setError(friendly.message);
+        console.error("[Step8PaymentSetup.kyc.init]", friendly.code, friendly.technical ?? err);
       }
     })();
 
@@ -274,7 +281,9 @@ function SubscriptionCardInner({
       try {
         const { error: submitError } = await elements.submit();
         if (submitError) {
-          setError(submitError.message ?? "Please check your card details.");
+          const friendly = toUserFacingError(submitError, "Please check your card details.");
+          setError(friendly.message);
+          console.error("[Step8PaymentSetup.subscription.submit]", friendly.code, friendly.technical ?? submitError);
           return;
         }
         const { setupIntent, error: confirmError } = await stripe.confirmSetup({
@@ -282,7 +291,9 @@ function SubscriptionCardInner({
           redirect: "if_required",
         });
         if (confirmError) {
-          setError(confirmError.message ?? "Couldn't confirm your card.");
+          const friendly = toUserFacingError(confirmError, "Couldn't confirm your card.");
+          setError(friendly.message);
+          console.error("[Step8PaymentSetup.subscription.confirm]", friendly.code, friendly.technical ?? confirmError);
           return;
         }
         const paymentMethodId =
@@ -574,7 +585,9 @@ export function Step8PaymentSetup({
         .update({ is_published: true })
         .eq("id", restaurantId);
       if (error) {
-        toast.error(`Couldn't publish: ${error.message}`);
+        const friendly = toUserFacingError(error, "Couldn't publish your restaurant.");
+        toast.error(`Couldn't publish: ${friendly.message}`);
+        console.error("[Step8PaymentSetup.publish]", friendly.code, friendly.technical ?? error);
         return;
       }
       toast.success("Your restaurant is live!");

@@ -21,6 +21,7 @@ import { useEvents } from "@/hooks/useEvents";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import { useErrorToast } from "@/lib/errors";
 
 function AiBadge() {
   return (
@@ -606,6 +607,7 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
   const { markApplied, dismiss } = useMenuSuggestions();
   const { createPromotion } = usePromotions();
   const { createEvent } = useEvents();
+  const { errorToast } = useErrorToast();
 
   const aiFields = suggestion ? Object.keys(suggestion.payload) : [];
 
@@ -625,7 +627,13 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
       .select("id")
       .single();
     setSaving(false);
-    if (error) { toast.error("Could not add item: " + error.message); return; }
+    if (error) {
+      errorToast(error, {
+        fallback: "Could not add item. Try again.",
+        logTag: "[SuggestionPreviewDialog.addMenuItem]",
+      });
+      return;
+    }
     await markApplied(suggestion.id, inserted.id);
     toast.success("Menu item added.");
     onOpenChange(false);
@@ -637,7 +645,13 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
     const client = getSupabaseBrowserClient();
     const { error } = await client.from("menu_items").update(data).eq("id", suggestion.target_entity_id);
     setSaving(false);
-    if (error) { toast.error("Could not update item: " + error.message); return; }
+    if (error) {
+      errorToast(error, {
+        fallback: "Could not update item. Try again.",
+        logTag: "[SuggestionPreviewDialog.updateMenuItem]",
+      });
+      return;
+    }
     await markApplied(suggestion.id, suggestion.target_entity_id);
     toast.success("Menu item updated.");
     onOpenChange(false);
@@ -648,7 +662,13 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
     setSaving(true);
     const err = await createPromotion(data as CreatePromotionPayload);
     setSaving(false);
-    if (err) { toast.error("Could not create promotion: " + err); return; }
+    if (err) {
+      errorToast(err, {
+        fallback: "Could not create promotion. Try again.",
+        logTag: "[SuggestionPreviewDialog.createPromotion]",
+      });
+      return;
+    }
     // Get newly created promo id from fresh fetch — approximate with timestamp
     await markApplied(suggestion.id, suggestion.id);
     toast.success("Promotion created.");
@@ -660,7 +680,13 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
     setSaving(true);
     const err = await createEvent(data as any);
     setSaving(false);
-    if (err) { toast.error("Could not create event: " + err); return; }
+    if (err) {
+      errorToast(err, {
+        fallback: "Could not create event. Try again.",
+        logTag: "[SuggestionPreviewDialog.createEvent]",
+      });
+      return;
+    }
     await markApplied(suggestion.id, suggestion.id);
     toast.success("Event created.");
     onOpenChange(false);

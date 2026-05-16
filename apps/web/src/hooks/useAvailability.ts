@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { toUserFacingError } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type ConflictWindow = {
@@ -93,10 +94,12 @@ async function fetchAvailabilityFromNetwork(
   });
 
   if (error) {
+    const friendly = toUserFacingError(error, "Couldn't load available times.");
+    console.error("[useAvailability.fetchSlots]", friendly.code, friendly.technical ?? error);
     return {
       slots: [],
       floorCapacity: null,
-      error: error.message,
+      error: friendly.message,
       unavailableReason: null,
       message: null,
     };
@@ -228,10 +231,11 @@ export function useAvailability() {
         setSlots(result.slots);
         return result;
       } catch (err) {
-        const message = String(err);
-        setError(message);
+        const friendly = toUserFacingError(err, "Couldn't load available times.");
+        console.error("[useAvailability.fetchSlots.catch]", friendly.code, friendly.technical ?? err);
+        setError(friendly.message);
         setFloorCapacity(null);
-        return { slots: [], floorCapacity: null, error: message, unavailableReason: null, message: null };
+        return { slots: [], floorCapacity: null, error: friendly.message, unavailableReason: null, message: null };
       } finally {
         setLoading(false);
       }

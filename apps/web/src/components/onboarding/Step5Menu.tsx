@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 type Step5MenuProps = {
@@ -77,6 +78,7 @@ function defaultCategories(): DraftCategory[] {
 }
 
 export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuProps) {
+  const { errorToast } = useErrorToast();
   const [categories, setCategories] = useState<DraftCategory[]>(defaultCategories);
   const [items, setItems] = useState<DraftItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
@@ -265,7 +267,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
           .eq("restaurant_id", restaurantId)
           .in("id", existingIds);
         if (clearErr) {
-          toast.error(`Couldn't update categories: ${clearErr.message}`);
+          errorToast(clearErr, {
+            context: "Couldn't update categories",
+            logTag: "[Step5Menu.clearTierFlags]",
+          });
           return;
         }
       }
@@ -275,7 +280,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
         .eq("restaurant_id", restaurantId)
         .eq("is_pricing_tier_source", true);
       if (clearAllErr) {
-        toast.error(`Couldn't reset tier flag: ${clearAllErr.message}`);
+        errorToast(clearAllErr, {
+          context: "Couldn't reset tier flag",
+          logTag: "[Step5Menu.clearAllTierFlags]",
+        });
         return;
       }
 
@@ -292,7 +300,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
             })
             .eq("id", cat.id);
           if (error) {
-            toast.error(`Couldn't save category "${trimmedName}": ${error.message}`);
+            errorToast(error, {
+              context: `Couldn't save category "${trimmedName}"`,
+              logTag: "[Step5Menu.updateCategory]",
+            });
             return;
           }
           keyToCategoryId.set(cat.key, cat.id);
@@ -309,7 +320,11 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
             .select("id")
             .single();
           if (error || !inserted) {
-            toast.error(`Couldn't add category "${trimmedName}": ${error?.message ?? ""}`);
+            errorToast(error, {
+              context: `Couldn't add category "${trimmedName}"`,
+              fallback: "Couldn't add category. Try again.",
+              logTag: "[Step5Menu.insertCategory]",
+            });
             return;
           }
           keyToCategoryId.set(cat.key, (inserted as { id: string }).id);
@@ -336,7 +351,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
             })
             .eq("id", it.id);
           if (error) {
-            toast.error(`Couldn't save item "${it.name.trim()}": ${error.message}`);
+            errorToast(error, {
+              context: `Couldn't save item "${it.name.trim()}"`,
+              logTag: "[Step5Menu.updateItem]",
+            });
             return;
           }
         } else {
@@ -353,7 +371,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
             is_featured: false,
           });
           if (error) {
-            toast.error(`Couldn't add item "${it.name.trim()}": ${error.message}`);
+            errorToast(error, {
+              context: `Couldn't add item "${it.name.trim()}"`,
+              logTag: "[Step5Menu.insertItem]",
+            });
             return;
           }
         }
@@ -365,7 +386,10 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
           .update({ price_range: derivedLevel })
           .eq("id", restaurantId);
         if (priceErr) {
-          toast.error(`Couldn't update price level: ${priceErr.message}`);
+          errorToast(priceErr, {
+            context: "Couldn't update price level",
+            logTag: "[Step5Menu.updatePriceLevel]",
+          });
           return;
         }
       }

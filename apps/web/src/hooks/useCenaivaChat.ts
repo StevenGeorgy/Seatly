@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -87,8 +88,9 @@ export function useCenaivaChat() {
 
         const data = await res.json();
         if (!res.ok) {
-          // Supabase gateway errors use `message` or `msg`; our function uses `error`
-          setError(data.error || data.message || data.msg || "Something went wrong.");
+          const friendly = toUserFacingEdgeError(res, data);
+          console.error("[useCenaivaChat.send]", friendly.code, friendly.technical ?? data);
+          setError(friendly.message);
           setLoading(false);
           return null;
         }
@@ -115,9 +117,12 @@ export function useCenaivaChat() {
           reply: data.reply,
           actions: data.actions_taken || [],
         };
-      } catch (err: any) {
-        if (err.name !== "AbortError") {
-          setError(err.message || "Connection failed.");
+      } catch (err) {
+        const name = err instanceof Error ? err.name : "";
+        if (name !== "AbortError") {
+          const friendly = toUserFacingError(err, "Connection failed.");
+          console.error("[useCenaivaChat.send.catch]", friendly.code, friendly.technical ?? err);
+          setError(friendly.message);
         }
         setLoading(false);
         return null;
