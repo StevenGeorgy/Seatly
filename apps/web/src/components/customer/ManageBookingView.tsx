@@ -180,6 +180,8 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
+        refund_total_cents?: number;
+        refunds?: Array<{ ok?: boolean; amount_cents?: number }>;
       };
       if (!res.ok || body.error || body.ok !== true) {
         setErrorMessage(body.error ?? `Could not cancel reservation (${res.status}).`);
@@ -189,7 +191,19 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       // Drop cached availability so the freed-up slot reappears immediately
       // without waiting for realtime / DB cache TTL.
       invalidateAvailabilityCache(reservation.restaurant_id);
-      setDoneMessage("Your reservation has been cancelled. The restaurant has been notified.");
+      const refundCents = typeof body.refund_total_cents === "number" ? body.refund_total_cents : 0;
+      const refundAttempted = Array.isArray(body.refunds) && body.refunds.length > 0;
+      const refundPending = refundAttempted && body.refunds!.some((r) => r?.ok === false);
+      let message = "Your reservation has been cancelled. The restaurant has been notified.";
+      if (refundCents > 0) {
+        const dollars = (refundCents / 100).toFixed(2);
+        message = refundPending
+          ? `Your reservation has been cancelled. $${dollars} refunded; remaining refunds are processing — we'll email you once they complete.`
+          : `Your reservation has been cancelled. $${dollars} has been refunded to your card.`;
+      } else if (refundPending) {
+        message = "Your reservation has been cancelled. Refunds are still processing — we'll email you once they complete.";
+      }
+      setDoneMessage(message);
       setMode("done");
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));
