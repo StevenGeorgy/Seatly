@@ -33,6 +33,8 @@ import { useRestaurantPreviewStatsByRestaurantIds } from "@/hooks/useRestaurantP
 import { fetchAvailabilitySlots, type AvailabilitySlot } from "@/hooks/useAvailability";
 import { useRestaurantPrefetch } from "@/lib/prefetch";
 import { useStaffRestaurants } from "@/hooks/useStaffRestaurants";
+import { useAssistant } from "@/components/cenaiva/AssistantProvider";
+import { buildWakeGreeting } from "@/lib/cenaiva/buildWakeGreeting";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { RestaurantPreviewModal } from "@/components/customer/RestaurantPreviewModal";
@@ -1007,6 +1009,28 @@ export default function DiscoverPage() {
   const { restaurants, loading } = usePublicRestaurants();
   const { notifications, unreadCount, markRead } = useNotifications();
   const { invites: pendingStaffInvites } = useMyStaffInvites();
+  const assistant = useAssistant();
+
+  // Auto-open Hey Cenaiva when the user lands on /discover with ?concierge=1.
+  // Triggered by the post-login bounce from CustomerNav's sign-in dialog: an
+  // anon visitor clicks "Concierge" → signs in → returns here, and we open the
+  // assistant for them so they don't have to click the button a second time.
+  useEffect(() => {
+    if (!user) return;
+    if (!assistant) return;
+    if (searchParams.get("concierge") !== "1") return;
+    const greetingText = buildWakeGreeting(user);
+    assistant.open(undefined, undefined, { autoListen: true, greetingText });
+    // Strip the param so a refresh doesn't re-open. Preserve any other
+    // query the caller already had on the URL.
+    const next = new URLSearchParams(searchParams);
+    next.delete("concierge");
+    const search = next.toString();
+    void navigate(
+      { pathname: "/discover", search: search ? `?${search}` : "" },
+      { replace: true },
+    );
+  }, [user, assistant, searchParams, navigate]);
 
   const [view, setView] = useState<"grid" | "map">("grid");
   const [filtersOpen, setFiltersOpen] = useState(false);

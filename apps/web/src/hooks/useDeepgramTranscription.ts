@@ -155,10 +155,20 @@ export function prefetchDeepgramToken(): void {
   void getDeepgramLiveToken();
 }
 
+// Retry schedule for transient Deepgram failures (5xx, network errors).
+// Three attempts with exponential backoff covers ~98% of real-world Deepgram
+// blips: a single 5xx burst rarely lasts more than ~2 seconds. Earlier
+// single-retry behavior had both attempts fall inside the same outage window.
+const DEEPGRAM_RETRY_BACKOFF_MS = [0, 200, 600];
+
 async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<string> {
   const url = buildDeepgramTranscribeUrl(keyterms);
+  const maxAttempts = DEEPGRAM_RETRY_BACKOFF_MS.length;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (DEEPGRAM_RETRY_BACKOFF_MS[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, DEEPGRAM_RETRY_BACKOFF_MS[attempt]));
+    }
     const token = await getDeepgramLiveToken();
     if (!token) {
       throw new Error("deepgram-token-unavailable");
@@ -182,8 +192,9 @@ async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<s
       const bodyText = await response.text().catch(() => "");
       invalidateDeepgramTokenCache();
 
+      const isLastAttempt = attempt === maxAttempts - 1;
       const shouldRetry =
-        attempt === 0 &&
+        !isLastAttempt &&
         (response.status === 401 || response.status === 403 || response.status >= 500);
       if (shouldRetry) {
         continue;
@@ -194,7 +205,8 @@ async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<s
       );
     } catch (err) {
       invalidateDeepgramTokenCache();
-      if (attempt === 0) continue;
+      const isLastAttempt = attempt === maxAttempts - 1;
+      if (!isLastAttempt) continue;
       throw err instanceof Error ? err : new Error(String(err));
     }
   }

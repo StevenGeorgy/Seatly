@@ -275,8 +275,8 @@ export default function RestaurantsPage() {
               </Button>
             </div>
             <p className="mt-5 text-sm text-text-muted">
-              <span className="text-gold">Free 3 months</span>, then $200 CAD/month.
-              {" "}{bookingFee} per reservation + 5% on pre-orders &amp; deposits.
+              <span className="text-gold">Free 3 months</span>, then $199 CAD/month.
+              {" "}{bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
             </p>
           </motion.div>
         </div>

@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import {
@@ -15,6 +16,13 @@ import {
   SMALL_PROMPT_TEMPERATURE,
 } from "../_shared/openai.ts";
 import { checkAuth } from "../_shared/auth.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+
+const supabaseAdmin = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
 
 const DEFAULT_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") ?? SHARED_DEFAULT_VOICE_ID;
 const TTS_OUTPUT_FORMAT = Deno.env.get("ELEVENLABS_OUTPUT_FORMAT") ?? DEFAULT_OUTPUT_FORMAT;
@@ -215,6 +223,23 @@ Deno.serve(async (req) => {
   const auth = checkAuth(req);
   if (!auth.ok) {
     return jsonRes({ error: "Unauthorized", code: auth.reason }, 401);
+  }
+
+  // Rate limit per signed-in user. Matches cenaiva-orchestrate's
+  // 30 calls / 60 seconds — small-prompt fires on roughly the same
+  // turn cadence so the same window makes sense. Bucket key is the
+  // user's auth.users.id so a malicious account can't share buckets
+  // with everyone else on the same IP.
+  try {
+    await enforceRateLimit(
+      supabaseAdmin,
+      "cenaiva-small-prompt",
+      rateLimitIdentifier(req, auth.authUserId),
+      { limit: 30, windowSeconds: 60 },
+    );
+  } catch (err) {
+    if (err instanceof RateLimitError) return jsonRes({ error: err.message }, 429);
+    throw err;
   }
 
   try {

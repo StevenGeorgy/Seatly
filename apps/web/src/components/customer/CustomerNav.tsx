@@ -1,6 +1,15 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useUser } from "@/hooks/useUser";
 import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { buildWakeGreeting } from "@/lib/cenaiva/buildWakeGreeting";
@@ -24,6 +33,23 @@ export function CustomerNav() {
   const location = useLocation();
   const { user, isStaff, canUseCustomerView, switchToCustomerView } = useUser();
   const assistant = useAssistant();
+  const [signInDialogOpen, setSignInDialogOpen] = useState(false);
+
+  const handleConciergeClick = () => {
+    if (!user) {
+      setSignInDialogOpen(true);
+      return;
+    }
+    const greetingText = buildWakeGreeting(user);
+    assistant?.open(undefined, undefined, { autoListen: true, greetingText });
+  };
+
+  const handleSignInRedirect = () => {
+    setSignInDialogOpen(false);
+    // Round-trip back to /discover with ?concierge=1 so the auto-open
+    // useEffect on DiscoverPage fires after login.
+    void navigate(`/login?from=${encodeURIComponent("/discover?concierge=1")}`);
+  };
 
   const goCustomer = useCallback(
     (to: string) => {
@@ -106,18 +132,38 @@ export function CustomerNav() {
       {import.meta.env.VITE_CENAIVA_AI_DISABLED !== "true" && (
         <button
           type="button"
-          onClick={() => {
-            // Same flow as the wake-word path: play a friendly greeting via
-            // TTS, then auto-start the mic so the user can speak immediately
-            // without tapping the orb. Per user 2026-05-11.
-            const greetingText = buildWakeGreeting(user ?? null);
-            assistant?.open(undefined, undefined, { autoListen: true, greetingText });
-          }}
+          onClick={handleConciergeClick}
           className="rounded-md px-4 py-2.5 text-base font-medium text-text-secondary transition-colors hover:text-white md:px-5 md:py-3"
         >
           Concierge
         </button>
       )}
+      <Dialog open={signInDialogOpen} onOpenChange={setSignInDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-serif text-2xl text-white">
+              Sign in to use Hey Cenaiva
+            </DialogTitle>
+            <DialogDescription className="text-text-secondary">
+              Hey Cenaiva is our voice concierge — it books tables, finds you
+              deals, and answers questions about restaurants. Sign in or
+              create a free account to start chatting.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setSignInDialogOpen(false)}
+            >
+              Maybe later
+            </Button>
+            <Button type="button" onClick={handleSignInRedirect}>
+              Sign in
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </nav>
   );
 }

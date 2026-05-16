@@ -9,8 +9,12 @@
 // Why no reverse_transfer / refund_application_fee here: Cenaiva uses
 // destination charges (`transfer_data.destination = stripe_account_id`).
 // With both flags defaulting to false, Stripe pulls the refund amount from
-// the connected restaurant account while the 5% application fee stays with
-// Cenaiva. If product later wants to return the fee on cancel, flip
+// the connected restaurant account while the 5.5% application fee stays
+// with Cenaiva. Cancellation policy (2026-05-16): callers issue a partial
+// refund of (total - application_fee_amount) so the diner gets back only
+// the restaurant's 94.5% slice; the 5.5% commission stays with Cenaiva as
+// the cancellation cost. See cancel-reservation for the partial-refund
+// call sites. If product later wants to return the fee on cancel, flip
 // refund_application_fee at the call site or extend the helper signature.
 
 import type Stripe from "npm:stripe@17";

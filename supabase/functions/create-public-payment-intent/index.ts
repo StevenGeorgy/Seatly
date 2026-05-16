@@ -7,8 +7,10 @@
 // via stripe.paymentIntents.update() once the reservation is created.
 //
 // Fee model:
-//   - 5% application_fee_amount to Cenaiva (taken off top via destination charge)
+//   - 5.5% application_fee_amount to Cenaiva (taken off top via destination charge)
 //   - Rest flows to restaurant's Connect account (transfer_data.destination)
+//   - Cenaiva absorbs Stripe processing fees (~2.9% + 30¢) out of its 5.5%;
+//     restaurants receive the full 94.5%. Destination-charge default behavior.
 //   - If restaurant has no stripe_account_id (grandfathered pre-launch), uses
 //     a platform-only charge — Cenaiva collects the full amount; manual payout
 //     to the restaurant happens out-of-band.
@@ -78,7 +80,7 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const PLATFORM_FEE_PERCENT = 0.05;
+const PLATFORM_FEE_PERCENT = 0.055;
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -198,7 +200,7 @@ Deno.serve(async (req: Request) => {
 
       if (row.stripe_account_id) {
         // Same destination-charge pattern as the one-time path.
-        // Funds settle to the restaurant's Connect account; the 5%
+        // Funds settle to the restaurant's Connect account; the 5.5%
         // application fee stays with Cenaiva.
         savedCardParams.application_fee_amount = applicationFeeCents;
         savedCardParams.transfer_data = { destination: row.stripe_account_id };

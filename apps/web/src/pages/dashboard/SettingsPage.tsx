@@ -427,16 +427,17 @@ function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
 
-// Cenaiva plan is a single tier: $200 CAD/month with a 90-day free trial.
-// In addition, $1 per confirmed reservation and 5% application fee on
-// pre-orders + deposits route to Cenaiva via Stripe Connect. Restaurants
-// absorb their own Stripe processing fees on the connected account.
-const PLAN_PRICE_CENTS = 20000;
+// Cenaiva plan is a single tier: $199 CAD/month with a 90-day free trial.
+// In addition, $1 per confirmed reservation and 5.5% application fee on
+// pre-orders + deposits route to Cenaiva via Stripe Connect. Cenaiva
+// absorbs Stripe processing fees out of the 5.5%; restaurants receive
+// the full 94.5%.
+const PLAN_PRICE_CENTS = 19900;
 const PLAN_CURRENCY = "CAD";
 const PLAN_USAGE_FEES = [
   "$1 per confirmed reservation",
-  "5% application fee on pre-orders",
-  "5% application fee on deposits",
+  "5.5% application fee on pre-orders",
+  "5.5% application fee on deposits",
 ];
 
 type BillingSummary = {

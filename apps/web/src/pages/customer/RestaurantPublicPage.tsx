@@ -1318,6 +1318,20 @@ export default function RestaurantPublicPage() {
   }, [restaurant?.id, dineInDate, dineInPartySize, fetchRestaurantSlots]);
   useAvailabilityRealtimeInvalidate(restaurant?.id ?? null, refetchSlots);
 
+  // ── Deep-link from Cenaiva voice pre-order: ?step=menu (2026-05-16) ──────
+  // When Cenaiva orchestrator hands off a pre-order intent ("I want to
+  // pre-order food at X"), it navigates to /<slug>?step=menu expecting the
+  // page to jump straight to the menu step. Without this useEffect the page
+  // lands on Details (the default initial step) and the user has to manually
+  // click "Continue" to reach the menu — defeats the hand-off.
+  useEffect(() => {
+    const targetStep = searchParams.get("step") as Step | null;
+    if (targetStep === "menu" && step !== "menu") {
+      setStep("menu");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
   // checkout (split bill, different card), it links here with the order_id.
@@ -1539,6 +1553,9 @@ export default function RestaurantPublicPage() {
     // available" warning rather than a silent reset (which would both lie to
     // the user about their pick and could submit a different time).
     if (bookingLockedFromPreview && requestedIsoSlot) return;
+    // 2026-05-16 fix: when Cenaiva voice deep-links here with ?time= but no
+    // ?slot=, leave dineIn.time alone — the URL is authoritative.
+    if (requestedBookingTime) return;
     void Promise.resolve().then(() => {
       setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
     });
@@ -1550,6 +1567,7 @@ export default function RestaurantPublicPage() {
     dineIn.date,
     dineIn.time,
     requestedIsoSlot,
+    requestedBookingTime,
   ]);
 
   useEffect(() => {
@@ -2391,12 +2409,18 @@ export default function RestaurantPublicPage() {
                         </div>
                       </div>
                     ) : (
+                      <>
+                        {previewDepositDollars > 0 && (
+                          <div className="rounded-md border border-gold/40 bg-gold/5 px-3 py-2 text-sm text-gold mb-3">
+                            Party of {Number(dineIn.party_size) || 0}: a {formatCurrency(previewDepositDollars, currency)} deposit ({formatCurrency(previewDepositDollars / (Number(dineIn.party_size) || 1), currency)}/guest) is collected at checkout to hold this booking.
+                          </div>
+                        )}
                       <AvailabilityPanel
                         restaurantId={restaurant.id}
                         restaurantTimezone={restaurant.timezone || "America/Toronto"}
                         userProfileId={profile?.id ?? null}
                         initialDate={dineIn.date || undefined}
-                        initialTime={dineIn.time ? undefined : undefined}
+                        initialTime={initialBookingTime || dineIn.time || undefined}
                         initialPartySize={typeof dineIn.party_size === "number" ? dineIn.party_size : undefined}
                         selectedSlotIso={pickedAvailabilitySlot?.date_time ?? null}
                         onStateChange={({ date: nextDate, partySize: nextParty }) => {
@@ -2424,6 +2448,7 @@ export default function RestaurantPublicPage() {
                           }));
                         }}
                       />
+                      </>
                     )}
 
                     <div className="h-px bg-border" />

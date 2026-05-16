@@ -245,7 +245,7 @@ Twilio with our existing `TWILIO_ACCOUNT_SID` /
 
 Cost: ~$0.0075 per SMS in Canada. At 10,000 new signups/month, that's
 $75/month. At 100,000 signups/month, $750. Negligible relative to the
-$200 CAD/mo restaurant subscription revenue.
+$199 CAD/mo restaurant subscription revenue.
 
 ### 7b. WhatsApp Business
 
@@ -315,8 +315,8 @@ The flow:
 3. Server creates the PaymentIntent directly on the connected account
    (`{ stripeAccount: acct_zzz }` option), passes the cloned
    `payment_method`, sets `confirm: true`, `off_session: true`,
-   `application_fee_amount` = 5%.
-4. Charge succeeds → 95% lands in restaurant's account, 5% in
+   `application_fee_amount` = 5.5%.
+4. Charge succeeds → 94.5% lands in restaurant's account, 5.5% in
    Cenaiva's. Same economics as destination charges.
 
 ### 8c. Why we charge "as the connected account" instead of
@@ -577,10 +577,10 @@ doesn't get paid out at all.
 Refactor `stripe-charge-order` to mirror Phase 4's pattern: resolve
 the order's restaurant → `stripe_account_id`, clone the saved PM to
 the connected account, charge directly on the connected account with
-`application_fee_amount` = 5%. Same SCA fallback.
+`application_fee_amount` = 5.5%. Same SCA fallback.
 
 After the fix, post-meal pay-the-bill flows pay the restaurant
-correctly with Cenaiva's 5% fee deducted.
+correctly with Cenaiva's 5.5% fee deducted.
 
 ### 13c. Why this is separate from the booking flow
 

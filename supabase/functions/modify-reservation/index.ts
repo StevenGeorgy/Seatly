@@ -545,7 +545,7 @@ Deno.serve(async (req: Request) => {
           const { default: Stripe } = await import("npm:stripe@17");
           const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
           const currency = (restaurant?.currency ?? "CAD").toLowerCase();
-          const applicationFeeCents = Math.round(deltaCents * 0.05);
+          const applicationFeeCents = Math.round(deltaCents * 0.055);
           const piParams: Record<string, unknown> = {
             amount: deltaCents,
             currency,

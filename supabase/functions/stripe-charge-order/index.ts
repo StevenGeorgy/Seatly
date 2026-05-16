@@ -121,10 +121,11 @@ Deno.serve(async (req: Request) => {
     // refactor. The diner's `stripe_customer_id` lives on the platform
     // account. To route money to the restaurant, we clone the
     // PaymentMethod to the connected account (`stripeAccount` option)
-    // and create the PI directly on the connected account with a 5%
-    // application fee. 95% lands on the restaurant; 5% on Cenaiva's
+    // and create the PI directly on the connected account with a 5.5%
+    // application fee. 94.5% lands on the restaurant; 5.5% on Cenaiva's
     // platform. Same economics as destination charges, simpler refund
     // path. Mirrors Phase 4 saved-card-on-booking architecture.
+    // Cenaiva absorbs Stripe processing fees out of the 5.5%.
     const { default: Stripe } = await import("npm:stripe@17");
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
@@ -172,7 +173,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const totalCents = Math.round(total * 100);
-    const applicationFeeCents = Math.max(Math.round(totalCents * 0.05), 1);
+    const applicationFeeCents = Math.max(Math.round(totalCents * 0.055), 1);
 
     let paymentIntent: any;
     let clonedPmId: string | null = null;

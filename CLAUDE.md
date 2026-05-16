@@ -25,7 +25,150 @@ If a task does NOT touch any of those, no update is needed — don't
 churn the file. Codex sees this file via the `AGENTS.md` symlink, so
 edits here propagate to both agents in one step.
 
+## Headline state (2026-05-16)
+
+- **Pricing overhaul: 5%→5.5%, $200→$199, cancel keeps fee (2026-05-16).**
+  Four CEO-directed pricing changes shipped together:
+  1. **Platform fee 5% → 5.5%** on pre-orders and deposits. Three edge
+     functions updated: `create-public-payment-intent` (`PLATFORM_FEE_PERCENT
+     = 0.055`), `stripe-charge-order` (post-meal pay-the-bill, also Phase 9
+     direct-charge path on connected account), and `modify-reservation`
+     (deposit delta on party-size increase). Break-even drops from $14.30
+     to $11.54; Mark Testing 8+ deposit floor ($80) nets +$1.78 (was
+     +$1.38). Margin reference table in
+     `project_billing_model.md` memory.
+  2. **Subscription $200 → $199 CAD/mo**. `SettingsPage.tsx`
+     `PLAN_PRICE_CENTS = 19900`. Onboarding wizard Step 8 copy + marketing
+     copy (`HomePage`, `RestaurantsPage`, `BookDemoPage`) all updated.
+     **OPERATIONAL — Mark must manually do this in Stripe Dashboard before
+     the next subscription onboarding**: create a NEW $199 CAD recurring
+     monthly Price on the existing Cenaiva subscription Product (Stripe
+     doesn't allow editing existing Price amounts), copy the new `price_…`
+     id, update env var `STRIPE_SUBSCRIPTION_PRICE_ID` in Supabase project
+     settings. Zero live subscribers per current state so no customer
+     migration needed.
+  3. **Stripe-fee absorption clarified**. Per Stripe Connect destination-
+     charge default behavior, the platform (Cenaiva) — not the connected
+     account (restaurant) — pays the Stripe fee (~2.9% + 30¢). Confirmed
+     by Stripe docs; no code change needed; the `project_billing_model.md`
+     memory previously stated the opposite — corrected. Marketing/dashboard
+     copy now consistently says "Cenaiva absorbs Stripe processing fees out
+     of the 5.5%; restaurants receive the full 94.5%."
+  4. **Cancellation refund policy**: Cenaiva KEEPS the 5.5% application
+     fee on cancel; diner is refunded only the restaurant's 94.5% slice.
+     `cancel-reservation` now retrieves `application_fee_amount` from
+     Stripe for each `orders.status='paid'` / `reservation_deposit_payments.
+     status='charged'` row (handles legacy 5% bookings correctly alongside
+     current 5.5%), then passes `amountCents = total − application_fee_amount`
+     to `refundPaymentIntent`. On retrieve failure, falls back to full
+     refund (safe default — diner whole). Net per cancelled $100 booking:
+     Cenaiva +$2.30, restaurant $0, diner −$5.50, Stripe keeps the $3.20
+     it took on original charge. The shared `_shared/stripe-refund.ts`
+     helper signature unchanged (already supported `amountCents` partial
+     refund); only call sites in `cancel-reservation` updated.
+  - **Hard rules updated**: the `Never raw-UPDATE reservations.status`
+     rule keeps standing; the cancel keeps-fee policy is enforced by the
+     edge function so no client-side rule change needed. The `stripe-
+     charge-order` rule below now mentions 5.5%.
+
+- **Voice hand-off destination-page fixes (2026-05-16).** The Cenaiva
+  orchestrator's deposit and pre-order hand-offs (verified working
+  iter 3 of the goal run) correctly redirect to `/<slug>?...` with
+  prefilled URL params, but the destination page in
+  `apps/web/src/pages/customer/RestaurantPublicPage.tsx` had three
+  bugs that made the hand-offs feel broken to users. Fixed all three:
+  (1) **`time` URL param was ignored** (line 2399 had
+  `initialTime={dineIn.time ? undefined : undefined}` — typo making
+  it always undefined). Now passes `initialBookingTime || dineIn.time
+  || undefined` directly so the AvailabilityPanel centers its slot
+  pills around the URL-requested time. Verified via Chrome MCP:
+  `?time=9:00+PM` now renders 7:45pm–9:30pm pill window with 9pm
+  highlighted. (2) **Deposit banner was hidden until checkout step.**
+  Added a gold banner on the Details step when
+  `previewDepositDollars > 0`: "Party of N: a $X deposit ($Y/guest)
+  is collected at checkout to hold this booking." (3) **`step=menu`
+  URL param ignored** — page always landed on Details. Added a
+  mount-only `useEffect` that calls `setStep("menu")` when
+  `searchParams.get("step") === "menu"`. Verified: voice "I want to
+  pre-order food at X" now lands on the Menu step with preorder
+  picker visible. Also widened the dineIn.time reset effect to bail
+  when `requestedBookingTime` is present (URL is authoritative). No
+  edge-fn deploys needed — frontend-only via Vite HMR. Files:
+  `apps/web/src/pages/customer/RestaurantPublicPage.tsx`.
+
 ## Headline state (2026-05-15)
+
+- **CRITICAL: voice booking blocker fixed + handler patches (2026-05-15,
+  latest, 2 iterations).** Every logged-in diner voice booking was
+  failing at the `reservations_must_have_identifier` CHECK constraint.
+  Root cause: the deployed `cenaiva-orchestrate` (v344) was bundled
+  with a STALE `_shared/booking.ts` whose `completeBooking` did a
+  direct `.from("reservations").insert(...)` skipping
+  `book_reservation` RPC AND omitting `user_profile_id` /
+  `guest_email` / `guest_phone` — every voice booking 100% failed.
+  Local `_shared/booking.ts` was already correct (routes through
+  `book_reservation` RPC per the hard rule). **Iter 1**: redeployed
+  `cenaiva-orchestrate` (v345) via
+  `supabase functions deploy cenaiva-orchestrate` so the current
+  RPC-routed `completeBooking` ships. Verified end-to-end via real
+  Chrome MCP UI: "book mark testing for 2 saturday at 7pm" → "yes
+  confirm" → "yes" → reservation `5707CB48` created. **Iter 2 (v346)**:
+  (a) widened hours-question regex in `factLookupMatch` at
+  `cenaiva-orchestrate/index.ts:5772` to accept trailing day-of-week
+  without "on" prefix ("what time does mark testing open saturday")
+  + added a new pattern for `what are X hours` phrasing (line 5778);
+  (b) added cancel-by-confirmation-code branch at
+  `cenaiva-orchestrate/index.ts:6832-6898` — detects `code|reservation
+  X|bare 8-char alphanumeric` in the transcript, looks up by code +
+  user_profile_id, queues `pending_action: cancel_reservation` with a
+  natural confirm prompt; (c) frontend `isFactLookup` guard in
+  `apps/web/src/components/cenaiva/AssistantProvider.tsx:455` skips
+  Stage 3 small-prompt when transcript pairs fact-noun
+  (hours/phone/address/menu/events/deals/promos/wagyu/wine) with a
+  question-word — without this, fact queries hit small-prompt LLM
+  which has no DB access and replies "I don't have info on …".
+  **Iter 5 (v347)**: (a) `parsePartySize` line 824 — made "a" optional
+  in "half (a) dozen" so bare "half dozen" returns 6; (b)
+  `parseDateInTimeZone` line 934 — added "Month Day(th)?" parser for
+  "may 18", "december 1st", "Jan 5" calendar phrasings. Verified all
+  10 user journeys end-to-end through real Chrome MCP UI clicks +
+  keystrokes including /bookings page navigation for J2 (booking
+  shows in list) + J6 (cancel reflects: Upcoming 1→0) + cross-session
+  pattern J9 (book → close pane → reopen → modify intent → DB updated).
+  Final goal-test report at
+  `~/.claude/goal-reports/cenaiva-20260515-231026-final.md`. 78 cases
+  tested; 70 pass (90%); 8 independent edge-case bugs documented for
+  follow-up tickets.
+  Re-surfaced issues from that test run that still need fixes:
+  (1) deposit hand-off for party 8+ doesn't fire on the casual book
+  path (per the v309 fix notes — appears regressed in v344); (2)
+  hours queries don't route to the hours handler (H1/H2 tests); (3)
+  cancel by confirmation code not recognized; (4) restaurant swap
+  mid-flow ("actually let's do jacobs instead") not recognized; (5)
+  past date ("yesterday") silently dropped; (6) LLM tool-path replies
+  use ISO date + 24h time ("2026-05-16 at 21:00") instead of natural
+  ("Saturday May 16 at 9 PM") — only affects the LLM-generated
+  branch, not the deterministic early-confirm path.
+
+- **Hey Cenaiva login gate hardened + small-prompt rate limit
+  (2026-05-15).** Audit confirmed voice assistant is logged-in
+  only (orb FAB hidden for anon, wake word skipped, all 3 expensive
+  edge fns require JWT). Two small additions: (1) `cenaiva-small-prompt`
+  now rate-limited 30/60s per user (matches `cenaiva-orchestrate`) —
+  was previously auth-checked but unrate-limited. Edge fn `v24` deployed.
+  (2) The Concierge button in `CustomerNav` now shows a shadcn Dialog
+  ("Sign in to use Hey Cenaiva") for anon users instead of opening a
+  broken voice pane; Sign in → `/login?from=/discover%3Fconcierge%3D1`
+  → DiscoverPage useEffect auto-opens the assistant on return (mirrors
+  the NotifyMeButton `?notifyMe=1` bounce pattern). (3) Defense-in-depth:
+  `AssistantInner` returns a passthrough for `!user` so any future code
+  calling `useAssistant()` from anon context gets null instead of a live
+  context. Files: `apps/web/src/components/customer/CustomerNav.tsx`,
+  `apps/web/src/pages/customer/DiscoverPage.tsx`,
+  `apps/web/src/components/cenaiva/AssistantProvider.tsx`,
+  `supabase/functions/cenaiva-small-prompt/index.ts`. Per-turn voice
+  cost ~$0.006 (Deepgram + OpenAI + ElevenLabs + nano); per-user
+  rate-limit caps abuse at <$0.40/min worst case.
 
 - **Cancellation policy overhaul + find-reservation + phone-everywhere
   (2026-05-15, late).** Six related changes shipped together:
@@ -171,8 +314,8 @@ edits here propagate to both agents in one step.
     restaurant's connected account (`stripeAccount` option on
     `stripe.paymentMethods.create`), then create + confirm the PI
     DIRECTLY on the connected account with
-    `application_fee_amount = round(totalCents * 0.05)` (5% to
-    Cenaiva, 95% to restaurant). PI metadata includes
+    `application_fee_amount = round(totalCents * 0.055)` (5.5% to
+    Cenaiva, 94.5% to restaurant). PI metadata includes
     `platform_source_pm` + `platform_source_customer` pointers for
     reconciliation. Now also handles `requires_action` (SCA): returns
     `client_secret` + `stripe_account_id` so the frontend can call
@@ -334,7 +477,7 @@ edits here propagate to both agents in one step.
   reconciles the deposit automatically:
   - Party UP → server computes the deposit delta, charges the diner's
     default saved card off-session via destination charge to the
-    restaurant's Connect account (with 5% app fee). Inserts a new
+    restaurant's Connect account (with 5.5% app fee). Inserts a new
     `reservation_deposit_payments` row for the delta. If the diner has
     no saved card on file (or guest checkout): returns 402 with
     `unavailable_reason: "modify_requires_card"` and a
@@ -372,7 +515,7 @@ edits here propagate to both agents in one step.
     `saved_card_id` + JWT auth on that branch. When provided, server
     verifies the `saved_cards` row belongs to the requesting diner,
     creates the PI with `payment_method` + `customer` + `confirm:
-    true` + `off_session: true` + `transfer_data.destination` + 5%
+    true` + `off_session: true` + `transfer_data.destination` + 5.5%
     `application_fee_amount`. Returns `{ mode: "saved_card", status:
     "succeeded" | "requires_action" | "failed", payment_intent_id,
     client_secret? }`. Same destination-charge architecture as the
@@ -523,7 +666,7 @@ edits here propagate to both agents in one step.
   switches to mention the refund amount when payments exist. Refunds
   rely on destination-charge behavior (`transfer_data.destination =
   stripe_account_id`) — Stripe automatically pulls funds back from the
-  connected restaurant account; Cenaiva keeps its 5% application fee
+  connected restaurant account; Cenaiva keeps its 5.5% application fee
   by default (`refund_application_fee` defaults to false). Files
   touched: `supabase/functions/_shared/stripe-refund.ts` (new),
   `apps/web/src/hooks/useReservationPayments.ts` (new),
@@ -591,7 +734,7 @@ edits here propagate to both agents in one step.
 
 - **Phase D Stripe wire-up shipped (2026-05-14).** Restaurant onboarding
   wizard Step 8 now mounts Stripe Connect Embedded onboarding + a Stripe
-  Elements SetupIntent card form for the $200 CAD/mo subscription with 90-day
+  Elements SetupIntent card form for the $199 CAD/mo subscription with 90-day
   trial. Publish gate requires KYC verification (`stripe_charges_enabled`)
   AND an active `trialing`/`active` subscription before the "Publish my
   restaurant" button enables. Four new edge functions:
@@ -941,7 +1084,7 @@ edits here propagate to both agents in one step.
 - Never charge a diner via `stripe-charge-order` (post-meal pay-the-bill)
   without the Connect-aware path: clone the platform-account PM to the
   restaurant's `stripe_account_id` first, then create + confirm the PI
-  on the connected account with `application_fee_amount` = 5% of total.
+  on the connected account with `application_fee_amount` = 5.5% of total.
   As of Phase 9 (2026-05-15) this is the only way the restaurant
   actually receives the money; the pre-Phase-9 platform-only path was
   a silent bug.
@@ -1006,6 +1149,21 @@ edits here propagate to both agents in one step.
   SpeechRecognition holds the mic" rule. Verify on every PR:
   `git diff --exit-code -- apps/web/src/hooks/useCenaivaWakeWord.ts`
   must be empty.
+- Hey Cenaiva (voice assistant) is **logged-in users only**. The mic FAB,
+  wake word recognizer, and all 4 stages of `sendTranscript` are gated on
+  `user` being non-null. All expensive edge functions
+  (`cenaiva-orchestrate`, `cenaiva-small-prompt`, `elevenlabs-tts`,
+  `deepgram-live-token`) require a real user JWT and rate-limit per-user
+  (30–60 calls/min, bucket key `user:{auth_user_id}`). Defense-in-depth:
+  `AssistantInner` returns a passthrough `<>{children}</>` when `!user`,
+  so the assistant context itself is unavailable to anon users — any
+  future descendant calling `useAssistant()` gets null. The Concierge
+  button on `/discover` shows a sign-in dialog for anon users instead
+  of opening a broken assistant; after login it round-trips back to
+  `/discover?concierge=1` where a useEffect auto-opens the assistant
+  with auto-listen. Never expose voice surfaces on `PUBLIC_PATHS` or
+  remove the JWT requirement on the voice edge functions — per-IP
+  buckets are defeated by VPN rotation; per-user buckets aren't.
 - Never bypass `planLocalBookingTurn` for booking-collection turns. It
   owns missing-field prompts, ambiguous-time disambiguation, and
   pending-option picks. Bypassing pushes those turns into the

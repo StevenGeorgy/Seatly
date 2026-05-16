@@ -383,6 +383,31 @@ Deno.serve(async (req: Request) => {
       const { default: Stripe } = await import("npm:stripe@17");
       const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
+      // Pricing-overhaul policy (2026-05-16): partial refund of
+      // (total - application_fee_amount). Cenaiva KEEPS its 5.5%
+      // commission on cancel; the diner forfeits it as a cancellation
+      // cost; the restaurant's 94.5% slice is reversed back to the
+      // diner. We retrieve `application_fee_amount` from the PI itself
+      // (rather than recomputing) so legacy 5% bookings refund
+      // correctly alongside current 5.5% bookings. On retrieve failure
+      // we fall back to a full refund (safe default — diner whole).
+      const resolveApplicationFee = async (
+        piId: string,
+      ): Promise<number> => {
+        try {
+          const pi = await stripe.paymentIntents.retrieve(piId);
+          return typeof pi.application_fee_amount === "number"
+            ? pi.application_fee_amount
+            : 0;
+        } catch (err) {
+          console.warn(
+            `[cancel-reservation] PI retrieve failed for ${piId}:`,
+            err instanceof Error ? err.message : err,
+          );
+          return 0;
+        }
+      };
+
       // Pre-order refunds. orders.total_amount is a numeric dollar value,
       // not cents — convert at report time.
       const { data: paidOrders } = await adminClient
@@ -400,7 +425,14 @@ Deno.serve(async (req: Request) => {
         const piId = row.stripe_payment_intent_id;
         const amountCents = Math.round(Number(row.total_amount ?? 0) * 100);
         if (!piId) continue;
-        const outcome = await refundPaymentIntent(stripe, piId, "reservation_cancelled");
+        const applicationFeeCents = await resolveApplicationFee(piId);
+        const refundCents = Math.max(amountCents - applicationFeeCents, 0);
+        const outcome = await refundPaymentIntent(
+          stripe,
+          piId,
+          "reservation_cancelled",
+          refundCents > 0 && refundCents < amountCents ? refundCents : undefined,
+        );
         if (outcome.ok) {
           await adminClient
             .from("orders")
@@ -410,14 +442,14 @@ Deno.serve(async (req: Request) => {
             kind: "preorder",
             ok: true,
             payment_intent_id: piId,
-            amount_cents: amountCents,
+            amount_cents: refundCents > 0 ? refundCents : amountCents,
           });
         } else {
           refundOutcomes.push({
             kind: "preorder",
             ok: false,
             payment_intent_id: piId,
-            amount_cents: amountCents,
+            amount_cents: refundCents > 0 ? refundCents : amountCents,
             error: outcome.error,
           });
           console.warn(
@@ -443,7 +475,14 @@ Deno.serve(async (req: Request) => {
         const piId = row.stripe_payment_intent_id;
         const amountCents = row.amount_cents ?? 0;
         if (!piId) continue;
-        const outcome = await refundPaymentIntent(stripe, piId, "reservation_cancelled");
+        const applicationFeeCents = await resolveApplicationFee(piId);
+        const refundCents = Math.max(amountCents - applicationFeeCents, 0);
+        const outcome = await refundPaymentIntent(
+          stripe,
+          piId,
+          "reservation_cancelled",
+          refundCents > 0 && refundCents < amountCents ? refundCents : undefined,
+        );
         if (outcome.ok) {
           await adminClient
             .from("reservation_deposit_payments")
@@ -453,7 +492,7 @@ Deno.serve(async (req: Request) => {
             kind: "deposit",
             ok: true,
             payment_intent_id: piId,
-            amount_cents: amountCents,
+            amount_cents: refundCents > 0 ? refundCents : amountCents,
           });
           refundedDepositPayerIds.push(row.id);
         } else {
@@ -461,7 +500,7 @@ Deno.serve(async (req: Request) => {
             kind: "deposit",
             ok: false,
             payment_intent_id: piId,
-            amount_cents: amountCents,
+            amount_cents: refundCents > 0 ? refundCents : amountCents,
             error: outcome.error,
           });
           console.warn(

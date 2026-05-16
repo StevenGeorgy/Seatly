@@ -452,7 +452,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
         /^(?:yes|yeah|yep|yup|sure|ok|okay|sounds good|sounds great|please|go ahead|let'?s do it|do it|book it|absolutely|definitely|of course)\b/i.test(
           transcript.trim(),
         );
-      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction && !isMidBookingAffirmative) {
+      // 2026-05-15 fix: fact-lookup queries about a named restaurant should
+      // go to the orchestrator's factLookupMatch handler (which reads
+      // hours_json / phone / address / events / promotions directly), not
+      // to the small-prompt LLM (which has no DB access and replies with
+      // a generic redirect like "I don't have info on testing hours").
+      const isFactLookup =
+        /\b(?:hours?|phone|address|location|menu|events?|deals?|promos?|promotions?|specials?|wagyu|wine|trivia|happy\s+hour)\b/i.test(transcript) &&
+        /\b(?:what|where|when|how|does|is|are|any|do(?:es)?|got|tell|list|show)\b/i.test(transcript);
+      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction && !isMidBookingAffirmative && !isFactLookup) {
         const controller = new AbortController();
         const timer = window.setTimeout(() => controller.abort(), 8_000);
         try {
@@ -804,6 +812,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (isVoiceSttUnavailable) {
         emptyRelistenStreakRef.current = 0;
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
+        // Log the inner error so we can diagnose which Deepgram branch
+        // failed (token-unavailable / http-401 / recorder-start-failed /
+        // stream-unavailable / etc). The toast text is intentionally
+        // generic for the user.
+        console.error("[cenaiva] STT unavailable:", msg, err);
         toast.error("Voice transcription is unavailable right now.", { duration: 3000 });
         return;
       }
@@ -1195,6 +1208,17 @@ function AssistantInner({ children }: { children: ReactNode }) {
     };
     return () => { delete w.__cenaivaTest; };
   }, [sendTranscript, open, close, setTextMode]);
+
+  // Defense-in-depth: Hey Cenaiva is logged-in-users-only. The UI gate in
+  // App.tsx already hides the FAB orb for anon users and the wake word
+  // recognizer only fires when `isCustomerRoute` is true (which itself
+  // requires `!!user`). This early-return ensures the assistant context
+  // itself is unavailable to anon users so any descendant call to
+  // useAssistant() returns null — preventing accidental future regressions
+  // (e.g. someone adding a button that calls assistant.open() without
+  // gating on user). All hooks above this line still run so the order is
+  // stable across user state transitions.
+  if (!user) return <>{children}</>;
 
   return <AssistantCtx.Provider value={ctx}>{children}</AssistantCtx.Provider>;
 }

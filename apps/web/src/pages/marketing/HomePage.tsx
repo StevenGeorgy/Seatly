@@ -776,8 +776,8 @@ export default function HomePage() {
               </Link>
             </div>
             <p className="mt-5 text-sm text-text-muted">
-              <span className="text-gold">Free 3 months</span>, then $200 CAD/month.
-              $1 per reservation + 5% on pre-orders &amp; deposits. Cancel any month.
+              <span className="text-gold">Free 3 months</span>, then $199 CAD/month.
+              $1 per reservation + 5.5% on pre-orders &amp; deposits. Cancel any month.
             </p>
           </div>
 

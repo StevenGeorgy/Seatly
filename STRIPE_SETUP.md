@@ -4,15 +4,16 @@ What needs to be done in the Stripe dashboard + environment variables **before**
 
 The plan file with full context: `/Users/mark_habbi/.claude/plans/okay-make-a-plan-replicated-octopus.md`. Phase D specifically depends on these prerequisites.
 
-**Stack:** Canada (CAD). Stripe Connect Embedded Components (so restaurants never leave Cenaiva to onboard) + Stripe Billing for the $200 CAD/month platform subscription.
+**Stack:** Canada (CAD). Stripe Connect Embedded Components (so restaurants never leave Cenaiva to onboard) + Stripe Billing for the $199 CAD/month platform subscription.
 
-**Billing model recap:**
+**Billing model recap (updated 2026-05-16):**
 
-- Monthly subscription: $200 CAD, 90-day free trial
+- Monthly subscription: $199 CAD, 90-day free trial
 - $1 per confirmed reservation (platform fee)
-- 5% of gross on pre-orders (application fee)
-- 5% of gross on deposits (application fee)
-- Restaurant absorbs Stripe processing fees (~2.9% + 30¢ per card charge)
+- 5.5% of gross on pre-orders (application fee)
+- 5.5% of gross on deposits (application fee)
+- Cenaiva absorbs Stripe processing fees (~2.9% + 30¢) out of the 5.5% application fee. Restaurants receive the full 94.5% on pre-orders/deposits (Stripe Connect destination-charge default behavior).
+- **Cancellation policy**: diner refunded only the restaurant's 94.5% slice; Cenaiva keeps the 5.5% commission as a cancellation cost.
 
 ---
 
@@ -53,7 +54,7 @@ These show up on the rare Stripe-hosted surfaces (account recovery emails, payou
 - Name: `Cenaiva subscription`
 - Description (optional): "Monthly platform subscription. Free 3 months."
 - Pricing model: Recurring
-- Price: `200.00 CAD`
+- Price: `199.00 CAD`
 - Billing period: Monthly
 - Free trial: `90 days`
 - Save
@@ -127,7 +128,7 @@ Or via the dashboard: Project Settings → Edge Functions → Secrets → Add ne
 |---|---|---|
 | `STRIPE_SECRET_KEY` | Server-side API key | Step 1.6 above — the Secret key (`sk_test_…` or `sk_live_…`) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | Step 1.5 above — the `whsec_…` from the webhook endpoint |
-| `STRIPE_SUBSCRIPTION_PRICE_ID` | The $200/mo recurring price | Step 1.4 above — the `price_…` from the product |
+| `STRIPE_SUBSCRIPTION_PRICE_ID` | The $199/mo recurring price | Step 1.4 above — the `price_…` from the product |
 
 **Verify they're set** after adding:
 
@@ -192,7 +193,7 @@ When everything above is done, run through this before calling Phase D ready:
 
 - [ ] Stripe account fully activated (no warnings in dashboard)
 - [ ] Connect platform enabled with Cenaiva branding (logo + name + brand color set)
-- [ ] Product created, recurring monthly $200 CAD price with 90-day trial, `price_id` recorded
+- [ ] Product created, recurring monthly $199 CAD price with 90-day trial, `price_id` recorded
 - [ ] Webhook endpoint created with the 9 events above, signing secret recorded
 - [ ] All 3 Supabase secrets set (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUBSCRIPTION_PRICE_ID`)
 - [ ] `VITE_STRIPE_PUBLISHABLE_KEY` set in `apps/web/.env.local` AND in the production hosting env

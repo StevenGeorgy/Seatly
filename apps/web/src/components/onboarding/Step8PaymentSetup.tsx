@@ -1,6 +1,6 @@
 // Step 8 — Payment setup. Phase D wire-up of:
 //   A. Stripe Connect Embedded onboarding (KYC) — restaurants accept deposits/orders
-//   B. $200 CAD/month Cenaiva subscription with 90-day free trial (Stripe Billing)
+//   B. $199 CAD/month Cenaiva subscription with 90-day free trial (Stripe Billing)
 //
 // Publish gate: enabled only when BOTH
 //   - stripe_charges_enabled === true (set by stripe-webhook on account.updated)
@@ -593,7 +593,7 @@ export function Step8PaymentSetup({
         <h1 className="text-2xl font-bold sm:text-3xl">Payments &amp; publish</h1>
         <p className="mt-1 text-sm text-text-muted">
           Set up where your money lands and add a card for your monthly Cenaiva subscription.
-          Free for 90 days, then $200 CAD/month.
+          Free for 90 days, then $199 CAD/month.
         </p>
       </div>
 
@@ -738,7 +738,7 @@ export function Step8PaymentSetup({
             <div>
               <h2 className="text-lg font-semibold">Your Cenaiva subscription</h2>
               <p className="text-sm text-text-muted">
-                $200 CAD/month. Free for the first 90 days — no charge until{" "}
+                $199 CAD/month. Free for the first 90 days — no charge until{" "}
                 {formatTrialEnd(summary?.trial_ends_at ?? null)}. Cancel anytime.
               </p>
             </div>
