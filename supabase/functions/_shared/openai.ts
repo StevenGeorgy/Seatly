@@ -14,7 +14,7 @@ function requireEnv(name: string): string {
 
 export const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 export const ORCHESTRATOR_MODEL =
-  Deno.env.get("CENAIVA_ORCHESTRATOR_MODEL")?.trim() || "gpt-4o-mini";
+  Deno.env.get("CENAIVA_ORCHESTRATOR_MODEL")?.trim() || "gpt-4.1-mini";
 export const SMALL_PROMPT_MODEL =
   Deno.env.get("CENAIVA_SMALL_PROMPT_MODEL")?.trim() || "gpt-4.1-nano";
 

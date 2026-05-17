@@ -41,15 +41,16 @@ Deno.serve(async (req) => {
       return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401);
     }
 
-    // Per-user rate limit. Tokens are TTL-cached client-side (~30s), so real
-    // usage is far below 60/min. 60 is a safety net for a stuck recognizer or
-    // a client that loses its cache.
+    // Per-user rate limit. Bumped to 120/min (2026-05-16). Tokens are
+    // TTL-cached client-side (~30s), but mic-cycle testing + multi-tab use +
+    // dev-server hot-reload can briefly blow the 60/min limit. 120 gives
+    // headroom without enabling real abuse.
     try {
       await enforceRateLimit(
         supabaseAdmin,
         "deepgram_live_token",
         rateLimitIdentifier(req, profile.id),
-        { limit: 60, windowSeconds: 60 },
+        { limit: 120, windowSeconds: 60 },
       );
     } catch (e) {
       if (e instanceof RateLimitError) {

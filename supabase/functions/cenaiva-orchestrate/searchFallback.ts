@@ -32,6 +32,17 @@ export type ZeroResultFallbackOptions<Row extends SearchFallbackRestaurant> = {
   priceRangeMin?: number | null;
   priceRangeMax?: number | null;
   limit?: number;
+  /**
+   * True when the user EXPLICITLY named the city (LLM put it in tool.city or
+   * the transcript carried it forward). When set, a zero-match search MUST
+   * return empty rather than silently widening to a different city. The
+   * orchestrator speaks an honest "I don't see restaurants in {city}" line.
+   *
+   * Without this flag, the legacy behavior swapped "restaurants in Guelph"
+   * → a nearby Toronto restaurant whenever Guelph had 0 active matches, and
+   * the user got a recommendation from the wrong city with no warning.
+   */
+  city_explicit?: boolean;
 };
 
 const COMMON_QUERY_TERMS = new Set([
@@ -165,14 +176,20 @@ export function chooseZeroResultFallbackRows<
     const sameCity = candidates.filter((row) =>
       cityMatches(row.city, requestedCity)
     );
-    // Soft city fallback: if the user named a city but no candidates match,
-    // drop the city filter and rank everything by distance + signal so the
-    // orchestrator can still recommend something instead of going silent.
-    // The orchestrator's spoken text (`I don't see X in {city} — I'd recommend
-    // Y instead`) handles framing this honestly to the user.
     if (sameCity.length) {
       candidates = sameCity;
+    } else if (opts.city_explicit) {
+      // User EXPLICITLY named the city and no restaurants there match the
+      // other filters. Return empty — the orchestrator speaks an honest
+      // "I don't see restaurants in {city}" instead of silently swapping
+      // to a restaurant in a different city (the "Mark Testing in Guelph"
+      // bug pre-2026-05-16). Universal: applies to any city, not just
+      // hard-coded names. New restaurants joining a previously-empty city
+      // start surfacing automatically the moment they're active.
+      return [];
     } else if (userLocation) {
+      // Soft city fallback: only when the city was inferred/suggestive
+      // rather than explicit. Drops the city filter and ranks by distance.
       const nearby = candidates.filter((row) =>
         (rowDistanceKm(row, userLocation) ?? Infinity) <= 50
       );

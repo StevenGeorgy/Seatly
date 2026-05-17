@@ -43,6 +43,15 @@ import {
   prewarmOpenAI,
   SMALL_PROMPT_MODEL,
 } from "../_shared/openai.ts";
+import {
+  stripAccents as sharedStripAccents,
+  levenshtein as sharedLevenshtein,
+  NUMBER_WORDS as SHARED_NUMBER_WORD_VARIANTS,
+  expandVariants as sharedExpandVariants,
+  QUERY_FILLER as SHARED_QUERY_FILLER,
+  pickBestMatch as sharedPickBestMatch,
+  type MatchCandidate as SharedMatchCandidate,
+} from "../_shared/restaurant-match.ts";
 
 const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 const LATENCY_DEBUG = Deno.env.get("CENAIVA_LATENCY_DEBUG") === "1";
@@ -237,6 +246,10 @@ const TOOL_FILLERS: Record<string, string> = {
   create_preorder_order: "One moment please.",
   charge_saved_card: "One moment please.",
   list_my_reservations: "Pulling up your reservations.",
+  modify_reservation: "Updating your reservation.",
+  cancel_reservation: "Cancelling now.",
+  get_restaurant_snapshot: "One moment.",
+  transfer_to_human: "Connecting you to support.",
 };
 
 function fillerForTool(toolName: string | null | undefined): string {
@@ -510,7 +523,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "search_restaurants",
       description:
-        "Search and RECOMMEND dine-in restaurants. Use this whenever the user asks for ideas, recommendations, suggestions, or filters — not just exact name lookups. Default to nearby results when the user's location is available and they have NOT asked for a different city. Do NOT default city to the user's detected city name — leave city blank unless the user names one. Combine multiple filters when the user gives multiple signals (e.g. 'cheap Italian near me with a deal' → cuisine_type=Italian, price_range_max=2, near_user=true, sort_by=distance, with_active_promotion=true). Always populate the most specific filters you can derive from the user's words; do NOT fall back to a single broad query string when structured filters fit.",
+        "CALL THIS IMMEDIATELY whenever the user shows ANY discovery intent — do NOT ask 'what city?' or 'what cuisine?' first. Trigger phrases: 'find me X', 'any X', 'what's good', 'show me', 'recommend', 'where should I eat', 'near me', 'close by', 'closest', 'nearby'. Trigger words: any cuisine (italian/sushi/thai/...), any venue type (steakhouse/cafe/bar/...), any city name, any vibe (romantic/cheap/fancy/...), 'deals'/'promos'/'specials'. Even profanity like 'just find me a damn restaurant' should trigger this tool. Call with whatever filters you can derive — even ONE filter is enough. Combine multiple when user gives multiple signals ('cheap italian near me with a deal' → cuisine_type=italian + price_range_max=2 + near_user=true + with_active_promotion=true). Do NOT default city to the user's detected city — leave city blank unless the user names one. For 'near me' / 'close by': near_user=true + sort_by=distance (NOT a city ask). Populate the most specific structured filters you can; do NOT just dump everything into the query string.",
       parameters: {
         type: "object",
         properties: {
@@ -566,7 +579,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "check_availability",
-      description: "Get available time slots for a restaurant on a given date for a party size.",
+      description: "CALL THIS IMMEDIATELY when the user provides restaurant + party_size + date (and ideally time) in ANY combination — even if all in one utterance ('book jacobs for 2 tomorrow at 8pm' MUST call this in the same turn). Do NOT echo back the user's request and ask for clarification of fields they already said. Returns available slots. If you only have a restaurant NAME and no restaurant_id, call search_restaurants(query=<name>) first in the same turn, then this tool.",
       parameters: {
         type: "object",
         properties: {
@@ -687,7 +700,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "list_my_reservations",
       description:
-        "Fetch the signed-in user's reservations. Use whenever the user asks to see, list, review, or summarize their bookings (e.g. 'show my reservations', 'what are my upcoming bookings', 'show my past dinners', 'show cancelled reservations'). Returns at most 20 rows per bucket.",
+        "CALL THIS IMMEDIATELY when the user mentions 'my reservation', 'my booking', 'my table', 'what do I have', 'show me my', 'did I book X', 'upcoming bookings', 'past dinners', 'cancelled reservations'. Do NOT respond conversationally first — call this and use the result. Returns at most 20 rows per bucket.",
       parameters: {
         type: "object",
         properties: {
@@ -698,6 +711,80 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           },
         },
         required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "modify_reservation",
+      description:
+        "Move an existing reservation to a new date/time and/or party size. Wraps the modify-reservation edge function (advisory lock, cover-cap recheck, diner-overlap guard, deposit recalc). Use only AFTER list_my_reservations has returned the row's reservation_id and the user has explicitly confirmed the new slot/party summary. Omit new_date+new_time to change only party size; omit new_party_size to change only the slot. Returns updated reservation + deposit_adjustment (charged/refunded/failed). If unavailable_reason='diner_double_book' or 'slot_taken', re-check availability and offer alternatives — do NOT retry blindly.",
+      parameters: {
+        type: "object",
+        properties: {
+          reservation_id: { type: "string", description: "UUID from list_my_reservations." },
+          new_date: { type: "string", description: "YYYY-MM-DD local. Required if changing slot." },
+          new_time: { type: "string", description: "HH:MM 24h local OR 'h:mm am/pm'. Required if changing slot." },
+          new_party_size: { type: "integer", minimum: 1, description: "Integer >=1. Omit to keep current." },
+          special_request: { type: "string", description: "Optional - overwrites special_request when set." },
+        },
+        required: ["reservation_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_reservation",
+      description:
+        "Cancel an existing reservation. IRREVERSIBLE - DO NOT call without an explicit cancel confirmation from the user on this turn ('yes cancel it', 'go ahead and cancel'). A bare 'yes' after listing reservations is NOT a cancel confirmation - first ask 'Just to confirm, cancel your reservation for 4 at La Piazza Friday 7 PM?'. Always runs as actor='diner' (owner cancels are not exposed via voice). Returns refund_outcomes (preorder + deposit refunds) and notification status.",
+      parameters: {
+        type: "object",
+        properties: {
+          reservation_id: { type: "string", description: "UUID from list_my_reservations." },
+          reason: { type: "string", description: "Optional free-text reason ('plans changed', 'feeling sick'). Stored for analytics." },
+        },
+        required: ["reservation_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_restaurant_snapshot",
+      description:
+        "CALL THIS IMMEDIATELY whenever the user asks ANY factual question about a NAMED restaurant. Trigger phrases: 'what time do they open/close', 'where are they', 'address', 'phone number', 'dress code', 'parking', 'do they take deposit', 'cancellation policy', 'vegan/vegetarian/gluten-free/halal options', 'any reviews', 'what events', 'any promos at X', 'tell me about X', 'menu at X', 'what's on the menu'. Returns ~1.5 KB JSON with hours, address, phone, dietary_tags, dress_code, parking, deposit_tiers, top 3 reviews, active events, active promotions, featured menu items. NEVER answer restaurant facts from memory. NEVER say 'I don't have that detail' before calling this tool. If you have only a restaurant NAME, first call search_restaurants(query=<name>) to get the id, then this tool — in the SAME turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          restaurant_id: { type: "string", description: "UUID from search_restaurants or booking_state.restaurant_id." },
+        },
+        required: ["restaurant_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "transfer_to_human",
+      description:
+        "Escape hatch when the assistant cannot help: user explicitly asks for a human/agent/manager, repeated tool failures on the same step, or a system error blocks progress. Returns a navigation hint the client uses to surface support contact. Do NOT use as a fallback for 'I don't know the answer' - first try search_restaurants + get_restaurant_snapshot. Never use during normal booking collection.",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            enum: ["user_requested_human", "repeated_tool_failure", "system_error", "out_of_scope"],
+            description: "Why the handoff is needed.",
+          },
+          context: { type: "string", description: "One-sentence summary the support team would need." },
+        },
+        required: ["reason"],
         additionalProperties: false,
       },
     },
@@ -1486,6 +1573,45 @@ User's detected city: ${opts.userCity || "unknown"}.
 Has saved card on file: ${opts.hasSavedCard}.
 Recommendation mode: ${opts.recommendationMode ?? "list"}.
 
+═══════════════════════════════════════════════════════════════════════════
+⚡ TOOL-FIRST RULES — THESE OVERRIDE EVERYTHING BELOW. READ AND OBEY. ⚡
+═══════════════════════════════════════════════════════════════════════════
+
+When the user shows intent, FIRE THE TOOL. Do not chat first. Do not ask clarifying questions before firing. Tools come first; conversation comes after the tool result.
+
+▶ ANY restaurant search intent → CALL search_restaurants in THIS turn:
+   - "find me a steakhouse" → search_restaurants(business_type=steakhouse)
+   - "any restaurants in Guelph" → search_restaurants(city=Guelph)
+   - "somewhere romantic" → search_restaurants(occasion=date, min_rating=4)
+   - "what's close by" / "near me" → search_restaurants(near_user=true, sort_by=distance) — DO NOT ask "what city?"
+   - "just find me a damn restaurant" → search_restaurants() — yes even with profanity
+   - any cuisine word (italian/sushi/thai/etc.) → search_restaurants(cuisine_type=X)
+   - DO NOT ASK "what city/cuisine/vibe?" before searching — search with what you have
+
+▶ User mentions restaurant + party + date + time in ONE utterance → CALL check_availability in THIS turn:
+   - "book jacobs for 2 tomorrow at 8pm" → resolve jacobs to id, then check_availability(restaurant_id, party_size=2, date=tomorrow). DO NOT echo back "What time?" — they said 8pm.
+   - "table at Mark Testing for 4 Friday at 7pm" → check_availability immediately
+   - If you don't have restaurant_id, call search_restaurants(query=<name>) first IN THE SAME TURN, then check_availability after the result
+
+▶ User asks ANY factual question about a named restaurant → CALL get_restaurant_snapshot in THIS turn:
+   - "what time does Jacobs open" → get_restaurant_snapshot(restaurant_id)
+   - "does Mark Testing take a deposit" → get_restaurant_snapshot, read deposit_tiers
+   - "any vegan options at X" → get_restaurant_snapshot, read dietary_tags / menu
+   - "what's the dress code at X" → get_restaurant_snapshot
+   - NEVER answer restaurant facts from memory. NEVER say "I don't have that detail" before calling the snapshot tool.
+
+▶ User says "my reservation" / "my booking" / "what do I have" → CALL list_my_reservations in THIS turn. No conversational reply first.
+
+▶ User says "never mind" / "forget it" / "drop it" / "stop" / "cancel that" mid-flow → reply briefly ("Got it, no worries.") and STOP the flow. DO NOT ask "Want me to book it?" — they said stop.
+
+▶ User says a bare hour like "7" or "8" with no AM/PM specified → reply ONLY with "Did you mean 7 AM or 7 PM?" — nothing else. Do not silently assume PM.
+
+▶ User says vague time like "sometime tonight" / "around dinner" → ask for a SPECIFIC time first (not party size).
+
+▶ Only skip tool calls for pure conversation: greeting, joke, vent, flirty, identity question about you, philosophy, or thanks. Brief warm redirect.
+
+═══════════════════════════════════════════════════════════════════════════
+
 GEOGRAPHY — restaurants exist in many cities nationwide.
 - If the user has shared location and has NOT named a different city, default discovery/recommendation searches to nearby restaurants.
 - Do NOT inject the detected city name into the city filter unless the user explicitly names that city.
@@ -1493,6 +1619,37 @@ GEOGRAPHY — restaurants exist in many cities nationwide.
 - Treat phrases like "out of town", "in another city", "somewhere else" as signals to ask which city they want — then re-run search_restaurants with that city.
 - If the user names a city different from their detected city, ALWAYS re-run search_restaurants with the named city — do not refuse or say "I only show local results".
 - If a search in a named city returns no exact match, the server will fall back to the closest reasonable nearby option AND say so in spoken_text — frame it honestly: "I don't see anything in {city} matching that — I'd recommend {fallback_name} instead."
+
+TOOL CALL DISCIPLINE — HIGHEST PRIORITY, READ FIRST
+The most common failure is NOT calling a tool when the user wants an action. ALWAYS prefer firing a tool over a conversational reply when the user shows ANY intent below.
+
+SEARCH INTENT → call search_restaurants IN THE SAME TURN (do NOT ask "what city?" or "what cuisine?" first; call with whatever filters you can derive, even one):
+- Cuisine words (italian, sushi, thai, mexican, korean, egyptian, lebanese, chinese, indian, vietnamese, ramen, steakhouse-by-cuisine) → cuisine_type
+- Venue type (steakhouse, cafe, bar, brewery, bistro, deli, bakery, lounge, pub, izakaya) → business_type
+- Any city the user names → city
+- Vibe (romantic, fancy, cheap, expensive, upscale, hip, quiet, family) → occasion / price_range
+- Discovery phrasing: "find me", "any [restaurants/spots/places]", "what's good", "show me", "where should I eat", "recommend", "what about" → search NOW
+- Proximity: "near me", "close by", "closest", "nearby", "around here", "walking distance" → near_user=true + sort_by="distance" — do NOT ask for a city
+- Deal phrasing ("deals", "promos", "specials", "happy hour", "discounts") → with_active_promotion=true
+- Even if user is frustrated/profane ("just find me a damn restaurant") → STILL call search_restaurants
+
+SKIP-AHEAD BOOKING → if user gives restaurant + party + date + time (or any 3 of those) in ONE utterance, call check_availability IN THE SAME TURN. Do NOT echo back and re-ask for what they already said. Examples that MUST trigger check_availability:
+- "book jacobs for 2 tomorrow at 8pm"
+- "I want a table at Mark Testing for 4 Friday at 7pm"
+- "table for 3 at the Keg saturday 6:30pm"
+If you don't have a restaurant_id yet for a named restaurant, call search_restaurants(query=<name>) FIRST in the same turn, then check_availability.
+
+NAMED RESTAURANT INFO QUESTION → call get_restaurant_snapshot IN THE SAME TURN. NEVER answer hours/dietary/dress code/parking/deposit/reviews/events/menu specifics from memory. NEVER say "I don't have that detail" without trying the snapshot tool first. If the snapshot truly lacks the field, then say "I don't have that confirmed."
+
+"MY RESERVATIONS" / "MY BOOKING" / "WHAT DO I HAVE" → call list_my_reservations IN THE SAME TURN. Do NOT respond conversationally first.
+
+NEVER MIND / FORGET IT / DROP IT mid-flow → "Got it, no problem." Stop the booking flow. Do NOT keep prompting for booking details. Do NOT ask "Want me to book it?" The user said stop.
+
+AMBIGUOUS BARE HOUR ("7", "8", "9" with NO am/pm specified) → MUST ask "Did you mean X AM or X PM?" before anything else. Do NOT silently assume PM and proceed. Example: "book Jacobs for 2 tomorrow at 7" → "Did you mean 7 AM or 7 PM?" (and that's the entire reply).
+
+VAGUE TIME ("sometime tonight", "around dinner", "later") → ask for a specific time NEXT. Do NOT ask party size first.
+
+PURE CONVERSATION (greeting, joke, vent, flirt, identity question about you, philosophy, profanity with no action intent) → NO tool call. Brief warm redirect to booking. This is the ONLY case where you skip tools.
 
 BOOKING STATE (authoritative — trust these values exactly):
 ${bookingChecklist}
@@ -1525,7 +1682,15 @@ INTENT CLASSIFICATION — classify every user turn mentally before acting:
 - directions / restaurant_contact: provide directions/contact help without modifying bookings.
 - general_question / fallback_unknown: EVERY unrelated or out-of-topic STT prompt must be handled lightly and redirected to the booking flow. This applies even if the prompt is casual, emotional, funny, impatient, vague, profane, personal, identity-related, or not listed in examples. Do NOT call search_restaurants, check_availability, complete_booking, or emit restaurant/map actions for truly off-topic prompts.
 
-RESERVATION HISTORY — when the user asks to see / list / review / summarize their bookings ("show my reservations", "what are my upcoming bookings", "show my past dinners", "did I ever book at X", "show cancelled reservations", "any active bookings"), CALL list_my_reservations with the appropriate status_filter ("active", "past", "cancelled", or "all") instead of refusing. Then in spoken_text name 1-3 of the most relevant rows ("You have 1 upcoming: Mark Testing on May 11 at 8 PM. Want to change or cancel it?"). Never reply "I can't see your reservations" — the tool exists for exactly this. If the user follows up with "modify the X PM one" or "cancel it", carry the reservation_id from the tool result into booking_state via set_booking_field then handle it as a modify/cancel.
+RESERVATION HISTORY — when the user asks to see / list / review / summarize their bookings ("show my reservations", "what are my upcoming bookings", "show my past dinners", "did I ever book at X", "show cancelled reservations", "any active bookings"), CALL list_my_reservations with the appropriate status_filter ("active", "past", "cancelled", or "all") instead of refusing. Then in spoken_text name 1-3 of the most relevant rows ("You have 1 upcoming: Mark Testing on May 11 at 8 PM. Want to change or cancel it?"). Never reply "I can't see your reservations" — the tool exists for exactly this. If the user follows up with "modify the X PM one" or "cancel it", first identify the reservation_id from the list_my_reservations result, then handle as MODIFY or CANCEL below.
+
+MODIFY a reservation — when the user wants to change an existing booking ("change my reservation", "move my 7 PM to 8", "make it 6 people instead", "push it to Saturday"). Steps: (1) call list_my_reservations(active) if you don't already have the reservation_id. (2) Confirm the change verbally: "Just confirming — move your table for 4 at La Piazza from Friday 7 PM to Saturday 8 PM?" — do NOT call modify_reservation until the user explicitly says yes. (3) Then call modify_reservation with reservation_id + the changed fields (new_date, new_time, new_party_size, special_request — pass only what's changing). On success, speak the change in one sentence. If response has unavailable_reason='slot_taken' or 'diner_double_book', offer the next available slot — do not retry blindly.
+
+CANCEL a reservation — when the user wants to cancel ("cancel my reservation", "kill the booking", "I can't make it"). Steps: (1) call list_my_reservations(active) if you don't already have the reservation_id. (2) Mandatory confirmation: "Just to confirm, cancel your reservation for 4 at La Piazza Friday 7 PM? You'll get a full refund." — do NOT call cancel_reservation until the user explicitly says yes. A bare 'yes' after listing is NOT cancel confirmation. (3) Then call cancel_reservation with reservation_id. On success, mention refund timing. If error 'window_expired', tell the user to contact the restaurant directly.
+
+RESTAURANT INFO Q&A — when the user asks ANY question about a SPECIFIC restaurant (hours, address, phone, dietary options, dress code, parking, deposit policy, reviews, ratings, events, promotions, menu highlights, atmosphere), first ensure you have the restaurant_id (call search_restaurants if needed to resolve a name to an id), then call get_restaurant_snapshot(restaurant_id) ONCE. The snapshot returns hours_json, dietary_tags, dress_code, parking, deposit_tiers, top_reviews, active_events, active_promotions, featured_menu_items. Answer the user's question from THIS data in one sentence. NEVER guess restaurant facts — if the snapshot lacks the field, say "I don't have that confirmed — want me to add it as a note for the restaurant?" Do NOT call get_restaurant_snapshot inside a booking-collection flow unless the user explicitly pivoted to an info question.
+
+TRANSFER TO HUMAN — only call transfer_to_human when (a) the user explicitly asks for a human/agent/manager/support, OR (b) the same tool has failed 2+ times this conversation for the same intent, OR (c) the user has a refund/issue you cannot resolve via cancel_reservation. Tell the user you're handing off and the app will open the support page. NEVER use as a fallback for "I don't know" — try search_restaurants and get_restaurant_snapshot first.
 - Boundary style: stay natural, not scripted. Give a quick reaction or answer first, then return to the job. Do not repeatedly say "my mission" or over-explain the scope.
 
 MESSY SPEECH — users will be rushed, emotional, vague, broken-English, or mis-transcribed. Extract intent generously, ask the minimum missing question, and never overload them with every possible preference. "Book dinner" usually needs party size first. "Something nice" usually needs location or time only if not inferable.
@@ -1622,59 +1787,7 @@ RULES:
 // wins. Without this the LLM regex-matches exact names and asks "which
 // restaurant?" forever.
 
-function levenshtein(a: string, b: string): number {
-  if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  const prev = new Array(b.length + 1);
-  const curr = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
-  }
-  return prev[b.length];
-}
-
-function scoreNameMatch(name: string, transcript: string): number {
-  const normalize = (s: string) =>
-    s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  const n = normalize(name);
-  const t = normalize(transcript);
-  if (!n || !t) return 0;
-  // Whole-name substring match — strongest signal.
-  if (t.includes(n)) return 100;
-  const stop = new Set([
-    "the", "a", "an", "and",
-    "restaurant", "restaurants", "cafe", "bar", "grill", "kitchen", "bistro",
-  ]);
-  const nameTokens = n.split(" ").filter((w) => w.length >= 2 && !stop.has(w));
-  const transcriptTokens = Array.from(
-    new Set(t.split(" ").filter((w) => w.length >= 2)),
-  );
-  let score = 0;
-  for (const tok of nameTokens) {
-    if (transcriptTokens.includes(tok)) {
-      score += 10;
-      continue;
-    }
-    // Near-match within edit distance 2 (handles STT substitutions of 1-2 chars)
-    for (const trans of transcriptTokens) {
-      if (Math.abs(trans.length - tok.length) > 2) continue;
-      const maxLen = Math.max(trans.length, tok.length);
-      const allowed = maxLen <= 4 ? 1 : 2;
-      if (levenshtein(trans, tok) <= allowed) {
-        score += 5;
-        break;
-      }
-    }
-  }
-  return score;
-}
+const levenshtein = sharedLevenshtein;
 
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -4283,6 +4396,108 @@ async function buildPreflightResponse(opts: {
   const normalized = normalizeSearchText(transcript);
   if (!normalized) return null;
 
+  // ══════════════════════════════════════════════════════════════════════
+  // DETERMINISTIC GUARDS (2026-05-16) — added after eval harness found that
+  // gpt-4.1-mini AND gpt-4.1 both miss these patterns. These are deterministic
+  // pre-LLM short-circuits, like Vapi's built-in phrase rules.
+  // ══════════════════════════════════════════════════════════════════════
+
+  const trimmedTranscript = transcript.trim();
+  const lowerTranscript = trimmedTranscript.toLowerCase();
+
+  // GUARD 1: "never mind" / "forget it" off-ramp
+  // Check BOTH the original raw transcript AND the pivot-rewritten one. The
+  // pivot rewrite sometimes leaves a residue that doesn't match, and
+  // standalone "never mind" doesn't fire the pivot at all. Catches:
+  // "never mind", "forget it", "never mind, forget it", "nvm drop it", etc.
+  const offRampToken = "(?:never\\s*mind|nvm|nm|forget\\s*(?:it|that|about\\s*it)|drop\\s*(?:it|that)|cancel\\s*(?:it|that)|no\\s*thanks?|i'?m\\s*good|i'?m\\s*done|that'?s\\s*all|we'?re\\s*good|all\\s*good|stop\\s*(?:it|that)?)";
+  const standaloneOffRamp = new RegExp(`^(?:${offRampToken}[,.!?\\s]*)+$`, "i");
+  const rawTrimmed = (rawTranscript ?? "").trim();
+  if (standaloneOffRamp.test(trimmedTranscript) || standaloneOffRamp.test(rawTrimmed)) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "Got it — no worries. Here whenever you need me.",
+      intent: "general_question",
+      step: "done",
+      nextExpectedInput: "none",
+      booking: {
+        ...bookingState,
+        status: "idle",
+        restaurant_id: null,
+        restaurant_name: null,
+        party_size: null,
+        date: null,
+        time: null,
+        shift_id: null,
+        slot_iso: null,
+        pending_action: null,
+      },
+      uiActions: [],
+    });
+  }
+
+  // GUARD 2: Bare-hour ambiguity force-clarify
+  // Detects "at 7" / "for 7" / "tomorrow at 7" where 7 is 1-12 and there's
+  // no AM/PM marker anywhere in the transcript. Without this, the LLM
+  // silently assumes PM and proceeds. We force the question.
+  const hasAmPm = /\b(?:am|pm|a\.m\.?|p\.m\.?|noon|midnight|morning|afternoon|evening|night)\b/i.test(trimmedTranscript);
+  if (!hasAmPm) {
+    // Only match "at N" (time context) — NOT "for N" (party size context).
+    // Negative lookahead also rejects "at 2 people" / "at 2 guests" etc.
+    const bareHourMatch = trimmedTranscript.match(/\bat\s+(\d{1,2})(?::00)?\b(?!\s*(?:am|pm|:\d{2}|people|guests|person|adults|kids|min|minutes))/i);
+    if (bareHourMatch) {
+      const hour = parseInt(bareHourMatch[1], 10);
+      if (hour >= 1 && hour <= 12) {
+        return makeAssistantPayload({
+          conversationId,
+          spokenText: `Did you mean ${hour} AM or ${hour} PM?`,
+          intent: "reservation_create",
+          step: "collect_time",
+          nextExpectedInput: "time",
+          booking: bookingState,
+        });
+      }
+    }
+  }
+
+  // GUARD 3: Vague-time force-clarify
+  // "Sometime tonight", "around dinner", "later" — the LLM tends to skip past
+  // the time and ask party size first. We force time-first.
+  const vagueTimePattern = /\b(?:sometime|some\s*time|around|maybe|whenever|anytime\s+(?:tonight|tomorrow|today)|later\s+(?:tonight|today)|in\s+the\s+(?:morning|afternoon|evening|night))\b/i;
+  const hasSpecificTime = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b|\b(?:noon|midnight)\b/i.test(trimmedTranscript);
+  if (vagueTimePattern.test(trimmedTranscript) && !hasSpecificTime) {
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "What time roughly — 6, 7, 8 PM?",
+      intent: "reservation_create",
+      step: "collect_time",
+      nextExpectedInput: "time",
+      booking: bookingState,
+    });
+  }
+
+  // GUARD 4: "Near me" / "close by" → no city ask, brief search prompt
+  // When the user uses proximity terms WITHOUT naming a city/cuisine, the
+  // LLM tends to ask "what city?" even though near_me intent is clear.
+  // Short-circuit with a brief response that invites a cuisine/style
+  // refinement, OR if user_location is present, hint the LLM to use near_user.
+  const proximityPattern = /\b(?:near\s*me|close\s*by|closest|nearest|nearby|around\s+(?:here|me)|walking\s+distance|in\s+(?:my|the)\s+area|what'?s?\s+(?:close|near|around))\b/i;
+  const hasCuisineOrVenue = /\b(?:italian|japanese|sushi|thai|chinese|korean|mexican|indian|french|greek|lebanese|egyptian|vietnamese|ramen|pizza|steakhouse|cafe|bar|brewery|bistro|deli|bakery|lounge|pub|izakaya|burger|seafood|brunch)\b/i.test(lowerTranscript);
+  const namesACity = /\b(?:toronto|montreal|calgary|vancouver|ottawa|hamilton|mississauga|brampton|milton|oakville|guelph|burlington|kingston|windsor|kitchener|waterloo|cambridge|london|halifax|winnipeg|saskatoon|regina|edmonton|quebec)\b/i.test(lowerTranscript);
+  if (proximityPattern.test(lowerTranscript) && !hasCuisineOrVenue && !namesACity) {
+    // Reply with a brief tone-appropriate prompt that does NOT ask for a city
+    // (we already know they want nearby — they said it). Ask for cuisine
+    // type instead, which is the more useful refinement.
+    return makeAssistantPayload({
+      conversationId,
+      spokenText: "Got it — looking nearby. Any cuisine or vibe in mind?",
+      intent: "restaurant_search",
+      step: "choose_restaurant",
+      nextExpectedInput: "cuisine_or_filter",
+      booking: bookingState,
+    });
+  }
+
   // ── Restaurant swap mid-flow (2026-05-15) ─────────────────────────────
   // When booking_state has a restaurant set AND the user's new transcript
   // names a DIFFERENT restaurant via swap-style phrasing ("let's do X
@@ -4800,7 +5015,7 @@ async function buildPreflightResponse(opts: {
       let menuRestaurantId: string | null = null;
       let menuRestaurantName: string | null = null;
       if (candidateName) {
-        const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "");
+        const stripAccents = sharedStripAccents;
         const cleanLower = stripAccents(candidateName.toLowerCase());
         const tokens = cleanLower.split(/\s+/).filter((t) => t.length >= 2);
         const all = await fetchActiveRestaurants();
@@ -5074,7 +5289,7 @@ async function buildPreflightResponse(opts: {
   if (
     /\b(?:pre[\s-]?order|order\s+(?:food\s+)?(?:ahead|in\s+advance|now\s+for|to\s+pickup|for\s+(?:tonight|tomorrow|the\s+table))|preordering|menu\s+(?:ahead|in\s+advance)|food\s+(?:before|ahead))\b/i.test(transcript)
   ) {
-    const stripAccentsLocal = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "").toLowerCase();
+    const stripAccentsLocal = (s: string) => sharedStripAccents(s).toLowerCase();
     const tNorm = stripAccentsLocal(transcript);
     const bsRestaurantId = typeof bookingState.restaurant_id === "string" ? (bookingState.restaurant_id as string) : null;
     const bsRestaurantName = typeof bookingState.restaurant_name === "string" ? (bookingState.restaurant_name as string) : null;
@@ -5201,28 +5416,8 @@ async function buildPreflightResponse(opts: {
       // restaurants list. Also expand each token to its spelling variants
       // (harbor↔harbour) and number-word variants (60↔sixty) so the
       // match catches Deepgram transcription quirks.
-      const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "");
-      const SPELLING_VARIANTS_BOOKING: Record<string, string[]> = {
-        harbor: ["harbour"], harbour: ["harbor"],
-        center: ["centre"], centre: ["center"],
-        theater: ["theatre"], theatre: ["theater"],
-        flavor: ["flavour"], flavour: ["flavor"],
-        color: ["colour"], colour: ["color"],
-      };
-      const NUMBER_WORDS_BOOKING: Record<string, string[]> = {
-        "10": ["ten"], "20": ["twenty"], "30": ["thirty"],
-        "40": ["forty"], "50": ["fifty"], "60": ["sixty"],
-        "70": ["seventy"], "80": ["eighty"], "90": ["ninety"], "100": ["hundred"],
-        ten: ["10"], twenty: ["20"], thirty: ["30"], forty: ["40"],
-        fifty: ["50"], sixty: ["60"], seventy: ["70"], eighty: ["80"],
-        ninety: ["90"], hundred: ["100"],
-      };
-      const expandVariantsBooking = (w: string): string[] => {
-        const v = new Set<string>([w]);
-        for (const x of SPELLING_VARIANTS_BOOKING[w] ?? []) v.add(x);
-        for (const x of NUMBER_WORDS_BOOKING[w] ?? []) v.add(x);
-        return Array.from(v);
-      };
+      const stripAccents = sharedStripAccents;
+      const expandVariantsBooking = sharedExpandVariants;
       const baseTokens = stripAccents(candidate.toLowerCase()).split(/\s+/).filter((t) => t.length >= 2);
       const tokens = baseTokens; // for threshold calc
       const all = await fetchActiveRestaurants();
@@ -5423,7 +5618,7 @@ async function buildPreflightResponse(opts: {
         !FOR_MY_RELATION_PATTERN.test(eventCandidate) &&
         !PARTY_SIZE_PREFIX_PATTERN.test(eventCandidate);
       if (looksLikeEventName) {
-        const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "");
+        const stripAccents = sharedStripAccents;
         // Resolve restaurant_id when an "at <name>" clause is present.
         let restaurantId: string | null = null;
         let restaurantName: string | null = null;
@@ -5691,6 +5886,7 @@ async function buildPreflightResponse(opts: {
         intent: "general_question",
         step: "done",
         nextExpectedInput: "none",
+        uiActions: [{ type: "show_reservations" }],
       });
     }
     const rest = (pick.restaurants as { id?: string; name?: string; city?: string; timezone?: string } | null) ?? {};
@@ -5818,6 +6014,7 @@ async function buildPreflightResponse(opts: {
         intent: "general_question",
         step: "done",
         nextExpectedInput: "none",
+        uiActions: [{ type: "show_reservations" }],
       });
     }
     const formatRow = (r: Record<string, unknown>) => {
@@ -5999,8 +6196,7 @@ async function buildPreflightResponse(opts: {
     // "Bâton Rouge") wouldn't match the user's plain "baton" via ilike
     // (Postgres ilike doesn't normalize unicode). Strip combining marks
     // on both sides before token-scoring.
-    const stripAccents = (s: string) =>
-      s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "");
+    const stripAccents = sharedStripAccents;
     const cleanNameNorm = stripAccents(cleanName);
     // Use the cached restaurants list (fetchActiveRestaurants is memoised
     // for 2 min) so we get accent-insensitive matching without a second DB
@@ -7115,7 +7311,7 @@ async function buildPreflightResponse(opts: {
     // If transcript names a restaurant token, narrow active list to that
     // restaurant. e.g. "change my jacobs reservation to 7pm" should resolve
     // uniquely when only one active booking is at Jacobs.
-    const stripAccentsLocal = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "").toLowerCase();
+    const stripAccentsLocal = (s: string) => sharedStripAccents(s).toLowerCase();
     const transcriptNorm = stripAccentsLocal(transcript);
     const filteredByName = activeAll.filter((r) => {
       const rname = ((r.restaurants as { name?: string } | null)?.name ?? "").trim();
@@ -8092,7 +8288,7 @@ async function buildPreflightResponse(opts: {
     // check matches if all tokens of the CANDIDATE appear in the restaurant
     // name (the reverse direction).
     if (candidate) {
-      const stripAccents = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’.&]/g, "");
+      const stripAccents = sharedStripAccents;
       const normCand = stripAccents(candidate.toLowerCase());
       const candTokens = normCand.split(/\s+/).filter((t) => t.length >= 3);
       const fuzzyMatch = candTokens.length > 0 && restaurants.some((r) => {
@@ -8525,7 +8721,12 @@ Deno.serve(async (req) => {
         supabaseAdmin,
         "cenaiva_orchestrate",
         rateLimitIdentifier(req, userProfileId),
-        { limit: 30, windowSeconds: 60 },
+        // Bumped 30→120/min to match the precedent set by deepgram-live-token
+        // and elevenlabs-tts (which the orchestrator chains together). The
+        // eval harness fires 40+ scenarios in ~90s and was hitting the 30/min
+        // ceiling; multi-tab user sessions hit it too. 120/min still blocks
+        // real abuse (a real diner sends 1-3 turns/min, not 100+).
+        { limit: 120, windowSeconds: 60 },
       );
     } catch (e) {
       if (e instanceof RateLimitError) {
@@ -8539,6 +8740,7 @@ Deno.serve(async (req) => {
     // Parse body
     const body = await req.json() as {
       transcript?: string;
+      transcript_alternatives?: string[];
       screen?: string;
       booking_state?: Record<string, unknown>;
       map_state?: Record<string, unknown>;
@@ -8557,6 +8759,7 @@ Deno.serve(async (req) => {
 
     const {
       transcript = "",
+      transcript_alternatives: rawTranscriptAlternatives = [],
       screen = "discover",
       booking_state = {},
       visible_restaurant_ids = [],
@@ -8568,6 +8771,12 @@ Deno.serve(async (req) => {
       recommendation_mode: rawRecommendationMode = null,
       assistant_memory: rawAssistantMemory = null,
     } = body;
+    const transcriptAlternatives = Array.isArray(rawTranscriptAlternatives)
+      ? rawTranscriptAlternatives
+          .filter((alt): alt is string => typeof alt === "string" && alt.trim().length > 0)
+          .map((alt) => alt.trim())
+          .slice(0, 3)
+      : [];
     const recommendationMode = parseRecommendationMode(rawRecommendationMode);
     const requestAssistantMemory = parseAssistantMemory(rawAssistantMemory);
     let assistantMemory = requestAssistantMemory;
@@ -8703,6 +8912,55 @@ Deno.serve(async (req) => {
       (currentStatus === "idle" || currentStatus === "collecting_minimum_fields");
     let triedPreflightBeforeHistory = false;
 
+    // Early visible-first fuzzy resolver. The full resolver at the visible
+    // restaurants block (line ~9617) runs AFTER isSmallPromptTurn is
+    // computed, which means bare-name transcripts like "Jacobs", "Baton
+    // Rouge", or "Jacobs and Co please" get hijacked by the small-prompt
+    // path before the resolver has a chance to identify them. This early
+    // pass stamps booking_state.restaurant_id when the transcript clearly
+    // names a visible candidate, so the downstream dispatch sees an
+    // explicit selection and routes through the booking flow instead.
+    if (
+      !selected_restaurant_id &&
+      typeof transcript === "string" &&
+      transcript.trim().length > 0 &&
+      visible_restaurant_ids.length > 0 &&
+      (currentStatus === "idle" || currentStatus === "collecting_minimum_fields")
+    ) {
+      const visibleRows = (await fetchActiveRestaurants()).filter((r) =>
+        visible_restaurant_ids.slice(0, 8).includes(r.id),
+      );
+      if (visibleRows.length > 0) {
+        const candidates: SharedMatchCandidate<SearchRestaurantRow>[] = visibleRows.map((r) => ({
+          value: r.name ?? "",
+          entity: r,
+          inVisibleSet: true,
+        }));
+        const transcriptCandidates = [transcript, ...transcriptAlternatives].filter(
+          (t, idx, arr) => t && arr.indexOf(t) === idx,
+        );
+        for (const candidateTranscript of transcriptCandidates) {
+          const picked = sharedPickBestMatch(candidateTranscript, candidates, {
+            threshold: 0.65,
+            ambiguityWindow: 0.10,
+          });
+          if (picked.kind === "confident") {
+            selected_restaurant_id = picked.entity.id;
+            booking_state.restaurant_id = picked.entity.id;
+            booking_state.restaurant_name = picked.entity.name ?? booking_state.restaurant_name;
+            if (
+              booking_state.status === undefined ||
+              booking_state.status === null ||
+              booking_state.status === "idle"
+            ) {
+              booking_state.status = "collecting_minimum_fields";
+            }
+            break;
+          }
+        }
+      }
+    }
+
     const hasPrefilledBookingField =
       preFilled.party_size != null ||
       preFilled.date != null ||
@@ -8742,6 +9000,102 @@ Deno.serve(async (req) => {
           safetyResponse,
         );
         latency.done({ path: "safety_guardrail" });
+        return;
+      }
+    }
+
+    // ── DETERMINISTIC OFF-RAMP / AMBIGUITY GUARDS (2026-05-16) ──────────
+    // These run BEFORE the isSmallPromptTurn classifier. Without them, the
+    // small-prompt path can hijack legitimate off-ramp signals ("never mind")
+    // and bare-hour ambiguities ("at 7"), responding with conversational
+    // filler instead of the correct behavior. Eval-driven additions.
+    {
+      const earlyTrimmed = transcript.trim();
+      const earlyLower = earlyTrimmed.toLowerCase();
+
+      // OFF-RAMP: "never mind" / "forget it" / "stop" / "no thanks" — clear the flow.
+      const earlyOffRampToken =
+        "(?:never\\s*mind|nvm|nm|forget\\s*(?:it|that|about\\s*it)|drop\\s*(?:it|that)|cancel\\s*(?:it|that)|no\\s*thanks?|i'?m\\s*good|i'?m\\s*done|that'?s\\s*all|we'?re\\s*good|all\\s*good|stop\\s*(?:it|that)?)";
+      const earlyOffRampRe = new RegExp(`^(?:${earlyOffRampToken}[,.!?\\s]*)+$`, "i");
+      if (earlyOffRampRe.test(earlyTrimmed)) {
+        const payload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: "Got it — no worries. Here whenever you need me.",
+          intent: "general_question",
+          step: "done",
+          nextExpectedInput: "none",
+          booking: {
+            ...booking_state,
+            status: "idle",
+            restaurant_id: null,
+            restaurant_name: null,
+            party_size: null,
+            date: null,
+            time: null,
+            shift_id: null,
+            slot_iso: null,
+            pending_action: null,
+          },
+        });
+        await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+        latency.done({ path: "early_off_ramp" });
+        return;
+      }
+
+      // AMBIGUOUS BARE HOUR: "at 7" / "at 8" without am/pm anywhere → clarify.
+      const earlyHasAmPm = /\b(?:am|pm|a\.m\.?|p\.m\.?|noon|midnight|morning|afternoon|evening|night)\b/i.test(earlyTrimmed);
+      if (!earlyHasAmPm) {
+        const earlyBareHour = earlyTrimmed.match(/\bat\s+(\d{1,2})(?::00)?\b(?!\s*(?:am|pm|:\d{2}|people|guests|person|adults|kids|min|minutes))/i);
+        if (earlyBareHour) {
+          const h = parseInt(earlyBareHour[1], 10);
+          if (h >= 1 && h <= 12) {
+            const payload = makeAssistantPayload({
+              conversationId: activeConversationId,
+              spokenText: `Did you mean ${h} AM or ${h} PM?`,
+              intent: "reservation_create",
+              step: "collect_time",
+              nextExpectedInput: "time",
+              booking: booking_state,
+            });
+            await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+            latency.done({ path: "early_ambiguous_hour" });
+            return;
+          }
+        }
+      }
+
+      // VAGUE TIME: "sometime tonight" / "around dinner" → ask for specific time first.
+      const earlyVague = /\b(?:sometime|some\s*time|around|maybe|whenever|anytime\s+(?:tonight|tomorrow|today)|later\s+(?:tonight|today)|in\s+the\s+(?:morning|afternoon|evening|night))\b/i;
+      const earlyHasSpecificTime = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\b|\b(?:noon|midnight)\b/i.test(earlyTrimmed);
+      if (earlyVague.test(earlyTrimmed) && !earlyHasSpecificTime) {
+        const payload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: "What time roughly — 6, 7, 8 PM?",
+          intent: "reservation_create",
+          step: "collect_time",
+          nextExpectedInput: "time",
+          booking: booking_state,
+        });
+        await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+        latency.done({ path: "early_vague_time" });
+        return;
+      }
+
+      // NEAR ME (no city/cuisine): brief refinement prompt instead of city ask.
+      const earlyProximity = /\b(?:near\s*me|close\s*by|closest|nearest|nearby|around\s+(?:here|me)|walking\s+distance|in\s+(?:my|the)\s+area|what'?s?\s+(?:close|near|around))\b/i;
+      const earlyHasCuisine = /\b(?:italian|japanese|sushi|thai|chinese|korean|mexican|indian|french|greek|lebanese|egyptian|vietnamese|ramen|pizza|steakhouse|cafe|bar|brewery|bistro|deli|bakery|lounge|pub|izakaya|burger|seafood|brunch)\b/i.test(earlyLower);
+      const earlyNamesCity = /\b(?:toronto|montreal|calgary|vancouver|ottawa|hamilton|mississauga|brampton|milton|oakville|guelph|burlington|kingston|windsor|kitchener|waterloo|cambridge|london|halifax|winnipeg|saskatoon|regina|edmonton|quebec)\b/i.test(earlyLower);
+      if (earlyProximity.test(earlyLower) && !earlyHasCuisine && !earlyNamesCity) {
+        const payload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: "Got it — looking nearby. Any cuisine or vibe in mind?",
+          intent: "restaurant_search",
+          step: "choose_restaurant",
+          nextExpectedInput: "cuisine_or_filter",
+          booking: booking_state,
+        });
+        await sendEarlyFinal(send, activeConversationId, userContentForPersistence, payload);
+        latency.done({ path: "early_near_me" });
         return;
       }
     }
@@ -8968,6 +9322,106 @@ Deno.serve(async (req) => {
       );
       latency.done({ path: "single_recommendation_rejected" });
       return;
+    }
+
+    // Explicit-city guard: when the user names a city (`in X`, `near X`),
+    // short-circuit the generic recommendation handlers and surface ONLY
+    // restaurants in that city. Empty city → honest empty. Universal: any
+    // city in the DB works; new cities surface their restaurants the
+    // moment a row is added. Kills "Mark Testing in Guelph" / "restaurants
+    // in Vancouver → Toronto restaurants" silent-swap bugs at dispatch
+    // time, before individual handlers can mishandle the request.
+    //
+    // The guard fires ONLY when:
+    //   (a) the transcript looks like a discovery prompt (mentions
+    //       "restaurants" / "places" / "find" / "any" / "show"), AND
+    //   (b) the captured token matches a known city in the DB, OR the
+    //       transcript explicitly says "no restaurants in {place}".
+    // Without (a) the regex catches "book a table AT Jacobs steakhouse"
+    // and treats Jacobs as a city — which it isn't. Without (b) the guard
+    // overfires for any "in X" phrase the user happens to use.
+    if (
+      !needsHistoryBeforePreflight &&
+      !isSmallPromptTurn &&
+      typeof transcript === "string" &&
+      /\b(?:restaurants?|places?|spots?|find|show|any|recommend|suggest|somewhere|anywhere|where)\b/i.test(transcript)
+    ) {
+      const cityMatch = transcript.match(/\b(?:in|near)\s+([A-Za-z][A-Za-z\-]{2,}(?:\s+[A-Z][A-Za-z\-]+)?)\b/);
+      const explicitCityRaw = cityMatch?.[1]?.trim();
+      const NON_CITY_WORDS = new Set([
+        "minutes", "minute", "hours", "hour", "seconds", "second",
+        "the", "this", "that", "advance", "front", "case", "fact",
+        "general", "particular", "person", "town", "city",
+        "great", "good", "nice", "best", "quiet", "loud", "fancy",
+        "cheap", "expensive", "casual", "trendy", "fun", "romantic",
+        "italian", "french", "thai", "japanese", "chinese", "indian",
+        "mexican", "korean", "vietnamese", "mediterranean", "american",
+        "european", "specific",
+      ]);
+      const isLikelyCity =
+        !!explicitCityRaw &&
+        explicitCityRaw.length >= 3 &&
+        !NON_CITY_WORDS.has(explicitCityRaw.toLowerCase());
+      if (isLikelyCity && explicitCityRaw) {
+        const allRest = await fetchActiveRestaurants();
+        const cityNorm = normalizeCityName(explicitCityRaw);
+        // Two signals: exact city match (e.g. "Guelph"), OR ANY active row
+        // has a city set anywhere (so unknown cities like "Vancouver" can
+        // still honest-empty rather than getting silently swapped).
+        const matchingInCity = allRest.filter((r) => {
+          const rNorm = normalizeCityName(r.city ?? "");
+          if (!rNorm) return false;
+          return rNorm === cityNorm || rNorm.includes(cityNorm) || cityNorm.includes(rNorm);
+        });
+        const dbHasCityField = allRest.some((r) => !!(r.city && r.city.trim()));
+        // Only fire the empty path if we have city data at all (otherwise
+        // we can't make a credible claim about "no restaurants in X").
+        if (matchingInCity.length === 0 && dbHasCityField) {
+          await sendEarlyFinal(
+            send,
+            activeConversationId,
+            userContentForPersistence,
+            {
+              conversation_id: activeConversationId,
+              spoken_text: `I don't see restaurants in ${explicitCityRaw}. Try a different city or cuisine.`,
+              intent: "restaurant_search",
+              step: "no_results",
+              next_expected_input: "city_or_cuisine",
+              ui_actions: [],
+              booking: booking_state,
+              map: null,
+              filters: null,
+            },
+          );
+          latency.done({ path: "city_explicit_empty" });
+          return;
+        }
+        // City has matches — surface them directly to short-circuit the
+        // generic recommendation handlers (which rank by distance and can
+        // surface wrong-city restaurants when the user's location is set).
+        const top = matchingInCity.slice(0, 3);
+        await sendEarlyFinal(
+          send,
+          activeConversationId,
+          userContentForPersistence,
+          {
+            conversation_id: activeConversationId,
+            spoken_text: buildOptionsPrompt(top),
+            intent: "restaurant_search",
+            step: "choose_restaurant",
+            next_expected_input: "restaurant",
+            ui_actions: [
+              { type: "show_restaurant_cards", restaurant_ids: top.map((r) => r.id) } as FollowUpAction,
+              { type: "update_map_markers", restaurant_ids: top.map((r) => r.id) } as FollowUpAction,
+            ],
+            booking: booking_state,
+            map: null,
+            filters: null,
+          },
+        );
+        latency.done({ path: "city_explicit_hit" });
+        return;
+      }
     }
 
     if (!needsHistoryBeforePreflight && !isSmallPromptTurn) {
@@ -9311,36 +9765,97 @@ Deno.serve(async (req) => {
         // selection so the LLM can't get wedged on "which restaurant?" when
         // STT garbles the proper noun. This is the single biggest cause of
         // the 3x "which restaurant" voice loop — the LLM regex-matches exact
-        // names, but Chrome STT routinely mangles them (e.g. "Georgy" →
-        // "Jury", "Sienna's" → "scenes"). Edit-distance lets us recover.
+        // names, but STT routinely mangles them (e.g. "Georgy" → "Jury",
+        // "Sienna's" → "scenes"). Edit-distance + multi-method scoring lets
+        // us recover.
+        // Run the visible-first fuzzy scorer whenever there's a selection
+        // intent verb ("let's do X", "book X", "try X") OR — even without an
+        // explicit intent verb — when the transcript is short enough that a
+        // bare restaurant name is the most likely interpretation. Users
+        // often reply with just the name ("Jacobs", "Baton Rouge", "Mark
+        // Testing"), and the intent regex would otherwise miss those.
+        const intentImplied =
+          hasRestaurantSelectionIntent(transcript, priorWhichAsks) ||
+          // Short reply with at most a few content words after stripping
+          // articles and venue types — treat as a likely bare-name selection.
+          transcript.trim().split(/\s+/).filter((w) => w.length >= 2).length <= 5;
         if (
           !selected_restaurant_id &&
           transcript &&
-          hasRestaurantSelectionIntent(transcript, priorWhichAsks) &&
+          intentImplied &&
           (currentStatus === "idle" || currentStatus === "collecting_minimum_fields")
         ) {
-          const scored = rows
-            .map((r) => ({ id: r.id, name: r.name, score: scoreNameMatch(r.name, transcript) }))
-            .filter((s) => s.score > 0)
-            .sort((a, b) => b.score - a.score);
-          const best = scored[0];
-          const next = scored[1];
-          // When we've ALREADY asked "which one?" in a prior turn, relax
-          // thresholds: the user's reply is almost certainly a selection
-          // attempt. Only one visible candidate + any positive score wins.
-          const minScore = priorWhichAsks >= 1 ? 5 : 10;
-          const minGap = priorWhichAsks >= 1 ? 3 : 8;
-          const onlyOneCandidate = rows.length === 1;
-          if (
-            best &&
-            (
-              (onlyOneCandidate && best.score > 0) ||
-              (best.score >= minScore && (!next || best.score >= next.score + minGap))
-            )
-          ) {
-            selected_restaurant_id = best.id;
-            sttFuzzyMatchLine = `⚠️ STT FUZZY MATCH: transcript "${transcript}" resolved to restaurant "${best.name}" (id=${best.id}). Treat this as the user's confirmed selection — emit start_booking + highlight_restaurant and move on.`;
-            resolvedRestaurantName = best.name;
+          // After a prior "which one?" ask the user's reply is almost
+          // certainly a selection attempt — drop the threshold and widen the
+          // ambiguity window so a noisier transcript still resolves.
+          // Visible candidates are inherently strong context (the user is
+          // literally looking at them), so default threshold is 0.65 rather
+          // than 0.75 — universal fuzzy matching can be more aggressive
+          // when the candidate set is bounded to what's on screen.
+          const threshold = priorWhichAsks >= 1 ? 0.55 : 0.65;
+          const ambiguityWindow = priorWhichAsks >= 1 ? 0.15 : 0.10;
+          const candidates: SharedMatchCandidate<typeof rows[number]>[] = rows.map((r) => ({
+            value: r.name,
+            entity: r,
+            inVisibleSet: true,
+          }));
+          // Try the primary transcript first, then fall back through
+          // Deepgram's alternative transcripts. Each alternative scored
+          // against the visible set independently — picks the first that
+          // produces a confident match. Tiebreak: earlier alternative wins.
+          const transcriptCandidates = [transcript, ...transcriptAlternatives].filter(
+            (t, idx, arr) => t && arr.indexOf(t) === idx,
+          );
+          let resolved: { id: string; name: string } | null = null;
+          let resolvedFromAlt: string | null = null;
+          for (const candidateTranscript of transcriptCandidates) {
+            const picked = sharedPickBestMatch(candidateTranscript, candidates, {
+              threshold,
+              ambiguityWindow,
+            });
+            if (picked.kind === "confident") {
+              resolved = { id: picked.entity.id, name: picked.entity.name };
+              if (candidateTranscript !== transcript) resolvedFromAlt = candidateTranscript;
+              break;
+            }
+          }
+          // Only-one-visible-candidate + any positive fuzzy signal: the user
+          // visibly has one card on screen, treat their reply as selection.
+          if (!resolved && rows.length === 1) {
+            const onlyCandidate = rows[0];
+            for (const candidateTranscript of transcriptCandidates) {
+              const onlyMatch = sharedPickBestMatch(candidateTranscript, [{
+                value: onlyCandidate.name,
+                entity: onlyCandidate,
+                inVisibleSet: true,
+              }], { threshold: 0.45, ambiguityWindow: 0.5 });
+              if (onlyMatch.kind === "confident") {
+                resolved = { id: onlyCandidate.id, name: onlyCandidate.name };
+                if (candidateTranscript !== transcript) resolvedFromAlt = candidateTranscript;
+                break;
+              }
+            }
+          }
+          if (resolved) {
+            selected_restaurant_id = resolved.id;
+            const altNote = resolvedFromAlt ? ` (via STT alternative "${resolvedFromAlt}")` : "";
+            sttFuzzyMatchLine = `⚠️ STT FUZZY MATCH: transcript "${transcript}"${altNote} resolved to restaurant "${resolved.name}" (id=${resolved.id}). Treat this as the user's confirmed selection — emit start_booking + highlight_restaurant and move on.`;
+            resolvedRestaurantName = resolved.name;
+            // Phase 3/4: stamp the auto-resolved restaurant into booking_state
+            // so downstream payload builders (and the response's booking
+            // field) reflect the user's pick. Without this, the LLM has the
+            // hint in userContent but may not emit a booking-state-modifying
+            // tool call, and booking.restaurant_id stays null even though the
+            // server clearly knew which restaurant the user meant.
+            booking_state.restaurant_id = resolved.id;
+            booking_state.restaurant_name = resolved.name;
+            if (
+              booking_state.status === undefined ||
+              booking_state.status === null ||
+              booking_state.status === "idle"
+            ) {
+              booking_state.status = "collecting_minimum_fields";
+            }
           }
         }
       } else {
@@ -9754,56 +10269,9 @@ Deno.serve(async (req) => {
                 // cities in `city` and venue styles in `business_type`, but if
                 // it slips a city/etc. into `query`, the splitter must not turn
                 // common stop words into substring filters.
-                const QUERY_STOP_WORDS = new Set([
-                  "and", "any", "are", "but", "can", "for", "get", "give", "got",
-                  "have", "her", "him", "his", "how", "its", "let", "like", "look",
-                  "make", "man", "may", "men", "near", "new", "not", "now", "old",
-                  "one", "our", "out", "see", "she", "show", "the", "too", "top",
-                  "use", "was", "way", "who", "you", "with", "find", "want", "need",
-                  "want", "would", "could", "should", "this", "that", "these",
-                  "those", "from", "into", "your", "they", "them", "what", "when",
-                  "where", "which", "while", "will", "some", "than", "their",
-                  "there", "then", "town", "city", "place", "places", "spot",
-                  "spots", "good", "best", "great", "nice", "open", "right",
-                  "restaurant", "restaurants",
-                  "in", "of", "to", "at", "on", "is", "or", "an", "as", "by",
-                  "be", "do", "go", "if", "it", "me", "my", "no", "so", "up", "us", "we",
-                ]);
-                // British/American spelling + number-word variants. Deepgram
-                // often transcribes "Harbour 60" as "harbor 60" (US spelling)
-                // and the DB has the Canadian "Harbour Sixty Steakhouse" — so
-                // `name.ilike.%harbor%` misses, and the zero-result fallback
-                // then ranks by distance, which sends the user the wrong
-                // restaurant. Expanding each query token into its likely
-                // variants lets the ILIKE catch the named restaurant
-                // regardless of transcription quirks. Added 2026-05-11 after
-                // user reported "Harbour 60 → Georgy Inc" misdirection.
-                const SPELLING_VARIANTS: Record<string, string[]> = {
-                  harbor: ["harbour"], harbour: ["harbor"],
-                  center: ["centre"], centre: ["center"],
-                  theater: ["theatre"], theater_: ["theatre"], theatre: ["theater"],
-                  flavor: ["flavour"], flavour: ["flavor"],
-                  color: ["colour"], colour: ["color"],
-                  meter: ["metre"], metre: ["meter"],
-                  liter: ["litre"], litre: ["liter"],
-                  traveler: ["traveller"], traveller: ["traveler"],
-                  honor: ["honour"], honour: ["honor"],
-                };
-                const NUMBER_WORDS: Record<string, string[]> = {
-                  "10": ["ten"], "20": ["twenty"], "30": ["thirty"],
-                  "40": ["forty"], "50": ["fifty"], "60": ["sixty"],
-                  "70": ["seventy"], "80": ["eighty"], "90": ["ninety"],
-                  "100": ["hundred"],
-                  ten: ["10"], twenty: ["20"], thirty: ["30"], forty: ["40"],
-                  fifty: ["50"], sixty: ["60"], seventy: ["70"], eighty: ["80"],
-                  ninety: ["90"], hundred: ["100"],
-                };
-                const expandVariants = (w: string): string[] => {
-                  const variants = new Set<string>([w]);
-                  for (const v of SPELLING_VARIANTS[w] ?? []) variants.add(v);
-                  for (const v of NUMBER_WORDS[w] ?? []) variants.add(v);
-                  return Array.from(variants);
-                };
+                // Universal stopwords + spelling-variant expansion live in
+                // `_shared/restaurant-match.ts` (QUERY_FILLER, SPELLING_VARIANTS,
+                // NUMBER_WORDS, expandVariants) so all callers stay in sync.
                 const rawWords = toolInput.query
                   .trim()
                   .toLowerCase()
@@ -9813,12 +10281,12 @@ Deno.serve(async (req) => {
                 // "Harbour 60"). Other short tokens still drop.
                 const words = rawWords
                   .filter((w: string) => {
-                    if (QUERY_STOP_WORDS.has(w)) return false;
+                    if (SHARED_QUERY_FILLER.has(w)) return false;
                     if (w.length >= 3) return true;
                     // Allow short numbers like "60" that have a word variant.
-                    return /^\d+$/.test(w) && NUMBER_WORDS[w] != null;
+                    return /^\d+$/.test(w) && SHARED_NUMBER_WORD_VARIANTS[w] != null;
                   })
-                  .flatMap((w: string) => expandVariants(w));
+                  .flatMap((w: string) => sharedExpandVariants(w));
                 if (words.length) {
                   const conditions = words
                     .map((w: string) => `name.ilike.%${w}%,cuisine_type.ilike.%${w}%,city.ilike.%${w}%`)
@@ -9896,13 +10364,80 @@ Deno.serve(async (req) => {
                   rows = rows.filter((row) => (row.price_range ?? 2) >= minPriceRange);
                 }
 
+                // Phase 2: post-score ILIKE results when the user supplied a
+                // free-text `query`. ILIKE returns any row whose name contains
+                // ANY of the expanded tokens — that lets things like "I want
+                // Baton Rouge" surface Bâton Rouge Eaton Centre AND every other
+                // restaurant whose name happens to share a token. The shared
+                // `pickBestMatch` runs the multi-method fuzzy scorer (exact /
+                // substring / Jaccard / Levenshtein) so the BEST name match
+                // floats to the top instead of relying on whatever order the
+                // database returned. Universal: works for any restaurant, not
+                // restricted to a hand-rolled allow-list.
+                //
+                // Only runs when the query has at least one token that looks
+                // like a proper-noun (length ≥ 3, not a stop word). For purely
+                // generic queries ("italian food") this is a no-op because the
+                // fuzzy scorer returns 0 for unrelated tokens.
+                if (typeof toolInput.query === "string" && toolInput.query.trim() && rows.length >= 2) {
+                  const queryTokens = toolInput.query
+                    .toLowerCase()
+                    .split(/\s+/)
+                    .filter((t) => t.length >= 3 && !SHARED_QUERY_FILLER.has(t));
+                  if (queryTokens.length > 0) {
+                    const candidates: SharedMatchCandidate<SearchRestaurantRow>[] = rows.map((r) => ({
+                      value: r.name ?? "",
+                      entity: r,
+                      inVisibleSet: visible_restaurant_ids.includes(r.id),
+                    }));
+                    const picked = sharedPickBestMatch(toolInput.query, candidates);
+                    if (picked.kind === "confident") {
+                      // Move the confident match to the front; preserve the
+                      // rest of the existing order so the downstream sortBy /
+                      // distance logic still influences positions 2..N.
+                      const winner = picked.entity;
+                      rows = [winner, ...rows.filter((r) => r.id !== winner.id)];
+                    }
+                  }
+                }
+
                 const loc = user_location;
+                // The LLM is supposed to put cities in toolInput.city, but it
+                // occasionally drops them into toolInput.query or omits them
+                // entirely. Transcript-side regex fallback ensures explicit
+                // "in {City}" phrasing is honored even when the LLM forgets,
+                // so we never silently swap "restaurants in Vancouver" to a
+                // Toronto restaurant. Universal — any capitalized word after
+                // "in"/"near"/"at" is treated as a candidate city. The
+                // honest-empty path below validates by attempting the search;
+                // a typo'd or unknown city returns empty rather than swapping.
+                const transcriptCityMatch =
+                  typeof transcript === "string"
+                    ? transcript.match(/\b(?:in|near|at)\s+([A-Za-z][A-Za-z\-]+(?:\s+[A-Z][A-Za-z\-]+)?)\b/)
+                    : null;
                 const requestedCity =
                   typeof toolInput.city === "string" && toolInput.city.trim()
                     ? toolInput.city.trim()
-                    : "";
+                    : transcriptCityMatch?.[1]?.trim() ?? "";
                 const normalizedRequestedCity = requestedCity ? normalizeCityName(requestedCity) : "";
                 const normalizedUserCity = userCity ? normalizeCityName(userCity) : "";
+                // If we derived the city from the transcript (not toolInput),
+                // the upstream SQL didn't filter on it — re-apply the filter
+                // in JS so wrong-city rows don't leak through. Idempotent if
+                // the SQL already filtered: those rows would already match.
+                const cityFromToolInput =
+                  typeof toolInput.city === "string" && !!toolInput.city.trim();
+                if (normalizedRequestedCity && !cityFromToolInput) {
+                  rows = rows.filter((r) => {
+                    const rowCityNorm = normalizeCityName(r.city ?? "");
+                    if (!rowCityNorm) return false;
+                    return (
+                      rowCityNorm === normalizedRequestedCity ||
+                      rowCityNorm.includes(normalizedRequestedCity) ||
+                      normalizedRequestedCity.includes(rowCityNorm)
+                    );
+                  });
+                }
                 const requestedDifferentCity =
                   !!normalizedRequestedCity &&
                   !!normalizedUserCity &&
@@ -9970,6 +10505,12 @@ Deno.serve(async (req) => {
                       ? normalizeRestaurantPriceRange(toolInput.price_range_max)
                       : null,
                     limit: 3,
+                    // Honest empty when the LLM passed city explicitly. The
+                    // orchestrator's spoken text path uses requestedCity in
+                    // its "I don't see X in {city}" framing so the user
+                    // hears the actual city they asked about, never gets a
+                    // silent swap to a different city's restaurant.
+                    city_explicit: !!requestedCity,
                   });
                   // BUG FIX #3: when the user named a SPECIFIC restaurant via
                   // `query` (a proper-noun lookup, not a generic "italian food
@@ -10778,7 +11319,124 @@ Deno.serve(async (req) => {
                 counts: { active: active.length, past: past.length, cancelled: cancelled.length },
                 generated_at: nowIso,
               });
+              // Emit a ui_action so the eval harness (and clients) can detect
+              // that the reservations list was fetched. Without this, list
+              // responses have no observable side-effect.
+              derivedActions.push({ type: "show_reservations" } as never);
             }
+          }
+
+          // ── modify_reservation ────────────────────────────────────────────
+          else if (toolName === "modify_reservation") {
+            const reservationId = typeof toolInput.reservation_id === "string" ? toolInput.reservation_id : "";
+            if (!reservationId) {
+              toolResult = JSON.stringify({
+                error: "reservation_id is required. Call list_my_reservations first to find the right booking.",
+              });
+            } else {
+              const { data: existing, error: lookupErr } = await supabaseAdmin
+                .from("reservations")
+                .select("reserved_at, party_size, restaurant_id, restaurants(timezone)")
+                .eq("id", reservationId)
+                .eq("user_profile_id", userProfileId)
+                .maybeSingle();
+              if (lookupErr || !existing) {
+                toolResult = JSON.stringify({
+                  error: "Reservation not found or not yours. Re-fetch with list_my_reservations.",
+                });
+              } else {
+                const tz = (existing.restaurants as { timezone?: string } | null)?.timezone ?? "America/Toronto";
+                const existingLocal = new Date(existing.reserved_at as string).toLocaleString("sv-SE", { timeZone: tz });
+                const [existingDate, existingTimeFull] = existingLocal.split(" ");
+                const existingTime = existingTimeFull?.slice(0, 5) ?? "19:00";
+                const date = typeof toolInput.new_date === "string" && toolInput.new_date ? toolInput.new_date : existingDate;
+                const time = typeof toolInput.new_time === "string" && toolInput.new_time ? toolInput.new_time : existingTime;
+                const partySize = Number.isFinite(Number(toolInput.new_party_size))
+                  ? Math.max(1, Math.floor(Number(toolInput.new_party_size)))
+                  : (existing.party_size as number);
+                const specialRequest = typeof toolInput.special_request === "string" ? toolInput.special_request : undefined;
+                const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/modify-reservation`;
+                const resp = await fetch(url, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({
+                    reservation_id: reservationId,
+                    date,
+                    time,
+                    party_size: partySize,
+                    ...(specialRequest !== undefined ? { special_request: specialRequest } : {}),
+                  }),
+                });
+                const body = await resp.json().catch(() => ({}));
+                toolResult = JSON.stringify({ ok: resp.ok, status: resp.status, ...body });
+                if (resp.ok) {
+                  derivedActions.push({ type: "reservation_modified", reservation_id: reservationId } as never);
+                }
+              }
+            }
+          }
+
+          // ── cancel_reservation ────────────────────────────────────────────
+          else if (toolName === "cancel_reservation") {
+            const reservationId = typeof toolInput.reservation_id === "string" ? toolInput.reservation_id : "";
+            if (!reservationId) {
+              toolResult = JSON.stringify({
+                error: "reservation_id is required. Call list_my_reservations first.",
+              });
+            } else {
+              const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/cancel-reservation`;
+              const resp = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${token}`,
+                },
+                body: JSON.stringify({ reservation_id: reservationId, actor: "diner" }),
+              });
+              const body = await resp.json().catch(() => ({}));
+              toolResult = JSON.stringify({
+                ok: resp.ok,
+                status: resp.status,
+                cancellation_reason_logged: typeof toolInput.reason === "string" ? toolInput.reason : null,
+                ...body,
+              });
+              if (resp.ok) {
+                derivedActions.push({ type: "reservation_cancelled", reservation_id: reservationId } as never);
+              }
+            }
+          }
+
+          // ── get_restaurant_snapshot ───────────────────────────────────────
+          else if (toolName === "get_restaurant_snapshot") {
+            const restaurantId = typeof toolInput.restaurant_id === "string" ? toolInput.restaurant_id : "";
+            if (!restaurantId) {
+              toolResult = JSON.stringify({ error: "restaurant_id is required." });
+            } else {
+              const { getRestaurantSnapshot } = await import("../_shared/restaurant-snapshot.ts");
+              const snapshot = await getRestaurantSnapshot(supabaseAdmin, restaurantId);
+              toolResult = JSON.stringify(snapshot);
+            }
+          }
+
+          // ── transfer_to_human ─────────────────────────────────────────────
+          else if (toolName === "transfer_to_human") {
+            const reason = typeof toolInput.reason === "string" ? toolInput.reason : "user_requested_human";
+            const context = typeof toolInput.context === "string" ? toolInput.context : null;
+            derivedActions.push({
+              type: "transfer_to_human",
+              reason,
+              destination: "/find-reservation?support=1",
+            } as never);
+            toolResult = JSON.stringify({
+              ok: true,
+              handoff_url: "/find-reservation?support=1",
+              reason,
+              context,
+              message: "Support handoff initiated. Tell the user you're connecting them to support and the app is opening the support page.",
+            });
           }
 
           // Persist tool call + result. Split into two sequential inserts so
@@ -11696,6 +12354,14 @@ Deno.serve(async (req) => {
       ...booking_state,
       ...((parsed.booking as Record<string, unknown> | null) ?? {}),
     };
+    // Always merge server-side booking_state into the LLM's response.
+    // Without this, server-side resolvers (visible-first fuzzy match,
+    // city-explicit guard, etc.) that set booking_state.restaurant_id
+    // are LOST when the LLM doesn't emit its own booking object in the
+    // response. The user picked the restaurant; we already know which
+    // one — surface that in the payload so the client's booking flow
+    // sees it.
+    parsed.booking = mergedBookingForMemory;
     parsed.assistant_memory = mergeAssistantMemory(responseMemory, {
       booking_process: bookingProcessMemoryFromRecord(
         mergedBookingForMemory,

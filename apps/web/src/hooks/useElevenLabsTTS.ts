@@ -223,6 +223,10 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
   const playerRunningRef = useRef(false);
   const queueGenerationRef = useRef(0);
   const queueResolversRef = useRef<Array<() => void>>([]);
+  // Tracks in-flight primeCache runs per voiceId so multiple gestures (page
+  // load + pointerdown + mic-click + send) don't each kick off a fresh 18-item
+  // prefetch and blow the per-user rate limit. (2026-05-16)
+  const primeInFlightRef = useRef<Set<string>>(new Set());
 
   const getAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -415,15 +419,38 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
    */
   const primeCache = useCallback(async (): Promise<void> => {
     const voiceId = voiceIdRef.current ?? undefined;
-    for (const text of COMMON_TTS_CACHE_TEXTS) {
-      try {
-        const cached = await readCachedBlob(voiceId, text);
-        if (cached) continue;
-      } catch {
-        /* ignore */
+    // 1) Single-flight guard: if a prime is already in progress for this
+    //    voice, don't kick off a second one. AssistantProvider calls
+    //    primeTTS() from multiple gestures (pointerdown, open, sendTranscript)
+    //    and each gesture used to fire 18 sequential ElevenLabs requests.
+    //    With 60/min server-side rate limit, that broke voice for the rest
+    //    of the minute. (2026-05-16 rate-limit fix)
+    const primeKey = `${voiceId ?? "default"}`;
+    if (primeInFlightRef.current.has(primeKey)) return;
+    primeInFlightRef.current.add(primeKey);
+    try {
+      // 2) Check ALL items first via Promise.all (parallel IDB reads are
+      //    cheap and don't hit the network).
+      const missing: string[] = [];
+      await Promise.all(
+        COMMON_TTS_CACHE_TEXTS.map(async (text) => {
+          try {
+            const cached = await readCachedBlob(voiceId, text);
+            if (!cached) missing.push(text);
+          } catch {
+            missing.push(text);
+          }
+        }),
+      );
+      if (missing.length === 0) return;
+      // 3) Throttle uncached fetches — ~250ms between each, so 18 items take
+      //    ~4.5s spread out instead of slamming the rate limit in 1 second.
+      for (const text of missing) {
+        await fetchTTSBlob(text, voiceId);
+        await new Promise((r) => setTimeout(r, 250));
       }
-      // fetchTTSBlob writes COMMON_TTS_CACHE_TEXTS into the cache.
-      await fetchTTSBlob(text, voiceId);
+    } finally {
+      primeInFlightRef.current.delete(primeKey);
     }
   }, []);
 

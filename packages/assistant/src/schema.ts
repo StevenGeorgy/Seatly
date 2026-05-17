@@ -267,6 +267,11 @@ export type AssistantResponseType = z.infer<typeof AssistantResponse>;
 
 export const OrchestratorRequest = z.object({
   transcript: z.string().optional(),
+  // Deepgram returns up to 3 candidate transcripts per utterance. The
+  // orchestrator scores each against the restaurant/city ground truth and
+  // picks the best fit. Index 0 may or may not equal `transcript` (it
+  // usually does) — the orchestrator treats them as a ranked list.
+  transcript_alternatives: z.array(z.string()).optional(),
   screen: z.string().optional(),
   booking_state: BookingDeltaSchema.optional(),
   map_state: MapDeltaSchema.optional(),

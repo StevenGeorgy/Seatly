@@ -40,15 +40,18 @@ Deno.serve(async (req) => {
       .single();
     if (profileErr || !profile) return jsonRes({ error: "Unauthorized" }, 401);
 
-    // Per-user rate limit. Each AI turn = 1 TTS call (plus retries + streaming
-    // chunks via speakQueued). 60/min is generous for a normal conversation
-    // and trips on sustained tab-spam or a stuck retry loop.
+    // Per-user rate limit. Bumped to 240/min (2026-05-16) because primeCache
+    // alone fires ~18 sequential requests per session open to warm IDB. With
+    // multi-tab use + real-time TTS chunks (speakQueued), the prior 60/min
+    // limit blew up routinely and silently broke voice for the rest of the
+    // minute. 240/min handles cache warm + active conversation + safety
+    // margin. Real abuse hits this; normal use never comes close.
     try {
       await enforceRateLimit(
         supabaseAdmin,
         "elevenlabs_tts",
         rateLimitIdentifier(req, profile.id),
-        { limit: 60, windowSeconds: 60 },
+        { limit: 240, windowSeconds: 60 },
       );
     } catch (e) {
       if (e instanceof RateLimitError) {

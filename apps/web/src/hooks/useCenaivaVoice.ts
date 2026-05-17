@@ -77,11 +77,11 @@ export function useCenaivaVoice() {
     });
   }, [dispatch, speech, deepgram]);
 
-  const startListening = useCallback(async (sttHints: string[] = []): Promise<{ transcript: string; stopped: boolean }> => {
-    if (listeningRef.current) return { transcript: "", stopped: false };
+  const startListening = useCallback(async (sttHints: string[] = []): Promise<{ transcript: string; alternatives: string[]; stopped: boolean }> => {
+    if (listeningRef.current) return { transcript: "", alternatives: [], stopped: false };
     // Manual mute short-circuits: report `stopped: true` so callers don't
     // mistake this for an empty-transcript retry loop.
-    if (isMuted) return { transcript: "", stopped: true };
+    if (isMuted) return { transcript: "", alternatives: [], stopped: true };
     // Wait for the prior session's teardown to finish if we're inside the
     // post-stop gap. Eliminates a Chrome race where re-acquiring the mic
     // before the previous stream was fully released errors out.
@@ -101,10 +101,13 @@ export function useCenaivaVoice() {
     dispatch({ type: "SET_VOICE_STATUS", status: "listening" });
 
     try {
-      let transcript: string;
+      let transcript = "";
+      let alternatives: string[] = [];
       if (DEEPGRAM_ENABLED && deepgram.isSupported) {
         try {
-          transcript = await deepgram.startRecognition(sttHints);
+          const result = await deepgram.startRecognition(sttHints);
+          transcript = result.transcript;
+          alternatives = result.alternatives;
         } catch (err) {
           // Never fall back to browser speech recognition. Deepgram failures
           // surface upward so the UI can fail closed instead of silently
@@ -120,7 +123,7 @@ export function useCenaivaVoice() {
       if (!manualStopRef.current) {
         dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
       }
-      return { transcript, stopped: manualStopRef.current };
+      return { transcript, alternatives, stopped: manualStopRef.current };
     } catch (err) {
       if (!manualStopRef.current) {
         // Only show the red "Grant microphone access" state when the user has

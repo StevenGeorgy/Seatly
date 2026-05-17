@@ -5,37 +5,22 @@ import { useErrorToast } from "@/lib/errors";
 import { useCenaivaOrchestrator } from "@/hooks/useCenaivaOrchestrator";
 import { useCenaivaVoice } from "@/hooks/useCenaivaVoice";
 import { useCenaivaWakeWord } from "@/hooks/useCenaivaWakeWord";
-import { useCenaivaSmallPrompt } from "@/hooks/useCenaivaSmallPrompt";
-import { useCenaivaAvailability } from "@/hooks/useCenaivaAvailability";
 import { useCenaivaLatencyBudget, type LatencyTransport } from "@/hooks/useCenaivaLatencyBudget";
-import { useCenaivaVoicePreference } from "@/hooks/useCenaivaVoicePreference";
 import { NOISE_ROBUST_AUDIO_CONSTRAINTS, prefetchDeepgramToken } from "@/hooks/useDeepgramTranscription";
 import { useAssistantStore, AssistantStoreProvider } from "@/components/cenaiva/AssistantStore";
 import {
   NO_AUTO_RELISTEN_STATUSES,
-  RELISTEN_AFTER_RESPONSE_MS,
 } from "@/components/cenaiva/assistantStoreConstants";
 import { useUser } from "@/hooks/useUser";
 import { useSavedCards } from "@/hooks/useSavedCards";
 import { buildWakeGreeting } from "@/lib/cenaiva/buildWakeGreeting";
-import {
-  shouldRouteAsCenaivaBookingConfirmation,
-  transcriptForCenaivaBookingConfirmation,
-} from "@/lib/cenaiva/confirmationIntent";
-import { isCenaivaProcessPrompt } from "@/lib/cenaiva/simplePromptIntent";
+import { transcriptForCenaivaBookingConfirmation } from "@/lib/cenaiva/confirmationIntent";
 import {
   getCenaivaRecommendationMode,
   normalizeSingleRestaurantRecommendationResponse,
   applyClientDiscoveryMemory,
 } from "@/lib/cenaiva/recommendationIntent";
-import {
-  buildLocalAvailabilityResponse,
-  planLocalBookingTurn,
-  type CenaivaAvailabilityOption,
-} from "@/lib/cenaiva/localBookingCollector";
-import type { AssistantResponseType, OrchestratorRequestType } from "@cenaiva/assistant";
-
-const FAST_PATH_ENABLED = (import.meta.env.VITE_CENAIVA_FAST_PATH ?? "true") !== "false";
+import type { OrchestratorRequestType } from "@cenaiva/assistant";
 
 // ── Context exposed to child components ───────────────────────────────────────
 
@@ -54,7 +39,7 @@ interface AssistantContextValue {
   sayGoodbyeAndClose: (message?: string, redirectAfter?: string) => Promise<void>;
   sendTranscript: (
     transcript: string,
-    opts?: { restaurantId?: string; silent?: boolean; force?: boolean },
+    opts?: { restaurantId?: string; silent?: boolean; force?: boolean; alternatives?: string[] },
   ) => Promise<void>;
   startListening: () => Promise<void>;
   shouldAutoListenOnOpen: () => boolean;
@@ -117,9 +102,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const { hasCard } = useSavedCards();
   const orchestrator = useCenaivaOrchestrator();
   const voice = useCenaivaVoice();
-  const smallPrompt = useCenaivaSmallPrompt();
-  const availability = useCenaivaAvailability();
-  const voicePref = useCenaivaVoicePreference();
+  // Note: voicePref hook removed from this component after 2026-05-16
+  // single-orchestrator collapse. /account/voice and useCenaivaVoice still
+  // call useCenaivaVoicePreference directly.
   const latency = useCenaivaLatencyBudget();
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -153,9 +138,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const speechHintsRef = useRef<string[]>([]);
   const autoListenOnOpenRef = useRef(false);
   const turnIdRef = useRef(0);
-  // Tracks options the user is still picking between after a Stage 2 result.
-  // Mirrors mobile's `pendingOptions` slot in the assistant store.
-  const pendingOptionsRef = useRef<CenaivaAvailabilityOption[]>([]);
   // Greeting text passed to open() — spoken after audio context unlocks.
   const greetingTextRef = useRef<string | null>(null);
   // The wake-word recognizer and the command recognizer cannot BOTH hold the
@@ -250,40 +232,10 @@ function AssistantInner({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Helper: finish a local-stage turn — apply response, speak it, and
-  // schedule relisten if the resulting booking status allows it.
-  const finishLocalResponse = useCallback(
-    async (
-      response: AssistantResponseType,
-      opts?: { schedule_relisten?: boolean; clearPendingOptions?: boolean },
-    ) => {
-      dispatch({ type: "APPLY_RESPONSE", response });
-      if (opts?.clearPendingOptions) pendingOptionsRef.current = [];
-      if (response.spoken_text) {
-        await voice.speak(response.spoken_text);
-      }
-      dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
-      processingRef.current = false;
-      const next = stateRef.current;
-      if (
-        opts?.schedule_relisten &&
-        isOpenRef.current &&
-        !textModeRef.current &&
-        !muteRef.current &&
-        !NO_AUTO_RELISTEN_STATUSES.has(next.booking.status)
-      ) {
-        setTimeout(() => {
-          if (isOpenRef.current && !textModeRef.current && !muteRef.current) void startListeningRef.current();
-        }, RELISTEN_AFTER_RESPONSE_MS);
-      }
-    },
-    [dispatch, voice],
-  );
-
   const sendTranscript = useCallback(
     async (
       transcript: string,
-      opts?: { restaurantId?: string; silent?: boolean; force?: boolean },
+      opts?: { restaurantId?: string; silent?: boolean; force?: boolean; alternatives?: string[] },
     ) => {
       const turnId = ++turnIdRef.current;
       latency.start(turnId);
@@ -306,209 +258,38 @@ function AssistantInner({ children }: { children: ReactNode }) {
       dispatch({ type: "SET_VOICE_STATUS", status: "processing" });
 
       const current = stateRef.current;
-      const isBookingConfirmationReply = shouldRouteAsCenaivaBookingConfirmation(
-        current.booking.status,
-        transcript,
-      );
+      // Confirmation rewrite: when the orchestrator just asked for booking
+      // confirmation and the user says a bare "yes", rewrite to a fuller
+      // phrase so the orchestrator's confirmation handler routes correctly
+      // even without prior-turn intent inference.
       const orchestratorTranscript = transcriptForCenaivaBookingConfirmation(
         current.booking.status,
         transcript,
       );
-      const isProcessPrompt = isCenaivaProcessPrompt(transcript);
       const recommendationMode = getCenaivaRecommendationMode(transcript);
       const browserTimeZone =
         typeof Intl !== "undefined"
           ? Intl.DateTimeFormat().resolvedOptions().timeZone
           : undefined;
 
-      // ── STAGE 1 — local booking collector ───────────────────────────────────
-      // Skip Stage 1 for clear greetings / chit-chat / off-topic that contain
-      // a stray date/time word ("how are you doing today", "good morning",
-      // "what's up tonight"). Without this guard the local collector parses
-      // "today"/"tonight"/etc. out of the greeting, treats it as a booking
-      // detail, and asks "what restaurant or area should I book?" — which
-      // sounds robotic and ignores the actual greeting.
-      const isPureGreeting = /^\s*(hey|hi|hello|yo|yoo+|sup|what'?s\s+up|good\s+(?:morning|afternoon|evening|night)|howdy|wassup|how\s+(?:are\s+you|is\s+it\s+going|you\s+doing))\b/i
-        .test(transcript) && !/\b(book|reserve|table|reservation|find|show|search|recommend|hungry|starving|eat|food)\b/i.test(transcript);
-      // Skip Stage 1 for fact-lookup / global discovery questions like "what
-      // is X about", "any deals tonight", "best cuisines", "closest spots".
-      // Without this guard, planLocalBookingTurn parses "tonight"/"today" as
-      // a date and routes to the availability check (Stage 2) — which then
-      // returns the restaurant's HOURS instead of the orchestrator's
-      // deterministic deals/about/etc handler.
-      const isFactOrGlobalQuery = /\b(?:reviews?|ratings?|expensive|cheap|pricey|popular|best|top|favorite|favourite|deals?|promotions?|discounts?|specials?|offers?|coupons?|happy hour|closest|nearest|near me|nearby|close by|around me|walking distance|tell me about|known for|famous for|all about|menu|appetizers?|entrees?|mains?|starters?|desserts?|kids?\s+menu|drink\s+(?:list|menu)|wine\s+(?:list|menu)|beer\s+(?:list|menu)|cocktail\s+(?:list|menu)|dish(?:es)?|events?|happenings?|live music|trivia|wagyu|wine\s+pairing|tasting\s+(?:menu|night)|prix\s+fixe)\b/i.test(transcript) ||
-        /\bwhat(?:'?s| is)\s+\w+(?:\s+\w+){0,3}\s+(?:about|like)\b/i.test(transcript) ||
-        /\b(?:what|how)\s+(?:kind|type|sort)\s+of\b/i.test(transcript) ||
-        /\bis\s+\w+(?:\s+\w+){0,3}\s+(?:a\s+(?:cafe|bar|brewery|brewpub|pub|bistro|deli|bakery|lounge|izakaya|restaurant|steakhouse)|fancy|romantic|casual|quiet|loud|trendy|hip|cozy|kid|family|good\s+for)\b/i.test(transcript) ||
-        /\bdo\s+they\s+(?:have|serve)\s+(?:vegan|vegetarian|gluten[- ]?free|halal|kosher|fish|seafood|steak|pasta|burger|pizza|salad|brunch)\b/i.test(transcript);
-      // Skip Stage 1 for modify/cancel referencing prior context ("modify it",
-      // "cancel that", "change the booking"). Otherwise the local booking
-      // collector parses "5pm" as a new booking time and asks "What restaurant
-      // or area should I book?" — confusing because the user clearly meant to
-      // act on an existing reservation. Orchestrator's modify/cancel branches
-      // handle the right responses (including the "no active reservations"
-      // case for cancelled-only history).
-      const isModifyOrCancelRef = (/\b(modify|change|switch|reschedule|update|adjust|edit|move|push|bump|shift|cancel|drop|scrap|kill|nuke|abort|nix|delete|remove|forget|nevermind)\b/i.test(transcript) ||
-        /\bmake\s+it\b/i.test(transcript)) &&
-        /\b(it|that|that one|the booking|the reservation|my booking|my reservation)\b/i.test(transcript);
-      // Also skip when user references "my reservation" / "my booking" — the
-      // orchestrator owns those flows.
-      const isReservationListQuery = /\b(my\s+(?:most\s+recent|latest|newest|last|next|upcoming|first|current|active)\s+(?:reservation|booking|table)|show\s+me\s+my\s+(?:reservation|booking|past|upcoming|cancelled)|list\s+my\s+(?:reservation|booking)|(?:do|did)\s+i\s+(?:have|book))\b/i.test(transcript);
-      // Skip Stage 1 for indirect / tentative booking phrasings — "what about
-      // X", "how about X", "can you get me into X", "any chance of a table at
-      // Y", "thinking of going to Z", "feel like X". Without this guard, the
-      // local collector parses time words ("tomorrow", "tonight") out of the
-      // transcript, treats restaurant_id as missing, and emits the robotic
-      // "What restaurant or area should I book?" prompt — confusing because
-      // the transcript clearly NAMES a restaurant. The orchestrator's casual
-      // booking handler does the proper fuzzy match. Smoke regression
-      // 2026-05-11.
-      const isIndirectBookingIntent = /\b(?:what\s+about|how\s+about|can\s+you\s+(?:get|fit|squeeze)\s+(?:me|us)|any\s+chance\s+(?:of|to\s+get|i\s+can\s+get)|thinking\s+(?:of|about)\s+(?:going|trying)|feel\s+like|hit\s+up|set\s+me\s+up|grab\s+us|snag|dinner\s+for|lunch\s+for|brunch\s+for|drinks\s+for|i\s+want\s+to\s+go\s+to|i'?d\s+like\s+to\s+(?:go|try)|let'?s\s+go\s+to|book\s+(?:me\s+)?(?:a\s+)?(?:table\s+)?at|reserve\s+(?:me\s+)?(?:a\s+)?(?:table\s+)?at|i\s+want\s+a\s+table|(?:take|bring|treat)\s+(?:my|the|our)\s+(?:girlfriend|boyfriend|wife|husband|partner|family|kids|date|gf|bf|friend|buddy|mate|mom|mum|dad|sister|brother|cousin|coworker|colleague|spouse|fiance|fiancee))\b/i.test(transcript);
-      if (FAST_PATH_ENABLED && !isPureGreeting && !isFactOrGlobalQuery && !isModifyOrCancelRef && !isReservationListQuery && !isIndirectBookingIntent) {
-        const decision = planLocalBookingTurn({
-          transcript,
-          booking: current.booking,
-          conversationId: current.conversationId,
-          selectedRestaurantId: opts?.restaurantId ?? current.booking.restaurant_id,
-          selectedRestaurantName: current.booking.restaurant_name,
-          timezone: browserTimeZone || "America/Toronto",
-          pendingOptions: pendingOptionsRef.current,
-          lastAssistantPrompt: current.lastSpokenText || null,
-        });
+      // ── SINGLE ORCHESTRATOR CALL ──────────────────────────────────────────
+      // 2026-05-16: collapsed the prior 4-stage pipeline (local booking
+      // collector + availability check + small-prompt + orchestrator) into a
+      // single orchestrator call. The orchestrator now owns slot extraction,
+      // availability checks (as a tool), fact lookups (via get_restaurant_snapshot),
+      // modify/cancel routing, and off-topic redirects. See CENAIVA_REBUILD_PLAN.md.
+      // Forward Deepgram's runner-up transcripts so the orchestrator can
+      // score each candidate against the visible/active restaurant list and
+      // pick the best fit. Only forwarded when the rewriter did NOT change
+      // the transcript (yes-confirmation rewrites are exact, not fuzzy).
+      const forwardedAlternatives =
+        opts?.alternatives && opts.alternatives.length > 0 && orchestratorTranscript === transcript
+          ? opts.alternatives.filter((a) => a && a !== orchestratorTranscript).slice(0, 3)
+          : undefined;
 
-        if (decision.kind === "local_response") {
-          if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
-          await finishLocalResponse(decision.response, {
-            schedule_relisten: true,
-            clearPendingOptions: decision.clearPendingOptions,
-          });
-          latency.summarize(turnId);
-          return;
-        }
-
-        if (decision.kind === "check_availability") {
-          // Speak filler in parallel with the availability call. "One moment
-          // please." is in COMMON_TTS_CACHE_TEXTS so playback is local-IDB
-          // (sub-50ms) once the user has primed the cache.
-          if (decision.filler) {
-            if (voice.isStreamingTTSAvailable) {
-              voice.speakStreamingChunk(decision.filler);
-            } else {
-              void voice.speak(decision.filler);
-            }
-          }
-          dispatch({ type: "APPLY_RESPONSE", response: decision.responseBeforeCheck });
-          const controller = new AbortController();
-          const timer = window.setTimeout(() => controller.abort(), 20_000);
-          try {
-            const { data: result } = await availability.check(
-              decision.request as unknown as Record<string, unknown>,
-              { signal: controller.signal },
-            );
-            if (!result) {
-              if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
-              await voice.speak(
-                "I could not reach live availability. Try another date and time, or ask for the restaurant hours.",
-              );
-              dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
-              processingRef.current = false;
-              latency.summarize(turnId);
-              return;
-            }
-            const { response: availResponse, pendingOptions } =
-              buildLocalAvailabilityResponse({
-                conversationId: current.conversationId,
-                request: decision.request,
-                result: result as unknown as Parameters<
-                  typeof buildLocalAvailabilityResponse
-                >[0]["result"],
-              });
-            pendingOptionsRef.current = pendingOptions;
-            if (voice.isStreamingTTSAvailable) voice.discardStreamingSpeech();
-            await finishLocalResponse(availResponse, { schedule_relisten: true });
-          } finally {
-            window.clearTimeout(timer);
-          }
-          latency.summarize(turnId);
-          return;
-        }
-        // decision.kind === 'pass' → continue to Stage 3 / 4
-      }
-
-      // ── STAGE 3 — small-prompt fast-path ─────────────────────────────────────
-      // Skip when the user is replying yes/no to a confirmation prompt or when
-      // the transcript is clearly a process/booking prompt (those go to the
-      // orchestrator so the booking flow proceeds correctly). Also skip when a
-      // pending_action (modify/cancel/save_preference) is queued — the user's
-      // next reply is a yes/no on THAT action and must reach the orchestrator's
-      // confirmPendingAction handler, not the small-prompt LLM (which would
-      // emit a fresh booking-flow prompt and silently drop the pending action).
-      const hasPendingAction = !!current.booking.pending_action;
-      // Mid-booking affirmative — when the user has already named a restaurant
-      // (restaurant_id set) and replies with a short yes/sure/ok/sounds good,
-      // route to the orchestrator so the booking flow continues. Without this
-      // guard, "yes" alone goes to small-prompt and the booking state silently
-      // resets. Smoke regression 2026-05-12.
-      const isMidBookingAffirmative =
-        !!current.booking.restaurant_id &&
-        /^(?:yes|yeah|yep|yup|sure|ok|okay|sounds good|sounds great|please|go ahead|let'?s do it|do it|book it|absolutely|definitely|of course)\b/i.test(
-          transcript.trim(),
-        );
-      // 2026-05-15 fix: fact-lookup queries about a named restaurant should
-      // go to the orchestrator's factLookupMatch handler (which reads
-      // hours_json / phone / address / events / promotions directly), not
-      // to the small-prompt LLM (which has no DB access and replies with
-      // a generic redirect like "I don't have info on testing hours").
-      const isFactLookup =
-        /\b(?:hours?|phone|address|location|menu|events?|deals?|promos?|promotions?|specials?|wagyu|wine|trivia|happy\s+hour)\b/i.test(transcript) &&
-        /\b(?:what|where|when|how|does|is|are|any|do(?:es)?|got|tell|list|show)\b/i.test(transcript);
-      if (FAST_PATH_ENABLED && !isBookingConfirmationReply && !isProcessPrompt && !hasPendingAction && !isMidBookingAffirmative && !isFactLookup) {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 8_000);
-        try {
-          const { data: smallResult } = await smallPrompt.send(
-            {
-              transcript,
-              booking: {
-                restaurant_id: current.booking.restaurant_id,
-                restaurant_name: current.booking.restaurant_name,
-                party_size: current.booking.party_size,
-                date: current.booking.date,
-                time: current.booking.time,
-              },
-              voice_id: voicePref.voiceId,
-            },
-            { signal: controller.signal },
-          );
-          if (smallResult) {
-            const asResponse: AssistantResponseType = {
-              conversation_id: current.conversationId ?? "",
-              spoken_text: smallResult.spoken_text,
-              intent: "general_question" as AssistantResponseType["intent"],
-              step: "general" as AssistantResponseType["step"],
-              next_expected_input:
-                smallResult.next_expected_input as AssistantResponseType["next_expected_input"],
-              ui_actions: [],
-              booking: null,
-              map: null,
-              filters: null,
-              assistant_memory: null,
-            };
-            await finishLocalResponse(asResponse, { schedule_relisten: true });
-            latency.summarize(turnId);
-            return;
-          }
-          // null → fall through to Stage 4
-        } catch {
-          // abort or fetch error → fall through to Stage 4
-        } finally {
-          window.clearTimeout(timer);
-        }
-      }
-
-      // ── STAGE 4 — full orchestrator (with recommendation_mode + memory) ─────
       const req: OrchestratorRequestType = {
         transcript: orchestratorTranscript,
+        transcript_alternatives: forwardedAlternatives,
         screen: "discover",
         booking_state: {
           restaurant_id: current.booking.restaurant_id,
@@ -763,10 +544,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
       navigate,
       hasCard,
       latency,
-      smallPrompt,
-      availability,
-      voicePref.voiceId,
-      finishLocalResponse,
       errorToast,
     ],
   );
@@ -774,7 +551,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const startListening = useCallback(async () => {
     if (!isOpenRef.current) return;
     try {
-      const { transcript, stopped } = await voice.startListening(speechHintsRef.current);
+      const { transcript, alternatives, stopped } = await voice.startListening(speechHintsRef.current);
       if (stopped) {
         emptyRelistenStreakRef.current = 0;
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
@@ -782,7 +559,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       }
       if (transcript.trim()) {
         emptyRelistenStreakRef.current = 0;
-        await sendTranscript(transcript);
+        await sendTranscript(transcript, { alternatives });
       } else if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
         // Empty transcript → relisten, but ALWAYS via setTimeout and capped
         // at MAX_EMPTY_RELISTENS. A sync `void startListeningRef.current()`
@@ -898,10 +675,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
       // starts the utterance, the token is already in hand — saves the
       // 100-300ms /deepgram-live-token round-trip on the first turn.
       prefetchDeepgramToken();
-      // Wake the orchestrator + small-prompt edge runtimes so the user's
-      // first real turn doesn't pay cold-start latency. Fire-and-forget.
+      // Wake the orchestrator edge runtime so the user's first real turn
+      // doesn't pay cold-start latency. Fire-and-forget.
       void orchestrator.prewarm();
-      smallPrompt.prewarm(voicePref.voiceId);
 
       if (restaurantId && restaurantName) {
         dispatch({ type: "PRESELECT_RESTAURANT", restaurant_id: restaurantId, restaurant_name: restaurantName });
@@ -950,7 +726,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         })();
       }
     },
-    [dispatch, requestLocation, voice, orchestrator, smallPrompt, voicePref.voiceId],
+    [dispatch, requestLocation, voice, orchestrator],
   );
 
   // voice is a fresh object literal every render of useCenaivaVoice, so any

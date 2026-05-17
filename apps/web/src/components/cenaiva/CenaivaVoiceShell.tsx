@@ -82,12 +82,24 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const inManualMenu = MANUAL_MENU_STATUSES.has(state.booking.status);
   const speechHints = useMemo(() => {
     const visibleIds = new Set(state.map.marker_restaurant_ids ?? []);
-    const visibleNames = restaurants
-      .filter((restaurant) => visibleIds.has(restaurant.id))
-      .map((restaurant) => restaurant.name);
+    const visibleRestaurants = restaurants.filter((restaurant) => visibleIds.has(restaurant.id));
+    const visibleNames = visibleRestaurants.map((restaurant) => restaurant.name);
+    // Phase 4: include up to 8 distinct city names from visible restaurants
+    // as Deepgram keyterms. A typo like "Welph" then resolves to "Guelph"
+    // via the model's keyterm-biased edit distance — same recovery the
+    // restaurant-name hints already give us, but for the geography axis
+    // that the orchestrator's city filter depends on.
+    const visibleCities = Array.from(
+      new Set(
+        visibleRestaurants
+          .map((r) => (r.city ?? "").trim())
+          .filter(Boolean),
+      ),
+    ).slice(0, 8);
     const hints = [
       state.booking.restaurant_name ?? "",
       ...visibleNames,
+      ...visibleCities,
     ];
     if (state.map.highlighted_restaurant_id) {
       const highlighted = restaurants.find((restaurant) => restaurant.id === state.map.highlighted_restaurant_id);
@@ -95,7 +107,7 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
         hints.unshift(highlighted.name);
       }
     }
-    return Array.from(new Set(hints.map((hint) => hint.trim()).filter(Boolean))).slice(0, 12);
+    return Array.from(new Set(hints.map((hint) => hint.trim()).filter(Boolean))).slice(0, 24);
   }, [
     restaurants,
     state.booking.restaurant_name,

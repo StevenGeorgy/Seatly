@@ -36,6 +36,11 @@ const TRANSCRIBE_QUERY: Record<string, string> = {
   language: "en",
   smart_format: "true",
   punctuate: "true",
+  // Request 3 candidate transcripts per utterance. The orchestrator scores
+  // each against the visible/active restaurant list and picks the best — a
+  // mishear that lands at position 1 ("Jackass and Co") can still resolve
+  // correctly when position 2 ("Jacobs and Co") clearly fits a real name.
+  alternatives: "3",
 };
 
 const TOKEN_TTL_BUFFER_MS = 5_000;
@@ -57,7 +62,11 @@ const NO_SPEECH_TIMEOUT_MS = 15_000;
 const TURN_TIMEOUT_MS = 60_000;
 const STREAM_KEEP_WARM_MS = 12_000;
 const SPEECH_RMS_THRESHOLD = 0.015;
-const MAX_KEYTERMS = 12;
+// Phase 4: bumped from 12 to 24 so the keyterm budget covers both visible
+// restaurant names AND up to ~8 nearby city names. Cities are a different
+// signal from restaurants — "in Welph" should still resolve to Guelph via
+// edit-distance against the city keyterm list.
+const MAX_KEYTERMS = 24;
 const MEDIA_RECORDER_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -73,6 +82,11 @@ interface DeepgramPrerecordedResponse {
     }>;
   };
 }
+
+export type DeepgramTranscriptResult = {
+  transcript: string;
+  alternatives: string[];
+};
 
 function normalizeKeyterms(keyterms: string[] = []): string[] {
   return Array.from(
@@ -161,7 +175,7 @@ export function prefetchDeepgramToken(): void {
 // single-retry behavior had both attempts fall inside the same outage window.
 const DEEPGRAM_RETRY_BACKOFF_MS = [0, 200, 600];
 
-async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<string> {
+async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<DeepgramTranscriptResult> {
   const url = buildDeepgramTranscribeUrl(keyterms);
   const maxAttempts = DEEPGRAM_RETRY_BACKOFF_MS.length;
 
@@ -186,7 +200,13 @@ async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<s
 
       if (response.ok) {
         const json = (await response.json()) as DeepgramPrerecordedResponse;
-        return json.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? "";
+        const alts = (json.results?.channels?.[0]?.alternatives ?? [])
+          .map((a) => a.transcript?.trim() ?? "")
+          .filter((t) => t.length > 0);
+        return {
+          transcript: alts[0] ?? "",
+          alternatives: alts.slice(0, 3),
+        };
       }
 
       const bodyText = await response.text().catch(() => "");
@@ -225,7 +245,7 @@ export function useDeepgramTranscription() {
   const turnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const releaseStreamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const resolveRef = useRef<((value: string) => void) | null>(null);
+  const resolveRef = useRef<((value: DeepgramTranscriptResult) => void) | null>(null);
   const rejectRef = useRef<((reason?: Error) => void) | null>(null);
   const settledRef = useRef(false);
   const speechDetectedRef = useRef(false);
@@ -312,16 +332,19 @@ export function useDeepgramTranscription() {
     setIsRecording(false);
   }, [cancelLevelMonitor, clearReleaseStreamTimer, clearTurnTimer, releaseStream]);
 
-  const finish = useCallback((transcript: string) => {
+  const finish = useCallback((result: DeepgramTranscriptResult) => {
     if (settledRef.current) return;
     settledRef.current = true;
     const resolve = resolveRef.current;
     resolveRef.current = null;
     rejectRef.current = null;
     cleanupMedia({ keepWarm: true });
-    const final = transcript.trim();
+    const final: DeepgramTranscriptResult = {
+      transcript: result.transcript.trim(),
+      alternatives: result.alternatives.map((a) => a.trim()).filter(Boolean),
+    };
     if (import.meta.env.DEV) {
-      console.log(`[Cenaiva STT] heard: "${final}"`);
+      console.log(`[Cenaiva STT] heard: "${final.transcript}" (alts=${final.alternatives.length})`);
     }
     resolve?.(final);
   }, [cleanupMedia]);
@@ -344,7 +367,7 @@ export function useDeepgramTranscription() {
 
     const recorder = recorderRef.current;
     if (!recorder) {
-      finish("");
+      finish({ transcript: "", alternatives: [] });
       return;
     }
 
@@ -356,7 +379,7 @@ export function useDeepgramTranscription() {
       } catch { /* ignore */ }
     }
 
-    finish("");
+    finish({ transcript: "", alternatives: [] });
   }, [cancelLevelMonitor, clearTurnTimer, finish]);
 
   const monitorLevels = useCallback(() => {
@@ -404,8 +427,8 @@ export function useDeepgramTranscription() {
     animationFrameRef.current = requestAnimationFrame(tick);
   }, [stopRecorder]);
 
-  const startRecognition = useCallback(async (keyterms: string[] = []): Promise<string> => {
-    if (isRecording) return "";
+  const startRecognition = useCallback(async (keyterms: string[] = []): Promise<DeepgramTranscriptResult> => {
+    if (isRecording) return { transcript: "", alternatives: [] };
     if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
       throw new Error("deepgram-mediarecorder-unavailable");
     }
@@ -499,12 +522,12 @@ export function useDeepgramTranscription() {
       void (async () => {
         cleanupMedia({ keepWarm: true });
         if (!blob.size || !speechDetectedRef.current) {
-          finish("");
+          finish({ transcript: "", alternatives: [] });
           return;
         }
         try {
-          const transcript = await transcribeWithDeepgram(blob, keytermsRef.current);
-          finish(transcript);
+          const result = await transcribeWithDeepgram(blob, keytermsRef.current);
+          finish(result);
         } catch (err) {
           fail(err instanceof Error ? err : new Error(String(err)));
         }
@@ -524,7 +547,7 @@ export function useDeepgramTranscription() {
     }, TURN_TIMEOUT_MS);
     monitorLevels();
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<DeepgramTranscriptResult>((resolve, reject) => {
       resolveRef.current = resolve;
       rejectRef.current = reject;
     });
