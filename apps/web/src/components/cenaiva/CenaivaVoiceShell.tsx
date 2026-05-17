@@ -143,8 +143,30 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
       assistant?.shouldAutoListenOnOpen() &&
       !MANUAL_MENU_STATUSES.has(state.booking.status);
 
+    // Skip the speak when AssistantProvider's wake-word flow already
+    // owns the greeting (it speaks `buildWakeGreeting(user)` then orchestrates
+    // mic handoff). Without this guard, BOTH paths speak — wake-word's
+    // greeting + the shell's local greeting — and the user hears two voices
+    // back-to-back. Still dispatch the text so the on-screen caption shows
+    // something (the wake-word greeting may differ in wording).
+    //
+    // ALSO skip when the greeting already played at least once this session
+    // (rapid open/close was firing 5× of "Good morning..." TTS attempts
+    // within one second — the cache silenced them but the work was wasted).
+    const greetingAlreadyHandled =
+      (assistant?.wasGreetingHandledExternally() ?? false) ||
+      (assistant?.wasSessionGreetingPlayed() ?? false);
+
     if (shouldListenImmediately) {
       dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
+      // Speak the greeting AND open the mic in parallel. Skipped when the
+      // wake-word path already spoke. Fire-and-forget so the mic doesn't
+      // block on TTS — useCenaivaVoice handles overlap by stopping TTS
+      // when listening starts.
+      if (!greetingAlreadyHandled) {
+        void voice.speak(greeting);
+        assistant?.markSessionGreetingPlayed();
+      }
       const timer = window.setTimeout(() => {
         if (
           isOpenRef.current &&
@@ -159,7 +181,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
 
     dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: greeting });
     void (async () => {
-      await voice.speak(greeting);
+      if (!greetingAlreadyHandled) {
+        await voice.speak(greeting);
+        assistant?.markSessionGreetingPlayed();
+      }
       // After greeting, start listening automatically — unless we're already
       // in the manual menu flow (pre-order offer / browsing menu), where the
       // user drives the UI with taps and only opts into the mic for ad-hoc

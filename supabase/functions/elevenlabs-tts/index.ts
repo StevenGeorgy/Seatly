@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders } from "../_shared/cors.ts";
+import { buildCorsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
@@ -17,12 +17,12 @@ function applyPronunciation(text: string): string {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: buildCorsHeaders(req) });
   }
 
   const apiKey = Deno.env.get("ELEVENLABS_API_KEY");
   if (!apiKey) {
-    return jsonRes({ error: "ElevenLabs not configured" }, 503);
+    return jsonRes({ error: "ElevenLabs not configured" }, 503, req);
   }
 
   try {
@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get("Authorization") ?? "";
     const token = authHeader.replace(/^Bearer\s+/i, "");
     const payload = decodeJwtPayload(token);
-    if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401);
+    if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401, req);
 
     // Lightweight user check + capture profile.id for the rate-limit bucket.
     const { data: profile, error: profileErr } = await supabaseAdmin
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
       .select("id")
       .eq("auth_user_id", payload.sub as string)
       .single();
-    if (profileErr || !profile) return jsonRes({ error: "Unauthorized" }, 401);
+    if (profileErr || !profile) return jsonRes({ error: "Unauthorized" }, 401, req);
 
     // Per-user rate limit. Bumped to 240/min (2026-05-16) because primeCache
     // alone fires ~18 sequential requests per session open to warm IDB. With
@@ -55,14 +55,14 @@ Deno.serve(async (req) => {
       );
     } catch (e) {
       if (e instanceof RateLimitError) {
-        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429, req);
       }
       throw e;
     }
 
     const body = await req.json() as { text?: string; voice_id?: string };
     const rawText = (body.text ?? "").trim();
-    if (!rawText) return jsonRes({ error: "text is required" }, 400);
+    if (!rawText) return jsonRes({ error: "text is required" }, 400, req);
 
     const text = applyPronunciation(rawText);
     const voiceId = body.voice_id ?? DEFAULT_VOICE_ID;
@@ -99,20 +99,20 @@ Deno.serve(async (req) => {
 
     if (!elRes.ok) {
       const errText = await elRes.text();
-      return jsonRes({ error: `ElevenLabs error: ${errText}` }, elRes.status);
+      return jsonRes({ error: `ElevenLabs error: ${errText}` }, elRes.status, req);
     }
 
     // Stream the MP3 directly back to the client
     return new Response(elRes.body, {
       status: 200,
       headers: {
-        ...corsHeaders,
+        ...buildCorsHeaders(req),
         "Content-Type": "audio/mpeg",
         "Transfer-Encoding": "chunked",
         "Cache-Control": "no-store",
       },
     });
   } catch (err) {
-    return jsonRes({ error: String(err) }, 500);
+    return jsonRes({ error: String(err) }, 500, req);
   }
 });

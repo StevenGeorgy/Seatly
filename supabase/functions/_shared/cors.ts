@@ -19,9 +19,21 @@ const SHARED_HEADERS = {
   "Vary": "Origin",
 };
 
+// Local development origins are always allowed in addition to whatever's in
+// ALLOWED_ORIGINS. Without this, every dev session needs the operator to
+// add the Vite port to the env list — which they always forget — and voice
+// + every other browser-fetched edge function breaks silently with
+// "TypeError: Failed to fetch" because the browser rejects the response
+// when the Allow-Origin header points at production instead of localhost.
+function isLocalDevOrigin(origin: string | null): boolean {
+  if (!origin) return false;
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/.test(origin);
+}
+
 function pickOrigin(requestOrigin: string | null): string {
   if (ALLOWED_ORIGINS.length === 0) return "*"; // fallback while env is unset
   if (requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin)) return requestOrigin;
+  if (isLocalDevOrigin(requestOrigin)) return requestOrigin!;
   // No match — echo the first allowed origin so preflight still completes.
   // The actual request will be CORS-blocked by the browser when origins
   // don't agree, which is the desired behavior.

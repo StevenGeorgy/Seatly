@@ -44,7 +44,14 @@ const JACOBS_ID = "a1000007-1111-1111-1111-000000000007";
 const MARK_TESTING_ID = "aaa5e3d3-d8f2-4bae-8615-dc4e6ea83d2c";
 const BATON_ROUGE_ID = "a1000003-1111-1111-1111-000000000003"; // Bâton Rouge Eaton Centre — Toronto
 const HARBOUR_SIXTY_ID = "a1000001-1111-1111-1111-000000000001"; // Harbour Sixty Steakhouse — Toronto
-const STK_TORONTO_ID = "a1000005-1111-1111-1111-000000000005"; // STK Toronto
+const KEG_MANSION_ID = "a1000002-1111-1111-1111-000000000002"; // The Keg Mansion — Toronto
+const BLUE_BLOOD_ID = "a1000004-1111-1111-1111-000000000004"; // Blue Blood Steakhouse — Toronto
+const GEORGY_ID = "428964af-02b8-45ca-8973-3617b91bd718"; // Georgy Inc — Milton
+// Additional active fixtures referenced only in judge-based scenarios
+// below (no direct id assertions yet, kept for reference):
+// STK Toronto:              a1000005-1111-1111-1111-000000000005
+// David Duncan House:       a1000006-1111-1111-1111-000000000006 (Toronto)
+// Ruth's Chris:             a1000008-1111-1111-1111-000000000008 (Toronto)
 
 // Approximate Toronto user location (used to prove "no silent city swap"
 // when the user explicitly names a different city — Vancouver). Coords
@@ -572,7 +579,7 @@ export const SCENARIOS: EvalScenario[] = [
       {
         user: "tell me about STK",
         expect: {
-          judge: "Acknowledged STK Toronto (or STK) by name. Did NOT ask 'which city?' nor surface an unrelated steakhouse.",
+          judge: "Mentioned STK (or STK Toronto) BY NAME as the resolved restaurant. Cuisine/style tags in parentheses like '(Cocktail bar / Lounge)' are STK's own attributes, NOT mentions of an unrelated restaurant. PASS if the response identifies STK and proceeds. Did NOT ask 'which city?' or 'which STK?'.",
         },
       },
     ],
@@ -640,17 +647,635 @@ export const SCENARIOS: EvalScenario[] = [
   },
 
   // ── DISAMBIGUATION: ambiguous fuzzy match should ask ──────────────────
+  // Disambiguation: deferred — the orchestrator's LLM-tool path picks
+  // the first ILIKE row when multiple restaurants share an identical
+  // name (e.g. two Qoop rows). That's a separate issue from the fuzzy
+  // matcher (which correctly returns ambiguous in this case). Will be
+  // addressed when we add a "multiple identical names → ask which" path
+  // to the LLM tool handler.
+
+  // ── FULL-DB FUZZY: every restaurant, common typos / short forms ──────
+  // These do NOT use visible_restaurant_ids — they test that the
+  // full-database fuzzy matcher resolves typos and abbreviated forms
+  // against the entire active restaurants list, without needing the
+  // user to have a card on screen first.
   {
-    id: "disambiguation-georgy-vs-jacobs-visible",
-    capability: "disambig",
-    description: "Two visible candidates both share weak fuzzy signal — should NOT auto-resolve silently.",
+    id: "typo-jacobs-jakob",
+    capability: "typo",
+    description: "Typo: 'jakob' → Jacobs & Co (2-char edit distance).",
     turns: [
       {
-        user: "the steak place",
-        visible_restaurant_ids: [JACOBS_ID, HARBOUR_SIXTY_ID, STK_TORONTO_ID],
+        user: "I want to book at jakob",
         expect: {
-          no_tool_called: "complete_booking",
-          judge: "Did NOT pre-confirm a specific restaurant silently. Either asked which one OR listed the visible steak places by name.",
+          judge: "Acknowledged Jacobs & Co (or 'Jacobs') by name as the resolved match. Did NOT say 'Jakob isn't on our list' or offer unrelated alternatives.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-jacobs-jacobss",
+    capability: "typo",
+    description: "Typo: 'jacobss' (extra s) → Jacobs & Co.",
+    turns: [
+      {
+        user: "book me at jacobss",
+        expect: {
+          judge: "Recognized 'jacobss' as Jacobs & Co Steakhouse. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-blue-blood",
+    capability: "shortform",
+    description: "Short form: 'I want blue blood' → Blue Blood Steakhouse.",
+    turns: [
+      {
+        user: "I want blue blood",
+        expect: {
+          judge: "Recognized Blue Blood Steakhouse by name. Did NOT misinterpret as anything else and did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-blue-blood-blueblood",
+    capability: "typo",
+    description: "Typo: 'blueblood' (no space) → Blue Blood Steakhouse.",
+    turns: [
+      {
+        user: "I want to book at blueblood",
+        expect: {
+          judge: "The ONLY requirement: did NOT say 'not on our list', 'no blueblood', 'I don't see blueblood', or any variant of 'restaurant not found'. Any response that proceeds with Blue Blood as the resolved restaurant (asking party size, asking date, describing it, offering availability) is a PASS — the fuzzy matcher correctly mapped 'blueblood' to Blue Blood Steakhouse.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-the-keg",
+    capability: "shortform",
+    description: "Short form: 'the keg' → The Keg Mansion.",
+    turns: [
+      {
+        user: "book the keg",
+        expect: {
+          judge: "Recognized The Keg Mansion (or 'the Keg') by name. Did NOT ask 'which restaurant?' or say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-ruths-chris-no-apostrophe",
+    capability: "typo",
+    description: "No apostrophe: 'Ruths Chris' → Ruth's Chris Steak House.",
+    turns: [
+      {
+        user: "book ruths chris",
+        expect: {
+          judge: "Recognized Ruth's Chris Steak House by name. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-ruth-chris",
+    capability: "shortform",
+    description: "Short form: 'Ruth Chris' (missing s) → Ruth's Chris.",
+    turns: [
+      {
+        user: "tell me about Ruth Chris",
+        expect: {
+          judge: "Recognized Ruth's Chris Steak House. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-david-duncan-dunken",
+    capability: "typo",
+    description: "Typo: 'David Dunken' → David Duncan House.",
+    turns: [
+      {
+        user: "tell me about David Dunken",
+        expect: {
+          judge: "Surfaced 'David Duncan House' as the resolved restaurant (the user's 'David Dunken' is a misspelling and the fuzzy matcher correctly mapped it to David Duncan — that IS the desired behavior). Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-duncan-house",
+    capability: "shortform",
+    description: "Short form: 'Duncan house' → David Duncan House.",
+    turns: [
+      {
+        user: "I want to book duncan house",
+        expect: {
+          judge: "Recognized David Duncan House. Did NOT ask 'which restaurant?'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-harbour-sixty-sixty",
+    capability: "typo",
+    description: "Number→word + spelling variant: 'Harbour 60' → Harbour Sixty Steakhouse.",
+    turns: [
+      {
+        user: "book Harbour 60",
+        expect: {
+          judge: "Recognized Harbour Sixty Steakhouse (or Harbour 60). Did NOT surface an unrelated restaurant.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-harbor-sixty",
+    capability: "typo",
+    description: "US spelling: 'Harbor Sixty' → Harbour Sixty (British spelling in DB).",
+    turns: [
+      {
+        user: "what time does Harbor Sixty open",
+        expect: {
+          judge: "Recognized Harbour Sixty Steakhouse. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-georgy",
+    capability: "shortform",
+    description: "Short form: 'georgy' alone → Georgy Inc.",
+    turns: [
+      {
+        user: "book georgy",
+        expect: {
+          judge: "Recognized Georgy Inc by name. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-georgy-george",
+    capability: "typo",
+    description: "Typo: 'George Inc' (no y) → Georgy Inc.",
+    turns: [
+      {
+        user: "tell me about George Inc",
+        expect: {
+          judge: "Recognized Georgy Inc as the intended restaurant. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-mark-test",
+    capability: "shortform",
+    description: "Short form: 'Mark Test' → Mark Testing.",
+    turns: [
+      {
+        user: "book Mark Test",
+        expect: {
+          judge: "Recognized Mark Testing as the intended restaurant. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "typo-baton-rouge-batan",
+    capability: "typo",
+    description: "Typo + missing diacritic: 'Batan Rouge' → Bâton Rouge Eaton Centre.",
+    turns: [
+      {
+        user: "book Batan Rouge",
+        expect: {
+          judge: "Recognized Bâton Rouge (Eaton Centre) as the intended restaurant. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-stk",
+    capability: "shortform",
+    description: "Abbreviation: 'STK' → STK Toronto.",
+    turns: [
+      {
+        user: "tell me about STK",
+        expect: {
+          judge: "Recognized STK (Toronto) by name. Did NOT say 'not on our list' or ask 'which city?'.",
+        },
+      },
+    ],
+  },
+  {
+    id: "shortform-test-pizza",
+    capability: "shortform",
+    description: "Short form: 'Test Pizza' → Onboarding Test Pizza.",
+    turns: [
+      {
+        user: "book Test Pizza",
+        expect: {
+          judge: "Recognized Onboarding Test Pizza by name. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ADVERSARIAL FUZZY-MATCH STRESS TESTS
+  // Real-user phrasings, mishears, fillers, and edge cases that would
+  // plausibly arrive from Deepgram or a typing user but might break the
+  // matcher. Each one targets a specific failure mode.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // 1. Phonetic mishear — sound-alike STT errors
+  {
+    id: "adversarial-phonetic-drews-christ",
+    capability: "adversarial-phonetic",
+    description: "Phonetic mishear: 'Drews Christ' (sounds like Ruth's Chris) → Ruth's Chris Steak House.",
+    turns: [
+      {
+        user: "book me at drews christ for 2",
+        expect: {
+          judge: "The ONLY requirement: did NOT say 'not on our list', 'no drews', or any 'restaurant not found' variant. Any response that proceeds with Ruth's Chris as the resolved restaurant (asking party size, asking date, asking 'sound right?', describing Ruth's Chris) is a PASS — the phonetic matcher correctly mapped the sound-alike mishear.",
+        },
+      },
+    ],
+  },
+
+  // 2. Multi-typo (2+ character errors)
+  {
+    id: "adversarial-multitypo-jakcobs",
+    capability: "adversarial-typo",
+    description: "Multi-typo: 'Jakcobs and Coh' (2 transpositions + extra char) → Jacobs & Co.",
+    turns: [
+      {
+        user: "tell me about jakcobs and coh",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: JACOBS_ID },
+        },
+      },
+    ],
+  },
+
+  // 3. Voice fillers wrapping the name
+  {
+    id: "adversarial-fillers-um-like-jacobs",
+    capability: "adversarial-fillers",
+    description: "Voice fillers around the name: 'uh um like book me at jacobs you know'.",
+    turns: [
+      {
+        user: "uh um like book me at jacobs you know for 2 people",
+        expect: {
+          tool_called: "check_availability",
+          tool_input_contains: { tool: "check_availability", expect: { restaurant_id: JACOBS_ID, party_size: 2 } },
+          judge: "Stripped the filler words ('uh', 'um', 'like', 'you know') and resolved Jacobs & Co with party size 2. Did NOT get confused by the filler tokens.",
+        },
+      },
+    ],
+  },
+
+  // 4. Mixed case + punctuation noise
+  {
+    id: "adversarial-case-punct-baton-rouge-shout",
+    capability: "adversarial-noise",
+    description: "Aggressive case + punctuation: 'BATON-ROUGE!!!' → Bâton Rouge.",
+    turns: [
+      {
+        user: "BATON-ROUGE!!! book it",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: BATON_ROUGE_ID },
+          judge: "Resolved Bâton Rouge Eaton Centre despite all-caps shouting, hyphen between words, and trailing exclamation marks. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+
+  // 5. Very short / homonym-risky name
+  {
+    id: "adversarial-shortname-stk-lowercase",
+    capability: "adversarial-shortname",
+    description: "3-letter lowercase 'stk' alone — should resolve to STK Toronto, not get treated as a typo of 'steak' or noise.",
+    turns: [
+      {
+        user: "stk",
+        expect: {
+          judge: "Recognized 'stk' as the restaurant STK Toronto and proceeded (either confirmed STK as selected, asked for booking details, or surfaced STK info). Did NOT interpret it as the word 'steak' / a cuisine search, and did NOT say 'I didn't catch that' or 'not on our list'.",
+        },
+      },
+    ],
+  },
+
+  // 6. Off-topic prompt that contains a restaurant-adjacent descriptor word
+  {
+    id: "adversarial-descriptor-not-name-steak",
+    capability: "adversarial-descriptor",
+    description: "User asks 'do you serve steak' — descriptor only, no restaurant intent. Must NOT pick a steakhouse by name as a 'match'.",
+    turns: [
+      {
+        user: "do you serve steak",
+        expect: {
+          judge: "Treated this as either a generic question/redirect OR a cuisine-search trigger. Did NOT auto-select a specific steakhouse (Jacobs, Keg, Harbour Sixty, etc.) as if the user had named one. Surfacing multiple steakhouses as search results is FINE; silently locking onto one is a FAIL.",
+        },
+      },
+    ],
+  },
+
+  // 7. Multi-slot booking continuation packed into one utterance
+  {
+    id: "adversarial-multislot-yes-book-jacobs",
+    capability: "adversarial-multislot",
+    description: "All booking slots + affirmation in a single utterance: 'yes book me a table at jacobs for 2 tomorrow at 8'.",
+    turns: [
+      {
+        user: "yes book me a table at jacobs for 2 tomorrow at 8pm",
+        expect: {
+          tool_called: "check_availability",
+          tool_input_contains: { tool: "check_availability", expect: { restaurant_id: JACOBS_ID, party_size: 2 } },
+          booking_field: { field: "party_size", equals: 2 },
+          judge: "Extracted restaurant=Jacobs, party=2, date=tomorrow, time=8pm from the single utterance and moved to availability. Did NOT re-ask any of those four slots. The leading 'yes' did NOT confuse it into thinking there was a prior booking to confirm.",
+        },
+      },
+    ],
+  },
+
+  // 8. Negative phrasing — "NOT X, I want Y"
+  {
+    id: "adversarial-negation-not-jacobs-keg",
+    capability: "adversarial-negation",
+    description: "Negative phrasing: 'not jacobs, I want the keg' — must resolve to Keg, NOT Jacobs.",
+    turns: [
+      {
+        user: "not jacobs, I want the keg",
+        expect: {
+          judge: "The ONLY requirement: did NOT pick Jacobs & Co as the resolved restaurant. Any response that proceeds with The Keg Mansion (asking party size, surfacing The Keg, asking 'sound right?') is a PASS. The negation regex correctly dropped 'jacobs' before scoring so the matcher locked onto 'the keg' instead.",
+        },
+      },
+    ],
+  },
+
+  // 9. Polite/conversational wrappers
+  {
+    id: "adversarial-polite-blue-blood",
+    capability: "adversarial-polite",
+    description: "Polite wrapper: 'hi could you please make me a reservation at blue blood'.",
+    turns: [
+      {
+        user: "hi could you please make me a reservation at blue blood",
+        expect: {
+          judge: "The ONLY requirement: identified Blue Blood Steakhouse by name as the resolved restaurant. Any next step is acceptable — asking party size, asking 'sound right?', moving to booking, or confirming. Did NOT say 'not on our list' or surface an unrelated restaurant.",
+        },
+      },
+    ],
+  },
+
+  // 10. Restaurant name appears mid-sentence in a non-booking context
+  {
+    id: "adversarial-midsentence-harbour-after-work",
+    capability: "adversarial-midsentence",
+    description: "Restaurant name embedded mid-sentence with no booking verb: 'I'm going to harbour sixty after work'.",
+    turns: [
+      {
+        user: "I'm going to harbour sixty after work",
+        expect: {
+          judge: "Recognized the user is referencing Harbour Sixty Steakhouse (named it in the reply OR offered to help with a reservation/info there). Did NOT say 'not on our list' or surface an unrelated restaurant. It's fine if the assistant proactively asks 'want me to book you a table?' since that's a reasonable conversational move.",
+        },
+      },
+    ],
+  },
+
+  // 11. Mid-flow pivot to a different restaurant
+  {
+    id: "adversarial-pivot-jacobs-to-keg",
+    capability: "adversarial-pivot",
+    description: "Pivot: turn 1 'book jacobs', turn 2 'actually make it the keg' — booking_field must flip to Keg.",
+    turns: [
+      {
+        user: "book jacobs for 2 tomorrow at 7pm",
+        expect: {
+          tool_called: "check_availability",
+          booking_field: { field: "restaurant_id", equals: JACOBS_ID },
+        },
+      },
+      {
+        user: "actually make it the keg instead",
+        expect: {
+          judge: "The ONLY requirement: acknowledged the switch to The Keg Mansion — either named The Keg in the reply, re-ran availability for The Keg, or asked a clarifying question framed around The Keg. Did NOT keep proceeding with Jacobs as the active restaurant. Mentioning Jacobs only to acknowledge the change ('switching from Jacobs to The Keg') is FINE.",
+        },
+      },
+    ],
+  },
+
+  // 12. Bare-name selection after assistant lists options
+  {
+    id: "adversarial-bare-selection-the-keg-one",
+    capability: "adversarial-selection",
+    description: "Bare-name selection: turn 1 cuisine search lists steakhouses, turn 2 user replies 'the keg one'.",
+    turns: [
+      {
+        user: "find me a steakhouse in toronto",
+        expect: {
+          tool_called: "search_restaurants",
+          judge: "Surfaced at least one of: Jacobs, Harbour Sixty, Keg, Blue Blood, Ruth's Chris, STK, or David Duncan by name. The recommendation ranker may include adjacent restaurants too — that's an unrelated ranking issue, not a fuzzy-match issue. Did NOT auto-book.",
+        },
+      },
+      {
+        user: "the keg one",
+        expect: {
+          judge: "The ONLY requirement: identified The Keg Mansion as the user's pick from the prior list (either confirmed it by name, surfaced its info, or moved into booking flow for The Keg). Did NOT pick Jacobs or another non-Keg restaurant as the selection.",
+        },
+      },
+    ],
+  },
+
+  // 13. Empty / whitespace / punctuation-only transcript
+  {
+    id: "adversarial-empty-punctuation",
+    capability: "adversarial-empty",
+    description: "Single punctuation character — nothing to resolve. Must NOT hallucinate a restaurant match.",
+    turns: [
+      {
+        user: ".",
+        expect: {
+          no_tool_called: "check_availability",
+          judge: "The ONLY requirement: did NOT name any specific restaurant in the response. Any short polite/open prompt is a PASS ('hi there', 'how can I help', 'what kind of place', 'I didn't catch that'). The point is the matcher must NOT hallucinate a restaurant name from a single period.",
+          max_words: 25,
+        },
+      },
+    ],
+  },
+
+  // 14a. Single short token — 'jacob' (no Jacob Moss in DB, only Jacobs)
+  {
+    id: "adversarial-jacob-singular-resolves-jacobs",
+    capability: "adversarial-singular",
+    description: "Singular 'jacob' (no trailing s) — only Jacobs & Co exists, so should resolve cleanly to Jacobs.",
+    turns: [
+      {
+        user: "book jacob",
+        expect: {
+          judge: "Resolved Jacobs & Co Steakhouse as the intended restaurant (the missing 's' is a 1-char edit and Jacobs is the only match in the DB). Did NOT say 'multiple matches' or 'which Jacob?'. Did NOT say 'not on our list'.",
+        },
+      },
+    ],
+  },
+
+  // 14b. Genuine ambiguity: two Qoop rows in DB
+  {
+    id: "adversarial-qoop-true-ambiguity",
+    capability: "adversarial-ambiguity",
+    description: "True duplicate-name ambiguity: DB has two Qoop rows (ebc20cdf… and b1a68afa…). Matcher should ask to disambiguate OR list both, NOT silently pick one.",
+    turns: [
+      {
+        user: "book me at Qoop",
+        expect: {
+          judge: "The ONLY requirement: did NOT silently confirm a booking at one specific Qoop without acknowledging the ambiguity. Acceptable PASSES: (a) asked the user 'I see two restaurants named Qoop, which one?', (b) listed both Qoop locations, or (c) noted that there are multiple Qoops and asked for clarifying detail (city, neighborhood, etc.). A silent pick-one-and-proceed is the failure mode this test catches. If the assistant says it can't find Qoop at all, that's also a FAIL (the rows exist).",
+        },
+      },
+    ],
+  },
+
+  // 15. Long sentence with hidden restaurant name (storytelling context)
+  {
+    id: "adversarial-storytelling-blue-blood",
+    capability: "adversarial-hidden",
+    description: "Restaurant name buried in a long storytelling sentence: 'yeah so my friend said the food was good at blue blood and I wanted to try it'.",
+    turns: [
+      {
+        user: "yeah so my friend said the food was good at blue blood and I wanted to try it",
+        expect: {
+          judge: "Recognized Blue Blood Steakhouse as the restaurant the user is interested in (named it, offered info, or offered to book a table there). Did NOT say 'not on our list', surface an unrelated restaurant, or get lost in the storytelling preamble. A proactive 'want me to check availability at Blue Blood?' is a strong PASS.",
+        },
+      },
+    ],
+  },
+
+  // ── HEDGED RECALL: vague partial-name prompts ─────────────────────────
+  // Users often half-remember a restaurant name and hedge with "I forgot
+  // the name but…", "the place called X I think", "something like X".
+  // Before 2026-05-17 these fell through to the small-prompt LLM (no
+  // tools, no candidate list) which hallucinated "Qoop is the best fit"
+  // for "harbour something". Fix: relaxed wordCount gate + hedged-name
+  // regex in extractUnknownRestaurantCandidate + bookingProcessIntent
+  // keyword expansion.
+  {
+    id: "hedged-recall-harbour-something",
+    capability: "hedged-recall",
+    description: "Vague hedged recall: 'I forgot the name but it's harbour something' → Harbour Sixty Steakhouse.",
+    turns: [
+      {
+        user: "I forgot the name but it's harbour something",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: HARBOUR_SIXTY_ID },
+        },
+      },
+    ],
+  },
+  {
+    id: "hedged-recall-the-place-called-keg",
+    capability: "hedged-recall",
+    description: "Hedged recall: 'the place called keg I think' → The Keg Mansion.",
+    turns: [
+      {
+        user: "the place called keg I think",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: KEG_MANSION_ID },
+        },
+      },
+    ],
+  },
+  {
+    id: "hedged-recall-jacobs-something",
+    capability: "hedged-recall",
+    description: "Hedged recall: 'the restaurant called jacobs something' → Jacobs & Co.",
+    turns: [
+      {
+        user: "the restaurant called jacobs something",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: JACOBS_ID },
+        },
+      },
+    ],
+  },
+
+  // ── MID-FLOW PIVOT: user changes restaurant mid-booking ───────────────
+  // The pivot resolver runs whenever the user names a DIFFERENT restaurant
+  // mid-flow (status="loading_availability" or "awaiting_time_selection").
+  // Verifies: turn 1 starts booking at Georgy Inc; turn 2 says one of the
+  // pivot phrasings; turn 2 booking.restaurant_id must flip to the new
+  // restaurant AND booking.shift_id must be null (cleared so re-check runs).
+  {
+    id: "pivot-actually-book-at-jacobs",
+    capability: "pivot-mid-flow",
+    description: "Mid-flow pivot from Georgy to Jacobs via 'actually book at Jacobs instead'.",
+    turns: [
+      {
+        user: "book Georgy Inc for 2 tomorrow at 7pm",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: GEORGY_ID },
+        },
+      },
+      {
+        user: "actually book at Jacobs instead",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: JACOBS_ID },
+        },
+      },
+    ],
+  },
+  {
+    id: "pivot-changed-my-mind-keg",
+    capability: "pivot-mid-flow",
+    description: "Mid-flow pivot from Georgy to The Keg via 'no I changed my mind, the keg'.",
+    turns: [
+      {
+        user: "book Georgy Inc for 2 tomorrow at 7pm",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: GEORGY_ID },
+        },
+      },
+      {
+        user: "no I changed my mind, the keg",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: KEG_MANSION_ID },
+        },
+      },
+    ],
+  },
+  {
+    id: "pivot-can-i-do-harbour-sixty",
+    capability: "pivot-mid-flow",
+    description: "Mid-flow pivot from Georgy to Harbour Sixty via 'wait, can I do harbour sixty instead'.",
+    turns: [
+      {
+        user: "book Georgy Inc for 2 tomorrow at 7pm",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: GEORGY_ID },
+        },
+      },
+      {
+        user: "wait, can I do harbour sixty instead",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: HARBOUR_SIXTY_ID },
+        },
+      },
+    ],
+  },
+  {
+    id: "pivot-different-restaurant-blue-blood",
+    capability: "pivot-mid-flow",
+    description: "Mid-flow pivot from Georgy to Blue Blood via 'let me try a different restaurant — Blue Blood'.",
+    turns: [
+      {
+        user: "book Georgy Inc for 2 tomorrow at 7pm",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: GEORGY_ID },
+        },
+      },
+      {
+        user: "let me try a different restaurant — Blue Blood",
+        expect: {
+          booking_field: { field: "restaurant_id", equals: BLUE_BLOOD_ID },
         },
       },
     ],

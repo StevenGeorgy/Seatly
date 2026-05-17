@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders } from "../_shared/cors.ts";
+import { buildCorsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
 import { decodeJwtPayload } from "../_shared/jwt.ts";
@@ -14,12 +14,12 @@ const DEEPGRAM_TOKEN_ENDPOINT = "https://api.deepgram.com/v1/auth/grant";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { headers: buildCorsHeaders(req) });
   }
 
   const apiKey = Deno.env.get("DEEPGRAM_API_KEY");
   if (!apiKey) {
-    return jsonRes({ error: "Deepgram not configured" }, 503);
+    return jsonRes({ error: "Deepgram not configured" }, 503, req);
   }
 
   try {
@@ -28,7 +28,7 @@ Deno.serve(async (req) => {
     const payload = decodeJwtPayload(token);
     if (!payload?.sub) {
       console.warn("[deepgram-live-token] JWT decode failed or missing sub");
-      return jsonRes({ error: "Unauthorized", reason: "jwt_decode" }, 401);
+      return jsonRes({ error: "Unauthorized", reason: "jwt_decode" }, 401, req);
     }
 
     const { data: profile, error: profileErr } = await supabaseAdmin
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
       .single();
     if (profileErr || !profile) {
       console.warn("[deepgram-live-token] profile lookup failed for sub:", payload.sub, profileErr?.message);
-      return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401);
+      return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401, req);
     }
 
     // Per-user rate limit. Bumped to 120/min (2026-05-16). Tokens are
@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
       );
     } catch (e) {
       if (e instanceof RateLimitError) {
-        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429);
+        return jsonRes({ error: e.message, unavailable_reason: "rate_limited" }, 429, req);
       }
       throw e;
     }
@@ -71,20 +71,20 @@ Deno.serve(async (req) => {
     if (!dgRes.ok) {
       const errText = await dgRes.text();
       console.error("[deepgram-live-token] grant failed:", dgRes.status, errText);
-      return jsonRes({ error: "Failed to mint Deepgram token" }, 502);
+      return jsonRes({ error: "Failed to mint Deepgram token" }, 502, req);
     }
 
     const dgJson = await dgRes.json() as { access_token?: string; expires_in?: number };
     if (!dgJson.access_token) {
-      return jsonRes({ error: "Malformed Deepgram response" }, 502);
+      return jsonRes({ error: "Malformed Deepgram response" }, 502, req);
     }
 
     return jsonRes({
       access_token: dgJson.access_token,
       expires_in: dgJson.expires_in ?? 30,
-    });
+    }, 200, req);
   } catch (err) {
     console.error("[deepgram-live-token] error:", err);
-    return jsonRes({ error: String(err) }, 500);
+    return jsonRes({ error: String(err) }, 500, req);
   }
 });

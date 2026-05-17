@@ -514,13 +514,21 @@ export function assistantReducer(
             state.booking.status === "post_booking" ||
             state.booking.status === "paid" ||
             state.booking.status === "confirmed");
-        if (transitioningToIdle) {
-          // Full reset: a transition to idle from a post-booking state means
-          // the user finished with that reservation (cancel / done). Don't
-          // carry forward time / date / party / restaurant / etc — otherwise
-          // the next booking turn inherits stale fields ("book mark testing
-          // for 2 thursday at 6pm" after canceling a 4PM reservation would
-          // reuse the 4PM time and ignore the new "6pm").
+        // R1-A: ONLY do the destructive wipe when the orchestrator
+        // signals an EXPLICIT cancellation (intent === "reservation_cancel")
+        // OR the user explicitly bailed (fallback_unknown / discover_restaurants
+        // for a totally new request). Without this, follow-up turns AFTER a
+        // successful booking ("cancel it" / "show me the menu" / "what's the
+        // address") wipe reservation_id when the orchestrator's reply happens
+        // to drop status to "idle" — leaving the deterministic cancel guard
+        // with no reservation_id to act on, forcing infinite "which one?"
+        // disambig loops. Preserve reservation_id + confirmation_code +
+        // restaurant context unless cancellation is confirmed or the user
+        // restarted from scratch.
+        const isExplicitCancelOrReset =
+          intent === "reservation_cancel" || isHardResetIntent;
+        if (transitioningToIdle && isExplicitCancelOrReset) {
+          // Full reset: cancel succeeded OR user restarted — wipe everything.
           next = {
             ...next,
             booking: {
@@ -532,6 +540,27 @@ export function assistantReducer(
                 restaurant_id: bookingPatch.restaurant_id,
                 restaurant_name: bookingPatch.restaurant_name ?? null,
               } : {}),
+            },
+            customerAccepted: false,
+          };
+        } else if (transitioningToIdle) {
+          // Soft reset: status went idle but no cancel/reset signal.
+          // Preserve the reservation_id + confirmation_code + restaurant
+          // context so follow-up "cancel it" / "show me the menu" can find
+          // the booking. Drop the slot/shift/party so the next NEW booking
+          // doesn't inherit stale fields, but keep the reservation marker.
+          next = {
+            ...next,
+            booking: {
+              ...initialBooking,
+              ...bookingPatch,
+              // Preserve the reservation marker from the just-booked turn.
+              reservation_id: next.booking.reservation_id ?? bookingPatch.reservation_id ?? null,
+              confirmation_code: next.booking.confirmation_code ?? bookingPatch.confirmation_code ?? null,
+              // Preserve restaurant context if the patch sets it OR if we
+              // already have it from the booking flow.
+              restaurant_id: bookingPatch.restaurant_id ?? next.booking.restaurant_id ?? null,
+              restaurant_name: bookingPatch.restaurant_name ?? next.booking.restaurant_name ?? null,
             },
             customerAccepted: false,
           };

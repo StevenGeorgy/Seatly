@@ -199,6 +199,149 @@ export function expandVariants(token: string): string[] {
   return Array.from(out);
 }
 
+/**
+ * Simplified Metaphone-style phonetic key. Catches sound-alike mishears
+ * that Levenshtein misses (e.g. "drews" ~ "ruths", "chris" ~ "kris",
+ * "harborsy" ~ "harbour sixty"). Rules approximate Lawrence Philips'
+ * original Metaphone — not full Double Metaphone, but enough to bucket
+ * English-language proper-noun mishears into the same phonetic class
+ * for STT recovery.
+ *
+ * Returns "" if the input has no encodable consonants — caller should
+ * treat empty as "no phonetic match available, fall back to Levenshtein".
+ */
+export function metaphone(input: string): string {
+  if (!input) return "";
+  let s = input.toLowerCase().replace(/[^a-z]/g, "");
+  if (!s) return "";
+
+  // Initial-letter normalizations
+  s = s
+    .replace(/^kn|^gn|^pn|^ae|^wr/, (m) => m[1]) // silent leading consonants
+    .replace(/^x/, "s") // initial X → S sound
+    .replace(/^wh/, "w");
+
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    const prev = i > 0 ? s[i - 1] : "";
+    const next = i + 1 < s.length ? s[i + 1] : "";
+
+    // Skip duplicate consonants (except "C" handled separately)
+    if (c === prev && c !== "c") continue;
+
+    switch (c) {
+      case "a": case "e": case "i": case "o": case "u":
+        if (i === 0) out += c; // keep leading vowel
+        break;
+      case "b":
+        if (!(i === s.length - 1 && prev === "m")) out += "b"; // silent B in "-mb"
+        break;
+      case "c":
+        if (next === "h") { out += "x"; i++; } // CH → X (sh)
+        else if (next === "i" || next === "e" || next === "y") out += "s"; // soft C → S
+        else out += "k"; // hard C → K
+        break;
+      case "d":
+        if (next === "g" && (s[i + 2] === "e" || s[i + 2] === "i" || s[i + 2] === "y")) {
+          out += "j"; i += 2;
+        } else out += "t"; // D → T sound
+        break;
+      case "f": out += "f"; break;
+      case "g":
+        if (next === "h" && i + 2 < s.length && !/[aeiou]/.test(s[i + 2] ?? "")) { i++; break; }
+        if (next === "n" && i + 1 === s.length - 1) { i++; break; } // silent G in -gn
+        if (next === "e" || next === "i" || next === "y") out += "j";
+        else out += "k";
+        break;
+      case "h":
+        if (/[aeiou]/.test(prev) && !/[aeiou]/.test(next)) break; // silent H
+        out += "h";
+        break;
+      case "j": out += "j"; break;
+      case "k":
+        if (prev !== "c") out += "k"; // silent in "ck"
+        break;
+      case "l": out += "l"; break;
+      case "m": out += "m"; break;
+      case "n": out += "n"; break;
+      case "p":
+        if (next === "h") { out += "f"; i++; } // PH → F
+        else out += "p";
+        break;
+      case "q": out += "k"; break;
+      case "r": out += "r"; break;
+      case "s":
+        if (next === "h") { out += "x"; i++; } // SH → X
+        else if (next === "i" && (s[i + 2] === "o" || s[i + 2] === "a")) out += "x"; // SIA / SIO → X
+        else out += "s";
+        break;
+      case "t":
+        if (next === "h") { out += "0"; i++; } // TH → 0 (theta)
+        else if (next === "i" && (s[i + 2] === "o" || s[i + 2] === "a")) out += "x"; // TIA / TIO → X
+        else out += "t";
+        break;
+      case "v": out += "f"; break;
+      case "w":
+        if (/[aeiou]/.test(next)) out += "w";
+        break;
+      case "x": out += "ks"; break;
+      case "y":
+        if (/[aeiou]/.test(next)) out += "y";
+        break;
+      case "z": out += "s"; break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Phonetic match score for a single (query, candidate) pair. Both sides
+ * are tokenized, each token gets a metaphone key, and the score is the
+ * length-weighted ratio of tokens whose metaphone keys ALSO match (within
+ * Levenshtein 1 to allow for codec drift). Returns 0 if either side has
+ * no encodable tokens.
+ */
+export function phoneticTokenScore(query: string, candidate: string): number {
+  const tokenize = (s: string) =>
+    normalize(s, {
+      mode: "loose",
+      stopwords: [ARTICLES, VENUE_TYPES, LOCATION_QUALIFIERS, COMPANY_SUFFIXES, QUERY_FILLER],
+    })
+      .split(" ")
+      .filter((t) => t.length >= 2);
+  const qTokens = tokenize(query);
+  const cTokens = tokenize(candidate);
+  if (!qTokens.length || !cTokens.length) return 0;
+
+  const qKeys = qTokens.map(metaphone).filter(Boolean);
+  const cKeys = cTokens.map(metaphone).filter(Boolean);
+  if (!qKeys.length || !cKeys.length) return 0;
+
+  let matchedLen = 0;
+  let totalLen = 0;
+  for (let i = 0; i < qKeys.length; i++) {
+    const qk = qKeys[i];
+    const qLen = qTokens[i].length;
+    totalLen += qLen;
+    // Phonetic keys shorter than 3 chars are too generic — "kp" matches
+    // "kk" matches "kg" matches "ks" — would tip every short word into
+    // false-positive ambiguity. Require keys to have meaningful length
+    // before counting them as a phonetic hit.
+    if (qk.length < 3) continue;
+    const matched = cKeys.some((ck) => {
+      if (ck.length < 3) return false;
+      if (qk === ck) return true;
+      // Allow one phonetic-code edit to absorb minor codec drift
+      // ("ruths" → RTS vs "drews" → TRS = 2 edits, won't match;
+      // "kris" → KRS vs "chris" → XRS = 1 edit, will match)
+      return Math.abs(qk.length - ck.length) <= 1 && levenshtein(qk, ck) <= 1;
+    });
+    if (matched) matchedLen += qLen;
+  }
+  return totalLen > 0 ? matchedLen / totalLen : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Multi-method scorer
 // ---------------------------------------------------------------------------
@@ -210,6 +353,7 @@ export type ScoreMethod =
   | "jaccard"
   | "fullLevenshtein"
   | "perTokenLevenshtein"
+  | "phonetic"
   | "none";
 
 export type ScoreResult = { score: number; method: ScoreMethod };
@@ -307,12 +451,36 @@ export function scoreMatch(query: string, candidate: string): ScoreResult {
       });
       if (matched) perTokenMatchedLen += qt.length;
     }
+    // Per-token Levenshtein weight is the highest rung available when
+    // ONLY edit-distance matches signal-bearing tokens (e.g. "jakob" vs
+    // "jacobs", "batan rouge" vs "baton rouge"). Bumped from 0.5 → 0.65
+    // so 100%-matched-by-edit-distance single-token queries clear the
+    // 0.55 full-DB fallback threshold.
     const perToken = perTokenTotalLen > 0
-      ? 0.5 * (perTokenMatchedLen / perTokenTotalLen)
+      ? 0.65 * (perTokenMatchedLen / perTokenTotalLen)
       : 0;
     if (perToken > best) {
       best = perToken;
       bestMethod = "perTokenLevenshtein";
+    }
+  }
+
+  // Rung 8: phonetic (Metaphone). Catches sound-alike mishears that
+  // edit-distance misses entirely — STT-style errors where the letters
+  // are wrong but the syllables are right ("drews christ" → "ruths
+  // chris", "harborsy" → "harbour sixty"). Capped at 0.6: phonetic
+  // similarity is genuine signal but weaker than substring/exact, so it
+  // shouldn't override stronger rungs when those fire. A perfect
+  // phonetic match (1.0 ratio) gives 0.6 — enough to clear the 0.55
+  // full-DB fallback threshold but not the 0.65 visible-first threshold.
+  if (best < 0.6) {
+    const phoneticRatio = phoneticTokenScore(query, candidate);
+    if (phoneticRatio > 0) {
+      const phoneticScore = 0.6 * phoneticRatio;
+      if (phoneticScore > best) {
+        best = phoneticScore;
+        bestMethod = "phonetic";
+      }
     }
   }
 

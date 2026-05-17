@@ -127,7 +127,19 @@ async function getBearerToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
   const client = getSupabaseBrowserClient();
   const { data } = await client.auth.getSession();
-  return data.session?.access_token ?? null;
+  const session = data.session;
+  if (!session?.access_token) return null;
+  // Proactive refresh: if the token expires within the next 60s, refresh
+  // now rather than firing a doomed-to-401 fetch. Supabase-js auto-refresh
+  // ticks on a timer that can lag a few seconds; for idle tabs that just
+  // came back into focus this avoids the "Voice transcription unavailable"
+  // toast that fires when ElevenLabs/Deepgram 401 due to a stale token.
+  const expiresAtMs = (session.expires_at ?? 0) * 1000;
+  if (expiresAtMs > 0 && expiresAtMs - Date.now() < 60_000) {
+    const { data: refreshed } = await client.auth.refreshSession();
+    return refreshed.session?.access_token ?? session.access_token;
+  }
+  return session.access_token;
 }
 
 // Track which non-200 status codes we've already warned about so a long
@@ -145,7 +157,7 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
     /* fall through to live fetch */
   }
 
-  const token = await getBearerToken();
+  let token = await getBearerToken();
   if (!token) {
     if (!warnedStatuses.has(401)) {
       console.warn("[Cenaiva TTS] no bearer token — user not signed in; skipping ElevenLabs");
@@ -154,15 +166,32 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
     return null;
   }
   try {
-    const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/elevenlabs-tts`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        apikey: getSupabaseAnonKey(),
-      },
-      body: JSON.stringify({ text, voice_id: voiceId }),
-    });
+    const doFetch = (bearer: string) =>
+      fetch(`${getSupabaseProjectUrl()}/functions/v1/elevenlabs-tts`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${bearer}`,
+          "Content-Type": "application/json",
+          apikey: getSupabaseAnonKey(),
+        },
+        body: JSON.stringify({ text, voice_id: voiceId }),
+      });
+    let res = await doFetch(token);
+    // 401 retry: token may have expired between getBearerToken() above
+    // and edge-function validation. Force a session refresh and try once
+    // more before falling back to Web Speech. Without this, idle/
+    // backgrounded tabs that just came back into focus would silently
+    // route every utterance through the OS voice for ~minutes until the
+    // session auto-refresh ticker caught up.
+    if (res.status === 401 && isSupabaseConfigured()) {
+      const client = getSupabaseBrowserClient();
+      const { data: refreshed } = await client.auth.refreshSession();
+      const fresh = refreshed.session?.access_token;
+      if (fresh) {
+        token = fresh;
+        res = await doFetch(fresh);
+      }
+    }
     if (!res.ok) {
       // In dev: ALWAYS log every failure with the body so we can debug
       // intermittent failures. In prod: dedupe per-status to avoid spam.

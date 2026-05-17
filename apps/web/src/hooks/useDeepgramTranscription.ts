@@ -36,11 +36,13 @@ const TRANSCRIBE_QUERY: Record<string, string> = {
   language: "en",
   smart_format: "true",
   punctuate: "true",
-  // Request 3 candidate transcripts per utterance. The orchestrator scores
-  // each against the visible/active restaurant list and picks the best — a
-  // mishear that lands at position 1 ("Jackass and Co") can still resolve
-  // correctly when position 2 ("Jacobs and Co") clearly fits a real name.
-  alternatives: "3",
+  // NOTE: `alternatives` is intentionally NOT included here. Deepgram's
+  // pre-recorded REST endpoint (which this hook POSTs to) does not list
+  // `alternatives` as a supported request parameter for nova-3 — sending
+  // it returned HTTP 400 and broke voice transcription end-to-end.
+  // Phase 4's multi-candidate scoring win still applies to text input
+  // (orchestrator-side fuzzy paths), and to streaming WebSocket if/when
+  // we add a streaming path that DOES accept alternatives.
 };
 
 const TOKEN_TTL_BUFFER_MS = 5_000;
@@ -120,7 +122,18 @@ async function getBearerToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
   const client = getSupabaseBrowserClient();
   const { data } = await client.auth.getSession();
-  return data.session?.access_token ?? null;
+  const session = data.session;
+  if (!session?.access_token) return null;
+  // Proactive refresh: if the token expires within the next 60s, refresh
+  // now rather than firing a doomed-to-401 fetch that triggers the
+  // "Voice transcription unavailable" toast. Supabase-js auto-refresh
+  // ticks on a timer that can lag for idle/backgrounded tabs.
+  const expiresAtMs = (session.expires_at ?? 0) * 1000;
+  if (expiresAtMs > 0 && expiresAtMs - Date.now() < 60_000) {
+    const { data: refreshed } = await client.auth.refreshSession();
+    return refreshed.session?.access_token ?? session.access_token;
+  }
+  return session.access_token;
 }
 
 let cachedToken: string | null = null;
@@ -133,17 +146,37 @@ function invalidateDeepgramTokenCache() {
 }
 
 async function fetchDeepgramTokenFresh(): Promise<string | null> {
-  const bearer = await getBearerToken();
-  if (!bearer) return null;
-  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/deepgram-live-token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${bearer}`,
-      "Content-Type": "application/json",
-      apikey: getSupabaseAnonKey(),
-    },
-  });
+  const doFetch = async (bearer: string) =>
+    fetch(`${getSupabaseProjectUrl()}/functions/v1/deepgram-live-token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        "Content-Type": "application/json",
+        apikey: getSupabaseAnonKey(),
+      },
+    });
+  let bearer = await getBearerToken();
+  if (!bearer) {
+    if (import.meta.env.DEV) console.warn("[Cenaiva STT] no bearer token — user not signed in");
+    return null;
+  }
+  let res = await doFetch(bearer);
+  // 401 retry: token may have expired between getBearerToken() and the
+  // edge function's JWT validation. Force a session refresh and retry
+  // once before declaring the token mint failed.
+  if (res.status === 401 && isSupabaseConfigured()) {
+    const client = getSupabaseBrowserClient();
+    const { data: refreshed } = await client.auth.refreshSession();
+    const fresh = refreshed.session?.access_token;
+    if (fresh) {
+      res = await doFetch(fresh);
+    }
+  }
   if (!res.ok) {
+    if (import.meta.env.DEV) {
+      const body = await res.text().catch(() => "<no body>");
+      console.warn(`[Cenaiva STT] deepgram-live-token status=${res.status} body=${body.slice(0, 200)}`);
+    }
     return null;
   }
   const json = (await res.json()) as { access_token?: string; expires_in?: number };

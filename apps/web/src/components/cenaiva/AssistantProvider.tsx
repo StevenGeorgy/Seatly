@@ -45,6 +45,23 @@ interface AssistantContextValue {
   shouldAutoListenOnOpen: () => boolean;
   setSpeechHints: (hints: string[]) => void;
   setTextMode: (active: boolean) => void;
+  /**
+   * True when `open()` was called with `greetingText` (wake-word path), so
+   * the wake-greeting flow at open() is already handling TTS playback.
+   * CenaivaVoiceShell's local greeting effect checks this to avoid a
+   * double-greeting (one from the provider's wake flow, one from the
+   * shell's own opener). Returns false on UI-tap opens where the shell
+   * should speak its own greeting.
+   */
+  wasGreetingHandledExternally: () => boolean;
+  /**
+   * True once the greeting TTS has played at least once in this browser
+   * session (across rapid open/close cycles). Reset on logout. Used by
+   * CenaivaVoiceShell to stop firing duplicate "Good morning..." TTS
+   * attempts when the user opens/closes/reopens Cenaiva rapidly.
+   */
+  wasSessionGreetingPlayed: () => boolean;
+  markSessionGreetingPlayed: () => void;
 }
 
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
@@ -621,6 +638,35 @@ function AssistantInner({ children }: { children: ReactNode }) {
   }, [voice, sendTranscript, dispatch, errorToast]);
 
   const shouldAutoListenOnOpen = useCallback(() => autoListenOnOpenRef.current, []);
+  // True when the wake-word path passed a greetingText and the open()
+  // flow is handling the speak — the shell's greeting effect uses this to
+  // skip its own voice.speak() and avoid double-greeting.
+  const wasGreetingHandledExternally = useCallback(
+    () => !!greetingTextRef.current,
+    [],
+  );
+  // Session-scoped greeting played flag. Per-mount `greetedRef` in
+  // CenaivaVoiceShell resets on every unmount, so rapid open/close cycles
+  // were firing 5× of "Good morning..." TTS attempts in one second (cache
+  // catches them silently but the work is wasted). This flag persists
+  // across the entire Cenaiva session and gets reset only when the user
+  // logs out (the auth-change effect below clears it).
+  const sessionGreetingPlayedRef = useRef<boolean>(false);
+  const wasSessionGreetingPlayed = useCallback(
+    () => sessionGreetingPlayedRef.current,
+    [],
+  );
+  const markSessionGreetingPlayed = useCallback(() => {
+    sessionGreetingPlayedRef.current = true;
+  }, []);
+  // Reset the session greeting flag when the user changes (logout → login).
+  // Without this, a user who logs out and logs back in would never hear a
+  // greeting again until they hard-reloaded the page.
+  useEffect(() => {
+    if (!user) {
+      sessionGreetingPlayedRef.current = false;
+    }
+  }, [user]);
 
   useEffect(() => {
     startListeningRef.current = startListening;
@@ -704,7 +750,13 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (opts?.autoListen && opts?.greetingText) {
         void (async () => {
           try {
-            await voice.speak(opts.greetingText!);
+            // Wake-word path: speak only if we haven't already played the
+            // greeting this session. Mark it played after so the shell's
+            // greeting effect also skips on subsequent opens.
+            if (!sessionGreetingPlayedRef.current) {
+              await voice.speak(opts.greetingText!);
+              sessionGreetingPlayedRef.current = true;
+            }
             voice.stopListening();
             await new Promise((resolve) => setTimeout(resolve, 200));
             if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
@@ -956,8 +1008,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
       shouldAutoListenOnOpen,
       setSpeechHints,
       setTextMode,
+      wasGreetingHandledExternally,
+      wasSessionGreetingPlayed,
+      markSessionGreetingPlayed,
     }),
-    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode],
+    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode, wasGreetingHandledExternally, wasSessionGreetingPlayed, markSessionGreetingPlayed],
   );
 
   useEffect(() => {
