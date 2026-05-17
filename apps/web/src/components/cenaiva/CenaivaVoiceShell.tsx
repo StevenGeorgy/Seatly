@@ -451,17 +451,25 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                     ref={inputRef}
                     value={textInput}
                     onChange={(e) => { setTextInput(e.target.value); setSendError(null); }}
-                    onKeyDown={(e) => { if (e.key === "Enter") void handleTextSend(); }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      // B1 (2026-05-17): gate Enter on assistant.isProcessing
+                      // — voiceStatus drops to "idle" between Stages 1–4 of
+                      // sendTranscript even though a turn is still in flight,
+                      // so the old voiceStatus-only check let Enter spam past.
+                      if (state.voiceStatus === "processing" || assistant?.isProcessing) return;
+                      void handleTextSend();
+                    }}
                     placeholder="Type a message…"
                     className="flex-1 bg-white/5 border border-white/15 rounded-full px-4 py-2.5 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#C8A951]"
                     autoFocus
                   />
                   <button
                     onClick={() => void handleTextSend()}
-                    disabled={!textInput.trim() || state.voiceStatus === "processing"}
+                    disabled={!textInput.trim() || state.voiceStatus === "processing" || !!assistant?.isProcessing}
                     className="px-4 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium disabled:opacity-40 hover:bg-[#E6C060] transition-colors"
                   >
-                    {state.voiceStatus === "processing" ? "…" : "Send"}
+                    {state.voiceStatus === "processing" || assistant?.isProcessing ? "…" : "Send"}
                   </button>
                 </div>
                 {sendError && (

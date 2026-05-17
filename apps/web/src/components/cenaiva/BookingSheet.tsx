@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { Calendar, Clock, Users, CheckCircle2, Plus, Minus, ShoppingCart } from "lucide-react";
+import { Calendar, Clock, Users, CheckCircle2, Plus, Minus, ShoppingCart, Loader2 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,12 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const [prepayBusy, setPrepayBusy] = useState(false);
   const [availabilityNotice, setAvailabilityNotice] = useState<string | null>(null);
   const lastAvailabilityLookupKeyRef = useRef<string | null>(null);
+  // B3 (2026-05-17): local guard so rapid clicks on "Confirm booking" don't
+  // each fire a `force: true` sendTranscript (which cancels the in-flight
+  // orchestrator turn — wasteful and visually confusing). The ref handles
+  // sub-render-frame double-clicks; the state drives the disabled+spinner UI.
+  const [isConfirming, setIsConfirming] = useState(false);
+  const confirmingRef = useRef(false);
 
   // Local-only review/prepay flow — no orchestrator involvement. Once the
   // user is done picking items in `browsing_menu`, the "Review order" button
@@ -178,6 +184,20 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       void assistant?.sendTranscript(parts.join(", "));
     }
     onExit();
+  };
+
+  /**
+   * R2 / R1-A follow-on fix: one-click cancel from the post-booking success
+   * card. The "You're booked!" card historically blocked the chat input
+   * (users typed "cancel it" but the success card's special_request input
+   * intercepted focus). This shortcut wires the cancel intent directly
+   * through the orchestrator. The deterministic post-booking cancel guard
+   * (post_booking + reservation_id + cancel verb) catches "cancel my
+   * reservation" and emits the confirmation prompt with natural date+time.
+   * Next user "yes" completes the cancel via the pending_action consumer.
+   */
+  const handleCancelFromSuccessCard = () => {
+    void assistant?.sendTranscript("cancel my reservation");
   };
 
   /** Client-side "Yes, prepay" — bypasses the orchestrator entirely so the
@@ -544,6 +564,21 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                 >
                   Save & close
                 </Button>
+              </div>
+
+              {/* Subtle one-click cancel — the special_request input above used
+                  to intercept focus when users tried to type "cancel it" in
+                  the chat. This shortcut routes through the orchestrator's
+                  deterministic post-booking cancel guard for a 2-turn cancel
+                  with the natural date+time confirmation prompt. */}
+              <div className="pt-1 text-center">
+                <button
+                  type="button"
+                  onClick={handleCancelFromSuccessCard}
+                  className="text-white/40 hover:text-white/70 text-xs underline underline-offset-2 transition-colors"
+                >
+                  Cancel this reservation
+                </button>
               </div>
             </div>
           )}
@@ -919,9 +954,27 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
                 <Button
                   type="button"
                   className="bg-[#C8A951] text-black hover:bg-[#E6C060] text-sm"
-                  onClick={() => void assistant?.sendTranscript("yes, confirm booking", { force: true })}
+                  disabled={isConfirming || !!assistant?.isProcessing}
+                  onClick={async () => {
+                    if (confirmingRef.current) return;
+                    confirmingRef.current = true;
+                    setIsConfirming(true);
+                    try {
+                      await assistant?.sendTranscript("yes, confirm booking", { force: true });
+                    } finally {
+                      confirmingRef.current = false;
+                      setIsConfirming(false);
+                    }
+                  }}
                 >
-                  Confirm booking
+                  {isConfirming || assistant?.isProcessing ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Confirming…
+                    </span>
+                  ) : (
+                    "Confirm booking"
+                  )}
                 </Button>
                 <Button
                   type="button"

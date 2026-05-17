@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useErrorToast } from "@/lib/errors";
@@ -62,6 +62,13 @@ interface AssistantContextValue {
    */
   wasSessionGreetingPlayed: () => boolean;
   markSessionGreetingPlayed: () => void;
+  /**
+   * True while an orchestrator turn is in flight. Mirrors processingRef so
+   * Send button / Enter handler can disable visibly between Stages 1–4 of
+   * sendTranscript. Without this, second clicks during in-flight turns were
+   * silently dropped by the processingRef guard.
+   */
+  isProcessing: boolean;
 }
 
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
@@ -138,6 +145,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
 
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const processingRef = useRef(false);
+  // B1 (2026-05-17): mirror processingRef into reactive state so the Send
+  // button + Enter handler can show a disabled state while a turn is in
+  // flight. Without this mirror, second/third clicks during an in-flight
+  // orchestrator call were silently dropped by the processingRef guard.
+  const [isProcessing, setIsProcessing] = useState(false);
+  const setProcessing = useCallback((value: boolean) => {
+    processingRef.current = value;
+    setIsProcessing(value);
+  }, []);
   const micGrantedRef = useRef(false);
   const isOpenRef = useRef(false);
   const textModeRef = useRef(false);
@@ -261,9 +277,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
       if (processingRef.current) {
         if (!opts?.force) return;
         orchestrator.cancel();
-        processingRef.current = false;
+        setProcessing(false);
       }
-      processingRef.current = true;
+      setProcessing(true);
 
       // Hard-stop any active recognition before processing. This must happen on
       // THIS voice hook instance (the same one that started the recognizer) —
@@ -397,7 +413,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       try {
         const rawResponse = await orchestrator.send(req, streamCallbacks);
         latency.mark(turnId, "finalReceivedAt");
-        processingRef.current = false;
+        setProcessing(false);
 
         if (!rawResponse) {
           // Orchestrator returned null (network / timeout / 500). Handle text
@@ -487,7 +503,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         if (pendingClose) {
           if (streamingActive) voice.discardStreamingSpeech();
           await sayGoodbyeAndCloseRef.current(spokenText || undefined, pendingNavigatePath ?? undefined);
-          processingRef.current = false;
+          setProcessing(false);
           latency.summarize(turnId);
           return;
         }
@@ -533,7 +549,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
         }
         latency.summarize(turnId);
       } catch (err) {
-        processingRef.current = false;
+        setProcessing(false);
         if (streamingActive) voice.discardStreamingSpeech();
         // Speak the retry prompt (voice mode) OR surface a banner + toast (text
         // mode). The red "error" voice status is reserved for mic-permission-denied.
@@ -562,6 +578,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
       hasCard,
       latency,
       errorToast,
+      setProcessing,
     ],
   );
 
@@ -901,11 +918,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
     // the flag here guarantees the next Send goes through instead of being
     // silently dropped by the `if (processingRef.current) return;` guard.
     if (active) {
-      processingRef.current = false;
+      setProcessing(false);
       emptyRelistenStreakRef.current = 0;
       dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
     }
-  }, [dispatch]);
+  }, [dispatch, setProcessing]);
 
   // After a successful payment the "You're all set!" confirmation renders
   // briefly. We speak a short farewell, then tear down the shell and navigate
@@ -1011,8 +1028,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
       wasGreetingHandledExternally,
       wasSessionGreetingPlayed,
       markSessionGreetingPlayed,
+      isProcessing,
     }),
-    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode, wasGreetingHandledExternally, wasSessionGreetingPlayed, markSessionGreetingPlayed],
+    [open, close, sayGoodbyeAndClose, sendTranscript, startListening, shouldAutoListenOnOpen, setSpeechHints, setTextMode, wasGreetingHandledExternally, wasSessionGreetingPlayed, markSessionGreetingPlayed, isProcessing],
   );
 
   useEffect(() => {

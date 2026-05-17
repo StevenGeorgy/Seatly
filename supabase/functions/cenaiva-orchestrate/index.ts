@@ -3916,6 +3916,31 @@ async function confirmPendingAction(
   }
 
   if (pending.type === "cancel_reservation") {
+    // Past-reservation safety net (B4 2026-05-17). The cancel-reservation
+    // edge function rejects past reservations at line 224-225 ("Past
+    // reservations cannot be cancelled"). This orchestrator path bypasses
+    // that edge function — without this guard, voice cancels of already-
+    // happened reservations would silently succeed (no refund owed; status
+    // flips anyway). Fetch reserved_at first; reject if past.
+    const { data: cancelPreCheck } = await supabaseAdmin
+      .from("reservations")
+      .select("reserved_at, status")
+      .eq("id", reservationId)
+      .maybeSingle();
+    if (
+      cancelPreCheck?.reserved_at &&
+      new Date(cancelPreCheck.reserved_at as string).getTime() < Date.now()
+    ) {
+      return makeAssistantPayload({
+        conversationId: opts.conversationId,
+        spokenText:
+          "That reservation has already happened — I can't cancel it after the fact. Want me to find you a new spot?",
+        intent: "reservation_cancel",
+        step: "rejected_past",
+        nextExpectedInput: "free_text",
+        booking: { pending_action: null },
+      });
+    }
     // Mirror cancel-reservation/index.ts: status flip + release_reservation_tables
     // RPC so the floor-plan stops showing the table as held. Direct
     // update({status}) alone leaks reservation_tables.released_at = null and
@@ -5009,6 +5034,19 @@ async function buildPreflightResponse(opts: {
       const cancelDate = typeof bookingState.date === "string" ? bookingState.date : null;
       const cancelTime = typeof bookingState.time === "string" ? bookingState.time : null;
       const cancelSlotIso = typeof bookingState.slot_iso === "string" ? bookingState.slot_iso : null;
+      // Past-reservation early reject (B4) — catches stale state from prior
+      // sessions where the reservation has already happened.
+      if (cancelSlotIso && new Date(cancelSlotIso).getTime() < Date.now()) {
+        return makeAssistantPayload({
+          conversationId,
+          spokenText:
+            "That reservation has already happened — I can't cancel it after the fact. Want me to find you a new spot?",
+          intent: "reservation_cancel",
+          step: "rejected_past",
+          nextExpectedInput: "free_text",
+          booking: { pending_action: null },
+        });
+      }
       let whenLabel = "";
       if (cancelSlotIso) {
         whenLabel = ` on ${formatDateForSpeechFull(cancelSlotIso, tzCancel)} at ${formatTimeForSpeech(
@@ -5693,7 +5731,7 @@ async function buildPreflightResponse(opts: {
             ? bookingState.restaurant_name
             : "your spot";
         const displayTime = (bookingState.time as string | null | undefined) ?? "";
-        const summaryTime = displayTime ? ` for ${displayTime}` : "";
+        const summaryTime = displayTime ? ` for ${formatTimeForSpeech(displayTime)}` : "";
         return makeAssistantPayload({
           conversationId,
           spokenText: `Booked! Your table at ${restaurantName}${summaryTime} is set. Anything else?`,
@@ -6533,7 +6571,7 @@ async function buildPreflightResponse(opts: {
                     : "What time?";
         return makeAssistantPayload({
           conversationId,
-          spokenText: `Got it — ${restName}${inferredParty != null ? ` for ${inferredParty}` : ""}${inferredDate ? ` on ${inferredDate}` : ""}${inferredTime ? ` at ${inferredTime}` : ""}. ${phrasingTail}`,
+          spokenText: `Got it — ${restName}${inferredParty != null ? ` for ${inferredParty}` : ""}${inferredDate ? ` on ${formatDateForSpeechFull(inferredDate, opts.timezone)}` : ""}${inferredTime ? ` at ${formatTimeForSpeech(inferredTime)}` : ""}. ${phrasingTail}`,
           intent: "reservation_create",
           step: canConfirm ? "confirm" : "collecting_minimum_fields",
           nextExpectedInput: canConfirm ? "confirmation" : (inferredParty != null ? "date_time" : "party_size"),
@@ -8355,6 +8393,19 @@ async function buildPreflightResponse(opts: {
 
       // CANCEL: queue pending_action so "yes" cancels via confirmPendingAction
       if (isCancelVerb) {
+        // Past-reservation early reject (B4) — don't waste a confirm turn on
+        // something we'll refuse downstream.
+        if (new Date(reservedAt).getTime() < Date.now()) {
+          return makeAssistantPayload({
+            conversationId,
+            spokenText:
+              "That reservation has already happened — I can't cancel it after the fact. Want me to find you a new spot?",
+            intent: "reservation_cancel",
+            step: "rejected_past",
+            nextExpectedInput: "free_text",
+            booking: { pending_action: null },
+          });
+        }
         return makeAssistantPayload({
           conversationId,
           spokenText: `Want to cancel your ${restName} booking on ${formatDateForSpeechFull(reservedAt, tz)} at ${formatTimeForSpeech(reservedTime)}? Say yes to confirm.`,
@@ -10019,7 +10070,7 @@ Deno.serve(async (req) => {
             : "your spot";
         const fcDisplayTime = (booking_state.time as string | null | undefined) ?? "";
         const fcSummary = fcDisplayTime
-          ? `Booked! Your table at ${fcRestaurantName} for ${fcDisplayTime} is set. Anything else?`
+          ? `Booked! Your table at ${fcRestaurantName} for ${formatTimeForSpeech(fcDisplayTime)} is set. Anything else?`
           : `Booked! Your table at ${fcRestaurantName} is set. Anything else?`;
         const fcPayload = makeAssistantPayload({
           conversationId: activeConversationId,
