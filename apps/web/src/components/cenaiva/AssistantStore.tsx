@@ -119,14 +119,73 @@ function computeCartSubtotal(cart: CartItem[]): number {
   return Math.round(cart.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
 }
 
+type DiscoveryExcluded = NonNullable<NonNullable<AssistantMemory["discovery"]>["excluded"]>;
+
+function arraysEqual(a: string[] | undefined | null, b: string[] | undefined | null): boolean {
+  const aa = a ?? [];
+  const bb = b ?? [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
+  return true;
+}
+
+function excludedEqual(a: DiscoveryExcluded | null | undefined, b: DiscoveryExcluded | null | undefined): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return arraysEqual(a.cuisines, b.cuisines)
+    && arraysEqual(a.restaurant_ids, b.restaurant_ids)
+    && arraysEqual(a.vibes, b.vibes);
+}
+
+function unionExcludedClient(
+  a: DiscoveryExcluded | null | undefined,
+  b: DiscoveryExcluded | null | undefined,
+): DiscoveryExcluded | null {
+  if (!a && !b) return null;
+  const dedupe = (arr: string[]) => Array.from(new Set(arr));
+  const next = {
+    cuisines: dedupe([...(a?.cuisines ?? []), ...(b?.cuisines ?? [])]),
+    restaurant_ids: dedupe([...(a?.restaurant_ids ?? []), ...(b?.restaurant_ids ?? [])]),
+    vibes: dedupe([...(a?.vibes ?? []), ...(b?.vibes ?? [])]),
+  };
+  // Preserve identity when the union is the same as `a` (the existing slot).
+  // Without this, every reducer dispatch produces a new object even when no
+  // exclusions changed — useEffect deps on memory then loop forever.
+  if (excludedEqual(a, next)) return a ?? null;
+  if (excludedEqual(b, next)) return b ?? null;
+  return next;
+}
+
 function mergeAssistantMemory(
   current: AssistantMemory,
   incoming: AssistantResponseType["assistant_memory"],
 ): AssistantMemory {
   if (!incoming) return current;
+  // Phase 1 (2026-05-17): mirror server's deep merge so direction-change
+  // exclusions accumulate across turns even when the server's `discovery`
+  // payload doesn't repeat them every turn.
+  let mergedDiscovery = current.discovery;
+  if (incoming.discovery) {
+    const mergedExcluded = unionExcludedClient(current.discovery?.excluded, incoming.discovery.excluded);
+    // Identity-stable merge: if every field is referentially equal to the
+    // existing discovery, reuse it. Prevents infinite useEffect loops.
+    const sameIncoming = incoming.discovery === current.discovery && mergedExcluded === current.discovery?.excluded;
+    if (!sameIncoming) {
+      mergedDiscovery = {
+        ...incoming.discovery,
+        excluded: mergedExcluded,
+      };
+    }
+  }
+  const mergedBooking = incoming.booking_process ?? current.booking_process;
+  // If nothing changed at the top level, return the existing memory object
+  // so downstream useEffects don't re-fire on referential inequality alone.
+  if (mergedDiscovery === current.discovery && mergedBooking === current.booking_process) {
+    return current;
+  }
   return {
-    discovery: incoming.discovery ?? current.discovery,
-    booking_process: incoming.booking_process ?? current.booking_process,
+    discovery: mergedDiscovery,
+    booking_process: mergedBooking,
   };
 }
 
@@ -149,6 +208,31 @@ function bookingProcessMemoryFromState(
   };
 }
 
+// Round-3 Fix 1 (2026-05-17): preserve an already-advanced booking status.
+// The orchestrator's "Got it — ... Confirming?" handler emits
+// `booking.status = "confirming"` PLUS a `start_booking` UI action in the
+// same payload. The reducer applied the booking patch first (status →
+// "confirming") but then the UI-actions loop ran applyUIAction which
+// called this helper — clobbering status back to "collecting_minimum_fields"
+// every time. Forced the user to say "yes confirm" twice. Only reset when
+// the existing status is genuinely idle/un-advanced.
+const ADVANCED_BOOKING_STATUSES: BookingState["status"][] = [
+  "confirming",
+  "awaiting_time_selection",
+  "loading_availability",
+  "post_booking",
+  "offering_preorder",
+  "browsing_menu",
+  "reviewing_cart",
+  "choosing_tip_timing",
+  "choosing_tip_amount",
+  "choosing_payment_split",
+  "collecting_payment",
+  "charging",
+  "paid",
+  "confirmed",
+];
+
 function beginBookingForRestaurant(
   booking: BookingState,
   restaurantId: string,
@@ -156,13 +240,15 @@ function beginBookingForRestaurant(
 ): BookingState {
   const isSameRestaurant = booking.restaurant_id === restaurantId;
   const shouldPreserveCollectedFields = isSameRestaurant || booking.restaurant_id == null;
+  const nextStatus: BookingState["status"] =
+    ADVANCED_BOOKING_STATUSES.includes(booking.status) ? booking.status : "collecting_minimum_fields";
 
   if (shouldPreserveCollectedFields) {
     return {
       ...booking,
       restaurant_id: restaurantId,
       ...(restaurantName != null ? { restaurant_name: restaurantName } : {}),
-      status: "collecting_minimum_fields",
+      status: nextStatus,
     };
   }
 
@@ -177,7 +263,7 @@ function beginBookingForRestaurant(
     slot_iso: null,
     special_request: null,
     occasion: null,
-    status: "collecting_minimum_fields",
+    status: nextStatus,
     confirmation_code: null,
     reservation_id: null,
     want_preorder: null,
@@ -200,6 +286,21 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
 
     case "close_assistant":
       return { ...state, isOpen: false, voiceStatus: "idle" };
+
+    case "soft_reset":
+      // Phase 1 (2026-05-17): direction-change reset. Server fires this when
+      // the user says "forget that" / "never mind" / "scratch that". Wipes
+      // booking + map markers + filters + availability panel, KEEPS memory
+      // (so accumulated exclusions persist), KEEPS has_saved_card (user-level
+      // fact), KEEPS conversationId (same session continues).
+      return {
+        ...state,
+        booking: { ...initialBooking, has_saved_card: state.booking.has_saved_card },
+        map: initialMap,
+        filters: {},
+        availabilityOpen: false,
+        showExitX: false,
+      };
 
     case "show_map":
       return { ...state, map: { ...state.map, visible: true } };

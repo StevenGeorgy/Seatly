@@ -168,6 +168,15 @@ export interface AssistantDiscoveryMemory {
   full_restaurant_ids: string[];
   displayed_restaurant_ids: string[];
   exhausted_restaurant_ids: string[];
+  // Phase 1 (2026-05-17): direction-change "don't want X" memory. Optional so
+  // OLD-shape responses from before Phase 1 deploy still parse cleanly.
+  excluded?: {
+    cuisines: string[];
+    restaurant_ids: string[];
+    vibes: string[];
+  } | null;
+  // Phase 3 (2026-05-17): pronoun resolution. Top 3 from last search.
+  last_offered_restaurant_ids?: string[];
 }
 
 export interface AssistantBookingProcessMemory {
@@ -187,4 +196,11 @@ export interface AssistantBookingProcessMemory {
 export interface AssistantMemory {
   discovery: AssistantDiscoveryMemory | null;
   booking_process: AssistantBookingProcessMemory | null;
+  // Phase 4 (2026-05-17): inline dietary declarations for this session.
+  session_dietary?: string[];
+  // Phase 5 (2026-05-17): joke + frustration counters across turns.
+  conversation_state?: {
+    joke_count?: number;
+    frustration_count?: number;
+  };
 }

@@ -65,6 +65,10 @@ export const UIAction = z.discriminatedUnion("type", [
     path: z.string(),
   }),
   z.object({ type: z.literal("fallback_to_manual") }),
+  // Phase 1 (2026-05-17): direction-change reset. Server emits when user
+  // says "forget that" / "never mind" / "scratch that" / "start over".
+  // Client clears the in-flight booking and resets the BookingSheet visual.
+  z.object({ type: z.literal("soft_reset") }),
   // ── Pre-order actions ────────────────────────────────────
   z.object({ type: z.literal("offer_preorder") }),
   z.object({
@@ -225,6 +229,15 @@ export const AssistantDiscoveryMemorySchema = z.object({
   full_restaurant_ids: z.array(z.string()),
   displayed_restaurant_ids: z.array(z.string()),
   exhausted_restaurant_ids: z.array(z.string()),
+  // Phase 1 (2026-05-17): direction-change "don't want X" memory. Optional so
+  // OLD-shape responses from before Phase 1 deploy still validate.
+  excluded: z.object({
+    cuisines: z.array(z.string()),
+    restaurant_ids: z.array(z.string()),
+    vibes: z.array(z.string()),
+  }).nullable().optional(),
+  // Phase 3 (2026-05-17): pronoun resolution. Top 3 from last search.
+  last_offered_restaurant_ids: z.array(z.string()).optional(),
 });
 
 export const AssistantBookingProcessMemorySchema = z.object({
@@ -244,6 +257,13 @@ export const AssistantBookingProcessMemorySchema = z.object({
 export const AssistantMemorySchema = z.object({
   discovery: AssistantDiscoveryMemorySchema.nullable(),
   booking_process: AssistantBookingProcessMemorySchema.nullable(),
+  // Phase 4 (2026-05-17): inline dietary declarations for this session.
+  session_dietary: z.array(z.string()).optional(),
+  // Phase 5 (2026-05-17): joke + frustration counters that persist across turns.
+  conversation_state: z.object({
+    joke_count: z.number().int().nonnegative().optional(),
+    frustration_count: z.number().int().nonnegative().optional(),
+  }).optional(),
 });
 
 // ── Main response schema ─────────────────────────────────────

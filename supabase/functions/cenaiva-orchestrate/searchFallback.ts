@@ -248,19 +248,23 @@ export function buildZeroResultFallbackSpokenText(opts: {
   city?: string | null;
   fallbackName: string;
 }): string {
+  // Phase 5 (2026-05-17): honest "no match" wording. Old text auto-suggested
+  // an unrelated restaurant ("I'd recommend Mark Testing instead") which
+  // misled users. New wording acknowledges the gap and offers a real next
+  // step. fallbackName retained for signature compatibility but unused.
+  void opts.fallbackName;
   const cuisine = displayLabel(opts.cuisine);
   const city = displayLabel(opts.city);
-  const fallbackName = opts.fallbackName.trim() || "this spot";
   if (cuisine && city) {
-    return `I don't see ${cuisine} restaurants in ${city} matching that. I'd recommend ${fallbackName} instead.`;
+    return `I don't see ${cuisine} in ${city} matching that. Want me to check outside ${city} or try a different search?`;
   }
   if (cuisine) {
-    return `I don't see ${cuisine} restaurants matching that. I'd recommend ${fallbackName} instead.`;
+    return `I don't see ${cuisine} matching that. Want to try a different cuisine or broaden the area?`;
   }
   if (city) {
-    return `I don't see restaurants in ${city} matching that. I'd recommend ${fallbackName} instead.`;
+    return `I don't see restaurants in ${city} matching that. Want me to check outside ${city}?`;
   }
-  return `I don't see restaurants matching that. I'd recommend ${fallbackName} instead.`;
+  return `I don't see anything matching that. Want to try different terms?`;
 }
 
 export function buildNoZeroResultFallbackSpokenText(opts: {

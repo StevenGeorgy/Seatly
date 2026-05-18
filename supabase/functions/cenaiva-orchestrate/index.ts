@@ -1036,16 +1036,26 @@ function parseDateInTimeZone(raw: string, timezone: string): string | null {
     aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10,
     nov: 11, november: 11, dec: 12, december: 12,
   };
-  const monthDay = t.match(/\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+(\d{1,2})(?:st|nd|rd|th)?\b/);
+  // Round 5 Part 4 fix (2026-05-17): capture optional 4-digit year. Without
+  // this, "may 17 2027" stripped the year and defaulted to today (closest-
+  // future-year heuristic kicks in even when the user gave the year). Now:
+  // if year is explicitly present and in 2000-2099, honor it.
+  const monthDay = t.match(/\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b/);
   if (monthDay) {
     const mo = months[monthDay[1]];
     const dy = parseInt(monthDay[2], 10);
+    const explicitYear = monthDay[3] ? parseInt(monthDay[3], 10) : null;
     if (mo && dy >= 1 && dy <= 31) {
-      const [todayY, todayM] = todayIso.split("-").map((n) => parseInt(n, 10));
-      // Pick the closest future year for this month/day.
-      let year = todayY;
-      if (mo < todayM || (mo === todayM && dy < parseInt(todayIso.split("-")[2], 10))) {
-        year = todayY + 1;
+      let year: number;
+      if (explicitYear && explicitYear >= 2000 && explicitYear < 2100) {
+        year = explicitYear;
+      } else {
+        const [todayY, todayM] = todayIso.split("-").map((n) => parseInt(n, 10));
+        // Pick the closest future year for this month/day.
+        year = todayY;
+        if (mo < todayM || (mo === todayM && dy < parseInt(todayIso.split("-")[2], 10))) {
+          year = todayY + 1;
+        }
       }
       return `${year}-${String(mo).padStart(2, "0")}-${String(dy).padStart(2, "0")}`;
     }
@@ -1395,18 +1405,23 @@ function nearestSlotLabels(
     .map((item) => item.slot.display_time);
 }
 
-function formatBookingDateForSpeech(dateStr: string): string {
-  const [year, month, day] = dateStr.slice(0, 10).split("-").map(Number);
-  if (!year || !month || !day) return dateStr;
-  const localNoon = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-  // Full weekday + full month for human readability — "Monday, May 13" not
-  // "Mon, May 13". Audit caught 2026-05-11.
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  }).format(localNoon);
+// Round 5 Part 4 fix (2026-05-17): async deposit-prefix helper. All
+// confirmation prompts must mention the deposit BEFORE the user confirms —
+// surprise-deposit-after-yes is bad UX. Returns "" if no deposit applies.
+async function getDepositPrefix(restaurantId: string | null, partySize: number): Promise<string> {
+  if (!restaurantId || partySize < 2) return "";
+  try {
+    const { data: depCents } = await supabaseAdmin.rpc("compute_deposit_for_party", {
+      p_restaurant_id: restaurantId,
+      p_party_size: partySize,
+    });
+    if (typeof depCents === "number" && depCents > 0) {
+      const perPerson = (depCents / partySize / 100).toFixed(0);
+      const total = (depCents / 100).toFixed(0);
+      return `Heads up — they ask for a $${perPerson}/person deposit (about $${total}) for parties this size; I'll hand you off to pay after you confirm. `;
+    }
+  } catch { /* ignore */ }
+  return "";
 }
 
 function buildBookingConfirmationPrompt(opts: {
@@ -1414,10 +1429,16 @@ function buildBookingConfirmationPrompt(opts: {
   partySize: number;
   date: string;
   time: string;
+  timezone: string;
+  depositPrefix?: string;
 }): string {
   const restaurant = opts.restaurantName || "this restaurant";
-  const dateLabel = formatBookingDateForSpeech(opts.date);
-  return `Just confirming: table for ${opts.partySize} at ${restaurant}, ${dateLabel} at ${opts.time}. Should I book it?`;
+  // Round-3 Fix 2 (2026-05-17): use the full-ordinal helper so spoken date
+  // matches the R3 standard ("Monday, May twenty-fifth") instead of the
+  // partial form ("Monday, May 25"). Time is already display_time format.
+  const dateLabel = formatDateForSpeechFull(opts.date, opts.timezone);
+  const prefix = opts.depositPrefix ?? "";
+  return `${prefix}Just confirming: table for ${opts.partySize} at ${restaurant}, ${dateLabel} at ${opts.time}. Should I book it?`;
 }
 
 function scrubGenericLookupPrompt(text: string): string {
@@ -1853,23 +1874,12 @@ When the user shows ANY intent (book, cancel, modify, search, look up a restaura
 
 Only skip tools for pure conversation: greeting, joke, vent, flirt, identity question about you, philosophy, thanks. Give a brief warm reply that redirects to booking.
 
+JOKE / FRUSTRATION / HUMAN / OFF-TOPIC: all handled deterministically upstream. If one reaches you anyway: brief warm reply + pivot to booking. Never tell a joke without a pivot. Never make political/identity/offensive jokes — refuse and pivot.
+
 ═══════════════════════════════════════════════════════════════════════════
-JOKE REQUESTS — "tell me a joke" / "make me laugh" / "say something funny"
+EXCLUSIONS — read assistant_memory.discovery.excluded EVERY search turn
 ═══════════════════════════════════════════════════════════════════════════
-Tell ONE brief joke (1-3 sentences max). PREFER food/restaurant/dining-themed jokes. Stay dad-joke clean — no offensive, political, religious, or risqué material. End EVERY joke with a soft pivot to restaurants.
-
-Format: "<one-line joke>. Anyway — <restaurant pivot>?"
-
-Examples:
-- "Why did the diner break up with the soup? She felt drained. Anyway — what's for dinner tonight?"
-- "I asked the chef what's on the menu. He said 'plates.' Anyway — where are we eating?"
-- "I tried making bread once. It didn't rise to the occasion. Anyway — want me to find you a great spot?"
-
-If user asks for ANOTHER joke after the first: tell one more, harder pivot ("OK that's my last one — where are we eating?").
-
-After 2 jokes in the session: politely refuse further jokes ("Save it for the comedy show — what spot sounds good?"). Track via conversation history: if you see you've already told 2 jokes, refuse the third.
-
-NEVER tell a joke without a pivot. NEVER make political/identity/offensive jokes — refuse and pivot.
+When the user says "I don't want X" / "no italian" / "not in the mood for thai", the server unions X into assistant_memory.discovery.excluded.{cuisines,vibes,restaurant_ids}. On EVERY subsequent search_restaurants call, AVOID those cuisines (pick a different cuisine_type) and filter excluded restaurant_ids out of the results you propose. Don't re-suggest what the user already vetoed.
 
 ═══════════════════════════════════════════════════════════════════════════
 INTENT DISPATCH — read booking_state FIRST, THEN classify the user's words.
@@ -1893,7 +1903,9 @@ The same affirmative word ("yes") means VERY different things depending on booki
 ═══════════════════════════════════════════════════════════════════════════
 NO-HALLUCINATION RULE
 ═══════════════════════════════════════════════════════════════════════════
-NEVER substitute a different restaurant name in a confirmation summary, a re-prompt, or any spoken reply. If booking_state.restaurant_id is SET, the summary MUST use the same restaurant (resolve the name from search_restaurants results or get_restaurant_snapshot). NEVER guess. The ONLY time a different restaurant appears is when the user explicitly names one to PIVOT to.
+NEVER substitute a different restaurant name in a confirmation summary, a re-prompt, or any spoken reply. If booking_state.restaurant_id is SET, the summary MUST use the same restaurant (resolve the name from search_restaurants results or get_restaurant_snapshot). NEVER guess. The ONLY time a different restaurant appears is when the user EXPLICITLY names one to PIVOT to in THIS turn's transcript.
+
+R8 anti-drift (2026-05-17): when the user's reply is JUST a party-size change ("just me", "make it 3", "for 2 of us") or JUST a time/date change ("actually 8pm", "wait monday"), KEEP booking_state.restaurant_id unchanged. Do NOT swap to a different restaurant. Only change restaurant when the user explicitly names a different one ("actually do Harbour Sixty instead"). If you're tempted to call search_restaurants because the user mentioned a party count, STOP — that's a field update, not a search.
 
 ═══════════════════════════════════════════════════════════════════════════
 TOOLS YOU HAVE
@@ -1924,12 +1936,15 @@ Cart (${cart.length} items): ${cartSummary}.
 ═══════════════════════════════════════════════════════════════════════════
 HACKABILITY — users can pivot or interject ANY time. Never get stuck.
 ═══════════════════════════════════════════════════════════════════════════
-- MID-FLOW QUESTION: if the user is mid-booking and asks a snapshot question ("wait, what's the address?", "are they vegan-friendly?", "what's parking like?"), CALL get_restaurant_snapshot, ANSWER in one sentence, THEN re-prompt the next missing booking field in the same reply ("Yorkville, 4.5km. Now — how many guests?"). Don't lose their booking progress.
-- MULTI-INTENT in one breath: parse all intents and act on them in priority order. "Book jacobs for 2 tomorrow at 7 — but what's the address first?" → answer address + start the booking flow with the 3 fields they gave.
-- REJECTED SINGLE RECOMMENDATION: if you proposed ONE restaurant and the user said "no" / "something else", IMMEDIATELY surface 2-3 alternative named restaurants ("Got it. Want to try X, Y, or Z instead?") with show_restaurant_cards + update_map_markers. Never say "Want another option?" without naming options.
-- NEVER MIND / FORGET IT / DROP IT / STOP: "Got it, no worries." Stop the flow. Don't ask "Want me to book it?" — they said stop.
-- HEDGED RECALL ("I forgot the name but it's something like baton") → match against active restaurants by fuzzy name (visible-first), and propose the best guess: "Sounds like Bâton Rouge — want me to book there?"
-- FREE-FORM: accept any phrasing. Don't force a template.
+- MID-FLOW QUESTION: if the user is mid-booking and asks a snapshot question ("wait, what's the address?", "are they vegan-friendly?", "what time do they close?"), CALL get_restaurant_snapshot, ANSWER in one sentence, THEN re-prompt the next missing booking field in the same reply ("Yorkville, 4.5km. Now — how many guests?"). Don't lose their booking progress.
+  • SOFT QUESTIONS (parking, dress code, accessibility, kid-friendly, payment methods) are intercepted upstream with an honest "I don't have that — call the restaurant" deflect when a restaurant is identified. If you DO see one here, ask which restaurant first; do NOT invent an answer.
+- MULTI-INTENT in one breath: parse ALL intents and execute action+answer in the same reply. "Book jacobs for 2 tomorrow at 7 — and what's the dress code?" → start the booking AND answer the question. "Book Harbour Sixty Saturday 8 — is there parking?" → start booking AND emit the soft deflect. Don't ask the user to pick one; do them both.
+- PRONOUN RESOLUTION: when the user says "the first one" / "the cheaper one" / "the second" / "that one" / "the one in toronto", read the LAST OFFERED restaurant ids line above. Map ordinal/adjective ("cheaper" = lowest price_range; "first" = index 0) to that list. NEVER say "which one?" if last_offered is populated.
+- VIBE asks ("somewhere romantic / lively / quiet / fancy") — say "I don't have vibe info, but {cuisine}-style spots at ${"$$$ "}price tend to fit", then show search_restaurants results with a sensible cuisine_type + price_range inference. Don't promise vibe match.
+- REJECTED SINGLE RECOMMENDATION: if you proposed ONE restaurant and the user said EXPLICITLY "no thanks" / "different one" / "something else" / "I don't want that one" (rejection language), surface 2-3 alternative named restaurants ("Try X, Y, or Z?"). Never say "Want another option?" without naming options.
+  • R9 anti-misfire (2026-05-17): "wait" / "before we book" / "hold on" / "actually" at the START of a turn does NOT mean rejection — it's a pause to ask a SIDE QUESTION. If the user follows "wait"/"before"/"hold on" with a question (hours, parking, menu, dress code, address, phone, etc.), ANSWER the question for the CURRENT restaurant. Do NOT offer alternatives. Resume the booking flow after answering. Trigger alternatives ONLY on explicit rejection words.
+- NEVER MIND / FORGET IT / STOP: handled deterministically upstream. If you see one anyway: "Got it." Stop. Don't re-prompt.
+- HEDGED RECALL ("something like baton") → fuzzy-match active restaurants and propose: "Sounds like Bâton Rouge — book there?"
 
 ═══════════════════════════════════════════════════════════════════════════
 DISAMBIGUATION
@@ -1952,10 +1967,8 @@ SAFETY GUARDS — never compromise
 ═══════════════════════════════════════════════════════════════════════════
 GEOGRAPHY
 ═══════════════════════════════════════════════════════════════════════════
-- Default to nearby restaurants if the user shared location and named no city.
-- ALWAYS pass city when the user explicitly names one — including small ones (Guelph, Milton, Oakville, Halifax, Saskatoon, Quebec City, etc).
-- If a city search returns no exact match, the server falls back to closest reasonable nearby option — frame it honestly: "I don't see anything in {city} matching that — I'd recommend {fallback_name} instead."
-- Don't dismiss small-city names as transcription noise.
+- Default to nearby if user shared location and named no city. ALWAYS pass city when one is explicitly named — including small ones (Guelph, Milton, Oakville, Halifax, etc). Don't dismiss small-city names as transcription noise.
+- If a city search returns no exact match, frame honestly: "I don't see anything in {city} matching that — want me to check outside {city}?" Do NOT auto-recommend an unrelated restaurant.
 
 ═══════════════════════════════════════════════════════════════════════════
 VOICE & TONE
@@ -1995,11 +2008,26 @@ Always echo the conversation_id. All UI actions must use types from this list: $
 const levenshtein = sharedLevenshtein;
 
 function normalizeSearchText(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  // Round 5 fix (2026-05-17): strip accents BEFORE the [a-z0-9] filter so
+  // "Bâton Rouge" → "baton rouge" instead of "b ton rouge". Without this,
+  // users typing "baton rouge" without accents never match the canonical name.
+  return value
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeCityName(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function inferRecommendationOccasion(value: string): string | null {
@@ -2050,6 +2078,12 @@ type SearchMenuCategoryRow = {
 
 type DiscoverySortMode = "distance" | "rating" | "popularity" | "price_asc" | "price_desc" | "fit";
 
+type DiscoveryExclusions = {
+  cuisines: string[];
+  restaurant_ids: string[];
+  vibes: string[];
+};
+
 type DiscoveryMemory = {
   transcript: string | null;
   recommendation_mode: RecommendationMode | null;
@@ -2061,6 +2095,15 @@ type DiscoveryMemory = {
   full_restaurant_ids: string[];
   displayed_restaurant_ids: string[];
   exhausted_restaurant_ids: string[];
+  // Phase 1 (2026-05-17): direction-change "don't want X" memory. Accumulates
+  // across turns via mergeAssistantMemory's union logic. Optional so existing
+  // sessions with the OLD shape don't crash on read.
+  excluded?: DiscoveryExclusions | null;
+  // Phase 3 (2026-05-17): pronoun resolution. The 3 most recent restaurants
+  // the assistant offered (top of last search). LLM uses this to resolve
+  // "the cheaper one" / "the first one" / "that one" against names + ids.
+  // Replaced each search; not unioned (we want the LATEST set, not history).
+  last_offered_restaurant_ids?: string[];
 };
 
 type BookingProcessMemory = {
@@ -2077,9 +2120,25 @@ type BookingProcessMemory = {
   last_prompt: string | null;
 };
 
+type ConversationState = {
+  // Phase 5 (2026-05-17): joke counter for the joke handler. After 2 jokes,
+  // refuse further. Counter persists across turns via assistant_memory.
+  joke_count?: number;
+  // Tracks consecutive frustration utterances to escalate apology + ask
+  // explicitly what the user wants.
+  frustration_count?: number;
+};
+
 type AssistantMemory = {
   discovery: DiscoveryMemory | null;
   booking_process: BookingProcessMemory | null;
+  // Phase 4 (2026-05-17): session-scoped dietary declarations ("I'm vegan",
+  // "I'm gluten-free", "no peanuts"). Auto-applied to subsequent
+  // search_restaurants calls THIS session. Distinct from profile dietary
+  // (persisted) — user can layer session prefs on top without overwriting.
+  session_dietary?: string[];
+  // Phase 5 (2026-05-17): conversational counters (jokes, frustration).
+  conversation_state?: ConversationState;
 };
 
 function scoreRecommendationFit(
@@ -2193,6 +2252,587 @@ function isSafeBookingConfirmationText(transcript: string): boolean {
     !/\b(change|modify|cancel|late|running late|preorder|menu|pay|payment|deposit|send|share|remember|weather|different)\b/i.test(transcript);
 }
 
+// Phase 1 (2026-05-17): direction-change handling.
+// Reset trigger = abandon the in-flight booking state and start fresh.
+// Tight patterns so a normal "no, the OTHER time" reply doesn't trigger reset.
+// Returns null if no trigger detected.
+function detectResetTrigger(transcript: string): "hard_reset" | "pivot" | null {
+  const t = transcript.toLowerCase().trim();
+  if (!t) return null;
+  // R8 (2026-05-17): hard reset should ONLY fire when the user is abandoning
+  // entirely — not when they're CORRECTING a field. "scratch that, 3 people"
+  // / "no wait thursday" / "wait no jacobs" are corrections with a substantive
+  // alternative in the same utterance, not full resets.
+  // Skip hard-reset if the utterance contains a clear correction signal:
+  // party number, day-of-week, time, restaurant name, ordinal date.
+  const hasCorrectionContent =
+    /\b\d{1,2}\s*(people|guests|persons|of us)\b/.test(t) ||
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|fri|sat|sun|tomorrow|tonight|today)\b/.test(t) ||
+    /\b\d{1,2}\s*(am|pm|:\d{2})\b/.test(t) ||
+    /\b(jacobs|harbour|mark testing|stk|the keg|blue blood|ruth|david duncan|baton rouge|bâton rouge|georgy|ruth's chris)\b/.test(t) ||
+    /\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2}\b/.test(t) ||
+    // R8 (2026-05-17): vibe/cuisine/price words also count as corrections.
+    // "no wait fancy" / "no actually italian" / "no cheap" are pivots not resets.
+    /\b(fancy|casual|romantic|lively|quiet|cozy|trendy|cheap|expensive|budget|upscale)\b/.test(t) ||
+    /\b(italian|french|japanese|sushi|chinese|thai|indian|mexican|korean|vietnamese|greek|mediterranean|steakhouse|seafood|pizza|burgers|bbq)\b/.test(t);
+
+  // R7 broadened: added "fresh", "start again", "start fresh", "let's start",
+  // and stripped trailing "please" before matching.
+  const tNoPlease = t.replace(/\s+please\s*$/, "").trim();
+  if (!hasCorrectionContent && /\b(forget (that|it|this)|never\s?mind|scratch (that|it)|start (over|fresh|again)|let's start (over|fresh|again)|wanna start (over|fresh|again)|want (to )?start (over|fresh|again)|reset|wipe (that|it|this))\b/.test(tNoPlease)) {
+    return "hard_reset";
+  }
+  if (!hasCorrectionContent && /^(actually no|no wait|wait no)\b/.test(t)) {
+    return "hard_reset";
+  }
+  if (/\b(different restaurant|not (that|this) (one|place|restaurant)|forget (mark testing|harbour|jacobs|stk|the keg|blue blood|ruth|david duncan|baton rouge|bâton rouge|georgy|ruth's chris)|scratch (jacobs|harbour|mark testing|stk|the keg|blue blood|baton rouge|bâton rouge|david duncan|ruth's chris))\b/.test(t)) {
+    return "pivot";
+  }
+  return null;
+}
+
+// Phase 1 (2026-05-17): exclusion detector.
+// "I don't want sushi" / "no italian" / "not in the mood for thai" → exclusions.
+// Returns null if no exclusion phrase found. LLM still controls the actual
+// search filter — this just supplies persistent state via assistant_memory.
+const EXCLUSION_CUISINE_TOKENS = new Set([
+  "sushi","italian","pasta","chinese","japanese","thai","indian","mexican",
+  "french","korean","vietnamese","greek","mediterranean","steakhouse","seafood",
+  "burgers","pizza","bbq","cuban","spanish","fusion","american","fast food",
+  "ramen","pho","dim sum","tapas","brunch",
+]);
+const EXCLUSION_VIBE_TOKENS = new Set([
+  "loud","quiet","romantic","casual","fancy","trendy","fast","slow","busy","crowded",
+]);
+
+function detectExclusionTrigger(transcript: string): {
+  cuisines: string[];
+  vibes: string[];
+} | null {
+  const t = transcript.toLowerCase();
+  if (!t) return null;
+  const found: string[] = [];
+  // Round 6 fix (2026-05-17): broadened to catch "don't really wanna do X"
+  // / "kinda not in the mood for X" / "not feeling X" / "anything but X" —
+  // common filler phrasings that the original regex missed. Trigger words
+  // now allow optional fillers like "really", "actually", "kinda", "sorta".
+  const negationPatterns = [
+    /(?:don'?t (?:really |actually |kinda |sorta )?(?:want|wanna|wanna do|feel like|feel)|do not (?:really |actually )?want|(?:i'?m |i am )?(?:kinda |sorta |really )?not (?:in the mood for|feeling|into)|i hate|don'?t like|not interested in|skip|avoid|nothing|hate|anything but)\s+([a-z][a-z\s]{2,29}?)(?=[.,;!?]|\s+(?:tonight|right now|today|now|please|tho|though|but|and|or)\b|$)/g,
+    /\bno\s+([a-z][a-z\s]{2,20}?)(?=[.,;!?]|\s+(?:tonight|please|today|tho|though|but|and|or)\b|$)/g,
+  ];
+  for (const pattern of negationPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(t)) !== null) {
+      const phrase = m[1].trim().replace(/\s+/g, " ");
+      if (phrase.length >= 3) found.push(phrase);
+    }
+  }
+  if (!found.length) return null;
+  const cuisines: string[] = [];
+  const vibes: string[] = [];
+  for (const phrase of found) {
+    if (EXCLUSION_CUISINE_TOKENS.has(phrase)) cuisines.push(phrase);
+    else if (EXCLUSION_VIBE_TOKENS.has(phrase)) vibes.push(phrase);
+    // Multi-word phrases ("fast food", "dim sum") and unknown tokens skipped.
+    // LLM still sees the raw transcript and can layer its own interpretation.
+    else if (EXCLUSION_CUISINE_TOKENS.has(phrase.split(" ").pop() ?? "")) {
+      cuisines.push(phrase.split(" ").pop()!);
+    }
+  }
+  if (!cuisines.length && !vibes.length) return null;
+  return { cuisines: uniqueStrings(cuisines), vibes: uniqueStrings(vibes) };
+}
+
+// Phase 1 (2026-05-17): merge new exclusions into existing AssistantMemory.
+// Used by main dispatch to layer in detectExclusionTrigger output before the
+// LLM call so the prompt can read the union via assistant_memory.
+function addExclusionsToMemory(
+  memory: AssistantMemory | null,
+  newExclusions: { cuisines: string[]; vibes: string[]; restaurant_ids?: string[] },
+): AssistantMemory {
+  const baseDiscovery = memory?.discovery ?? null;
+  const merged = unionExclusions(baseDiscovery?.excluded ?? null, {
+    cuisines: newExclusions.cuisines,
+    vibes: newExclusions.vibes,
+    restaurant_ids: newExclusions.restaurant_ids ?? [],
+  });
+  const discovery: DiscoveryMemory = baseDiscovery
+    ? { ...baseDiscovery, excluded: merged }
+    : {
+        transcript: null,
+        recommendation_mode: null,
+        cuisine: null,
+        cuisine_group: null,
+        city: null,
+        query: null,
+        sort_by: null,
+        full_restaurant_ids: [],
+        displayed_restaurant_ids: [],
+        exhausted_restaurant_ids: [],
+        excluded: merged,
+      };
+  return {
+    discovery,
+    booking_process: memory?.booking_process ?? null,
+  };
+}
+
+// Phase 1 (2026-05-17): clear booking state for a soft_reset response payload.
+// Mirror beginBookingForRestaurant on the client — every collected field set
+// back to its initial value. status -> "idle" so the BookingSheet doesn't
+// linger on the prior step.
+function clearedBookingStateForReset(): Record<string, unknown> {
+  return {
+    restaurant_id: null,
+    restaurant_name: null,
+    party_size: null,
+    date: null,
+    time: null,
+    shift_id: null,
+    slot_iso: null,
+    reservation_id: null,
+    confirmation_code: null,
+    status: "idle",
+    pending_action: null,
+    special_request: null,
+    occasion: null,
+    cart: [],
+    cart_subtotal: 0,
+    want_preorder: null,
+    payment_status: "idle",
+  };
+}
+
+// Phase 2 (2026-05-17): info-query deflect detector.
+// "Soft" categories Cenaiva doesn't reliably have populated owner-side data
+// for. Returns the category (drives template selection) or null.
+// Per [[feedback-honest-deflects-over-plumbing]]: prefer honest "call the
+// restaurant" over false confidence built on owner-supplied data that may
+// be wrong or missing.
+type InfoQueryDeflectCategory =
+  | "parking"
+  | "dress_code"
+  | "accessibility"
+  | "kid_friendly"
+  | "payment";
+
+function detectInfoQueryDeflect(transcript: string): InfoQueryDeflectCategory | null {
+  const t = transcript.toLowerCase();
+  if (!t) return null;
+  // Parking / valet
+  if (/\b(park(ing)?|valet|garage|park my car|spot to park|street parking|lot)\b/.test(t)) {
+    return "parking";
+  }
+  // Dress code
+  if (/\b(dress(\s?code)?|what (do|should) i wear|attire|formal|casual dress|jacket required|black tie|cocktail attire|smart casual)\b/.test(t)) {
+    return "dress_code";
+  }
+  // Accessibility / wheelchair
+  if (/\b(wheelchair|accessib(le|ility)|ramp|elevator|step.free|stair.free|ada\b|mobility)\b/.test(t)) {
+    return "accessibility";
+  }
+  // Kid-friendly
+  if (/\b(kid.friendly|kid friendly|family.friendly|family friendly|high chair|highchair|booster|kids?\s+(menu|allowed|welcome)|stroller|baby)\b/.test(t)) {
+    return "kid_friendly";
+  }
+  // Payment methods
+  if (/\b(accept (cash|card|credit|debit|apple pay|google pay)|take cash|do they take|payment method|tap to pay|contactless|amex|visa|mastercard)\b/.test(t)) {
+    return "payment";
+  }
+  return null;
+}
+
+// Phase 2 (2026-05-17): friendly deflect text per category. Includes phone
+// when available; falls back to "call them directly" when not.
+function infoQueryDeflectText(
+  category: InfoQueryDeflectCategory,
+  restaurantName: string | null,
+  phone: string | null,
+): string {
+  const who = restaurantName ?? "the restaurant";
+  const callPart = phone ? ` at ${phone}` : " directly";
+  switch (category) {
+    case "parking":
+      return `I don't have parking info for ${who} — I'd call them${callPart} or check their website. Want me to keep going with the booking?`;
+    case "dress_code":
+      return `I don't know ${who}'s dress code, sorry. You can ask them${callPart} or check their site.`;
+    case "accessibility":
+      return `I don't have accessibility info for ${who} — please call them${callPart} to confirm.`;
+    case "kid_friendly":
+      return `I'm not sure if ${who} is set up for kids — give them a call${callPart}.`;
+    case "payment":
+      return `Most spots accept cards, but I'd confirm with ${who}${callPart}.`;
+  }
+}
+
+// Round 5 fix (2026-05-17): deterministic pronoun resolver. The LLM was
+// unreliably mapping "the first one" / "the cheaper one" / "that one" against
+// assistant_memory.discovery.last_offered_restaurant_ids. Resolve here and
+// promote to selected_restaurant_id before the LLM runs.
+function resolvePronounToRestaurantId(
+  transcript: string,
+  lastOffered: string[],
+  rowsById: Map<string, SearchRestaurantRow>,
+): string | null {
+  const t = transcript.toLowerCase().trim();
+  if (!t || lastOffered.length === 0) return null;
+  // Ordinals (first / second / third / 1st / 2nd / 3rd / "the X one")
+  const ordinalMap: Record<string, number> = {
+    first: 0, "1st": 0,
+    second: 1, "2nd": 1,
+    third: 2, "3rd": 2,
+    last: lastOffered.length - 1,
+  };
+  for (const [word, idx] of Object.entries(ordinalMap)) {
+    if (new RegExp(`\\bthe ${word}( one)?\\b`).test(t) || new RegExp(`^${word}\\b`).test(t)) {
+      return lastOffered[idx] ?? null;
+    }
+  }
+  // Price-based comparatives
+  const wantCheaper = /\b(cheaper|cheapest|cheap one|less expensive|more affordable|budget)\b/.test(t);
+  const wantPricier = /\b(more expensive|priciest|fanciest|fancier|nicest|expensive one|upscale)\b/.test(t);
+  if (wantCheaper || wantPricier) {
+    const ranked = lastOffered
+      .map((id) => rowsById.get(id))
+      .filter((row): row is SearchRestaurantRow => !!row)
+      .sort((a, b) => (a.price_range ?? 0) - (b.price_range ?? 0));
+    if (ranked.length === 0) return null;
+    return wantCheaper ? ranked[0].id : ranked[ranked.length - 1].id;
+  }
+  // "that one" / "this one" — only safe when exactly one was offered last
+  if (/\b(that|this|the)\s+one\b/.test(t) && lastOffered.length === 1) {
+    return lastOffered[0];
+  }
+  return null;
+}
+
+// R9 hours-question detector (2026-05-17): broader patterns than the old
+// restaurantHoursQuestionIntent (which only fires inside buildPreflightResponse).
+// Used by a dedicated early dispatch that reads booking_state.restaurant_id /
+// last_offered / fuzzy-match before falling to LLM.
+function detectHoursQuestion(transcript: string): boolean {
+  const t = transcript.toLowerCase();
+  if (!t) return false;
+  // Skip relative time deltas ("an hour later" is a modify, not a hours-Q)
+  if (/\b(?:an? |one |two |\d+\s*)?hours?\s+(?:later|earlier|sooner|after|before|ahead|behind)\b/.test(t)) return false;
+  if (/\b(?:push|move|bump|shift|reschedule|change)\s+(?:it\s+)?(?:up|back|forward|earlier|later|ahead|behind|by)?\b/.test(t)) return false;
+  // Affirmative hours-question patterns
+  return (
+    /\b(hours? of operation|open(ing)? hours|closing time|what (?:are )?(?:their|the) hours|what time (?:do they|does (?:it|the place)) (?:open|close)|when (?:do they|does (?:it|the place)) (?:open|close)|are they open|how late are they open)\b/.test(t)
+  );
+}
+
+// R9 — extract day-of-week from transcript for day-specific hours answer.
+// Returns ISO date for the target day in the given timezone, or null if no
+// day mentioned (in which case we return weekly summary).
+function extractHoursTargetDate(transcript: string, timezone: string): string | null {
+  return parseDateInTimeZone(transcript, timezone);
+}
+
+// R9 — render hours_json into a natural sentence.
+function describeHoursForDay(
+  restaurantName: string,
+  hoursJson: Record<string, unknown> | null,
+  isoDate: string | null,
+  timezone: string,
+): string {
+  const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const fmtDay = (d: string) => d.charAt(0).toUpperCase() + d.slice(1);
+  if (!hoursJson || typeof hoursJson !== "object") {
+    return `I don't have hours on file for ${restaurantName} — call them to confirm.`;
+  }
+  if (isoDate) {
+    let dow: number;
+    try { dow = localDayOfWeek(isoDate, timezone); } catch { return `I couldn't read that date.`; }
+    const key = dayNames[dow];
+    const dayHours = (hoursJson as Record<string, unknown>)[key];
+    if (dayHours === null) {
+      return `${restaurantName} is closed ${fmtDay(key)}s.`;
+    }
+    if (dayHours && typeof dayHours === "object") {
+      const dh = dayHours as { open?: unknown; close?: unknown };
+      if (typeof dh.open === "string" && typeof dh.close === "string") {
+        return `${restaurantName} is open ${dh.open} to ${dh.close} on ${fmtDay(key)}.`;
+      }
+    }
+    return `I don't have ${fmtDay(key)} hours on file for ${restaurantName} — call them to confirm.`;
+  }
+  // No specific day — summarize: list 2-3 different windows or weekly
+  const summaryEntries: Array<{ day: string; open: string; close: string }> = [];
+  for (const day of dayNames) {
+    const dayHours = (hoursJson as Record<string, unknown>)[day];
+    if (dayHours && typeof dayHours === "object") {
+      const dh = dayHours as { open?: unknown; close?: unknown };
+      if (typeof dh.open === "string" && typeof dh.close === "string") {
+        summaryEntries.push({ day, open: dh.open, close: dh.close });
+      }
+    }
+  }
+  if (!summaryEntries.length) {
+    return `I don't have hours on file for ${restaurantName} — call them to confirm.`;
+  }
+  // Group consecutive days with same hours
+  const allSame = summaryEntries.every(e => e.open === summaryEntries[0].open && e.close === summaryEntries[0].close);
+  if (allSame && summaryEntries.length >= 5) {
+    return `${restaurantName} is open ${summaryEntries[0].open} to ${summaryEntries[0].close} most days.`;
+  }
+  const sample = summaryEntries.slice(0, 2).map(e => `${fmtDay(e.day)} ${e.open}–${e.close}`).join(", ");
+  return `${restaurantName}: ${sample}. Want hours for a specific day?`;
+}
+
+// R8 background-noise detector (2026-05-17): user calling out to someone
+// else, not addressing Cenaiva. Examples: "honey where are the keys",
+// "kids stop fighting", "babe what time is it". These shouldn't be treated
+// as restaurant queries.
+function detectBackgroundInterrupt(transcript: string): boolean {
+  const t = transcript.toLowerCase().trim();
+  if (!t) return false;
+  // Address to non-Cenaiva entity at start of utterance
+  const addressedToOther = /^(honey|hun|babe|sweetie|sweetheart|darling|love|mom|mum|dad|daddy|mommy|kids|kiddo|guys|y'all|y all|girls|boys|son|sweety|bro(?! ))/.test(t);
+  if (!addressedToOther) return false;
+  // If transcript mentions restaurant/booking words, might actually be for us
+  const restaurantContext = /\b(book|reservation|table|restaurant|menu|cuisine|dinner|lunch|brunch|cenaiva|hey ?cenaiva)\b/.test(t);
+  if (restaurantContext) return false;
+  return true;
+}
+
+// R8 compound multi-intent splitter (2026-05-17): "book X also Y" /
+// "book X what about Y" — split into primary + secondary so the secondary
+// info question gets answered too. Returns null if no split.
+function splitCompoundIntent(transcript: string): { primary: string; secondary: string } | null {
+  const t = transcript.trim();
+  if (!t) return null;
+  // Match common compound markers — must have substantive text on both sides
+  const m = t.match(/^(.{8,}?)\s+(?:also|and also|plus|what about|by the way|oh and|also wondering|also can you tell me|and what about)\s+(.{3,})$/i);
+  if (!m) return null;
+  return { primary: m[1].trim(), secondary: m[2].trim() };
+}
+
+// R7 cancel/modify intent detector (2026-05-17): catch ESL + simple
+// phrasings ("I want cancel my reservation", "cancel res", "change time
+// to eight PM") that the LLM was routing to search_restaurants. Returns
+// "cancel" / "modify" / null.
+function detectReservationMgmtIntent(transcript: string): "cancel" | "modify" | "list" | null {
+  const t = transcript.toLowerCase().trim();
+  if (!t) return null;
+  // Cancel: includes ESL forms like "i want cancel" and short forms
+  if (/\b(cancel(s|ling)?|wanna cancel|want (to )?cancel|kill (it|the)|drop (it|the|my)|nix (it|my)|can'?t make it)\b/.test(t) && /\b(reservation|booking|res|table|the booking|my booking|my res|my reservation|my table)\b/.test(t)) {
+    return "cancel";
+  }
+  // Cancel intent without explicit noun ("cancel my may 5", "cancel everything")
+  if (/^cancel\b/.test(t) || /\bcancel (my|the|everything|all)\b/.test(t)) {
+    return "cancel";
+  }
+  // Modify: change/move/update/push/reschedule + (reservation|booking|table|time|party|it)
+  if (/\b(change|modify|update|move|push|bump|reschedule|shift)\b/.test(t) && /\b(reservation|booking|res|table|time|date|party|guests?|people|it|my)\b/.test(t)) {
+    return "modify";
+  }
+  // R7 (2026-05-17): list intent — "what bookings I have", "show my bookings".
+  // ESL phrasings like "what reservation I have" included.
+  if (/\b(what (reservation|booking|res|table)s? (do )?i (have|got))\b/.test(t)) {
+    return "list";
+  }
+  return null;
+}
+
+// Round 6 out-of-scope detector (2026-05-17): recognize requests Cenaiva
+// can't fulfill (food delivery, taxi, hotel, translate, time, weather is
+// handled elsewhere, math, code). Returns the category for templated reply
+// or null to fall through.
+type OutOfScopeKind =
+  | "food_delivery"
+  | "rideshare"
+  | "hotel"
+  | "translate"
+  | "time"
+  | "math_or_code"
+  | "shopping";
+
+function detectOutOfScope(transcript: string): OutOfScopeKind | null {
+  const t = transcript.toLowerCase();
+  if (!t) return null;
+  if (/\b(doordash|uber eats|skip the dishes|grubhub|deliver(y| to me)|order\s+me\s+(?:a\s+|some\s+)?(?:\w+\s+)?pizza|order food|order takeout|delivery to my|drop off (food|dinner))\b/.test(t)) {
+    return "food_delivery";
+  }
+  if (/\b(call (an? )?(uber|lyft|taxi|cab)|book (an? )?(uber|lyft|taxi|cab|ride)|hail (a |me a |us a )?(cab|taxi)|need a ride|get me a ride)\b/.test(t)) {
+    return "rideshare";
+  }
+  if (/\b(book\s+(?:me\s+)?(?:an?\s+)?(?:hotel|airbnb|room|stay)|reserve\s+(?:me\s+)?(?:an?\s+)?(?:hotel|airbnb|room)|find\s+(?:me\s+)?(?:an?\s+)?(?:hotel|airbnb)|where can I sleep|stay overnight)\b/.test(t)) {
+    return "hotel";
+  }
+  if (/\b(translate|how do you say|what does .* mean in (french|spanish|german|italian|chinese|japanese|korean)|in french|in spanish)\b/.test(t)) {
+    return "translate";
+  }
+  if (/\bwhat time is it\b|\bcurrent time\b|\btime right now\b/.test(t)) {
+    return "time";
+  }
+  if (/\b(what'?s? \d+\s*[+\-*/]\s*\d+|calculate|compute)\b/.test(t) || /\b(write\s+(?:me\s+)?(?:some\s+)?(?:\w+\s+)*code|debug this|fix this bug|programming|python|javascript|typescript|sql query)\b/.test(t)) {
+    return "math_or_code";
+  }
+  if (/\b(buy me|order me .* (from|on) amazon|shopping list|grocery delivery)\b/.test(t)) {
+    return "shopping";
+  }
+  return null;
+}
+
+function outOfScopeReply(kind: OutOfScopeKind): string {
+  switch (kind) {
+    case "food_delivery":
+      return "I only handle restaurant bookings — for delivery try DoorDash, Uber Eats, or Skip directly. Want me to find you a sit-down spot instead?";
+    case "rideshare":
+      return "I can't book rides — try the Uber or Lyft app. But I can find you a restaurant to head to. What sounds good?";
+    case "hotel":
+      return "I only do restaurants, not hotels. Try Airbnb or Booking.com for stays. Want dinner first?";
+    case "translate":
+      return "Translation isn't my thing — try Google Translate. Need a spot to eat though?";
+    case "time":
+      return "I don't track time — check your phone. Want me to find you a dinner spot?";
+    case "math_or_code":
+      return "That's outside my lane — I only handle restaurant bookings. Anywhere on your mind?";
+    case "shopping":
+      return "I only book restaurants. For shopping try Amazon or the brand's site. Hungry?";
+  }
+}
+
+// Round 6 day-closed pre-check (2026-05-17): when transcript names both a
+// restaurant + a specific day-of-week or date, check hours_json upfront to
+// reject closed days BEFORE asking party_size / running availability check.
+// Returns "closed" if the restaurant is closed that day, null otherwise.
+function checkRestaurantClosedOnDay(
+  restaurant: SearchRestaurantRow | null,
+  isoDate: string | null,
+  timezone: string,
+): { closed: true; dayName: string } | null {
+  if (!restaurant || !isoDate) return null;
+  const hours = (restaurant as { hours_json?: Record<string, unknown> | null }).hours_json;
+  if (!hours || typeof hours !== "object") return null;
+  let dayOfWeek: number;
+  try {
+    dayOfWeek = localDayOfWeek(isoDate, timezone || "America/Toronto");
+  } catch { return null; }
+  const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const dayKey = dayNames[dayOfWeek];
+  const dayHours = (hours as Record<string, unknown>)[dayKey];
+  if (dayHours === null) {
+    return { closed: true, dayName: dayKey.charAt(0).toUpperCase() + dayKey.slice(1) + "s" };
+  }
+  return null;
+}
+
+// Round 5+ menu deflect (2026-05-17): detect a pre-booking menu request.
+// The system prompt forbids get_menu / offer_preorder pre-booking, so users
+// asking "show me the menu" used to get silence. Surface 3-5 featured items
+// inline + redirect to the restaurant preview for the full menu.
+function detectMenuRequest(transcript: string): boolean {
+  const t = transcript.toLowerCase();
+  if (!/\bmenu\b/.test(t)) return false;
+  return /\b(see|show|browse|check|view|pull up|whats? on|what.s on|what is on|can i see|let me see|tell me|peek at|see what.s on)\b[\s\S]*\bmenu\b/.test(t)
+    || /\bmenu\b[\s\S]*\b(at|for|please|of)\b/.test(t)
+    || /^menu\b/.test(t)
+    || /\b(food menu|dinner menu|brunch menu|lunch menu|drinks menu|wine menu|the menu|their menu)\b/.test(t);
+}
+
+// Phase 5 (2026-05-17): joke request detector. Drives a 3-joke pool with
+// counter-based escalation. Joke 1 = soft pivot, 2 = harder pivot, 3+ = refuse.
+// R5+ joke-followup fix (2026-05-17): after a joke was told, accept pronoun
+// follow-ups like "another one" / "one more" / "again" — users don't repeat
+// "joke" every time.
+function detectJokeRequest(transcript: string, jokeCount: number = 0): boolean {
+  if (/\b(tell me a joke|joke please|another joke|one more joke|say something funny|make me laugh|got a joke|crack a joke|hit me with a joke)\b/i.test(transcript)) {
+    return true;
+  }
+  if (jokeCount > 0 && /^(another( one)?|one more( one)?|again|more|hit me|keep going)\b/i.test(transcript.trim())) {
+    return true;
+  }
+  return false;
+}
+
+const FOOD_JOKE_POOL = [
+  "Why did the diner break up with the soup? She felt drained. Anyway — what's for dinner?",
+  "I asked the chef what's on the menu. He said 'plates.' Anyway — where are we eating?",
+  "I tried making bread once. It didn't rise to the occasion. Anyway — want me to find you a spot?",
+];
+
+// Phase 5 (2026-05-17): frustration detector. "no no no" / "stop" / "wait
+// wait wait" / "ugh" / "you're not getting it". Tight patterns; a regular
+// "no" doesn't trigger.
+function detectFrustration(transcript: string): boolean {
+  const t = transcript.toLowerCase().trim();
+  if (!t) return false;
+  // R9 (2026-05-17): allow punctuation between "no" instances — STT emits
+  // "No. No. No." with periods, which the old \s+ regex couldn't match.
+  if (/^(no[.,!?]?\s+){2,}no\b/.test(t)) return true; // "no no no" or "no. no. no."
+  if (/\bwait\s+wait\b/.test(t)) return true;
+  if (/^(ugh|argh|come on|cmon|seriously\?|are you kidding)\b/.test(t)) return true;
+  if (/\byou'?re not (getting|listening|hearing)\b/.test(t)) return true;
+  if (/\bthat'?s not (what|right)\b/.test(t)) return true;
+  if (/^stop\b/.test(t)) return true;
+  return false;
+}
+
+// Phase 5 (2026-05-17): "talk to a human" detector. Deflect with restaurant
+// phone if context exists, else generic.
+function detectHumanRequest(transcript: string): boolean {
+  // R7 broadened (2026-05-17): ESL phrasings ("I want talk human", "gimme a
+  // real human") didn't match the formal pattern. Added looser triggers.
+  return /\b(talk (to )?(a |the )?(person|human|manager|someone|real (person|human))|speak (to )?(someone|a person|a human|a manager|customer service)|real human|customer service\b|a real person|gimme (a )?(real )?human|want (to )?talk (to )?(a )?(human|person|someone))\b/i.test(transcript);
+}
+
+// Phase 5 (2026-05-17): off-topic acknowledgments. Brief deflect + redirect.
+function detectOffTopic(transcript: string): "weather" | "robot_identity" | "philosophy" | null {
+  const t = transcript.toLowerCase();
+  if (!t) return null;
+  if (/\b(weather|raining|temperature|forecast|how hot|how cold)\b/.test(t) && !/\b(restaurant|book|dinner|reservation)\b/.test(t)) {
+    return "weather";
+  }
+  if (/\b(are you (a )?(robot|ai|bot|human|real|person)|who made you|who built you|are you alive|what are you)\b/.test(t)) {
+    return "robot_identity";
+  }
+  if (/\b(meaning of life|are we alone|do you (dream|sleep|feel|love)|consciousness)\b/.test(t)) {
+    return "philosophy";
+  }
+  return null;
+}
+
+// Phase 4 (2026-05-17): inline dietary declaration detector.
+// "I'm vegan" / "I'm gluten-free" / "no peanuts (I'm allergic)". Returns
+// the dietary token(s) found, or null. The LLM still passes them to
+// search_restaurants; this just persists the declaration to session memory.
+const DIETARY_TOKENS: Record<string, string> = {
+  vegan: "vegan",
+  vegetarian: "vegetarian",
+  "gluten free": "gluten_free",
+  "gluten-free": "gluten_free",
+  "no gluten": "gluten_free",
+  celiac: "gluten_free",
+  "dairy free": "dairy_free",
+  "dairy-free": "dairy_free",
+  "lactose intolerant": "dairy_free",
+  "nut free": "nut_free",
+  "nut-free": "nut_free",
+  "no nuts": "nut_free",
+  "no peanuts": "nut_free",
+  "tree nut": "nut_free",
+  pescatarian: "pescatarian",
+  halal: "halal",
+  kosher: "kosher",
+  "no pork": "halal",
+  "no shellfish": "no_shellfish",
+};
+
+function detectDietaryDeclaration(transcript: string): string[] {
+  const t = transcript.toLowerCase();
+  if (!t) return [];
+  // Only fire on declaration phrases — not, e.g., "is the salad vegan?".
+  const declarationCue = /\b(i'?m|i am|we'?re|we are|we'?ll be|i can'?t (eat|have)|allergic to|i don'?t eat|no\s)\b/.test(t);
+  if (!declarationCue) return [];
+  const found: string[] = [];
+  for (const [phrase, tag] of Object.entries(DIETARY_TOKENS)) {
+    if (t.includes(phrase)) found.push(tag);
+  }
+  return uniqueStrings(found);
+}
+
 function singleDisplayedRestaurantId(memory: AssistantMemory | null | undefined): string | null {
   const ids = memory?.discovery?.displayed_restaurant_ids ?? [];
   return ids.length === 1 && typeof ids[0] === "string" ? ids[0] : null;
@@ -2237,6 +2877,45 @@ async function sendEarlyFinal(
   userContent: string,
   payload: AssistantPayload,
 ): Promise<void> {
+  // Round 5 polish (2026-05-17): vibe deflect + ISO-date sanitizer applied
+  // to ALL early-final paths. Extracts transcript from userContent (every
+  // caller passes `User said: "..."`) so no signature changes needed across
+  // the 20+ call sites. Without this the preflight short-circuit emits
+  // search-result templates ("Three options: ...") without honoring vibe
+  // hints — users asking "somewhere romantic" got a bare list instead of
+  // the honest "I don't have vibe info" deflect.
+  if (typeof payload.spoken_text === "string") {
+    const transcriptMatch = userContent.match(/^User said: "([^"]*)"/);
+    const transcriptText = transcriptMatch ? transcriptMatch[1] : "";
+    let s = payload.spoken_text;
+    // R10 (2026-05-17): skip vibe prepend if transcript carries booking
+    // intent — "quiet corner" / "fancy place for anniversary" with a "book"
+    // verb is a special_request, not a vibe search.
+    const transcriptHasBookingActionForVibe =
+      /\b(book|reserve|reservation|table for)\b/i.test(transcriptText);
+    if (
+      !transcriptHasBookingActionForVibe &&
+      /\b(romantic|lively|quiet|fancy|cozy|trendy|intimate|loud|date night|special occasion)\b/i.test(transcriptText) &&
+      !/vibe info|don't have vibe/i.test(s)
+    ) {
+      s = `I don't have vibe info, but here are top picks — ${s}`;
+    }
+    s = s.replace(/\b(\d{4}-\d{2}-\d{2})\b/g, (_m, iso) => {
+      try { return formatDateForSpeechFull(iso, "America/Toronto"); } catch { return iso; }
+    });
+    // R5+ profanity scrub on every early-final path. LLM sometimes echoes the
+    // user's expletives (e.g. searchFallback rewrites "sushi but no fucking
+    // shrimp" verbatim). Strip common four-letter words so the TTS never
+    // voices them.
+    s = s
+      .replace(/\bf+u+c+k+(ing|ed|er|s)?\b/gi, "")
+      .replace(/\bs+h+i+t+(ty|s)?\b/gi, "")
+      .replace(/\ba+s+s+h+o+l+e+s?\b/gi, "")
+      .replace(/\bb+i+t+c+h+(es|y)?\b/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    payload.spoken_text = s;
+  }
   const safeSpokenText = safeStreamingSpeechChunk(payload.spoken_text);
   if (safeSpokenText) {
     send({ type: "speech_chunk", text: safeSpokenText });
@@ -2343,13 +3022,27 @@ function parseDiscoverySortMode(value: unknown): DiscoverySortMode | null {
     : null;
 }
 
+function parseDiscoveryExclusions(value: unknown): DiscoveryExclusions | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const cuisines = uniqueStrings(parseStringArray(raw.cuisines));
+  const restaurantIds = uniqueStrings(parseStringArray(raw.restaurant_ids));
+  const vibes = uniqueStrings(parseStringArray(raw.vibes));
+  if (!cuisines.length && !restaurantIds.length && !vibes.length) return null;
+  return { cuisines, restaurant_ids: restaurantIds, vibes };
+}
+
 function parseDiscoveryMemory(value: unknown): DiscoveryMemory | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const fullIds = parseStringArray(raw.full_restaurant_ids);
   const displayedIds = parseStringArray(raw.displayed_restaurant_ids);
   const exhaustedIds = parseStringArray(raw.exhausted_restaurant_ids);
-  if (!fullIds.length && !displayedIds.length) return null;
+  const lastOfferedIds = parseStringArray(raw.last_offered_restaurant_ids);
+  const excluded = parseDiscoveryExclusions(raw.excluded);
+  // Keep memory alive if we have search history OR exclusions OR a pronoun-
+  // resolution snapshot — any of these need to persist across turns.
+  if (!fullIds.length && !displayedIds.length && !excluded && !lastOfferedIds.length) return null;
   return {
     transcript: typeof raw.transcript === "string" ? raw.transcript : null,
     recommendation_mode: parseRecommendationMode(raw.recommendation_mode),
@@ -2361,6 +3054,8 @@ function parseDiscoveryMemory(value: unknown): DiscoveryMemory | null {
     full_restaurant_ids: uniqueStrings(fullIds),
     displayed_restaurant_ids: uniqueStrings(displayedIds),
     exhausted_restaurant_ids: uniqueStrings(exhaustedIds),
+    excluded,
+    last_offered_restaurant_ids: lastOfferedIds.length ? uniqueStrings(lastOfferedIds) : undefined,
   };
 }
 
@@ -2426,11 +3121,46 @@ function bookingProcessMemoryFromRecord(
 function parseAssistantMemory(value: unknown): AssistantMemory | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  const memory = {
+  const sessionDietary = Array.isArray(raw.session_dietary)
+    ? uniqueStrings(parseStringArray(raw.session_dietary))
+    : [];
+  const conversationStateRaw = (raw.conversation_state && typeof raw.conversation_state === "object")
+    ? raw.conversation_state as Record<string, unknown>
+    : null;
+  const conversationState: ConversationState | undefined = conversationStateRaw
+    ? {
+        joke_count: typeof conversationStateRaw.joke_count === "number" && Number.isFinite(conversationStateRaw.joke_count)
+          ? Math.max(0, Math.floor(conversationStateRaw.joke_count))
+          : undefined,
+        frustration_count: typeof conversationStateRaw.frustration_count === "number" && Number.isFinite(conversationStateRaw.frustration_count)
+          ? Math.max(0, Math.floor(conversationStateRaw.frustration_count))
+          : undefined,
+      }
+    : undefined;
+  const memory: AssistantMemory = {
     discovery: parseDiscoveryMemory(raw.discovery),
     booking_process: parseBookingProcessMemory(raw.booking_process),
+    session_dietary: sessionDietary.length ? sessionDietary : undefined,
+    conversation_state: conversationState && (conversationState.joke_count || conversationState.frustration_count) ? conversationState : undefined,
   };
-  return memory.discovery || memory.booking_process ? memory : null;
+  return memory.discovery
+    || memory.booking_process
+    || (memory.session_dietary && memory.session_dietary.length)
+    || memory.conversation_state
+    ? memory
+    : null;
+}
+
+function unionExclusions(
+  a: DiscoveryExclusions | null | undefined,
+  b: DiscoveryExclusions | null | undefined,
+): DiscoveryExclusions | null {
+  if (!a && !b) return null;
+  return {
+    cuisines: uniqueStrings([...(a?.cuisines ?? []), ...(b?.cuisines ?? [])]),
+    restaurant_ids: uniqueStrings([...(a?.restaurant_ids ?? []), ...(b?.restaurant_ids ?? [])]),
+    vibes: uniqueStrings([...(a?.vibes ?? []), ...(b?.vibes ?? [])]),
+  };
 }
 
 function mergeAssistantMemory(
@@ -2438,9 +3168,41 @@ function mergeAssistantMemory(
   incoming: Partial<AssistantMemory> | null,
 ): AssistantMemory | null {
   if (!base && !incoming) return null;
+  // Phase 1 (2026-05-17): deep-merge discovery so excluded accumulates across
+  // turns. A naive `incoming.discovery ?? base.discovery` would wipe excluded
+  // every time the LLM returned a fresh discovery object without it.
+  let mergedDiscovery: DiscoveryMemory | null;
+  if (incoming?.discovery) {
+    mergedDiscovery = {
+      ...incoming.discovery,
+      excluded: unionExclusions(base?.discovery?.excluded, incoming.discovery.excluded),
+    };
+  } else {
+    mergedDiscovery = base?.discovery ?? null;
+  }
+  // Phase 4 (2026-05-17): union session_dietary across turns. Once declared,
+  // a dietary preference applies for the rest of the session unless the user
+  // explicitly clears with "ignore my preferences" (LLM handles that case).
+  const mergedDietary = uniqueStrings([
+    ...(base?.session_dietary ?? []),
+    ...(incoming?.session_dietary ?? []),
+  ]);
+  // Phase 5 (2026-05-17): conversation_state takes MAX of joke/frustration
+  // counters so deterministic increments are never wiped by the LLM omitting
+  // the field. Both sides may write; we keep the higher count.
+  const baseCS = base?.conversation_state;
+  const incCS = incoming?.conversation_state;
+  const mergedCS: ConversationState | undefined = baseCS || incCS
+    ? {
+        joke_count: Math.max(baseCS?.joke_count ?? 0, incCS?.joke_count ?? 0) || undefined,
+        frustration_count: Math.max(baseCS?.frustration_count ?? 0, incCS?.frustration_count ?? 0) || undefined,
+      }
+    : undefined;
   return {
-    discovery: incoming?.discovery ?? base?.discovery ?? null,
+    discovery: mergedDiscovery,
     booking_process: incoming?.booking_process ?? base?.booking_process ?? null,
+    session_dietary: mergedDietary.length ? mergedDietary : undefined,
+    conversation_state: mergedCS && (mergedCS.joke_count || mergedCS.frustration_count) ? mergedCS : undefined,
   };
 }
 
@@ -2514,6 +3276,10 @@ function buildDiscoveryMemory(opts: {
     ...(opts.previous?.displayed_restaurant_ids ?? []),
     ...opts.displayedRows.map((row) => row.id),
   ]);
+  // Phase 3 (2026-05-17): pronoun resolution snapshot. Take top 3 freshly
+  // displayed rows (not the historical accumulator) so the LLM resolves
+  // "the cheaper one" / "that one" against THIS turn's offer set.
+  const lastOffered = uniqueStrings(opts.displayedRows.slice(0, 3).map((row) => row.id));
   return {
     transcript: opts.transcript || opts.previous?.transcript || null,
     recommendation_mode: opts.recommendationMode ?? opts.previous?.recommendation_mode ?? null,
@@ -2525,6 +3291,7 @@ function buildDiscoveryMemory(opts: {
     full_restaurant_ids: uniqueStrings(opts.fullRows.map((row) => row.id)),
     displayed_restaurant_ids: displayedIds,
     exhausted_restaurant_ids: displayedIds,
+    last_offered_restaurant_ids: lastOffered.length ? lastOffered : opts.previous?.last_offered_restaurant_ids,
   };
 }
 
@@ -2532,8 +3299,14 @@ function withDiscoveryMemory(
   base: AssistantMemory | null,
   discovery: DiscoveryMemory,
 ): AssistantMemory {
+  // Phase 1 (2026-05-17): preserve accumulated `excluded` across discovery
+  // replacements. A new search shouldn't wipe earlier "I don't want sushi".
+  const mergedExcluded = unionExclusions(
+    base?.discovery?.excluded ?? null,
+    discovery.excluded ?? null,
+  );
   return {
-    discovery,
+    discovery: { ...discovery, excluded: mergedExcluded },
     booking_process: base?.booking_process ?? null,
   };
 }
@@ -4856,7 +5629,11 @@ async function buildPreflightResponse(opts: {
       }
       if (bestRow) {
         const partyBit = typeof bookingState.party_size === "number" ? ` for ${bookingState.party_size}` : "";
-        const dateBit = typeof bookingState.date === "string" && bookingState.date ? ` on ${bookingState.date}` : "";
+        // Round 5 fix (2026-05-17): format the date for speech instead of
+        // emitting raw YYYY-MM-DD.
+        const dateBit = typeof bookingState.date === "string" && bookingState.date
+          ? ` on ${formatDateForSpeechFull(bookingState.date as string, opts.timezone || "America/Toronto")}`
+          : "";
         const timeBit = typeof bookingState.time === "string" && bookingState.time ? ` at ${formatTimeForSpeech(bookingState.time as string)}` : "";
         return makeAssistantPayload({
           conversationId,
@@ -6556,6 +7333,30 @@ async function buildPreflightResponse(opts: {
         const canConfirm = hasAllFields && resolvedShiftId != null && resolvedSlotIso != null;
         // Granular missing-field prompt — ask only for what's still missing.
         // When all fields resolve to a real slot, prompt for confirmation.
+        // Round 6 (2026-05-17): day-closed pre-check. When transcript names
+        // both a restaurant + a specific date, reject upfront if the
+        // restaurant is closed that day (hours_json sunday/monday/etc. = null).
+        // Without this the user collects party size then gets "no tables".
+        if (inferredDate && best) {
+          const dayClosed = checkRestaurantClosedOnDay(best, inferredDate, opts.timezone || "America/Toronto");
+          if (dayClosed) {
+            return makeAssistantPayload({
+              conversationId,
+              spokenText: `${restName} is closed ${dayClosed.dayName} — want a different day?`,
+              intent: "answer_restaurant_question",
+              step: "choose_date",
+              nextExpectedInput: "date",
+              booking: {
+                restaurant_id: restId,
+                restaurant_name: restName,
+                date: null,
+                shift_id: null,
+                slot_iso: null,
+                status: "collecting_minimum_fields",
+              },
+            });
+          }
+        }
         const phrasingTail = canConfirm
           ? "Confirming?"
           : hasAllFields
@@ -6569,9 +7370,26 @@ async function buildPreflightResponse(opts: {
                   : !inferredDate
                     ? "What date?"
                     : "What time?";
+        // Round 5 fix (2026-05-17): deposit prefix BEFORE confirmation prompt.
+        // For parties with a deposit, the diner needs to know the amount
+        // upfront — surprise-deposit-after-yes is a bad UX.
+        let depositPrefix = "";
+        if (canConfirm && restId && inferredParty != null && inferredParty >= 2) {
+          try {
+            const { data: depCents } = await supabaseAdmin.rpc("compute_deposit_for_party", {
+              p_restaurant_id: restId,
+              p_party_size: inferredParty,
+            });
+            if (typeof depCents === "number" && depCents > 0) {
+              const perPerson = (depCents / inferredParty / 100).toFixed(0);
+              const total = (depCents / 100).toFixed(0);
+              depositPrefix = `Heads up — they ask for a $${perPerson}/person deposit (about $${total}) for parties this size; I'll hand you off to pay after you confirm. `;
+            }
+          } catch { /* ignore */ }
+        }
         return makeAssistantPayload({
           conversationId,
-          spokenText: `Got it — ${restName}${inferredParty != null ? ` for ${inferredParty}` : ""}${inferredDate ? ` on ${formatDateForSpeechFull(inferredDate, opts.timezone)}` : ""}${inferredTime ? ` at ${formatTimeForSpeech(inferredTime)}` : ""}. ${phrasingTail}`,
+          spokenText: `${depositPrefix}Got it — ${restName}${inferredParty != null ? ` for ${inferredParty}` : ""}${inferredDate ? ` on ${formatDateForSpeechFull(inferredDate, opts.timezone)}` : ""}${inferredTime ? ` at ${formatTimeForSpeech(inferredTime)}` : ""}. ${phrasingTail}`,
           intent: "reservation_create",
           step: canConfirm ? "confirm" : "collecting_minimum_fields",
           nextExpectedInput: canConfirm ? "confirmation" : (inferredParty != null ? "date_time" : "party_size"),
@@ -6586,6 +7404,16 @@ async function buildPreflightResponse(opts: {
             ...(resolvedSlotIso ? { slot_iso: resolvedSlotIso } : {}),
             // Cap 6 fix: clear stale offered_events when switching restaurants.
             ...(restaurantChanged ? { offered_events: null } : {}),
+            // R10 (2026-05-17): forward special_request + occasion the
+            // pre-fill extracted from this turn's transcript ("by the
+            // window", "for our anniversary") so the client + final
+            // complete_booking call both see them.
+            ...(typeof bookingState.special_request === "string" && (bookingState.special_request as string).trim()
+              ? { special_request: bookingState.special_request as string }
+              : {}),
+            ...(typeof bookingState.occasion === "string" && (bookingState.occasion as string).trim()
+              ? { occasion: bookingState.occasion as string }
+              : {}),
           },
           uiActions: [
             { type: "highlight_restaurant", restaurant_id: restId },
@@ -8192,6 +9020,7 @@ async function buildPreflightResponse(opts: {
       });
     }
 
+    const depositPrefix8686 = await getDepositPrefix(currentRestaurantId, nextPartySize);
     return makeAssistantPayload({
       conversationId,
       spokenText: buildBookingConfirmationPrompt({
@@ -8199,6 +9028,8 @@ async function buildPreflightResponse(opts: {
         partySize: nextPartySize,
         date: nextDate,
         time: nearest.display_time,
+        timezone: opts.timezone,
+        depositPrefix: depositPrefix8686,
       }),
       intent: "confirm_booking",
       step: "confirm",
@@ -8798,7 +9629,11 @@ async function buildPreflightResponse(opts: {
           : lastBookable
             ? ` Last bookable time is ${lastBookable}.`
             : "";
-      const noSlotPrompt = `${requestedLabel} isn't available on ${newDate}.${altText} Want to pick a different time?`;
+      // Phase 2 (2026-05-17): format date naturally for speech. Previously
+      // emitted raw ISO ("2026-06-14") which sounded robotic ("two thousand
+      // twenty six dash six dash fourteen") through TTS.
+      const newDateSpoken = formatDateForSpeechFull(newDate, opts.timezone || "America/Toronto");
+      const noSlotPrompt = `${requestedLabel} isn't available on ${newDateSpoken}.${altText} Want to pick a different time?`;
       return makeAssistantPayload({
         conversationId,
         spokenText: noSlotPrompt,
@@ -9144,6 +9979,7 @@ async function buildPreflightResponse(opts: {
       });
     }
 
+    const depositPrefix9643 = await getDepositPrefix(currentRestaurantId, nextPartySize);
     return makeAssistantPayload({
       conversationId,
       spokenText: buildBookingConfirmationPrompt({
@@ -9151,6 +9987,8 @@ async function buildPreflightResponse(opts: {
         partySize: nextPartySize,
         date: nextDate,
         time: nearest.display_time,
+        timezone: opts.timezone,
+        depositPrefix: depositPrefix9643,
       }),
       intent: "confirm_booking",
       step: "confirm",
@@ -9193,9 +10031,12 @@ async function buildPreflightResponse(opts: {
   if (allergyIntent(transcript)) {
     const fullRows = topRecommendationRows(restaurants, transcript, await opts.getUserCity(), opts.userLocation);
     const rows = limitRecommendationRows(fullRows, opts.recommendationMode);
+    // Round 5 fix (2026-05-17): drop the awkward "I don't have certification
+    // confirmed" wording. For allergies, keep the safety reminder; for dietary
+    // preferences just acknowledge naturally.
     const warning = /\ballerg/i.test(transcript)
       ? "For serious allergies, confirm with the restaurant; I can add a reservation note. "
-      : "I don't have certification confirmed, but I can use it as a preference. ";
+      : "Got it. ";
     return recommendationPayload({
       conversationId,
       transcript,
@@ -9732,6 +10573,7 @@ async function buildPreflightResponse(opts: {
       });
     }
 
+    const depositPrefix10237 = await getDepositPrefix(restaurant.id ?? null, partySize);
     return makeAssistantPayload({
       conversationId,
       spokenText: buildBookingConfirmationPrompt({
@@ -9739,6 +10581,8 @@ async function buildPreflightResponse(opts: {
         partySize,
         date,
         time: nearest.display_time,
+        timezone: opts.timezone,
+        depositPrefix: depositPrefix10237,
       }),
       intent: "confirm_booking",
       step: "confirm",
@@ -9854,7 +10698,7 @@ Deno.serve(async (req) => {
     const { data: userProfile } = await latency.time("profile", () =>
       supabaseAdmin
         .from("user_profiles")
-        .select("id, full_name, email")
+        .select("id, full_name, email, dietary_restrictions")
         .eq("auth_user_id", payload.sub as string)
         .single()
     );
@@ -9867,6 +10711,12 @@ Deno.serve(async (req) => {
     const userProfileId: string = userProfile.id;
     const userName: string = userProfile.full_name ?? "there";
     const firstName = userName.split(" ")[0];
+    // Phase 4 (2026-05-17): profile-level dietary restrictions auto-filter
+    // search_restaurants. The LLM reads this via the DIETARY line in
+    // userContent and passes it as a search filter.
+    const profileDietary: string[] = Array.isArray(userProfile.dietary_restrictions)
+      ? (userProfile.dietary_restrictions as string[]).filter((d) => typeof d === "string" && d.trim().length > 0)
+      : [];
 
     // Per-user rate limit. 30/60s is wide enough for a long voice
     // conversation (5–15 turns is normal; 30 covers heavy back-and-forth)
@@ -9971,6 +10821,22 @@ Deno.serve(async (req) => {
       selected_restaurant_id = proposedRestaurantId;
     }
 
+    // Round 5 fix (2026-05-17): deterministic pronoun → restaurant_id when
+    // last_offered_restaurant_ids was populated by the previous search turn.
+    // NOTE: only checks requestAssistantMemory at this early stage; a deeper
+    // check runs after history-merge (~line 11900) using the merged value.
+    if (!selected_restaurant_id) {
+      const lastOffered = requestAssistantMemory?.discovery?.last_offered_restaurant_ids ?? [];
+      if (lastOffered.length > 0) {
+        const activeRows = await fetchActiveRestaurants();
+        const rowsById = new Map(activeRows.map((r) => [r.id, r]));
+        const pronounResolvedId = resolvePronounToRestaurantId(transcript, lastOffered, rowsById);
+        if (pronounResolvedId) {
+          selected_restaurant_id = pronounResolvedId;
+        }
+      }
+    }
+
     // Pre-fill booking_state from the current transcript so the system prompt
     // sees party_size/date as SET. Without this the model was ignoring its own
     // set_booking_field action across turns and re-asking the same questions.
@@ -10006,6 +10872,49 @@ Deno.serve(async (req) => {
       if (t && (booking_state.time == null || canReplaceUnavailableSlot)) {
         booking_state.time = t;
         preFilled.time = t;
+      }
+      // R10 (2026-05-17): extract special_request + occasion from transcript
+      // so booking_state captures seating preferences ("by the window",
+      // "quiet corner", "high chair", "booth", "patio") and life events
+      // ("anniversary", "birthday", "business dinner"). Previously these
+      // were lost — either silently or hijacked by kid-friendly/vibe deflects.
+      const tLower = transcript.toLowerCase();
+      // Special request seating + accessories
+      const specialReqPatterns: Array<{ re: RegExp; phrase: string }> = [
+        { re: /\b(?:table |seat(?:ed)? )?(?:by the |near the |close to the )?window\b/, phrase: "table by the window" },
+        { re: /\b(quiet (?:corner|table|spot|area)|quiet please)\b/, phrase: "quiet corner" },
+        { re: /\b(booth|in a booth|booth please)\b/, phrase: "booth" },
+        { re: /\b(patio|outdoor|outside|terrace)\b/, phrase: "patio / outdoor" },
+        { re: /\b(high ?chair|high chairs)\b/, phrase: "high chair needed" },
+        { re: /\b(booster (seat|chair))\b/, phrase: "booster seat needed" },
+        { re: /\b(stroller (room|space|access))\b/, phrase: "stroller access" },
+        { re: /\b(wheelchair (access|accessible|table))\b/, phrase: "wheelchair access needed" },
+      ];
+      if (typeof booking_state.special_request !== "string" || !(booking_state.special_request as string).trim()) {
+        for (const { re, phrase } of specialReqPatterns) {
+          if (re.test(tLower)) {
+            (booking_state as Record<string, unknown>).special_request = phrase;
+            break;
+          }
+        }
+      }
+      // Occasion (mutually exclusive; first wins)
+      const occasionPatterns: Array<{ re: RegExp; occ: string }> = [
+        { re: /\b(anniversary|our anniversary)\b/, occ: "anniversary" },
+        { re: /\b(birthday|bday|b-day|it'?s? my birthday)\b/, occ: "birthday" },
+        { re: /\b(engagement|just got engaged|proposing|propose to)\b/, occ: "engagement" },
+        { re: /\b(business dinner|client dinner|work dinner)\b/, occ: "business" },
+        { re: /\b(date night|first date|romantic dinner)\b/, occ: "date" },
+        { re: /\b(graduation|graduating)\b/, occ: "graduation" },
+        { re: /\b(family (?:get-?together|reunion|dinner))\b/, occ: "family" },
+      ];
+      if (typeof booking_state.occasion !== "string" || !(booking_state.occasion as string).trim()) {
+        for (const { re, occ } of occasionPatterns) {
+          if (re.test(tLower)) {
+            (booking_state as Record<string, unknown>).occasion = occ;
+            break;
+          }
+        }
       }
     }
 
@@ -10100,6 +11009,559 @@ Deno.serve(async (req) => {
       }
       // On failure, fall through to preflight + LLM — let them handle the
       // error path (slot taken, duplicate, etc.).
+    }
+
+    // ── Reset / direction-change guard (Phase 1, 2026-05-17) ──────────────
+    // "forget that" / "never mind" / "scratch that" / "start over" / "wait no"
+    // mid-flow → clear booking_state + emit soft_reset UI action. Allowed
+    // when no reservation_id is committed yet (post_booking is locked in).
+    // Pivot ("different restaurant", "forget X") falls through to the LLM so
+    // it can re-extract the new restaurant name from the same transcript with
+    // a cleared booking_state — pivot below clears party/date/time but keeps
+    // the LLM in charge of the restaurant resolution.
+    const reservationCommitted = typeof booking_state.reservation_id === "string"
+      && booking_state.reservation_id.trim().length > 0;
+    const resetKind = !reservationCommitted ? detectResetTrigger(transcript) : null;
+    if (resetKind === "hard_reset") {
+      const resetPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: "Cleared. What would you like instead?",
+        intent: "general_question",
+        step: "greeting",
+        nextExpectedInput: "free_text",
+        booking: clearedBookingStateForReset(),
+        uiActions: [{ type: "soft_reset" }],
+        assistantMemory,
+      });
+      await sendEarlyFinal(
+        send,
+        activeConversationId,
+        transcript ? `User said: "${transcript}"` : "User reset.",
+        resetPayload,
+      );
+      latency.done({ path: "reset_hard" });
+      return;
+    }
+    if (resetKind === "pivot") {
+      // Strip booked-against-old-restaurant fields. LLM will re-resolve the
+      // new restaurant from the same transcript on the upcoming turn.
+      // Same preFilled-preservation rule as mid-flow pivot — keep this turn's
+      // freshly extracted fields, drop stale ones.
+      const keepParty = preFilled.party_size != null ? booking_state.party_size : null;
+      const keepDate = preFilled.date != null ? booking_state.date : null;
+      const keepTime = preFilled.time != null ? booking_state.time : null;
+      booking_state.party_size = keepParty;
+      booking_state.date = keepDate;
+      booking_state.time = keepTime;
+      booking_state.shift_id = null;
+      booking_state.slot_iso = null;
+      booking_state.restaurant_id = null;
+      booking_state.restaurant_name = null;
+      booking_state.pending_action = null;
+      (booking_state as Record<string, unknown>).status = "idle";
+    }
+
+    // ── Mid-flow restaurant pivot (Phase 1, 2026-05-17) ───────────────────
+    // User names a DIFFERENT restaurant while a booking is already in flight
+    // against a previous one. Strip stale party/date/time/slot before the
+    // LLM applies the new restaurant_id. Pre-fill below will re-extract any
+    // party/date/time from the same transcript so single-utterance pivots
+    // like "actually do Harbour Sixty Friday 7 for 4" still capture them.
+    const existingBookingRestaurantId = typeof booking_state.restaurant_id === "string"
+      && (booking_state.restaurant_id as string).trim().length > 0
+      ? (booking_state.restaurant_id as string)
+      : null;
+    if (
+      existingBookingRestaurantId &&
+      !reservationCommitted &&
+      !resetKind &&
+      transcript.trim().length > 0
+    ) {
+      const pivotActiveRestaurants = await fetchActiveRestaurants();
+      const pivotCandidates = findNamedRestaurants(transcript, pivotActiveRestaurants);
+      const pivotTarget = pivotCandidates.find((row) => row.id !== existingBookingRestaurantId);
+      if (pivotTarget) {
+        // R8 (2026-05-17): SET new restaurant_id explicitly + PRESERVE
+        // party/date/time when they were collected for the original booking
+        // (the user is just swapping the restaurant, not starting over).
+        // Without this, the LLM sometimes said "Harbour Sixty — sound right?"
+        // but state still had Mark Testing, leading to mid-confirm pivot bugs.
+        // shift_id and slot_iso DO get cleared (they were for the old restaurant).
+        selected_restaurant_id = pivotTarget.id;
+        booking_state.restaurant_id = pivotTarget.id;
+        booking_state.restaurant_name = pivotTarget.name ?? null;
+        booking_state.shift_id = null;
+        booking_state.slot_iso = null;
+        booking_state.pending_action = null;
+        (booking_state as Record<string, unknown>).status = "collecting_minimum_fields";
+      }
+    }
+
+    // ── Exclusion memory (Phase 1, 2026-05-17) ────────────────────────────
+    // "I don't want sushi" / "no italian" → union into assistant_memory.discovery.excluded.
+    // LLM still controls the actual search filter; this just persists.
+    const exclusionTrigger = detectExclusionTrigger(transcript);
+    if (exclusionTrigger && (exclusionTrigger.cuisines.length || exclusionTrigger.vibes.length)) {
+      assistantMemory = addExclusionsToMemory(assistantMemory, {
+        cuisines: exclusionTrigger.cuisines,
+        vibes: exclusionTrigger.vibes,
+      });
+    }
+
+    // ── Frustration recovery (Phase 5, 2026-05-17) ────────────────────────
+    // "no no no" / "wait wait wait" / "ugh" / "you're not getting it" → pause
+    // any in-flight LLM dispatch and ask explicitly what the user wants.
+    if (!resetKind && !reservationCommitted && detectFrustration(transcript)) {
+      const prevCount = assistantMemory?.conversation_state?.frustration_count ?? 0;
+      const nextCount = prevCount + 1;
+      assistantMemory = {
+        discovery: assistantMemory?.discovery ?? null,
+        booking_process: assistantMemory?.booking_process ?? null,
+        session_dietary: assistantMemory?.session_dietary,
+        conversation_state: {
+          ...(assistantMemory?.conversation_state ?? {}),
+          frustration_count: nextCount,
+        },
+      };
+      const apology = nextCount === 1
+        ? "Sorry — let me start fresh. What would you like to do?"
+        : "I'm clearly off — tell me in your own words what you want and I'll do that.";
+      const fPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: apology,
+        intent: "general_question",
+        step: "greeting",
+        nextExpectedInput: "free_text",
+        booking: {},
+        assistantMemory,
+      });
+      await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, fPayload);
+      latency.done({ path: "frustration_recovery" });
+      return;
+    }
+
+    // ── Talk-to-human deflect (Phase 5, 2026-05-17) ──────────────────────
+    if (!resetKind && detectHumanRequest(transcript)) {
+      let humanRestaurantPhone: string | null = null;
+      let humanRestaurantName: string | null = null;
+      const humanRestaurantId = (typeof booking_state.restaurant_id === "string"
+        ? (booking_state.restaurant_id as string)
+        : null) ?? singleDisplayedRestaurantId(assistantMemory);
+      if (humanRestaurantId) {
+        const humanActive = await fetchActiveRestaurants();
+        const row = humanActive.find((r) => r.id === humanRestaurantId);
+        humanRestaurantName = row?.name ?? null;
+        humanRestaurantPhone = (row as { phone?: string | null } | undefined)?.phone ?? null;
+      }
+      const humanText = humanRestaurantPhone && humanRestaurantName
+        ? `I'm Cenaiva — I handle bookings via voice. For anything else, call ${humanRestaurantName} at ${humanRestaurantPhone}.`
+        : "I'm Cenaiva — I handle bookings via voice. For other help, call the restaurant directly. Want me to keep going?";
+      const hPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: humanText,
+        intent: "fallback_handoff",
+        step: "done",
+        nextExpectedInput: "free_text",
+        booking: {},
+        assistantMemory,
+      });
+      await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, hPayload);
+      latency.done({ path: "human_deflect" });
+      return;
+    }
+
+    // ── Joke counter handler (Phase 5, 2026-05-17) ───────────────────────
+    // Up to 2 jokes per session from a small food-themed pool; third request
+    // gets a polite refusal. Counter persists via assistant_memory.
+    if (!resetKind && detectJokeRequest(transcript, assistantMemory?.conversation_state?.joke_count ?? 0)) {
+      const prevJokes = assistantMemory?.conversation_state?.joke_count ?? 0;
+      if (prevJokes >= 2) {
+        const refusal = "Save it for the comedy show — what spot sounds good?";
+        const jPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: refusal,
+          intent: "general_question",
+          step: "greeting",
+          nextExpectedInput: "free_text",
+          booking: {},
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, jPayload);
+        latency.done({ path: "joke_refused" });
+        return;
+      }
+      const jokeIdx = prevJokes % FOOD_JOKE_POOL.length;
+      const jokeText = FOOD_JOKE_POOL[jokeIdx];
+      const nextJokes = prevJokes + 1;
+      assistantMemory = {
+        discovery: assistantMemory?.discovery ?? null,
+        booking_process: assistantMemory?.booking_process ?? null,
+        session_dietary: assistantMemory?.session_dietary,
+        conversation_state: {
+          ...(assistantMemory?.conversation_state ?? {}),
+          joke_count: nextJokes,
+        },
+      };
+      const jPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: jokeText,
+        intent: "general_question",
+        step: "greeting",
+        nextExpectedInput: "free_text",
+        booking: {},
+        assistantMemory,
+      });
+      await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, jPayload);
+      latency.done({ path: `joke_${nextJokes}` });
+      return;
+    }
+
+    // ── Background-noise interrupt (R8, 2026-05-17) ──────────────────────
+    // "honey where are the keys" → user is addressing someone else, not us.
+    // Don't take it as a query. Acknowledge briefly so they know we're idle.
+    if (!resetKind && transcript.trim().length > 0 && detectBackgroundInterrupt(transcript)) {
+      const bgPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: "Standing by — let me know when you're ready to continue.",
+        intent: "general_question",
+        step: "greeting",
+        nextExpectedInput: "free_text",
+        booking: {},
+        assistantMemory,
+      });
+      await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, bgPayload);
+      latency.done({ path: "background_interrupt" });
+      return;
+    }
+
+    // ── Reservation-management intent deflect (R7, 2026-05-17) ───────────
+    // ESL / simple phrasings ("I want cancel my reservation", "cancel res")
+    // were falling through to search_restaurants. Catch deterministically:
+    // if intent is cancel/modify AND user has zero active reservations,
+    // respond honestly. If they have reservations, route to LLM via tool.
+    if (!resetKind && transcript.trim().length > 0) {
+      const mgmtIntent = detectReservationMgmtIntent(transcript);
+      if (mgmtIntent) {
+        const nowIso2 = new Date().toISOString();
+        const { data: activeCheck } = await supabaseAdmin
+          .from("reservations")
+          .select("id")
+          .eq("user_profile_id", userProfileId)
+          .neq("status", "cancelled")
+          .gte("reserved_at", nowIso2)
+          .limit(1);
+        if (!activeCheck || activeCheck.length === 0) {
+          const noResText = mgmtIntent === "cancel"
+            ? "You don't have any upcoming reservations to cancel. Want to book a new one?"
+            : mgmtIntent === "list"
+              ? "You don't have any upcoming reservations right now. Want me to help you find a spot?"
+              : "You don't have any active reservations to change. Want to book a new one?";
+          const mgmtPayload = makeAssistantPayload({
+            conversationId: activeConversationId,
+            spokenText: noResText,
+            intent: mgmtIntent === "cancel" ? "reservation_cancel" : "reservation_modify",
+            step: "done",
+            nextExpectedInput: "free_text",
+            booking: {},
+            assistantMemory,
+          });
+          await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, mgmtPayload);
+          latency.done({ path: `mgmt_intent_${mgmtIntent}_no_active` });
+          return;
+        }
+        // Has active reservations — fall through to LLM which will call
+        // list_my_reservations + disambig as normal. The LLM dispatch is
+        // better at this multi-step flow than a deterministic stub.
+      }
+    }
+
+    // ── Out-of-scope deflect (Round 6, 2026-05-17) ───────────────────────
+    // Delivery, rideshare, hotel, translate, time, math/code, shopping —
+    // none of which Cenaiva does. Politely redirect to the right tool.
+    if (!resetKind) {
+      const oosKind = detectOutOfScope(transcript);
+      if (oosKind) {
+        const oosPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: outOfScopeReply(oosKind),
+          intent: "general_question",
+          step: "greeting",
+          nextExpectedInput: "free_text",
+          booking: {},
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, oosPayload);
+        latency.done({ path: `oos_${oosKind}` });
+        return;
+      }
+    }
+
+    // ── Off-topic acks (Phase 5, 2026-05-17) ─────────────────────────────
+    if (!resetKind) {
+      const offTopicKind = detectOffTopic(transcript);
+      if (offTopicKind) {
+        const offText = offTopicKind === "weather"
+          ? "I don't track weather — try a weather app. Want me to find you a spot for dinner?"
+          : offTopicKind === "robot_identity"
+            ? "I'm Cenaiva — a voice assistant for restaurant bookings. Where are we eating?"
+            : "Big questions! I'm just here for bookings. What sounds good?";
+        const offPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: offText,
+          intent: "general_question",
+          step: "greeting",
+          nextExpectedInput: "free_text",
+          booking: {},
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, offPayload);
+        latency.done({ path: `offtopic_${offTopicKind}` });
+        return;
+      }
+    }
+
+    // ── Inline dietary declaration (Phase 4, 2026-05-17) ─────────────────
+    // "I'm vegan" / "I'm gluten-free" mid-conversation → union into
+    // session_dietary. LLM reads this via DIETARY line in userContent and
+    // passes to search_restaurants. Doesn't persist to user profile —
+    // user can update profile via settings if they want permanent change.
+    const dietaryDeclared = detectDietaryDeclaration(transcript);
+    if (dietaryDeclared.length) {
+      const baseDietary = assistantMemory?.session_dietary ?? [];
+      const merged = uniqueStrings([...baseDietary, ...dietaryDeclared]);
+      assistantMemory = {
+        discovery: assistantMemory?.discovery ?? null,
+        booking_process: assistantMemory?.booking_process ?? null,
+        session_dietary: merged,
+      };
+    }
+
+    // ── Hours question deflect (R9, 2026-05-17) ──────────────────────────
+    // "what are their hours" / "when does X open" / "hours of operation" →
+    // resolve restaurant from booking_state / last_offered / fuzzy match →
+    // read hours_json → answer naturally. Day-specific if user mentioned
+    // a day in the same utterance. Previously hours questions fell through
+    // to the LLM which sometimes misclassified them as restaurant pivots.
+    if (!resetKind && transcript.trim().length > 0 && detectHoursQuestion(transcript)) {
+      const hoursCandidateRestaurantId =
+        (typeof booking_state.restaurant_id === "string" && (booking_state.restaurant_id as string).trim().length > 0
+          ? (booking_state.restaurant_id as string)
+          : null) ??
+        (Array.isArray(visible_restaurant_ids) && visible_restaurant_ids.length === 1
+          ? visible_restaurant_ids[0]
+          : null) ??
+        singleDisplayedRestaurantId(assistantMemory) ??
+        ((assistantMemory?.discovery?.last_offered_restaurant_ids ?? []).length === 1
+          ? (assistantMemory!.discovery!.last_offered_restaurant_ids![0])
+          : null);
+      let hoursRestaurantId: string | null = hoursCandidateRestaurantId;
+      let hoursRestaurantRow: SearchRestaurantRow | null = null;
+      const hoursActive = await fetchActiveRestaurants();
+      if (!hoursRestaurantId) {
+        const fromTranscript = findNamedRestaurants(transcript, hoursActive);
+        if (fromTranscript.length === 1) {
+          hoursRestaurantId = fromTranscript[0].id;
+        }
+      }
+      if (hoursRestaurantId) {
+        hoursRestaurantRow = hoursActive.find((row) => row.id === hoursRestaurantId) ?? null;
+      }
+      if (hoursRestaurantRow) {
+        const targetDate = extractHoursTargetDate(transcript, effectiveTimeZone);
+        const hoursText = describeHoursForDay(
+          hoursRestaurantRow.name ?? "the restaurant",
+          (hoursRestaurantRow as { hours_json?: Record<string, unknown> | null }).hours_json ?? null,
+          targetDate,
+          effectiveTimeZone,
+        );
+        const hoursPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: hoursText,
+          intent: "answer_restaurant_question",
+          step: "done",
+          nextExpectedInput: "free_text",
+          booking: {},
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, hoursPayload);
+        latency.done({ path: "hours_deflect" });
+        return;
+      }
+      // No restaurant context — ask which.
+      const askHoursPayload = makeAssistantPayload({
+        conversationId: activeConversationId,
+        spokenText: "Which restaurant should I check hours for?",
+        intent: "answer_restaurant_question",
+        step: "choose_restaurant",
+        nextExpectedInput: "restaurant",
+        booking: {},
+        assistantMemory,
+      });
+      await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, askHoursPayload);
+      latency.done({ path: "hours_deflect_no_restaurant" });
+      return;
+    }
+
+    // ── Menu pre-booking deflect (R5+, 2026-05-17) ───────────────────────
+    // "show me the menu" / "what's on the menu at X" pre-booking previously
+    // went silent (system prompt blocks get_menu pre-booking). Now: surface
+    // 3-5 featured items inline + redirect to the restaurant preview for the
+    // full menu + offer to book.
+    if (!resetKind && transcript.trim().length > 0 && detectMenuRequest(transcript)) {
+      const menuCandidateRestaurantId =
+        (typeof booking_state.restaurant_id === "string" && (booking_state.restaurant_id as string).trim().length > 0
+          ? (booking_state.restaurant_id as string)
+          : null) ??
+        (Array.isArray(visible_restaurant_ids) && visible_restaurant_ids.length === 1
+          ? visible_restaurant_ids[0]
+          : null) ??
+        singleDisplayedRestaurantId(assistantMemory) ??
+        ((assistantMemory?.discovery?.last_offered_restaurant_ids ?? []).length === 1
+          ? (assistantMemory!.discovery!.last_offered_restaurant_ids![0])
+          : null);
+      let menuRestaurantId: string | null = menuCandidateRestaurantId;
+      let menuRestaurantRow: SearchRestaurantRow | null = null;
+      const menuActive = await fetchActiveRestaurants();
+      if (!menuRestaurantId) {
+        const fromTranscript = findNamedRestaurants(transcript, menuActive);
+        if (fromTranscript.length === 1) {
+          menuRestaurantId = fromTranscript[0].id;
+        }
+      }
+      if (menuRestaurantId) {
+        menuRestaurantRow = menuActive.find((row) => row.id === menuRestaurantId) ?? null;
+      }
+      if (menuRestaurantRow) {
+        // Fetch featured + top items. Featured first, then by sort_order.
+        const { data: itemsData } = await supabaseAdmin
+          .from("menu_items")
+          .select("name, price, is_featured, sort_order")
+          .eq("restaurant_id", menuRestaurantId)
+          .eq("is_active", true)
+          .eq("is_available", true)
+          .order("is_featured", { ascending: false })
+          .order("sort_order", { ascending: true })
+          .limit(5);
+        const items = (itemsData ?? []) as Array<{ name: string; price: number | null }>;
+        const itemList = items.length
+          ? items
+              .map((it) => {
+                const dollars = typeof it.price === "number" && it.price > 0 ? ` ($${it.price.toFixed(0)})` : "";
+                return `${it.name}${dollars}`;
+              })
+              .join(", ")
+          : null;
+        const restName = menuRestaurantRow.name ?? "the restaurant";
+        const spokenMenu = itemList
+          ? `A few favorites at ${restName}: ${itemList}. For the full menu, tap the card on Discover. Want me to book you a table?`
+          : `I don't have menu items on file for ${restName}. Tap the card on Discover for details. Want me to book?`;
+        // R5+ fix (2026-05-17): menu deflect now sets restaurant_id +
+        // restaurant_name in booking_state so a follow-up "book a table"
+        // inherits the restaurant context. Without this, "show me menu for
+        // David Duncan" → "book a table tomorrow 6pm" loses David Duncan
+        // and the LLM re-asks which restaurant.
+        const menuPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: spokenMenu,
+          intent: "answer_restaurant_question",
+          step: "choose_restaurant",
+          nextExpectedInput: "free_text",
+          booking: {
+            restaurant_id: menuRestaurantId,
+            restaurant_name: menuRestaurantRow.name ?? null,
+            status: "collecting_minimum_fields",
+          },
+          uiActions: [
+            { type: "highlight_restaurant", restaurant_id: menuRestaurantId },
+            { type: "open_restaurant_preview", restaurant_id: menuRestaurantId },
+          ],
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, menuPayload);
+        latency.done({ path: "menu_deflect" });
+        return;
+      } else {
+        // No restaurant context — ask which restaurant.
+        const askPayload = makeAssistantPayload({
+          conversationId: activeConversationId,
+          spokenText: "Which restaurant's menu should I show you?",
+          intent: "answer_restaurant_question",
+          step: "choose_restaurant",
+          nextExpectedInput: "restaurant",
+          booking: {},
+          assistantMemory,
+        });
+        await sendEarlyFinal(send, activeConversationId, `User said: "${transcript}"`, askPayload);
+        latency.done({ path: "menu_deflect_no_restaurant" });
+        return;
+      }
+    }
+
+    // ── Info-query soft deflect (Phase 2, 2026-05-17) ────────────────────
+    // "do they have parking" / "what's the dress code" / "is it wheelchair
+    // accessible" → friendly honest "call the restaurant" response. Soft
+    // categories (parking, dress code, accessibility, kid-friendly, payment)
+    // are not reliably populated by owners; per
+    // [[feedback-honest-deflects-over-plumbing]] we prefer a polite deflect
+    // with the restaurant phone over guessed/hallucinated data.
+    // Skips when: reset just fired, transcript empty, no restaurant context.
+    // R10 (2026-05-17): also skip when transcript contains booking action
+    // verb + restaurant name in the SAME utterance — those phrasings carry
+    // special_request data ("book mark testing for 4 friday 8pm we need a
+    // high chair"), not a standalone deflect query.
+    const transcriptHasBookingIntent =
+      /\b(book|reserve|reservation|table for)\b/i.test(transcript) &&
+      /\b(jacobs|harbour|mark testing|stk|the keg|blue blood|ruth|david duncan|baton rouge|bâton rouge|georgy|ruth's chris)\b/i.test(transcript);
+    if (!resetKind && transcript.trim().length > 0 && !transcriptHasBookingIntent) {
+      const infoCategory = detectInfoQueryDeflect(transcript);
+      if (infoCategory) {
+        const infoCandidateRestaurantId =
+          (typeof booking_state.restaurant_id === "string" && (booking_state.restaurant_id as string).trim().length > 0
+            ? (booking_state.restaurant_id as string)
+            : null) ??
+          (Array.isArray(visible_restaurant_ids) && visible_restaurant_ids.length === 1
+            ? visible_restaurant_ids[0]
+            : null) ??
+          singleDisplayedRestaurantId(assistantMemory);
+        let infoRestaurantId: string | null = infoCandidateRestaurantId;
+        let infoRestaurantRow: SearchRestaurantRow | null = null;
+        const infoActive = await fetchActiveRestaurants();
+        if (!infoRestaurantId) {
+          const fromTranscript = findNamedRestaurants(transcript, infoActive);
+          if (fromTranscript.length === 1) {
+            infoRestaurantId = fromTranscript[0].id;
+          }
+        }
+        if (infoRestaurantId) {
+          infoRestaurantRow = infoActive.find((row) => row.id === infoRestaurantId) ?? null;
+        }
+        if (infoRestaurantRow) {
+          const deflectText = infoQueryDeflectText(
+            infoCategory,
+            infoRestaurantRow.name ?? null,
+            (infoRestaurantRow as { phone?: string | null }).phone ?? null,
+          );
+          const deflectPayload = makeAssistantPayload({
+            conversationId: activeConversationId,
+            spokenText: deflectText,
+            intent: "answer_restaurant_question",
+            step: "done",
+            nextExpectedInput: "free_text",
+            booking: {},
+            assistantMemory,
+          });
+          await sendEarlyFinal(
+            send,
+            activeConversationId,
+            `User said: "${transcript}"`,
+            deflectPayload,
+          );
+          latency.done({ path: `info_deflect_${infoCategory}` });
+          return;
+        }
+        // No restaurant context — fall through to LLM. It will likely ask
+        // "which restaurant?" before deflecting, which is a fine UX.
+      }
     }
 
     let userCityCache: string | null = null;
@@ -11173,6 +12635,47 @@ Deno.serve(async (req) => {
     history = await loadHistory();
     assistantMemory = mergeAssistantMemory(assistantMemoryFromHistory(history), requestAssistantMemory);
 
+    // Phase 1/4 (2026-05-17): re-apply memory-mutating detectors AFTER the
+    // history+request reassignment above (which would otherwise wipe earlier
+    // exclusion / dietary additions). These detectors don't early-return —
+    // they just layer state onto assistantMemory before the LLM call.
+    {
+      const exclTrigger = detectExclusionTrigger(transcript);
+      if (exclTrigger && (exclTrigger.cuisines.length || exclTrigger.vibes.length)) {
+        assistantMemory = addExclusionsToMemory(assistantMemory, {
+          cuisines: exclTrigger.cuisines,
+          vibes: exclTrigger.vibes,
+        });
+      }
+      const dietaryDeclaredAfter = detectDietaryDeclaration(transcript);
+      if (dietaryDeclaredAfter.length) {
+        const baseDietary = assistantMemory?.session_dietary ?? [];
+        const merged = uniqueStrings([...baseDietary, ...dietaryDeclaredAfter]);
+        assistantMemory = {
+          discovery: assistantMemory?.discovery ?? null,
+          booking_process: assistantMemory?.booking_process ?? null,
+          session_dietary: merged,
+          conversation_state: assistantMemory?.conversation_state,
+        };
+      }
+    }
+
+    // Round 5 fix (2026-05-17): re-attempt pronoun resolution using the
+    // history-merged assistantMemory. The earlier check only saw the request
+    // body's memory, which may not include last_offered_restaurant_ids if the
+    // previous turn's response was stripped by zod schema or wasn't passed.
+    if (!selected_restaurant_id) {
+      const lastOfferedMerged = assistantMemory?.discovery?.last_offered_restaurant_ids ?? [];
+      if (lastOfferedMerged.length > 0) {
+        const activeRowsP = await fetchActiveRestaurants();
+        const rowsByIdP = new Map(activeRowsP.map((r) => [r.id, r]));
+        const pronounIdP = resolvePronounToRestaurantId(transcript, lastOfferedMerged, rowsByIdP);
+        if (pronounIdP) {
+          selected_restaurant_id = pronounIdP;
+        }
+      }
+    }
+
     // Promote a "yes" to an explicit selection when the previous assistant
     // turn already proposed a specific restaurant via highlight_restaurant
     // (i.e. the LLM said "Did you mean Georgy Inc?"). Without this, an
@@ -11509,6 +13012,109 @@ Deno.serve(async (req) => {
       (currentStatus === "idle" || currentStatus === "collecting_minimum_fields") &&
       priorWhichAsks >= 1;
 
+    // Phase 1 (2026-05-17): surface accumulated exclusions to the LLM so it
+    // can filter them out of search_restaurants results and avoid re-proposing
+    // what the user already vetoed.
+    const excludedMemory = assistantMemory?.discovery?.excluded ?? null;
+    const exclusionsLine = excludedMemory && (
+      excludedMemory.cuisines.length || excludedMemory.vibes.length || excludedMemory.restaurant_ids.length
+    )
+      ? `⚠️ EXCLUSIONS (user has vetoed these — do NOT propose): cuisines=[${excludedMemory.cuisines.join(", ") || "—"}], vibes=[${excludedMemory.vibes.join(", ") || "—"}], restaurant_ids=[${excludedMemory.restaurant_ids.join(", ") || "—"}].`
+      : "";
+
+    // Phase 3 (2026-05-17): surface the last-offered ID list so the LLM can
+    // resolve pronouns ("the cheaper one", "the first one") to a real
+    // restaurant_id from THIS conversation's most recent search results.
+    const lastOffered = assistantMemory?.discovery?.last_offered_restaurant_ids ?? [];
+    const lastOfferedLine = lastOffered.length
+      ? `🧠 LAST OFFERED restaurant ids (use for pronoun resolution like "the first one" / "the cheaper one" / "that one"): [${lastOffered.join(", ")}].`
+      : "";
+
+    // Phase 4 (2026-05-17): surface dietary so the LLM passes it as a search
+    // filter automatically. Profile = persistent; session = this-conversation.
+    // Both apply unless user says "ignore my preferences".
+    const sessionDietary = assistantMemory?.session_dietary ?? [];
+    const allDietary = uniqueStrings([...profileDietary, ...sessionDietary]);
+    // Round 5+ scope fix (2026-05-17): only surface DIETARY when the user is
+    // NOT mid-booking (no restaurant_id selected and no party_size collected).
+    // Previously the "immediately call search_restaurants" instruction
+    // hijacked the party_size collection step — when the user replied "for 2
+    // guests" the LLM called search(pescatarian) instead of continuing the
+    // booking. Scoping to free-discovery prevents that hijack.
+    // Rephrased to passive ("apply to any search you call") so even when it
+    // does fire, the LLM doesn't treat it as a command to search.
+    const dietaryActiveBookingInFlight =
+      (typeof booking_state.restaurant_id === "string" && (booking_state.restaurant_id as string).trim().length > 0) ||
+      (typeof booking_state.party_size === "number");
+    // Round 6 scope fix (2026-05-17): also suppress dietary when the user's
+    // intent is clearly reservation-management (list/cancel/modify), not
+    // discovery. Without this, "what bookings do I have" got hijacked to
+    // "Got it, Pescatarian. Anywhere on your mind?".
+    const dietaryReservationMgmtIntent = /\b(my (booking|reservation|table)s?|what (do i have|bookings|reservations?)|what (reservation|booking|res|table)s? (do )?i (have|got)|show my|list my|cancel|modify|move my|change my|push my|update my|reschedule|delete)\b/i.test(transcript);
+    // R7 (2026-05-17): also suppress when transcript expresses EXCLUSION
+    // ("I don't want X" / "no sushi") — the user is REJECTING something,
+    // not asking to search. Dietary previously hijacked these into a
+    // Pescatarian search.
+    const dietaryExclusionIntent = /\b(don'?t (really )?(want|wanna|like|feel like)|do not (really )?want|not (in the mood|feeling)|i (?:no|don't) (?:like|want)|anything but|skip|avoid)\b/i.test(transcript);
+    // R7 (2026-05-17): also suppress when transcript is a reset/clear intent.
+    const dietaryResetIntent = /\b(start (over|fresh|again)|forget (that|it)|never\s?mind|scratch (that|it)|reset)\b/i.test(transcript);
+    // R7 (2026-05-17): TONE FIX — make dietary a SILENT preference, not a
+    // commanding instruction. Previously the LLM treated "apply as filter"
+    // as "go search now". New wording is purely informational so the LLM
+    // only consults it if it independently decides to search.
+    const dietaryLine = (allDietary.length && !dietaryActiveBookingInFlight && !dietaryReservationMgmtIntent && !dietaryExclusionIntent && !dietaryResetIntent)
+      ? `🥗 USER DIETARY PREFERENCE [${allDietary.join(", ")}] — informational only. Do NOT call search_restaurants just because of this. If you DO search for restaurants (because the user asked to find one), pass relevant filters (cuisine_type / menu_item_keyword) that align with these preferences. Never say "certification" / "certified" / "confirmed dietary".`
+      : "";
+
+    // Round 5 fix (2026-05-17): surface deposit info BEFORE the LLM emits a
+    // confirmation prompt. When the booking has a known restaurant + party
+    // size that triggers a deposit, the LLM must mention amount up front.
+    // Resolves restaurant from booking_state OR fuzzy-matched from transcript.
+    let depositLine = "";
+    {
+      let depositRestaurantId: string | null = typeof booking_state.restaurant_id === "string"
+        ? booking_state.restaurant_id as string : null;
+      const bsParty = typeof booking_state.party_size === "number"
+        ? booking_state.party_size as number : null;
+      // Fallback: fuzzy-match restaurant from transcript so single-utterance
+      // bookings ("book harbour sixty for 12 friday 7pm") get a deposit
+      // disclosure BEFORE the LLM's confirmation prompt.
+      if (!depositRestaurantId && transcript) {
+        const activeRows = await fetchActiveRestaurants();
+        const named = findNamedRestaurants(transcript, activeRows);
+        if (named.length === 1) depositRestaurantId = named[0].id;
+      }
+      if (depositRestaurantId && bsParty && bsParty >= 2) {
+        try {
+          const { data: depositCents } = await supabaseAdmin.rpc("compute_deposit_for_party", {
+            p_restaurant_id: depositRestaurantId,
+            p_party_size: bsParty,
+          });
+          if (typeof depositCents === "number" && depositCents > 0) {
+            const totalDollars = (depositCents / 100).toFixed(0);
+            const perPerson = (depositCents / bsParty / 100).toFixed(0);
+            depositLine = `⚠️ DEPOSIT REQUIRED: party of ${bsParty} needs a $${perPerson}/person deposit (~$${totalDollars} total). Your spoken_text MUST start with "Heads up — they ask for a $${perPerson}/person deposit (about $${totalDollars}) for parties this size; I'll hand you off to pay after you confirm. " THEN add the normal confirmation prompt. Do NOT skip the deposit notice.`;
+          }
+        } catch { /* ignore deposit fetch errors */ }
+      }
+    }
+
+    // R8 compound multi-intent (2026-05-17): "book X also Y" / "X what
+    // about Y" — surface the secondary question to the LLM so it appends a
+    // brief answer to its primary response. Previously the secondary was
+    // dropped entirely.
+    const compoundSplit = splitCompoundIntent(transcript);
+    const compoundLine = compoundSplit
+      ? `📎 USER ALSO ASKED: "${compoundSplit.secondary}". AFTER your main response to the primary intent, append a brief honest answer to this side question. If you don't know, deflect honestly (e.g. "Hours/parking/dress code info — call the restaurant"). Don't ignore it.`
+      : "";
+
+    // Round 5 fix (2026-05-17): vibe-deflect line. When the user uses a vibe
+    // word ("romantic", "lively", "quiet", "fancy"), prepend an honest
+    // disclaimer so the LLM doesn't promise vibe matching.
+    const vibeLine = /\b(romantic|lively|quiet|fancy|cozy|trendy|casual|intimate|loud|date night|special occasion)\b/i.test(transcript)
+      ? `⚠️ VIBE WORD DETECTED in transcript — MANDATORY: your spoken_text MUST start with "I don't have vibe info, but" before listing any restaurants. Example: "I don't have vibe info, but higher-priced steakhouses and Italian tend to fit romantic. Try Harbour Sixty, Jacobs, or David Duncan?" Never just list restaurants without the disclaimer first.`
+      : "";
+
     const userContent = [
       transcript ? `User said: "${transcript}"` : "User opened the assistant.",
       selected_restaurant_id
@@ -11516,6 +13122,12 @@ Deno.serve(async (req) => {
         : "",
       visibleRestaurantsLine,
       sttFuzzyMatchLine,
+      exclusionsLine,
+      lastOfferedLine,
+      dietaryLine,
+      depositLine,
+      vibeLine,
+      compoundLine,
       repeatedWhichAsk && !selected_restaurant_id
         ? "⚠️ You have already asked 'which restaurant?' at least twice. Do NOT ask it again. Take the closest-sounding candidate from the list above and emit highlight_restaurant on its id + spoken_text 'Did you mean <name>?' Set next_expected_input='confirmation'."
         : "",
@@ -13545,11 +15157,17 @@ Deno.serve(async (req) => {
         (booking_state.date as string | null | undefined) ??
         (preFilled.date as string | undefined) ??
         "";
+      const depositPrefixAuto = await getDepositPrefix(
+        typeof booking_state.restaurant_id === "string" ? (booking_state.restaurant_id as string) : null,
+        partyForPrompt,
+      );
       parsed.spoken_text = buildBookingConfirmationPrompt({
         restaurantName: resolvedRestaurantName,
         partySize: partyForPrompt,
         date: dateForPrompt,
         time: autoSelectedSlot.display_time,
+        timezone: effectiveTimeZone,
+        depositPrefix: depositPrefixAuto,
       });
       parsed.intent = "confirm_booking";
       parsed.step = "confirm";
@@ -14138,6 +15756,46 @@ Deno.serve(async (req) => {
         (parsed.spoken_text as string) ?? "",
       ),
     });
+
+    // Round 5 fix (2026-05-17): if the LLM ignored the DEPOSIT / VIBE
+    // instructions in userContent, prepend them deterministically. These
+    // are non-negotiable disclosures for trust + UX.
+    if (typeof parsed.spoken_text === "string") {
+      let spoken = parsed.spoken_text as string;
+      if (depositLine && !/deposit|heads up.*\$|\$\d+.*deposit/i.test(spoken)) {
+        // Pull the "Heads up — ..." sentence out of depositLine via regex.
+        const m = depositLine.match(/"(Heads up[^"]+)"/);
+        if (m) spoken = `${m[1]}${spoken}`.trim();
+      }
+      if (vibeLine && !/vibe info|don't have vibe/i.test(spoken)) {
+        spoken = `I don't have vibe info, but here are top picks — ${spoken}`;
+      }
+      parsed.spoken_text = spoken;
+    }
+
+    // Round 5 fix (2026-05-17): final safety net — strip raw YYYY-MM-DD from
+    // the LLM's spoken_text. The prompt instructs natural dates, but the LLM
+    // occasionally echoes booking_state.date verbatim ("on 2026-05-23").
+    // This regex replaces with formatDateForSpeechFull output.
+    if (typeof parsed.spoken_text === "string") {
+      parsed.spoken_text = (parsed.spoken_text as string).replace(
+        /\b(\d{4}-\d{2}-\d{2})\b/g,
+        (_m, iso) => {
+          try { return formatDateForSpeechFull(iso, effectiveTimeZone); } catch { return iso; }
+        },
+      );
+      // R5+ profanity scrub (2026-05-17): the LLM occasionally echoes the
+      // user's expletives ("I don't see anyone serving sushi but no fucking
+      // shrimp..."). Replace common four-letter words with neutral placeholders
+      // so the TTS never voices them.
+      parsed.spoken_text = (parsed.spoken_text as string)
+        .replace(/\bf+u+c+k+(ing|ed|er)?\b/gi, "")
+        .replace(/\bs+h+i+t+\b/gi, "")
+        .replace(/\ba+s+s+h+o+l+e+s?\b/gi, "")
+        .replace(/\bb+i+t+c+h+\b/gi, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+    }
 
     await latency.time("assistant_persist", () =>
       supabaseAdmin.from("chat_messages").insert({

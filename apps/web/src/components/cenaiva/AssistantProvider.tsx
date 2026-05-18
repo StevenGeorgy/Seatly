@@ -1047,7 +1047,6 @@ function AssistantInner({ children }: { children: ReactNode }) {
             return {
               spokenText: cur,
               booking: stateRef.current.booking,
-              uiActions: stateRef.current.ui_actions ?? [],
             };
           }
           await new Promise((r) => setTimeout(r, 150));

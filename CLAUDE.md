@@ -14,6 +14,27 @@ Routine bug fixes do not need an update. Detailed ship notes go to
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-17 ROUND 4 (Hey Cenaiva polish)** — All 5 deterministic
+  upstream layers shipped to `cenaiva-orchestrate`:
+  (P1) direction-change reset + mid-flow restaurant pivot + exclusion
+  memory + `soft_reset` UI action;
+  (P2) info-query soft-deflect (parking, dress code, accessibility,
+  kid-friendly, payment) + robot-date fix on modify path;
+  (P3) pronoun resolution via `discovery.last_offered_restaurant_ids`
+  + multi-intent + vibe honest deflect;
+  (P4) profile + session dietary auto-apply to search_restaurants;
+  (P5) frustration recovery + talk-to-human + joke counter (3-pool +
+  refuse-after-2) + off-topic acks + misleading-fallback rewrite in
+  `searchFallback.ts`. AssistantMemory extensions: `excluded`,
+  `last_offered_restaurant_ids`, `session_dietary`,
+  `conversation_state.{joke_count,frustration_count}` — all optional
+  with sensible defaults. Schema mirrored in `@cenaiva/assistant`.
+  Client `mergeAssistantMemory` made identity-stable to prevent a
+  Phase-1 useEffect loop (`AssistantStore.tsx`). Prompt net growth
+  vs Phase 0 baseline: +2 lines / +62 words / +786 chars (see
+  PROMPT_SIZE_LOG.md). Full 85-test Chrome E2E (Phase 6) NOT yet
+  run — assistant FAB-open path in Chrome MCP context blocked on
+  mic permission flow; Mark to verify in real browser.
 - **2026-05-16** — Pricing overhaul: platform fee 5%→5.5% on pre-orders
   & deposits; subscription $200→$199 CAD/mo; cancellation refunds only
   the restaurant's 94.5% slice (Cenaiva keeps the 5.5% commission);
@@ -23,6 +44,11 @@ Routine bug fixes do not need an update. Detailed ship notes go to
 - **2026-05-16 OPERATIONAL (Mark)** — Create new $199 CAD/mo recurring
   Stripe Price + update `STRIPE_SUBSCRIPTION_PRICE_ID` env var in
   Supabase. Until then new subscriptions will charge $200.
+- **2026-05-17 OPERATIONAL (Mark)** — ZERO restaurants currently have
+  `stripe_charges_enabled = true`. Onboard at least one through the
+  Connect Embedded flow so Phase 6 Section O (Stripe + payments) can
+  run end-to-end. Without this, deposit + post-meal pay flows can be
+  developed but not E2E-verified.
 - **2026-05-15** — Cancellation policy: 24h forfeit cliff REMOVED, all
   cancels fully refund (within new keep-fee policy). New page
   `/find-reservation`. Phone+email both required everywhere. Diner

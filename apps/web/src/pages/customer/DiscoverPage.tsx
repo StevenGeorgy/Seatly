@@ -1328,7 +1328,11 @@ export default function DiscoverPage() {
   );
 
   useEffect(() => {
-    if (view !== "map" || locationStatus !== "idle") return;
+    // Bug fix 2026-05-17: previously this only ran in map view, so the
+    // hardcoded "TORONTO" header on grid view never had a chance to reflect
+    // the user's real city. Run on initial idle regardless of view so the
+    // header's geo-eyebrow can resolve.
+    if (locationStatus !== "idle") return;
     navigator.geolocation.getCurrentPosition(
       (position) => {
         setUserLocation({
@@ -1342,7 +1346,34 @@ export default function DiscoverPage() {
       },
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 300_000 },
     );
-  }, [locationStatus, view]);
+  }, [locationStatus]);
+
+  // Reverse-geocode the user's location to a city label for the header
+  // eyebrow. Falls back gracefully when geolocation is denied/unsupported —
+  // no city is shown rather than risking a wrong one (the prior hardcoded
+  // "TORONTO" was confusing Guelph users into thinking the matcher was
+  // broken).
+  const [userCityLabel, setUserCityLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!userLocation) return;
+    let cancelled = false;
+    void loadGoogleMaps().then((maps) => {
+      if (cancelled) return;
+      const geocoder = new maps.Geocoder();
+      geocoder.geocode({ location: userLocation }, (results, status) => {
+        if (cancelled) return;
+        if (status !== "OK" || !results) return;
+        const localityComp = results
+          .flatMap((r) => r.address_components ?? [])
+          .find((c) =>
+            c.types.includes("locality") ||
+            c.types.includes("administrative_area_level_2"),
+          );
+        if (localityComp?.long_name) setUserCityLabel(localityComp.long_name);
+      });
+    });
+    return () => { cancelled = true; };
+  }, [userLocation]);
 
   const urlPreviewRestaurant = useMemo(() => {
     if (!previewParam) return null;
@@ -1591,9 +1622,10 @@ export default function DiscoverPage() {
   const greetingName = profile?.full_name?.split(" ")[0] ?? "guest";
 
   const today = new Date();
+  const headerCityPart = userCityLabel ? ` · ${userCityLabel.toUpperCase()}` : "";
   const headerEyebrow = `${today.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase()} · ${today
     .toLocaleDateString("en-US", { month: "long", day: "numeric" })
-    .toUpperCase()} · TORONTO`;
+    .toUpperCase()}${headerCityPart}`;
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
