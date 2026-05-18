@@ -1336,6 +1336,22 @@ export default function RestaurantPublicPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Deep-link from Cenaiva post-confirm pre-order: ?reservation_id= ──────
+  // R11 (2026-05-18): when voice creates the reservation FIRST and then
+  // asks "want to pre-order?", an affirmative routes the user here with
+  // the reservation_id pinned. Setting existingReservationId tells
+  // handlePlaceOrder (~line 1962) to skip the booking-create branch and
+  // attach the pre-order to the existing row. Without this, proceeding
+  // to checkout would call book_reservation, which fires diner_double_book
+  // (P0006) since the user already has a reservation at that slot.
+  useEffect(() => {
+    const reservationIdParam = searchParams.get("reservation_id");
+    if (reservationIdParam && !existingReservationId) {
+      setExistingReservationId(reservationIdParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Deep-link from Cenaiva: ?order_id=xxx&step=checkout ──────────────────
   // When Cenaiva creates an order and the user wants to pay via the manual
   // checkout (split bill, different card), it links here with the order_id.
@@ -2133,6 +2149,77 @@ export default function RestaurantPublicPage() {
           })
           .eq("id", existingOrderId);
         if (orderUpdErr) throw new Error(`Order: ${orderUpdErr.message}`);
+      } else if (
+        existingReservationId &&
+        cart.length > 0 &&
+        !createdOrderId
+      ) {
+        // R11 (2026-05-18): voice handoff path — Cenaiva created the
+        // reservation but NOT an order. User picked items on this page;
+        // create the order + order_items here so the pre-order persists
+        // and mark-order-paid (post-payment, below) can flip it to 'paid'.
+        // Without this, the user would pay via Stripe but their food
+        // selections would never be saved → reservation exists with no
+        // attached pre-order. That's the "dead button" symptom: the
+        // payment goes through but the order data vanishes.
+        if (!restaurant?.id) throw new Error("Restaurant not loaded for pre-order");
+        if (!profile?.id) throw new Error("Sign in required to attach a pre-order");
+        const { data: guestRow, error: guestErr } = await client
+          .from("guests")
+          .select("id")
+          .eq("user_profile_id", profile.id)
+          .eq("restaurant_id", restaurant.id)
+          .maybeSingle();
+        if (guestErr || !guestRow?.id) {
+          throw new Error(
+            guestErr?.message
+              ?? "Couldn't find your guest record for this restaurant — the reservation may still be settling.",
+          );
+        }
+        const orderCode = `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+        const { data: newOrder, error: newOrderErr } = await client
+          .from("orders")
+          .insert({
+            restaurant_id: restaurant.id,
+            guest_id: guestRow.id,
+            reservation_id: existingReservationId,
+            is_preorder: true,
+            order_type: "dine_in",
+            status: "pending",
+            subtotal: roundMoney(discountedSubtotal),
+            tax_amount: roundMoney(tax),
+            tip_amount: roundMoney(tipAmount),
+            total_amount: roundMoney(totalNow),
+            discount_amount: discount > 0 ? roundMoney(discount) : null,
+            discount_reason: activePromo?.title ?? null,
+            promotion_id: activePromo?.id ?? null,
+            payment_method: paymentSplitMode === "split" ? "split" : "card",
+            confirmation_code: orderCode,
+            source: "cenaiva",
+          })
+          .select("id")
+          .single();
+        if (newOrderErr || !newOrder) {
+          throw new Error(newOrderErr?.message ?? "Couldn't create your pre-order");
+        }
+        const newOrderItems = cart.map((item) => ({
+          order_id: newOrder.id,
+          menu_item_id: item.id,
+          name: item.name,
+          quantity: item.qty,
+          unit_price: roundMoney(item.price),
+          line_total: roundMoney(item.price * item.qty),
+          status: "pending",
+        }));
+        const { error: newItemsErr } = await client
+          .from("order_items")
+          .insert(newOrderItems);
+        if (newItemsErr) {
+          // Roll back the headless order so we don't leave a $0 orphan.
+          await client.from("orders").delete().eq("id", newOrder.id);
+          throw new Error(newItemsErr.message);
+        }
+        createdOrderId = newOrder.id;
       }
 
       // 3. Save phone to user profile if it changed (so it's remembered next time)
@@ -2396,15 +2483,17 @@ export default function RestaurantPublicPage() {
 
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
-      {/* ── Sticky back button ───────────────────────────────────────────────── */}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="fixed left-4 top-4 z-50 gap-1.5 border border-border bg-bg-elevated/85 shadow-xl shadow-black/40 backdrop-blur hover:bg-bg-elevated"
-        asChild
-      >
-        <Link to={backTarget}><ArrowLeft className="size-4" />Back</Link>
-      </Button>
+      {/* ── Sticky back button (hidden in R11 voice add-on mode) ───────────── */}
+      {!existingReservationId && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="fixed left-4 top-4 z-50 gap-1.5 border border-border bg-bg-elevated/85 shadow-xl shadow-black/40 backdrop-blur hover:bg-bg-elevated"
+          asChild
+        >
+          <Link to={backTarget}><ArrowLeft className="size-4" />Back</Link>
+        </Button>
+      )}
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <div className={`relative h-12 w-full bg-gradient-to-b ${gradient}`}>
@@ -2448,18 +2537,29 @@ export default function RestaurantPublicPage() {
           </div>
         </div>
 
-        {/* ── Step bar ─────────────────────────────────────────────────────────── */}
-        <div className="mb-6">
-          <StepBar current={step} onNavigate={setStep} />
-        </div>
+        {/* ── Step bar (hidden in R11 voice add-on mode — booking is locked) ─ */}
+        {!existingReservationId && (
+          <div className="mb-6">
+            <StepBar current={step} onNavigate={setStep} />
+          </div>
+        )}
 
-        {/* ── Hold timer banner (visible on all 3 booking steps) ──────────────── */}
-        {hold.state.status === "active" && (
+        {/* ── Hold timer banner (suppressed in add-on mode — no hold to expire) ─ */}
+        {hold.state.status === "active" && !existingReservationId && (
           <HoldTimerBanner
             secondsLeft={hold.state.secondsLeft}
             visualState={hold.visualState}
             className="-mx-4 sm:-mx-6 mb-4"
           />
+        )}
+
+        {/* ── R11 add-on mode banner — replaces the stepper/timer ────────────── */}
+        {existingReservationId && step === "menu" && (
+          <div className="mb-6 rounded-2xl border border-border bg-bg-elevated/60 p-4">
+            <p className="text-sm font-medium text-text-primary">
+              Your table is confirmed. Pre-ordering food is optional — add what you like.
+            </p>
+          </div>
         )}
 
         {/* ── Step content ─────────────────────────────────────────────────────── */}
@@ -2678,8 +2778,15 @@ export default function RestaurantPublicPage() {
           {step === "menu" && (
             <motion.div key="menu" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -24 }} transition={{ duration: 0.25 }}>
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-white">Preorder (optional)</h2>
-                <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Back to booking</button>
+                <h2 className="text-lg font-bold text-white">
+                  {existingReservationId ? "Add to your booking (optional)" : "Preorder (optional)"}
+                </h2>
+                {/* R12 (2026-05-18): in R11 add-on mode, the user has no "back to booking" because the booking is already confirmed — show "View booking" link to /bookings instead */}
+                {existingReservationId ? (
+                  <Link to="/bookings" className="text-xs text-text-muted hover:text-gold transition-colors">View booking →</Link>
+                ) : (
+                  <button type="button" onClick={() => setStep("details")} className="text-xs text-text-muted hover:text-gold transition-colors">← Back to booking</button>
+                )}
               </div>
 
               {/* ── Allergen warning section ── */}
@@ -2908,11 +3015,19 @@ export default function RestaurantPublicPage() {
                     }
                   }}
                 >
-                  {cartCount === 0 && previewDepositDollars <= 0
-                    ? placing ? t("customerPublic.booking.confirmingBooking") : "Skip preorder · Confirm booking"
-                    : cartCount === 0
-                      ? `Continue to checkout · Deposit ${formatCurrency(previewDepositDollars, currency)}`
-                      : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`}
+                  {/* R12 (2026-05-18): add-on mode (R11 voice handoff with existingReservationId)
+                       reframes the sticky button. Booking is already confirmed, so:
+                       - empty cart → "Skip add-on" (not "Skip preorder · Confirm booking")
+                       - has items → "Add to my booking · N items · $X" (not "Continue · ...") */}
+                  {existingReservationId
+                    ? (cartCount === 0
+                        ? placing ? "Saving…" : "Skip add-on"
+                        : `Add to my booking · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`)
+                    : (cartCount === 0 && previewDepositDollars <= 0
+                        ? placing ? t("customerPublic.booking.confirmingBooking") : "Skip preorder · Confirm booking"
+                        : cartCount === 0
+                          ? `Continue to checkout · Deposit ${formatCurrency(previewDepositDollars, currency)}`
+                          : `Continue · ${cartCount} item${cartCount !== 1 ? "s" : ""} · ${formatCurrency(cartTotal, currency)}`)}
                   <ChevronRight className="size-4 ml-1" />
                 </Button>
               </div>

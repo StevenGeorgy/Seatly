@@ -413,7 +413,14 @@ function AssistantInner({ children }: { children: ReactNode }) {
       try {
         const rawResponse = await orchestrator.send(req, streamCallbacks);
         latency.mark(turnId, "finalReceivedAt");
-        setProcessing(false);
+        // R10 (2026-05-17): keep processingRef TRUE through TTS playback.
+        // Previously setProcessing(false) fired right after orchestrator
+        // returned, so user speaking during TTS triggered a new sendTranscript
+        // that cancelled the in-flight TTS — Cenaiva went silent. Now
+        // processingRef stays true until TTS drains, so mid-TTS STT events
+        // get dropped at the processingRef guard in sendTranscript.
+        // The final setProcessing(false) now lives just before the auto-relisten
+        // call below.
 
         if (!rawResponse) {
           // Orchestrator returned null (network / timeout / 500). Handle text
@@ -531,6 +538,11 @@ function AssistantInner({ children }: { children: ReactNode }) {
           // No spokenText (silent flow) — make sure any queued audio is dropped.
           voice.discardStreamingSpeech();
         }
+
+        // R10 (2026-05-17): TTS finished — NOW it's safe to release the
+        // processing guard. Mid-TTS STT events were dropped at the
+        // processingRef guard, preventing the silent-failure cascade.
+        setProcessing(false);
 
         // Auto-resume the mic UNLESS: assistant closed, user typing,
         // user manually muted, OR status is in the (now narrow) gated set.

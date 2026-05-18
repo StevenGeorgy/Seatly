@@ -210,6 +210,22 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
   const handleYesPrepay = async () => {
     if (prepayBusy) return;
     if (!booking.restaurant_id || !booking.reservation_id || booking.cart.length === 0) {
+      // R11 (2026-05-18): silent return makes the button feel dead. Surface
+      // the actual reason via toast so the user knows why. Most common
+      // cause: booking.reservation_id missing because the flow reset
+      // between the booking commit and the review screen.
+      const missing = !booking.reservation_id
+        ? "the reservation isn't ready yet"
+        : !booking.restaurant_id
+          ? "the restaurant isn't selected"
+          : "your cart is empty";
+      errorToast(
+        new Error(`Can't start prepay — ${missing}.`),
+        {
+          fallback: `Can't start prepay — ${missing}.`,
+          logTag: "[BookingSheet.handleYesPrepay.guard]",
+        },
+      );
       return;
     }
     setPrepayBusy(true);

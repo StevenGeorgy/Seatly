@@ -404,11 +404,17 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
 
     case "show_confirmation":
       // Land in `post_booking` (the orchestrator will set pending_action to
-      // session_end_check on the same turn). Voice no longer offers preorder
-      // here — preorder is a hand-off to the public restaurant page (see
-      // cenaiva-orchestrate Change 6). The BookingSheet renders the
+      // session_end_check on the same turn). The BookingSheet renders the
       // confirmation card for `post_booking`; the "Anything else?" follow-up
       // comes from the orchestrator's spoken_text.
+      //
+      // R11 (2026-05-18): exception for `offering_preorder` — the orchestrator
+      // emits show_confirmation alongside the pre-order ask because the
+      // booking IS committed (reservation_id + confirmation_code are set),
+      // we just want to keep the BookingSheet on the offering_preorder
+      // branch ("Yes, show menu" / "No thanks") rather than the post_booking
+      // confirmation card. Without this carve-out, this action stomps the
+      // offering_preorder status set by the booking patch.
       //
       // Fall back to the value already on `state.booking.confirmation_code`
       // when the orchestrator emits a bare `{type:"show_confirmation"}`
@@ -419,7 +425,10 @@ function applyUIAction(state: AssistantState, action: UIActionType): AssistantSt
         ...state,
         booking: {
           ...state.booking,
-          status: "post_booking",
+          status:
+            state.booking.status === "offering_preorder"
+              ? "offering_preorder"
+              : "post_booking",
           confirmation_code:
             action.confirmation_code ?? state.booking.confirmation_code,
         },
@@ -720,11 +729,17 @@ export function assistantReducer(
       // ── Safety net: a reservation was just created but the orchestrator's
       // post-booking status update didn't reach the booking patch. Force into
       // `post_booking` so the BookingSheet renders the confirmation card.
-      // Voice no longer offers preorder — that's a hand-off path on the
-      // public page (see cenaiva-orchestrate Change 6).
+      //
+      // R11 (2026-05-18): "offering_preorder" is INTENTIONAL — the orchestrator
+      // commits the reservation and immediately asks "want to pre-order?".
+      // Without including it in alreadyPastBooking, this safety net forces
+      // status back to post_booking, which (a) hides BookingSheet's preorder
+      // UI and (b) breaks the orchestrator's offering_preorder yes/no handler
+      // (next turn the client sends post_booking, not offering_preorder).
       const wasNotBooked = !state.booking.reservation_id;
       const isNowBooked = !!next.booking.reservation_id;
       const alreadyPastBooking: BookingState["status"][] = [
+        "offering_preorder",
         "browsing_menu",
         "reviewing_cart",
         "choosing_tip_timing",

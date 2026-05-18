@@ -242,3 +242,12 @@
 .gm-style .gm-style-iw-c button.gm-ui-hover-effect {
     display: none !important;
 }
+
+/* R11 (2026-05-18): Stripe.js injects a "Stripe developer tools" floating
+   iframe in the bottom-right when using a test publishable key. It blocks
+   the Cenaiva mic FAB on the checkout page. Hide it — the dev tools are
+   reachable via the Stripe dashboard if needed, and the badge serves no
+   end-user purpose. */
+iframe[name^="__privateStripeFrame"][title="Stripe developer tools frame"] {
+    display: none !important;
+}
