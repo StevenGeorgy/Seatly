@@ -41,18 +41,18 @@ const DIETARY_LABEL: Record<RestaurantDietaryTag, string> = {
 };
 
 const formSchema = z.object({
-  restaurantName: z.string().trim().min(1, "Required"),
-  address: z.string().trim().min(1, "Required"),
-  city: z.string().trim().min(1, "Required"),
-  province: z.string().trim().min(1, "Required"),
-  country: z.string().trim().min(1, "Required"),
-  postalCode: z.string(),
-  businessType: z.string().trim().min(1, "Required"),
-  cuisineType: z.string().trim().min(1, "Required"),
-  phone: z.string().trim().min(1, "Required"),
+  restaurantName: z.string().trim().min(1, "Required").max(120, "Name is too long"),
+  address: z.string().trim().min(1, "Required").max(300, "Address is too long"),
+  city: z.string().trim().min(1, "Required").max(120, "City is too long"),
+  province: z.string().trim().min(1, "Required").max(80, "Province is too long"),
+  country: z.string().trim().min(1, "Required").max(80, "Country is too long"),
+  postalCode: z.string().max(20, "Postal code is too long"),
+  businessType: z.string().trim().min(1, "Required").max(80, "Too long"),
+  cuisineType: z.string().trim().min(1, "Required").max(80, "Too long"),
+  phone: z.string().trim().min(1, "Required").max(20, "Phone is too long"),
   description: z.string().max(DESCRIPTION_MAX),
   acceptsWalkins: z.boolean(),
-  dietaryTags: z.array(z.string()),
+  dietaryTags: z.array(z.string().max(80)).max(30),
 });
 
 type Step1FormValues = z.infer<typeof formSchema>;
@@ -248,7 +248,7 @@ export function Step1Basics({
             <Label htmlFor="restaurantName">
               Restaurant name <span className="text-danger">*</span>
             </Label>
-            <Input id="restaurantName" {...form.register("restaurantName")} placeholder="The Golden Fork" />
+            <Input id="restaurantName" maxLength={120} {...form.register("restaurantName")} placeholder="The Golden Fork" />
             {errors.restaurantName ? (
               <p className="text-xs text-danger">{errors.restaurantName.message}</p>
             ) : null}
@@ -324,21 +324,21 @@ export function Step1Basics({
             <Label htmlFor="city">
               City <span className="text-danger">*</span>
             </Label>
-            <Input id="city" {...form.register("city")} placeholder="Toronto" />
+            <Input id="city" maxLength={120} {...form.register("city")} placeholder="Toronto" />
             {errors.city ? <p className="text-xs text-danger">{errors.city.message}</p> : null}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="province">
               Province <span className="text-danger">*</span>
             </Label>
-            <Input id="province" {...form.register("province")} placeholder="ON" />
+            <Input id="province" maxLength={80} {...form.register("province")} placeholder="ON" />
             {errors.province ? <p className="text-xs text-danger">{errors.province.message}</p> : null}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="country">
               Country <span className="text-danger">*</span>
             </Label>
-            <Input id="country" {...form.register("country")} placeholder="Canada" />
+            <Input id="country" maxLength={80} {...form.register("country")} placeholder="Canada" />
             {errors.country ? <p className="text-xs text-danger">{errors.country.message}</p> : null}
           </div>
         </div>
@@ -367,7 +367,7 @@ export function Step1Basics({
             <Label htmlFor="phone">
               Phone <span className="text-danger">*</span>
             </Label>
-            <Input id="phone" type="tel" {...form.register("phone")} placeholder="+1 (416) 555-0100" />
+            <Input id="phone" type="tel" maxLength={20} {...form.register("phone")} placeholder="+1 (416) 555-0100" />
             {errors.phone ? <p className="text-xs text-danger">{errors.phone.message}</p> : null}
           </div>
         </div>

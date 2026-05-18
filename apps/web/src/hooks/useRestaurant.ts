@@ -5,6 +5,23 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 import { deriveRestaurantPriceLevel, type RestaurantPriceMenuItem } from "@/lib/restaurant-price-level";
 import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
 
+// Anon-safe restaurant columns. The Restaurant type below still contains
+// optional Stripe/billing fields, but those columns are revoked from anon
+// at the DB layer (see migration restaurants_anon_column_grants_v2). Owner-
+// side queries that need stripe_account_id etc. should query those columns
+// explicitly via authenticated paths (Step8PaymentSetup, SettingsPage).
+const RESTAURANT_PUBLIC_SELECT =
+  "id,name,slug,logo_url,cover_photo_url,cover_image_url,website," +
+  "cuisine_type,business_type,price_range,plan,description," +
+  "address,city,province,country,lat,lng,timezone," +
+  "phone,email," +
+  "hours_json,settings_json,deposit_tiers,deposit_policy_json," +
+  "loyalty_config_json,currency,tax_rate," +
+  "cancellation_hours,no_show_fee,booking_advance_days," +
+  "accepts_walkins,has_bar," +
+  "avg_rating,total_reviews,bookings_last_30d," +
+  "is_active,is_published,created_at";
+
 export type Restaurant = {
   id: string;
   name: string;
@@ -136,12 +153,12 @@ async function fetchPublicRestaurants(): Promise<Restaurant[]> {
   const client = getSupabaseBrowserClient();
   const { data } = await client
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_PUBLIC_SELECT)
     .eq("is_active", true)
     .eq("is_published", true)
     .order("avg_rating", { ascending: false, nullsFirst: false });
 
-  const rows = (data ?? []) as Restaurant[];
+  const rows = (data ?? []) as unknown as Restaurant[];
   if (rows.length === 0) return [];
 
   const ids = rows.map((restaurant) => restaurant.id);
@@ -180,7 +197,7 @@ export async function fetchRestaurantBySlugOrId(slugOrId: string): Promise<Resta
   const column = isUuid ? "id" : "slug";
   const { data, error: qErr } = await client
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_PUBLIC_SELECT)
     .eq(column, slugOrId)
     .single();
 
@@ -193,7 +210,7 @@ export async function fetchRestaurantBySlugOrId(slugOrId: string): Promise<Resta
     throw new Error(friendly.message);
   }
 
-  const row = data as Restaurant;
+  const row = data as unknown as Restaurant;
   const [{ data: menuData }, { data: categoryData }, { data: reviewSummaryData }] = await Promise.all([
     client
       .from("menu_items")

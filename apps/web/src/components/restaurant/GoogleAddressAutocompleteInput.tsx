@@ -86,7 +86,8 @@ export function GoogleAddressAutocompleteInput({
       <Input
         ref={inputRef}
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        maxLength={300}
+        onChange={(event) => onChange(event.target.value.slice(0, 300))}
         placeholder={placeholder}
         className={className}
         autoComplete="off"

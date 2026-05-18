@@ -170,8 +170,9 @@ export default function FindReservationPage() {
               <Input
                 id="find-code"
                 value={code}
+                maxLength={20}
                 onChange={(e) => {
-                  setCode(e.target.value.toUpperCase());
+                  setCode(e.target.value.slice(0, 20).toUpperCase());
                   if (codeError) setCodeError(null);
                 }}
                 placeholder="SEAT-A8B2"
@@ -226,8 +227,9 @@ export default function FindReservationPage() {
                 <Input
                   id="find-email"
                   type="email"
+                  maxLength={254}
                   value={contactEmail}
-                  onChange={(e) => setContactEmail(e.target.value)}
+                  onChange={(e) => setContactEmail(e.target.value.slice(0, 254))}
                   placeholder="you@example.com"
                   autoComplete="email"
                   disabled={contactBusy}
@@ -239,8 +241,9 @@ export default function FindReservationPage() {
                 </Label>
                 <Input
                   id="find-last-name"
+                  maxLength={120}
                   value={contactLastName}
-                  onChange={(e) => setContactLastName(e.target.value)}
+                  onChange={(e) => setContactLastName(e.target.value.slice(0, 120))}
                   placeholder="Smith"
                   autoComplete="family-name"
                   disabled={contactBusy}

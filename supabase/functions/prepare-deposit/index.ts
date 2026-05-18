@@ -14,9 +14,9 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { PrepareDepositInputSchema } from "../_shared/validation/deposit.ts";
 
-// Inlined from supabase/functions/_shared/rate-limit.ts so this function can
-// be deployed standalone without bundling a shared file.
 class RateLimitError extends Error {
   constructor(message: string) { super(message); this.name = "RateLimitError"; }
 }
@@ -50,18 +50,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-type PayerInput = {
-  email?: unknown;
-  full_name?: unknown;
-  amount_cents?: unknown;
-  user_profile_id?: unknown;
-};
-
-type Payload = {
-  reservation_id?: unknown;
-  payers?: PayerInput[];
-};
-
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -73,28 +61,12 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "POST only" }, 405);
 
-  let payload: Payload;
-  try {
-    payload = (await req.json()) as Payload;
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
-  }
+  const parsed = await parseJsonBody(req, PrepareDepositInputSchema, {
+    jsonRes: (body, status) => jsonResponse(body as Record<string, unknown>, status),
+  });
+  if ("response" in parsed) return parsed.response;
 
-  const reservationId =
-    typeof payload.reservation_id === "string" && payload.reservation_id.trim()
-      ? payload.reservation_id.trim()
-      : null;
-  if (!reservationId) {
-    return jsonResponse({ error: "reservation_id is required" }, 400);
-  }
-
-  const payers = Array.isArray(payload.payers) ? payload.payers : [];
-  if (payers.length === 0) {
-    return jsonResponse({ error: "payers must be a non-empty array" }, 400);
-  }
-  if (payers.length > 50) {
-    return jsonResponse({ error: "Too many payers (max 50)" }, 400);
-  }
+  const { reservation_id: reservationId, payers } = parsed.data;
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
@@ -134,51 +106,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "Deposit already charged" }, 409);
   }
 
-  const normalizedPayers: Array<{
-    payer_email: string | null;
-    payer_full_name: string | null;
-    payer_user_profile_id: string | null;
-    amount_cents: number;
-  }> = [];
-  let runningTotal = 0;
-
-  for (let i = 0; i < payers.length; i += 1) {
-    const p = payers[i];
-    const email =
-      typeof p.email === "string" && p.email.trim() ? p.email.trim().toLowerCase() : null;
-    const fullName =
-      typeof p.full_name === "string" && p.full_name.trim() ? p.full_name.trim() : null;
-    const userProfileId =
-      typeof p.user_profile_id === "string" && p.user_profile_id.trim()
-        ? p.user_profile_id.trim()
-        : null;
-    const amount =
-      typeof p.amount_cents === "number" && Number.isFinite(p.amount_cents)
-        ? Math.round(p.amount_cents)
-        : Number.NaN;
-
-    if (!email && !userProfileId) {
-      return jsonResponse(
-        { error: `Payer #${i + 1} needs an email or user_profile_id` },
-        400,
-      );
-    }
-    if (!Number.isFinite(amount) || amount < 0) {
-      return jsonResponse(
-        { error: `Payer #${i + 1} has an invalid amount_cents` },
-        400,
-      );
-    }
-
-    runningTotal += amount;
-    normalizedPayers.push({
-      payer_email: email,
-      payer_full_name: fullName,
-      payer_user_profile_id: userProfileId,
-      amount_cents: amount,
-    });
-  }
-
+  const runningTotal = payers.reduce((sum, p) => sum + p.amount_cents, 0);
   if (runningTotal !== expectedTotal) {
     return jsonResponse(
       {
@@ -198,11 +126,11 @@ Deno.serve(async (req: Request) => {
   const { data: insertedRows, error: insertError } = await supabase
     .from("reservation_deposit_payments")
     .insert(
-      normalizedPayers.map((p) => ({
+      payers.map((p) => ({
         reservation_id: reservationId,
-        payer_email: p.payer_email,
-        payer_full_name: p.payer_full_name,
-        payer_user_profile_id: p.payer_user_profile_id,
+        payer_email: p.email ?? null,
+        payer_full_name: p.full_name ?? null,
+        payer_user_profile_id: p.user_profile_id ?? null,
         amount_cents: p.amount_cents,
         status: "pending",
       })),

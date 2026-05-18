@@ -116,7 +116,15 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   ]);
 
   useEffect(() => {
-    assistant?.setSpeechHints(speechHints);
+    // Bug 11 (2026-05-18): defer setSpeechHints to the next tick so the
+    // setter doesn't fire synchronously inside the parent's render commit.
+    // React 18 warns "Cannot update a component while rendering a different
+    // component" when AssistantStoreProvider re-renders for an unrelated
+    // reason at the same instant the shell's effect runs.
+    const handle = window.setTimeout(() => {
+      assistant?.setSpeechHints(speechHints);
+    }, 0);
+    return () => window.clearTimeout(handle);
   }, [assistant, speechHints]);
 
   // Client-side greeting — no LLM roundtrip, instant playback
@@ -272,8 +280,13 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
   const handleKeyboardToggle = useCallback(() => {
     const entering = !showTextInput;
     if (entering) {
-      // Stop mic before showing keyboard — prevents Chrome from firing a recognition error
+      // Stop mic AND TTS before showing keyboard. Bug 10 (2026-05-18 sweep):
+      // the wake greeting's TTS would re-arm the mic on completion and bump
+      // voiceStatus back to "listening" right after setTextMode set it to
+      // "idle", leaving the Send button permanently disabled until the user
+      // manually muted the mic. Stopping the TTS prevents that re-arm.
       voice.stopListening();
+      voice.stopSpeaking();
       assistant?.setTextMode(true);
     } else {
       assistant?.setTextMode(false);
@@ -453,11 +466,12 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                     onChange={(e) => { setTextInput(e.target.value); setSendError(null); }}
                     onKeyDown={(e) => {
                       if (e.key !== "Enter") return;
-                      // B1 (2026-05-17): gate Enter on assistant.isProcessing
-                      // — voiceStatus drops to "idle" between Stages 1–4 of
-                      // sendTranscript even though a turn is still in flight,
-                      // so the old voiceStatus-only check let Enter spam past.
-                      if (state.voiceStatus === "processing" || assistant?.isProcessing) return;
+                      // Bug 10 (2026-05-18): only gate on assistant.isProcessing
+                      // (an in-flight orchestrator turn). Don't gate on
+                      // state.voiceStatus — that flag tracks the VOICE
+                      // subsystem (TTS playback, mic listening) which is
+                      // irrelevant when the user is typing.
+                      if (assistant?.isProcessing) return;
                       void handleTextSend();
                     }}
                     placeholder="Type a message…"
@@ -466,10 +480,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
                   />
                   <button
                     onClick={() => void handleTextSend()}
-                    disabled={!textInput.trim() || state.voiceStatus === "processing" || !!assistant?.isProcessing}
+                    disabled={!textInput.trim() || !!assistant?.isProcessing}
                     className="px-4 py-2.5 rounded-full bg-[#C8A951] text-black text-sm font-medium disabled:opacity-40 hover:bg-[#E6C060] transition-colors"
                   >
-                    {state.voiceStatus === "processing" || assistant?.isProcessing ? "…" : "Send"}
+                    {assistant?.isProcessing ? "…" : "Send"}
                   </button>
                 </div>
                 {sendError && (

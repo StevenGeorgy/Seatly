@@ -468,6 +468,7 @@ export function RestaurantPreviewModal({
     <AnimatePresence>
       {restaurant && (
         <motion.div
+          key={restaurant.id}
           className="fixed inset-0 z-[80] overflow-y-auto bg-black/85 px-4 py-6 backdrop-blur-md sm:px-6"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -522,7 +523,7 @@ export function RestaurantPreviewModal({
                     <div className="flex flex-wrap gap-2">
                       {headerBadges.map((feature) => (
                         <span
-                          key={feature}
+                          key={`badge-${feature}`}
                           className="rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary"
                         >
                           {feature}
@@ -530,7 +531,7 @@ export function RestaurantPreviewModal({
                       ))}
                       {dietaryTags.map((tag) => (
                         <span
-                          key={tag}
+                          key={`diet-${tag}`}
                           className="rounded-md border border-gold/30 bg-gold/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold"
                         >
                           {t(`restaurantDietaryTags.${tag}`)}
@@ -554,8 +555,8 @@ export function RestaurantPreviewModal({
                           <span className="text-text-muted">({reviewSummary.totalReviews})</span>
                         </span>
                       ) : null}
-                      {headerMeta.map((meta) => (
-                        <span key={meta}>{meta}</span>
+                      {headerMeta.map((meta, index) => (
+                        <span key={`meta-${meta}-${index}`}>{meta}</span>
                       ))}
                     </div>
                     </div>
@@ -660,9 +661,9 @@ export function RestaurantPreviewModal({
                           )}
                         </section>
 
-                        {menuSections.map((section) => (
+                        {menuSections.map((section, index) => (
                           <section
-                            key={section.title}
+                            key={`section-${section.title ?? ""}-${index}`}
                             className="rounded-2xl border border-border bg-bg-surface p-4"
                           >
                             <div className="flex items-center justify-between">
@@ -785,7 +786,7 @@ export function RestaurantPreviewModal({
                             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
                               {photoSources.slice(0, 6).map((imageUrl, index) => (
                                 <StripeArt
-                                  key={imageUrl}
+                                  key={`${imageUrl}-${index}`}
                                   label={restaurant.name}
                                   imageUrl={imageUrl}
                                   className={cn(index === 0 && "col-span-2 row-span-2", "min-h-0")}

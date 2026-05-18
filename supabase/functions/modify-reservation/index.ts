@@ -9,24 +9,13 @@ import {
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ModifyReservationSchema } from "../_shared/validation/booking.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type RequestBody = {
-  reservation_id?: unknown;
-  reservationId?: unknown;
-  date?: unknown;
-  time?: unknown;
-  party_size?: unknown;
-  partySize?: unknown;
-  special_request?: unknown;
-  specialRequest?: unknown;
-  confirmation_code?: unknown;
-  confirmationCode?: unknown;
 };
 
 type ReservationRow = {
@@ -93,10 +82,6 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function cleanString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function parseTimeToMinutes(value: string): number | null {
   const trimmed = value.trim();
   const meridiem = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
@@ -136,18 +121,22 @@ Deno.serve(async (req: Request) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
 
-    const body = (await req.json().catch(() => ({}))) as RequestBody;
-    const reservationId = cleanString(body.reservation_id ?? body.reservationId);
-    const providedCode = cleanString(body.confirmation_code ?? body.confirmationCode);
-    const date = cleanString(body.date);
-    const time = cleanString(body.time);
-    const partySize = Math.max(1, Math.floor(Number(body.party_size ?? body.partySize)));
-    const specialRequest = cleanString(body.special_request ?? body.specialRequest);
+    const parsed = await parseJsonBody(req, ModifyReservationSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const reservationId = (parsed.data.reservation_id ?? parsed.data.reservationId)!;
+    const providedCode =
+      parsed.data.confirmation_code ?? parsed.data.confirmationCode ?? "";
+    const date = parsed.data.date;
+    const time = parsed.data.time;
+    const partySize = (parsed.data.party_size ?? parsed.data.partySize)!;
+    const specialRequest =
+      parsed.data.special_request ?? parsed.data.specialRequest ?? "";
 
-    if (!reservationId) return json({ error: "reservation_id is required" }, 400);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "Valid date is required" }, 400);
-    if (!time || parseTimeToMinutes(time) == null) return json({ error: "Valid time is required" }, 400);
-    if (!Number.isFinite(partySize) || partySize < 1) return json({ error: "Valid party size is required" }, 400);
+    if (parseTimeToMinutes(time) == null) {
+      return json({ error: "Valid time is required" }, 400);
+    }
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")

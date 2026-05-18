@@ -2666,16 +2666,16 @@ export default function RestaurantPublicPage() {
                     {/* Contact */}
                     <div>
                       <Label htmlFor="di-name" className="mb-1.5 block text-xs text-text-muted">Full Name <span className="text-danger">*</span></Label>
-                      <Input id="di-name" required value={dineIn.name} onChange={(e) => setDineIn((d) => ({ ...d, name: e.target.value }))} placeholder="Jane Smith" />
+                      <Input id="di-name" required maxLength={120} value={dineIn.name} onChange={(e) => setDineIn((d) => ({ ...d, name: e.target.value.slice(0, 120) }))} placeholder="Jane Smith" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <Label htmlFor="di-email" className="mb-1.5 block text-xs text-text-muted">Email <span className="text-danger">*</span></Label>
-                        <Input id="di-email" type="email" required value={dineIn.email} onChange={(e) => setDineIn((d) => ({ ...d, email: e.target.value }))} placeholder="jane@example.com" />
+                        <Input id="di-email" type="email" required maxLength={254} value={dineIn.email} onChange={(e) => setDineIn((d) => ({ ...d, email: e.target.value.slice(0, 254) }))} placeholder="jane@example.com" />
                       </div>
                       <div>
                         <Label htmlFor="di-phone" className="mb-1.5 block text-xs text-text-muted">Phone <span className="text-danger">*</span></Label>
-                        <Input id="di-phone" type="tel" required value={dineIn.phone} onChange={(e) => setDineIn((d) => ({ ...d, phone: e.target.value }))} placeholder="+1 (416) 555-0100" />
+                        <Input id="di-phone" type="tel" required maxLength={20} value={dineIn.phone} onChange={(e) => setDineIn((d) => ({ ...d, phone: e.target.value.slice(0, 20) }))} placeholder="+1 (416) 555-0100" />
                         {dineIn.phone.trim().length > 0 && normalizeE164Phone(dineIn.phone) === null ? (
                           <p className="mt-1 text-[11px] text-danger" role="alert">
                             That phone number doesn't look right. Try +1 416 555 1234.
@@ -2725,7 +2725,7 @@ export default function RestaurantPublicPage() {
                     {/* Dietary restrictions */}
                     <div>
                       <Label htmlFor="di-allergies" className="mb-1.5 block text-xs text-text-muted">Dietary restrictions & allergies</Label>
-                      <Input id="di-allergies" value={dineIn.allergies} onChange={(e) => setDineIn((d) => ({ ...d, allergies: e.target.value }))} placeholder="e.g. Nut allergy (2 guests), 1 vegan, gluten-free" />
+                      <Input id="di-allergies" maxLength={500} value={dineIn.allergies} onChange={(e) => setDineIn((d) => ({ ...d, allergies: e.target.value.slice(0, 500) }))} placeholder="e.g. Nut allergy (2 guests), 1 vegan, gluten-free" />
                       <p className="mt-1.5 text-[11px] text-text-muted">Please list restrictions for every guest in your party.</p>
                     </div>
                 </div>

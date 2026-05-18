@@ -270,6 +270,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
       transcript: string,
       opts?: { restaurantId?: string; silent?: boolean; force?: boolean; alternatives?: string[] },
     ) => {
+      // Phase 4 (input validation rollout): client-side transcript cap.
+      // Matches the server-side cap in cenaiva-orchestrate (5000 chars).
+      // Truncate rather than reject so a runaway STT stream doesn't kill
+      // the conversation — the user's intent is in the first ~50 words
+      // anyway.
+      if (transcript.length > 5000) {
+        transcript = transcript.slice(0, 5000);
+      }
+
       const turnId = ++turnIdRef.current;
       latency.start(turnId);
       latency.mark(turnId, "transcriptAt");
@@ -435,12 +444,15 @@ function AssistantInner({ children }: { children: ReactNode }) {
               : cause === "not_authenticated"
                 ? "Please sign in again to continue."
                 : "Something went wrong. Try again.";
+          // Option A (2026-05-18): text-mode users get voice responses too.
+          // Always speak the friendly error AND surface it in the caption /
+          // toast so type-to-talk feels like a real assistant rather than
+          // silent on errors.
+          dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
           if (textModeRef.current) {
-            dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
             errorToast(cause, { fallback: friendly, duration: 3000, logTag: "[Cenaiva.orchestrator]" });
-          } else {
-            await voice.speak("Sorry, I didn't catch that. Try again.");
           }
+          await voice.speak(friendly);
           dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
           if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
             setTimeout(() => {
@@ -563,16 +575,19 @@ function AssistantInner({ children }: { children: ReactNode }) {
       } catch (err) {
         setProcessing(false);
         if (streamingActive) voice.discardStreamingSpeech();
-        // Speak the retry prompt (voice mode) OR surface a banner + toast (text
-        // mode). The red "error" voice status is reserved for mic-permission-denied.
+        // Option A (2026-05-18): speak the retry prompt in both voice and
+        // text mode. Text mode also gets the inline toast/caption. The red
+        // "error" voice status is reserved for mic-permission-denied.
+        const friendly = textModeRef.current
+          ? "Something went wrong. Try again."
+          : "Sorry, I didn't catch that. Try again.";
+        dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
         if (textModeRef.current) {
-          const friendly = "Something went wrong. Try again.";
-          dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: friendly });
           errorToast(err, { fallback: friendly, duration: 3000, logTag: "[Cenaiva.send]" });
         } else {
           console.error("[Cenaiva.send]", err);
-          await voice.speak("Sorry, I didn't catch that. Try again.");
         }
+        await voice.speak(friendly);
         dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
         if (isOpenRef.current && !textModeRef.current && !muteRef.current) {
           setTimeout(() => {

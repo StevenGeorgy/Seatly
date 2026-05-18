@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { OrderTipSchema } from "../_shared/validation/charge.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -52,9 +54,11 @@ Deno.serve(async (req: Request) => {
       .single();
     if (!profile) return jsonRes({ error: "User profile not found" }, 404);
 
-    const body = await req.json().catch(() => ({}));
-    const { order_id, tip_amount: rawTipAmount, tip_percentage } = body;
-    if (!order_id) return jsonRes({ error: "order_id is required" }, 400);
+    const parsed = await parseJsonBody(req, OrderTipSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const { order_id, tip_amount: rawTipAmount, tip_percentage } = parsed.data;
 
     // Fetch and validate the order
     const { data: order } = await supabaseAdmin
@@ -78,10 +82,10 @@ Deno.serve(async (req: Request) => {
     const subtotal = Number(order.subtotal || 0);
     const tax = Number(order.tax_amount || 0);
     const discount = Number(order.discount_amount || 0);
-    const tipAmount = rawTipAmount != null
-      ? Number(rawTipAmount)
-      : tip_percentage != null
-        ? Math.round(subtotal * (Number(tip_percentage) / 100) * 100) / 100
+    const tipAmount = rawTipAmount !== undefined
+      ? rawTipAmount
+      : tip_percentage !== undefined
+        ? Math.round(subtotal * (tip_percentage / 100) * 100) / 100
         : 0;
     const total = Math.round((subtotal + tax - discount + tipAmount) * 100) / 100;
 

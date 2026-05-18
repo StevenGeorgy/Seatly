@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ImageIcon, Pencil, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -638,7 +638,8 @@ export default function MenuPage() {
                     <Input
                       id="menu-item-name"
                       value={itemName}
-                      onChange={(event) => setItemName(event.target.value)}
+                      maxLength={200}
+                      onChange={(event) => setItemName(event.target.value.slice(0, 200))}
                       placeholder="e.g. Burrata & stone fruit"
                     />
                   </div>
@@ -681,6 +682,7 @@ export default function MenuPage() {
                         id="menu-item-price"
                         type="number"
                         min="0"
+                        max="10000"
                         step="0.01"
                         value={itemPrice}
                         onChange={(event) => setItemPrice(event.target.value)}
@@ -904,24 +906,24 @@ export default function MenuPage() {
   );
 }
 
-function MenuCard({
-  item,
-  index,
-  currency,
-  onEdit,
-  onDelete,
-}: {
+type MenuCardProps = {
   item: MenuItemRow;
   index: number;
   currency: string;
   onEdit: () => void;
   onDelete: () => void;
-}) {
+};
+
+const MenuCard = forwardRef<HTMLElement, MenuCardProps>(function MenuCard(
+  { item, index, currency, onEdit, onDelete },
+  ref,
+) {
   const margin = item.cost_price && item.price > 0 ? ((item.price - item.cost_price) / item.price) * 100 : null;
   const orderDelta = item.id.includes("sardines") ? "-22%" : item.id.includes("trout") ? "+4%" : "+1%";
 
   return (
     <motion.article
+      ref={ref}
       layout
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
@@ -1020,4 +1022,4 @@ function MenuCard({
       </div>
     </motion.article>
   );
-}
+});

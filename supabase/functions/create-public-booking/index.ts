@@ -8,6 +8,8 @@ import {
   findClosedSpecialDayForDate,
   localDateForDateTime,
 } from "../_shared/closures.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { BookingInputSchema } from "../_shared/validation/booking.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,37 +24,6 @@ type CartItemInput = {
   unit_price?: unknown;
 };
 
-type BookingPayload = {
-  restaurant_id?: unknown;
-  date_time?: unknown;
-  shift_id?: unknown;
-  party_size?: unknown;
-  guest_name?: unknown;
-  guest_email?: unknown;
-  guest_phone?: unknown;
-  allergies?: unknown;
-  seating_preference?: unknown;
-  occasion?: unknown;
-  confirmation_code?: unknown;
-  cart_items?: CartItemInput[];
-  subtotal?: unknown;
-  tax_amount?: unknown;
-  tip_amount?: unknown;
-  total_amount?: unknown;
-  discount_amount?: unknown;
-  discount_reason?: unknown;
-  promotion_id?: unknown;
-  payment_method?: unknown;
-  // Event / promotion linkage — forwarded from the /deals card flow so the
-  // reservation row gets tagged with event_id / promotion_id / applied_promo_code.
-  event_id?: unknown;
-  applied_promo_code?: unknown;
-  // Reservation-hold conversion (CENAIVA_HOLDS_ENABLED). When present, this
-  // endpoint converts the existing hold instead of creating a fresh
-  // reservation via book_reservation.
-  hold_id?: unknown;
-};
-
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -62,10 +33,6 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
 
 function asText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function normalizeEmail(value: string | null): string | null {
-  return value ? value.trim().toLowerCase() : null;
 }
 
 function asUuid(value: unknown): string | null {
@@ -131,28 +98,26 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "POST required" }, 405);
 
   try {
-    const payload = (await req.json().catch(() => ({}))) as BookingPayload;
-    const restaurantId = asUuid(payload.restaurant_id);
-    const shiftId = asUuid(payload.shift_id);
-    const dateTime = asText(payload.date_time);
-    const guestName = asText(payload.guest_name);
-    const guestEmail = normalizeEmail(asText(payload.guest_email));
-    const guestPhone = asText(payload.guest_phone);
-    const allergies = asText(payload.allergies);
-    const seatingPreference = asText(payload.seating_preference);
-    const occasion = asText(payload.occasion);
-    const confirmationCode =
-      asText(payload.confirmation_code) ?? `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const partySize = Math.max(1, Math.floor(asNumber(payload.party_size, 1)));
+    const parsed = await parseJsonBody(req, BookingInputSchema, {
+      jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const payload = parsed.data;
 
-    if (!restaurantId || !shiftId || !dateTime || !guestName || !guestEmail || !guestPhone) {
-      return jsonResponse({ error: "restaurant_id, shift_id, date_time, guest_name, guest_email, and guest_phone are required." }, 400);
-    }
+    const restaurantId = payload.restaurant_id;
+    const shiftId = payload.shift_id;
+    const dateTime = payload.date_time;
+    const guestName = payload.guest_name;
+    const guestEmail = payload.guest_email;
+    const guestPhone = payload.guest_phone;
+    const allergies = payload.allergies ?? null;
+    const seatingPreference = payload.seating_preference ?? null;
+    const occasion = payload.occasion ?? null;
+    const confirmationCode =
+      payload.confirmation_code ?? `SEAT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const partySize = payload.party_size;
 
     const reservedAt = new Date(dateTime);
-    if (Number.isNaN(reservedAt.getTime())) {
-      return jsonResponse({ error: "date_time must be a valid ISO timestamp." }, 400);
-    }
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,

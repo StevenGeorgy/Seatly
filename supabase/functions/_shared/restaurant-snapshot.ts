@@ -88,7 +88,13 @@ export interface RestaurantSnapshot {
 type SnapshotError = { error: string; status: number };
 
 const SNAPSHOT_CACHE = new Map<string, { snapshot: RestaurantSnapshot; expiresAt: number }>();
-const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+// Snapshot freshness window. Dropped from 5min → 30s on 2026-05-18 so
+// owner-side edits (hours change, menu update, deposit policy tweak) become
+// visible to Cenaiva voice/text within seconds rather than minutes. The
+// trade-off is ~10× more cache misses for the same restaurant, which is
+// negligible at current scale and still saves the re-fetch within a single
+// conversational turn.
+const SNAPSHOT_TTL_MS = 30 * 1000;
 const MAX_CACHE_ENTRIES = 200;
 
 function readSettingsField<T>(settingsJson: unknown, key: string): T | null {

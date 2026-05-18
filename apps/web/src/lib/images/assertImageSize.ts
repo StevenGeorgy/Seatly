@@ -2,13 +2,30 @@ import { toast } from "sonner";
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
 
+const ALLOWED_IMAGE_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+]);
+
 /**
  * Guard for any image upload site that writes to Supabase storage. Rejects
- * files over 5 MB with a friendly toast and returns false so the caller can
- * bail out. The cap protects diner page load time (oversized hero images)
- * and platform storage costs.
+ * files over 5 MB AND files whose declared MIME type isn't a real image
+ * format (a .exe renamed to .jpg would have type === "application/octet-
+ * stream" or empty, not image/*). Returns false so the caller can bail out.
  */
-export function assertImageSizeOk(file: File): boolean {
+export function assertImageOk(file: File): boolean {
+  const type = (file.type ?? "").toLowerCase();
+  if (!type.startsWith("image/") || !ALLOWED_IMAGE_MIME.has(type)) {
+    toast.error(
+      `That file isn't a supported image. Please upload a JPG, PNG, GIF, WebP, or HEIC photo.`,
+    );
+    return false;
+  }
   if (file.size > MAX_IMAGE_BYTES) {
     const mb = (file.size / 1024 / 1024).toFixed(1);
     toast.error(
@@ -18,3 +35,6 @@ export function assertImageSizeOk(file: File): boolean {
   }
   return true;
 }
+
+/** @deprecated use `assertImageOk` (now also checks MIME type) */
+export const assertImageSizeOk = assertImageOk;

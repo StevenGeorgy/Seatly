@@ -7,6 +7,8 @@ import {
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CancelReservationSchema } from "../_shared/validation/booking.ts";
 
 type RefundOutcomeReport = {
   kind: "preorder" | "deposit";
@@ -29,14 +31,6 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type RequestBody = {
-  reservation_id?: unknown;
-  reservationId?: unknown;
-  confirmation_code?: unknown;
-  confirmationCode?: unknown;
-  actor?: unknown; // "diner" (default) | "owner"
 };
 
 type ReservationRow = {
@@ -82,10 +76,6 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function cleanString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -97,12 +87,13 @@ Deno.serve(async (req: Request) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
 
-    const body = (await req.json().catch(() => ({}))) as RequestBody;
-    const reservationId = cleanString(body.reservation_id ?? body.reservationId);
-    const providedCode = cleanString(body.confirmation_code ?? body.confirmationCode);
-    const rawActor = typeof body.actor === "string" ? body.actor.trim().toLowerCase() : "";
-    const actor: "diner" | "owner" = rawActor === "owner" ? "owner" : "diner";
-    if (!reservationId) return json({ error: "reservation_id is required" }, 400);
+    const parsed = await parseJsonBody(req, CancelReservationSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const reservationId = parsed.data.reservation_id ?? parsed.data.reservationId!;
+    const providedCode = parsed.data.confirmation_code ?? parsed.data.confirmationCode ?? "";
+    const actor: "diner" | "owner" = parsed.data.actor === "owner" ? "owner" : "diner";
 
     const { data: reservation, error: reservationError } = await adminClient
       .from("reservations")

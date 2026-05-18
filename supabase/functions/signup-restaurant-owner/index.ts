@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { RestaurantOnboardingSchema } from "../_shared/validation/restaurant.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -47,6 +48,40 @@ Deno.serve(async (req: Request) => {
     if (!restaurantName) {
       return new Response(
         JSON.stringify({ error: "Restaurant name is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Phase 5 (input validation rollout, 2026-05-18): validate restaurant
+    // fields against length/format caps before any DB write. Strips unknown
+    // keys silently (auth fields like email/password/full_name pass through
+    // because they're handled below, not by this validator).
+    const restaurantValidation = RestaurantOnboardingSchema.safeParse({
+      restaurant_name: restaurantName,
+      description: typeof body.description === "string" ? body.description : undefined,
+      address: typeof body.address === "string" ? body.address : undefined,
+      city: typeof body.city === "string" ? body.city : undefined,
+      province: typeof body.province === "string" ? body.province : undefined,
+      postal_code: typeof body.postal_code === "string" ? body.postal_code : undefined,
+      country: typeof body.country === "string" ? body.country : undefined,
+      phone: typeof body.phone === "string" ? body.phone : undefined,
+      cuisine_type: typeof body.cuisine_type === "string" ? body.cuisine_type : undefined,
+      business_type: typeof body.business_type === "string" ? body.business_type : undefined,
+      dietary_tags: Array.isArray(body.dietary_tags) ? body.dietary_tags : undefined,
+      lat: typeof body.lat === "number" ? body.lat : undefined,
+      lng: typeof body.lng === "number" ? body.lng : undefined,
+      force_new: typeof body.force_new === "boolean" ? body.force_new : undefined,
+      restaurant_id: typeof body.restaurant_id === "string" ? body.restaurant_id : undefined,
+    });
+    if (!restaurantValidation.success) {
+      return new Response(
+        JSON.stringify({
+          error: "Validation failed",
+          issues: restaurantValidation.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+        }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

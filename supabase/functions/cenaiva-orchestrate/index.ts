@@ -11780,6 +11780,26 @@ Deno.serve(async (req) => {
       recommendation_mode: rawRecommendationMode = null,
       assistant_memory: rawAssistantMemory = null,
     } = body;
+    // Phase 4 (input validation rollout, 2026-05-18): hard-reject oversized
+    // transcripts. The 500-char soft cap further down is for inference-skip,
+    // not enforcement. Beyond 5000 chars is almost certainly malicious
+    // (prompt-injection payload) or a recording loop bug.
+    //
+    // INVARIANT (booking_state template interpolation): the system prompt
+    // built later in this function embeds booking_state fields via template
+    // literals (e.g. `${restaurant}`, `${guests}`). booking_state is
+    // populated by deterministic server-side intent classifiers and never
+    // by user input directly. Do NOT add any path that copies user
+    // transcript verbatim into booking_state — that would open prompt
+    // injection through the template. If you need to surface user-supplied
+    // text in the system prompt, escape it inside a delimited block.
+    if (typeof transcript === "string" && transcript.length > 5000) {
+      return jsonRes(
+        { error: "Transcript too long (max 5000 chars)", max_chars: 5000 },
+        400,
+        req,
+      );
+    }
     const transcriptAlternatives = Array.isArray(rawTranscriptAlternatives)
       ? rawTranscriptAlternatives
           .filter((alt): alt is string => typeof alt === "string" && alt.trim().length > 0)

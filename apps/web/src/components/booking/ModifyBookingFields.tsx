@@ -140,7 +140,8 @@ export function ModifyBookingFields({
           <textarea
             id="modify-booking-notes"
             value={notes}
-            onChange={(event) => setNotes(event.target.value)}
+            onChange={(event) => setNotes(event.target.value.slice(0, 500))}
+            maxLength={500}
             rows={3}
             placeholder="Allergies, occasion, seating notes…"
             className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-foreground placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-gold/40"
