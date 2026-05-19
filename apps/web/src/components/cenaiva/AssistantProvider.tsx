@@ -438,12 +438,42 @@ function AssistantInner({ children }: { children: ReactNode }) {
           // queued streaming audio so the user doesn't hear half a sentence.
           if (streamingActive) voice.discardStreamingSpeech();
           const cause = orchestrator.lastErrorRef.current ?? "unknown";
+          // Surface specific failure modes when we can. Generic "something went
+          // wrong" is a last resort — the cause string carries enough signal
+          // to give the user a better hint in most cases.
+          const isRateLimited =
+            cause.includes("rate_limit") ||
+            cause.includes("429") ||
+            cause.toLowerCase().includes("too many requests");
+          const isOverloaded =
+            cause.toLowerCase().includes("overload") ||
+            cause.toLowerCase().includes("busy") ||
+            cause.includes("503");
+          const isSchemaDrift = cause.startsWith("schema_drift");
+          const isNoFinal = cause === "no_final_payload";
           const friendly =
             cause === "timeout"
               ? "The assistant is taking a while. Try again."
               : cause === "not_authenticated"
                 ? "Please sign in again to continue."
-                : "Something went wrong. Try again.";
+                : isRateLimited
+                  ? "Cenaiva is busy right now. Try again in a moment."
+                  : isOverloaded
+                    ? "The voice service is overloaded. Try again in a moment."
+                    : isNoFinal
+                      ? "The assistant didn't finish responding. Try again."
+                      : isSchemaDrift
+                        ? "Something went wrong on our end — please rephrase and try again."
+                        : "Something went wrong. Try again.";
+          // Always log the raw cause so future debugging is easy. This is the
+          // most informative signal we have on what the orchestrator actually
+          // returned (timeout / schema_drift / http_503 / claude_overload / …).
+          console.warn(
+            "[Cenaiva.orchestrator] turn failed — cause:",
+            cause,
+            "friendly:",
+            friendly,
+          );
           // Option A (2026-05-18): text-mode users get voice responses too.
           // Always speak the friendly error AND surface it in the caption /
           // toast so type-to-talk feels like a real assistant rather than

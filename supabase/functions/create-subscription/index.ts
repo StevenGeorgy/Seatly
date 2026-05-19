@@ -123,6 +123,29 @@ Deno.serve(async (req: Request) => {
     const { default: Stripe } = await import("npm:stripe@17");
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
+    // Validate the Price ID early so the error tells us exactly what's wrong
+    // (invalid id, wrong currency, one-time vs recurring, archived).
+    try {
+      const price = await stripe.prices.retrieve(priceId);
+      if (!price.active) {
+        return jsonRes({ error: `Price ${priceId} is archived/inactive`, attempted_price_id: priceId }, 500);
+      }
+      if (!price.recurring) {
+        return jsonRes({ error: `Price ${priceId} is not recurring`, attempted_price_id: priceId, price_type: price.type }, 500);
+      }
+      if (price.currency !== "cad") {
+        return jsonRes({ error: `Price ${priceId} currency is ${price.currency}, expected cad`, attempted_price_id: priceId }, 500);
+      }
+    } catch (err) {
+      const e = err as { message?: string; code?: string; type?: string };
+      return jsonRes({
+        error: `Price retrieve failed: ${e.message ?? String(err)}`,
+        stripe_code: e.code,
+        stripe_type: e.type,
+        attempted_price_id: priceId,
+      }, 500);
+    }
+
     let customerId = row.stripe_customer_id;
     if (!customerId) {
       const customer = await stripe.customers.create({
@@ -156,14 +179,27 @@ Deno.serve(async (req: Request) => {
       invoice_settings: { default_payment_method: paymentMethodId },
     });
 
-    const subscription = await stripe.subscriptions.create({
-      customer: customerId,
-      items: [{ price: priceId }],
-      trial_period_days: 90,
-      payment_behavior: "default_incomplete",
-      expand: ["latest_invoice.payment_intent"],
-      metadata: { restaurant_id: row.id },
-    });
+    let subscription;
+    try {
+      subscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: priceId }],
+        trial_period_days: 90,
+        payment_behavior: "default_incomplete",
+        expand: ["latest_invoice.payment_intent"],
+        metadata: { restaurant_id: row.id },
+      });
+    } catch (err) {
+      const e = err as { message?: string; code?: string; type?: string; param?: string; raw?: unknown };
+      return jsonRes({
+        error: e.message ?? String(err),
+        stripe_code: e.code,
+        stripe_type: e.type,
+        stripe_param: e.param,
+        attempted_price_id: priceId,
+        attempted_customer_id: customerId,
+      }, 500);
+    }
 
     const trialEndsAt =
       typeof subscription.trial_end === "number"

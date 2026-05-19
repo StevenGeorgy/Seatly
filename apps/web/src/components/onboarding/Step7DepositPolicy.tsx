@@ -5,7 +5,6 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -50,7 +49,6 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
   const { errorToast } = useErrorToast();
   const [choice, setChoice] = useState<DepositChoice>("none");
   const [draft, setDraft] = useState<DraftTier[]>([]);
-  const [cancellationHours, setCancellationHours] = useState<string>("24");
   const [hydrated, setHydrated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -65,13 +63,12 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
       const client = getSupabaseBrowserClient();
       const { data } = await client
         .from("restaurants")
-        .select("deposit_tiers, cancellation_hours")
+        .select("deposit_tiers")
         .eq("id", restaurantId)
         .maybeSingle();
       if (cancelled) return;
       const row = (data ?? null) as {
         deposit_tiers: RestaurantDepositTier[] | null;
-        cancellation_hours: number | null;
       } | null;
       if (row?.deposit_tiers && row.deposit_tiers.length > 0) {
         setChoice("take");
@@ -82,9 +79,6 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
       } else {
         setChoice("none");
         setDraft([]);
-      }
-      if (row?.cancellation_hours != null) {
-        setCancellationHours(String(row.cancellation_hours));
       }
       setHydrated(true);
     })();
@@ -152,11 +146,6 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
       toast.error(parsed.error);
       return;
     }
-    const hours = Number.parseInt(cancellationHours, 10);
-    if (!Number.isFinite(hours) || hours < 0 || hours > 720) {
-      toast.error("Cancellation window must be between 0 and 720 hours.");
-      return;
-    }
     if (!isSupabaseConfigured()) {
       toast.error("Supabase is not configured.");
       return;
@@ -169,7 +158,6 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
         .from("restaurants")
         .update({
           deposit_tiers: parsed,
-          cancellation_hours: hours,
         })
         .eq("id", restaurantId);
       if (error) {
@@ -324,36 +312,6 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
         </motion.section>
         ) : null}
       </AnimatePresence>
-
-      <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
-        <div>
-          <h2 className="text-lg font-semibold">Cancellation window</h2>
-          <p className="text-xs text-text-muted">
-            How many hours before a booking diners can cancel without contacting you.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Label htmlFor="cancellation-hours" className="sr-only">
-            Cancellation hours
-          </Label>
-          <Input
-            id="cancellation-hours"
-            type="number"
-            min={0}
-            max={720}
-            step={1}
-            value={cancellationHours}
-            onChange={(e) => setCancellationHours(e.target.value)}
-            className="w-32"
-          />
-          <span className="text-sm text-text-muted">hours</span>
-        </div>
-      </section>
-
-      <p className="text-xs text-text-muted">
-        Stripe billing isn't live yet — tiers display to customers but won't actually charge
-        until payments are wired in.
-      </p>
 
       <div className="flex items-center justify-end">
         <Button id="wizard-step-submit" onClick={onSubmit} disabled={submitting} className="px-6">

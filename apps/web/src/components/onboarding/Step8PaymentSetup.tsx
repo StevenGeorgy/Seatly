@@ -290,7 +290,22 @@ function SubscriptionCardInner({
           elements,
           redirect: "if_required",
         });
-        if (confirmError) {
+        // Recovery path: if the SetupIntent was already confirmed in a prior
+        // submit attempt (e.g., create-subscription failed downstream and the
+        // user clicked Submit again without refreshing), Stripe returns
+        // setup_intent_unexpected_state. The error includes the prior
+        // SetupIntent — reuse its PaymentMethod and skip straight to
+        // create-subscription.
+        const recoveredSetupIntent =
+          confirmError &&
+          (confirmError as { code?: string }).code === "setup_intent_unexpected_state"
+            ? (confirmError as { setup_intent?: { status?: string; payment_method?: string } })
+                .setup_intent
+            : null;
+        if (
+          confirmError &&
+          !(recoveredSetupIntent && recoveredSetupIntent.status === "succeeded")
+        ) {
           const friendly = toUserFacingError(confirmError, "Couldn't confirm your card.");
           setError(friendly.message);
           console.error("[Step8PaymentSetup.subscription.confirm]", friendly.code, friendly.technical ?? confirmError);
@@ -299,7 +314,9 @@ function SubscriptionCardInner({
         const paymentMethodId =
           typeof setupIntent?.payment_method === "string"
             ? setupIntent.payment_method
-            : null;
+            : typeof recoveredSetupIntent?.payment_method === "string"
+              ? recoveredSetupIntent.payment_method
+              : null;
         if (!paymentMethodId) {
           setError("Stripe didn't return a payment method. Try again.");
           return;
@@ -366,12 +383,10 @@ function SubscriptionCard({
   stripePromiseRef: Promise<StripeJs | null>;
   onSubscriptionReady: (info: { status: string; trial_ends_at: string | null }) => void;
 }) {
-  // SetupIntent client_secret obtained from the existing stripe-setup-intent
-  // function. That function attaches the setup intent to a user-level
-  // stripe_customer_id (saved card flow), but for the wizard we want it tied
-  // to the *restaurant* — so we fetch a fresh client_secret and rely on
-  // create-subscription to attach the resulting payment_method to the
-  // restaurant's customer record.
+  // SetupIntent client_secret tied to the *restaurant's* Stripe customer.
+  // stripe-setup-intent accepts restaurant_id to target the restaurant
+  // customer — Stripe blocks moving a PaymentMethod between customers, so the
+  // SetupIntent must be created on the same customer create-subscription bills.
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
@@ -382,7 +397,7 @@ function SubscriptionCard({
     void (async () => {
       const res = await invokeEdgeFunction<{ client_secret: string | null }>(
         "stripe-setup-intent",
-        {},
+        { restaurant_id: restaurantId },
       );
       if (!res.ok) {
         setError(res.error);
@@ -394,7 +409,7 @@ function SubscriptionCard({
       }
       setClientSecret(res.data.client_secret);
     })();
-  }, []);
+  }, [restaurantId]);
 
   if (error) {
     return (

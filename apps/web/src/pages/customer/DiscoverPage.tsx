@@ -1096,6 +1096,14 @@ export default function DiscoverPage() {
   // auto-roll decision can only happen after real data has been seen at least
   // once.
   const [availabilityHasLoaded, setAvailabilityHasLoaded] = useState(false);
+  // Tracks the `effectiveBookingDate` that the most recent availability fetch
+  // actually settled for. Used by the auto-roll effect below to prevent a
+  // synchronous loop: setting `autoRollOffsetDays` advances `effectiveBookingDate`
+  // and triggers a new fetch, but `availabilityLoading` doesn't flip true
+  // until the NEXT render. Without this date-anchor, the auto-roll effect
+  // re-fires inside the same render cycle and runs to the 14-day cap before
+  // any real network call completes — tripping React's max-update-depth warning.
+  const [availabilitySettledForDate, setAvailabilitySettledForDate] = useState<string | null>(null);
   // Bumped whenever the user's reservation set changes (cancel / book / modify)
   // OR the tab regains focus. Threaded into the availability fetch effect's
   // deps so Discover refreshes after the user cancels — without it the
@@ -1203,6 +1211,7 @@ export default function DiscoverPage() {
       setAvailabilityByRestaurantId(map);
       setAvailabilityLoading(false);
       setAvailabilityHasLoaded(true);
+      setAvailabilitySettledForDate(effectiveBookingDate);
     })();
     return () => {
       cancelled = true;
@@ -1251,6 +1260,14 @@ export default function DiscoverPage() {
     // shows `cardsWithSlotsCount === 0`, and auto-roll fires before any
     // server response.
     if (!availabilityHasLoaded) return;
+    // Per-date settled guard: only roll when the LAST settled fetch was for
+    // the CURRENT effective date. After we increment `autoRollOffsetDays`,
+    // `effectiveBookingDate` changes but `availabilitySettledForDate` still
+    // points at the previous date — so this guard bails until the new fetch
+    // resolves. Without it, the effect could re-fire synchronously (before
+    // `availabilityLoading` propagates) and run to the 14-day cap in a
+    // single tick, tripping React's max-update-depth warning.
+    if (availabilitySettledForDate !== effectiveBookingDate) return;
     if (cardsWithSlotsCount > 0) return;
     if (autoRollOffsetDays >= 14) return;
     // setState-in-effect is intentional here: we need to advance the date
@@ -1265,6 +1282,8 @@ export default function DiscoverPage() {
     noFiltersActive,
     availabilityLoading,
     availabilityHasLoaded,
+    availabilitySettledForDate,
+    effectiveBookingDate,
     cards.length,
     cardsWithSlotsCount,
     autoRollOffsetDays,

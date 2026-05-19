@@ -14,6 +14,47 @@ Routine bug fixes do not need an update. Detailed ship notes go to
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-19 Stripe wire-up debugging + handoff state** —
+  (A) SetupIntent customer-mismatch fix shipped to `stripe-setup-intent`
+  v68: function now accepts `restaurant_id` and creates the SetupIntent
+  on the **restaurant's** Stripe customer (Branch A) vs the diner's
+  user_profiles customer (Branch B, original saved-card flow). Stripe
+  blocks moving a PaymentMethod between customers; before this fix the
+  wizard's PM ended up on the wrong customer and `create-subscription`
+  failed silently. `Step8PaymentSetup.tsx` updated to pass
+  `restaurant_id` + recovery path for SetupIntent already-succeeded
+  state (when create-subscription fails downstream and user retries
+  without refresh).
+  (B) **`create-subscription` is currently a DEBUG BUILD (v29).** Adds
+  explicit try/catch around `stripe.prices.retrieve` (early invalid-
+  Price detection), `customer.update`, and `subscriptions.create`,
+  returning detailed `stripe_code` / `stripe_type` / `stripe_param` /
+  `attempted_price_id` / `attempted_customer_id` in the JSON 500 body
+  instead of a bare error string. **Must revert to clean error
+  surface before prod** (or keep enhanced reporting if preferred — the
+  generic "Something went wrong" fallback was hiding actionable Stripe
+  errors from owners). Original file at
+  `supabase/functions/create-subscription/index.ts` reflects the debug
+  shape; clean version is the pre-2026-05-19 git history.
+  (C) `Step7DepositPolicy.tsx` — removed the "Cancellation window"
+  UI section (`cancellation_hours` field + state + validation + save).
+  Consistent with 2026-05-15 policy that all cancels fully refund.
+  Column `restaurants.cancellation_hours` still exists in DB but is
+  no longer read or written by the wizard. Safe to drop in a future
+  migration; don't drop without verifying no other code path reads
+  it.
+  (D) **Operational discovery: `STRIPE_SUBSCRIPTION_PRICE_ID` in
+  Supabase secrets was set to `prod_USX4rqMU6E7f4V`** — a Stripe
+  Product ID, not a Price ID. Subscriptions API requires a Price ID
+  (`price_…`). Local `.env` had the correct Price ID
+  (`price_1TTc0YJABKj4FeJXsR18YzVw`) but the Supabase secret store
+  was never updated to match. Mark updating the secret manually via
+  `supabase secrets set` (or dashboard) — pending verification.
+  (E) `RACE_CONDITION_AUDIT.md` documents 3 known Stripe-adjacent
+  race conditions (create-subscription duplicate, stripe-charge-order
+  no idempotency key, modify-reservation duplicate deposit rows).
+  Deferred to partner pickup. **Do not bundle the 3 fixes in one
+  deploy** — stagger them per the audit doc's recommendation.
 - **2026-05-17 ROUND 4 (Hey Cenaiva polish)** — All 5 deterministic
   upstream layers shipped to `cenaiva-orchestrate`:
   (P1) direction-change reset + mid-flow restaurant pivot + exclusion
@@ -116,6 +157,17 @@ Multi-payer deposit SMS support requires `payer_phone` column.
 - Never drop or weaken the `restaurants_publish_gate` trigger — it's
   the trust boundary on `is_published`. Client-side check in
   `Step8PaymentSetup.tsx` is good UX; the trigger is the real gate.
+- Never collapse `stripe-setup-intent`'s two branches. Branch A (when
+  `restaurant_id` is present) targets the **restaurant's** Stripe
+  customer for the onboarding wizard; Branch B (no `restaurant_id`)
+  targets the **diner's** `user_profiles.stripe_customer_id` for the
+  saved-card flow. Stripe blocks moving a PaymentMethod between
+  customers, so the SetupIntent must be created on whichever customer
+  will eventually be billed.
+- `STRIPE_SUBSCRIPTION_PRICE_ID` must point to a **Stripe Price ID**
+  (`price_…`) — NOT a Product ID (`prod_…`). The Subscriptions API
+  rejects Product IDs with `resource_missing`. Verify with
+  `stripe.prices.retrieve(...)` after every env-var swap.
 
 ### Auth / profile
 - Never assume `user_profiles` is NULL for an authenticated diner. The
@@ -317,6 +369,12 @@ Multi-payer deposit SMS support requires `payer_phone` column.
 - `SPEED_PLAN.md` — per-user latency phases (1–9), frontend perf.
 - `PERFORMANCE_PATTERNS.md` — portable patterns for future projects.
 - `STRIPE_SETUP.md` — Stripe dashboard + env var setup checklist.
+- `RACE_CONDITION_AUDIT.md` — 3 open Stripe-adjacent race conditions
+  (create-subscription duplicate sub, stripe-charge-order double-charge
+  diner, modify-reservation duplicate deposit rows). Includes per-fix
+  shape, risk assessment, and recommended stagger order. **Partner
+  pickup task as of 2026-05-19**; do not bundle the 3 fixes into one
+  deploy.
 - `MOBILE_STRIPE_GUIDE.md` — mobile-client Stripe integration guide
   (account deletion, business-side Connect, post-meal pay-the-bill,
   cancellation policy with $100 examples).

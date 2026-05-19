@@ -45,6 +45,12 @@ Deno.serve(async (req: Request) => {
     const authUserId = jwtPayload?.sub as string | undefined;
     if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
 
+    const body = (await req.json().catch(() => ({}))) as { restaurant_id?: unknown };
+    const restaurantId =
+      typeof body.restaurant_id === "string" && body.restaurant_id.trim()
+        ? body.restaurant_id.trim()
+        : null;
+
     const { data: profile } = await supabaseAdmin
       .from("user_profiles")
       .select("id, full_name, email, stripe_customer_id")
@@ -63,6 +69,50 @@ Deno.serve(async (req: Request) => {
     const { default: Stripe } = await import("npm:stripe@17");
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
+    // Branch A — restaurant subscription onboarding. Target the restaurant's
+    // customer so the resulting PaymentMethod can be used by create-subscription
+    // without a customer-swap (Stripe blocks moving a PM between customers).
+    if (restaurantId) {
+      const { data: roleRow } = await supabaseAdmin
+        .from("user_restaurant_roles")
+        .select("role")
+        .eq("user_id", (profile as { id: string }).id)
+        .eq("restaurant_id", restaurantId)
+        .eq("role", "owner")
+        .maybeSingle();
+      if (!roleRow) return jsonRes({ error: "Not authorized for this restaurant" }, 403);
+
+      const { data: rest } = await supabaseAdmin
+        .from("restaurants")
+        .select("id, name, email, stripe_customer_id")
+        .eq("id", restaurantId)
+        .single();
+      if (!rest) return jsonRes({ error: "Restaurant not found" }, 404);
+
+      let customerId = (rest as { stripe_customer_id: string | null }).stripe_customer_id;
+      if (!customerId) {
+        const customer = await stripe.customers.create({
+          email: (rest as { email: string | null }).email || undefined,
+          name: (rest as { name: string | null }).name || undefined,
+          metadata: { restaurant_id: (rest as { id: string }).id },
+        });
+        customerId = customer.id;
+        await supabaseAdmin
+          .from("restaurants")
+          .update({ stripe_customer_id: customerId })
+          .eq("id", (rest as { id: string }).id);
+      }
+
+      const setupIntent = await stripe.setupIntents.create({
+        customer: customerId,
+        payment_method_types: ["card"],
+        usage: "off_session",
+      });
+
+      return jsonRes({ client_secret: setupIntent.client_secret, mode: "live" });
+    }
+
+    // Branch B — diner saved-card flow. Target the diner's personal customer.
     let customerId = profile.stripe_customer_id;
     if (!customerId) {
       const customer = await stripe.customers.create({

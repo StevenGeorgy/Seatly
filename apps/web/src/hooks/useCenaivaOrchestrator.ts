@@ -158,11 +158,24 @@ export function useCenaivaOrchestrator() {
         }
 
         // Validate with zod. Schema drift from the orchestrator (new intents,
-        // missing optional fields) is expected in development — we fall
-        // through with a best-effort cast so the flow keeps working instead
-        // of spamming the console on every turn.
+        // missing optional fields) can still happen in development. Log it
+        // explicitly so we can diagnose, and record the cause so the friendly
+        // toast can surface "schema_drift" instead of a vague "unknown".
+        // Returns the best-effort cast either way — booking flow tries to
+        // proceed with whatever fields are present (`spoken_text`, partial
+        // `ui_actions`, etc.) rather than failing the whole turn.
         const parsed = AssistantResponse.safeParse(finalPayload);
         if (!parsed.success) {
+          const firstIssue = parsed.error.issues[0];
+          const issueSummary = firstIssue
+            ? `${firstIssue.path.join(".") || "<root>"}: ${firstIssue.message}`
+            : "unknown";
+          console.warn(
+            "[Cenaiva.orchestrator] schema validation failed —",
+            issueSummary,
+            { allIssues: parsed.error.flatten(), payload: finalPayload },
+          );
+          recordError(`schema_drift: ${issueSummary}`);
           return finalPayload as AssistantResponseType;
         }
         return parsed.data;
