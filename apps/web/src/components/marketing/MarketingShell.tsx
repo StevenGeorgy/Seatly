@@ -13,7 +13,7 @@ type MarketingShellProps = {
 };
 
 const navLinkClass =
-  "text-text-secondary hover:text-white px-3 py-1.5 text-sm font-medium transition-colors duration-200 relative";
+  "text-text-secondary hover:text-white px-4 py-2 text-base font-medium transition-colors duration-200 relative";
 const navLinkActive = "text-white";
 
 function navigateToAuth(path: "/login" | "/register") {
@@ -46,41 +46,15 @@ function MarketingNavLinks({ onClick }: { onClick?: () => void }) {
   );
 }
 
-function LangToggle() {
-  const { i18n } = useTranslation();
-  const lang = (i18n.language || "en").startsWith("fr") ? "fr" : "en";
-
-  return (
-    <div className="hidden items-center gap-1 rounded-full border border-border bg-bg-surface/60 px-1 py-1 text-xs font-medium md:flex">
-      {(["en", "fr"] as const).map((code) => (
-        <button
-          key={code}
-          type="button"
-          onClick={() => void i18n.changeLanguage(code)}
-          className={cn(
-            "rounded-full px-2.5 py-0.5 uppercase tracking-wider transition-colors",
-            lang === code
-              ? "bg-gold/15 text-gold"
-              : "text-text-muted hover:text-white",
-          )}
-          aria-pressed={lang === code}
-        >
-          {code}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export function MarketingShell({ children }: MarketingShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="flex h-16 w-full items-center px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
+        <div className="flex h-20 w-full items-center px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 md:h-24">
           <Link to="/" className="flex shrink-0 items-center" aria-label="Cenaiva home">
-            <CenaivaWordmark />
+            <CenaivaWordmark className="h-[4.5rem] md:h-[5.5rem]" />
           </Link>
 
           <nav
@@ -90,26 +64,24 @@ export function MarketingShell({ children }: MarketingShellProps) {
             <MarketingNavLinks />
           </nav>
 
-          <div className="hidden shrink-0 items-center gap-3 md:flex">
+          <div className="hidden shrink-0 items-center gap-4 md:flex">
             <Link
               to="/discover"
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-surface/60 px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:text-white"
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/60 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-white"
             >
-              <Search className="size-3.5 text-gold" />
+              <Search className="size-4 text-gold" />
               Discover
             </Link>
-            <LangToggle />
             <button
               type="button"
               onClick={() => navigateToAuth("/login")}
-              className="text-sm font-medium text-text-secondary transition-colors hover:text-white"
+              className="text-base font-medium text-text-secondary transition-colors hover:text-white"
             >
               Log in
             </button>
             <Button
               type="button"
-              size="sm"
-              className="rounded-full px-5 font-semibold"
+              className="rounded-full px-6 text-base font-semibold"
               onClick={() => navigateToAuth("/register")}
             >
               Sign up

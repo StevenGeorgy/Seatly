@@ -1098,7 +1098,7 @@ export default function DealsPage() {
   const { promotions, loading: promotionsLoading } = useAllActivePromotions();
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
 
-  const [view, setView] = useState<"grid" | "map">("grid");
+  const [view, setView] = useState<"grid" | "map">("map");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<"tonight" | "weekend" | "week" | "expiring" | "sold-out" | null>(null);
   const [search, setSearch] = useState("");

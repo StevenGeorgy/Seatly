@@ -1032,7 +1032,7 @@ export default function DiscoverPage() {
     );
   }, [user, assistant, searchParams, navigate]);
 
-  const [view, setView] = useState<"grid" | "map">("grid");
+  const [view, setView] = useState<"grid" | "map">("map");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
