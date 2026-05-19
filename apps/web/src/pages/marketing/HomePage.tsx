@@ -5,9 +5,7 @@ import { format } from "date-fns";
 import { toast } from "sonner";
 import {
   ArrowRight,
-  ArrowUpRight,
   Calendar as CalendarIcon,
-  Check,
   ChevronDown,
   Clock,
   Heart,
@@ -48,6 +46,8 @@ import {
 } from "@/components/ui/accordion";
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
+import { HeyCenaivaVoiceMock } from "@/components/marketing/HeyCenaivaVoiceMock";
+import { useUser } from "@/hooks/useUser";
 
 const ease = [0.25, 0.46, 0.45, 0.94] as const;
 
@@ -72,133 +72,79 @@ const QUICK_PROMPTS = [
   '"Late-night ramen for 4"',
 ];
 
-type Restaurant = {
-  id: string;
-  name: string;
-  reviews: number;
-  cuisine: string;
-  price: string;
-  area: string;
-  bookedToday: number;
-  slots: string[];
-  initials: string;
-};
-
-const RESTAURANTS: Restaurant[] = [
-  {
-    id: "maison-verre",
-    name: "Maison Verre",
-    reviews: 1538,
-    cuisine: "Modern French",
-    price: "$$$$",
-    area: "Yorkville",
-    bookedToday: 82,
-    slots: ["9:30 PM", "9:45 PM", "10:00 PM"],
-    initials: "MAISON",
-  },
-  {
-    id: "taps-public-house",
-    name: "Taps Public House",
-    reviews: 1238,
-    cuisine: "Fusion / Eclectic",
-    price: "$$$",
-    area: "Mississauga",
-    bookedToday: 64,
-    slots: ["9:30 PM", "9:45 PM", "10:00 PM"],
-    initials: "TAPS",
-  },
-  {
-    id: "osteria-nova",
-    name: "Osteria Nova",
-    reviews: 892,
-    cuisine: "Italian · Wood-fired",
-    price: "$$$",
-    area: "King West",
-    bookedToday: 47,
-    slots: ["6:45 PM", "7:30 PM", "9:00 PM"],
-    initials: "OSTERIA",
-  },
-  {
-    id: "salt-ember",
-    name: "Salt & Ember",
-    reviews: 2104,
-    cuisine: "Live-fire grill",
-    price: "$$$",
-    area: "Distillery",
-    bookedToday: 118,
-    slots: ["7:15 PM", "8:00 PM", "8:45 PM"],
-    initials: "SALT",
-  },
-];
-
-const TIMELINE = [
-  { time: "7:30pm", who: "Lefebvre · party of 4", status: "seated" as const },
-  { time: "7:45pm", who: "Chen · party of 2", status: "confirmed" as const },
-  { time: "8pm", who: "Singh · party of 6 · VIP", status: "at-risk" as const },
-  { time: "8:15pm", who: "Walk-in · party of 2", status: "waiting" as const },
-  { time: "8:30pm", who: "Tremblay · party of 3 · anniversary", status: "confirmed" as const },
-];
-
-const STATUS_STYLES: Record<(typeof TIMELINE)[number]["status"], string> = {
-  seated: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30",
-  confirmed: "bg-gold/10 text-gold border border-gold/30",
-  "at-risk": "bg-amber-500/10 text-amber-400 border border-amber-500/30",
-  waiting: "bg-zinc-500/10 text-zinc-300 border border-zinc-500/30",
-};
-
 const DINER_FEATURES = [
   {
     icon: MapIcon,
     title: "Discover, mapped",
-    desc: "Map view, recommended lists, AI search. Filter by mood, budget, dietary needs, or how far you feel like walking.",
+    desc: "Map view, recommended lists, voice search. Filter by cuisine, budget, dietary needs, or how far you feel like walking.",
   },
   {
     icon: CalendarDays,
     title: "Book in two taps",
-    desc: "Pre-pay deposits, hold a table, modify or cancel from your wrist. Confirmation codes synced to your calendar.",
+    desc: "Pre-pay deposits, modify or cancel right from your reservation. Confirmation codes on every booking.",
   },
   {
     icon: Wallet,
     title: "Order before you sit",
-    desc: "Pre-order courses with the booking. Or scan the table QR for dine-in. Or order takeout. Same wallet, same loyalty.",
+    desc: "Pre-order courses with the booking. Pay with a saved card. The kitchen has it ready when you arrive.",
   },
   {
-    icon: Coins,
-    title: "Loyalty that compounds",
-    desc: "Earn points everywhere. Redeem for discounts, free menu items, or event tickets. Tier unlocks and perks across every Cenaiva restaurant.",
+    icon: Search,
+    title: "Find any reservation",
+    desc: "Look up your booking by confirmation code or email — no account login required.",
   },
   {
     icon: CalendarHeart,
     title: "Plan the moment",
-    desc: "Anniversaries, birthdays, business dinners, post-game ramen. Save groups, favourite spots, and dietary profiles per guest.",
+    desc: "Anniversaries, birthdays, business dinners, post-game ramen. Tag the occasion when you book — the restaurant sees it.",
   },
   {
     icon: CreditCard,
     title: "Pay & split, gracefully",
-    desc: "Apple Pay, Google Pay, gift cards. Split equally or by item. Tipping defaults set the way you actually tip.",
+    desc: "Apple Pay, Google Pay, saved cards. Split deposits across multiple cards. Pay-the-bill split is on the roadmap.",
   },
 ];
 
 const FAQ = [
   {
     q: "Is Cenaiva free for diners?",
-    a: "Yes. Forever. Diners pay nothing to discover, book, pre-order, or earn loyalty across every Cenaiva restaurant.",
+    a: "Yes. Forever. Diners pay nothing to discover, book, and pre-order across every Cenaiva restaurant.",
+  },
+  {
+    q: "Do I need to download an app?",
+    a: "You can, but you don't have to. Cenaiva is available on iOS and Android, and works just as well in any web browser on desktop, phone, or tablet. Sign in once and everything syncs across all three.",
   },
   {
     q: 'How does "Hey Cenaiva" actually work?',
-    a: "One trigger phrase wakes the assistant. Audio is processed on-device until you confirm an action, at which point the request is encrypted and sent for booking. It works on iOS, Android, Apple Watch, CarPlay, and HomePod.",
+    a: "One trigger phrase wakes the assistant in your browser. Once you start a booking request, the audio is transcribed by our voice partner and the request is sent for booking.",
   },
   {
-    q: "Does it work in French?",
-    a: "Fully. Both the diner app and the restaurant dashboard ship in English and French — including Hey Cenaiva voice, receipts, and email confirmations.",
+    q: "Can I pre-order food before I arrive?",
+    a: "Yes. When you book, you can browse the restaurant's menu and pre-order entrées, wine, or anything they've listed. The kitchen sees your order attached to your reservation.",
+  },
+  {
+    q: "How do deposits work?",
+    a: "Some restaurants ask for a deposit at booking — usually based on party size. You'll see the exact amount before you confirm, and you can split it across multiple cards if you're booking with friends.",
+  },
+  {
+    q: "What if I have dietary restrictions or allergies?",
+    a: "Set your dietary preferences once on your profile. Cenaiva remembers them on every booking, and every restaurant's menu items are flagged for allergens at the source.",
+  },
+  {
+    q: "Can I modify my booking after I make it?",
+    a: "Yes. Change the time, party size, or cancel right from your reservation — no phone call needed. If the new party size changes the deposit, you'll see the difference before you confirm.",
   },
   {
     q: "What if I cancel?",
-    a: "Cancel a booking from the app, your watch, or by saying so. Most restaurants allow free cancellation up to 2 hours before — deposit terms are shown before you confirm.",
+    a: "Cancel a booking right from your reservation. Most cancellations are fully refunded — deposit terms are shown before you confirm.",
   },
   {
     q: "Where can I use it?",
-    a: "Toronto, Montréal, and Vancouver today, with 800+ restaurants on the platform. New cities roll out every quarter.",
+    a: "Launching in Toronto — onboarding our first restaurants now. Built for Canada from day one.",
+  },
+  {
+    q: "Is loyalty available yet?",
+    a: "Not yet — coming soon. Points and tier perks across every Cenaiva restaurant. We'll let you know when it launches.",
   },
 ];
 
@@ -228,8 +174,15 @@ function SectionEyebrow({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Where "Try Hey Cenaiva" sends signed-in diners. The `?concierge=1` flag
+// auto-opens the voice shell on /discover. Anonymous visitors are bounced
+// to /login with this path as `?from` so they return here after sign-in
+// (voice shell is auth-gated per CLAUDE.md hard rule).
+const HEY_CENAIVA_DESTINATION = "/discover?concierge=1";
+
 export default function HomePage() {
   const navigate = useNavigate();
+  const { user } = useUser();
   const [date, setDate] = useState<Date | undefined>(new Date());
   const [time, setTime] = useState<string>("7:30 PM");
   const [people, setPeople] = useState<string>("2");
@@ -249,6 +202,14 @@ export default function HomePage() {
       else next.add(id);
       return next;
     });
+  };
+
+  const handleTryHeyCenaiva = () => {
+    if (user) {
+      navigate(HEY_CENAIVA_DESTINATION);
+    } else {
+      navigate(`/login?from=${encodeURIComponent(HEY_CENAIVA_DESTINATION)}`);
+    }
   };
 
   const goToDiscover = (extra?: Record<string, string>) => {
@@ -288,7 +249,7 @@ export default function HomePage() {
               className="inline-flex w-fit items-center gap-2.5 rounded-full border border-gold/30 bg-gold/5 px-4 py-1.5 font-mono text-xs uppercase tracking-[0.2em] text-gold sm:text-[13px]"
             >
               <span className="size-2 rounded-full bg-gold" />
-              800+ restaurants · Toronto · Montréal · Vancouver
+              Built in Canada · Onboarding our first restaurants now
             </motion.span>
 
             <motion.h1
@@ -439,16 +400,16 @@ export default function HomePage() {
 
             <div className="mt-20 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-12 sm:gap-10 lg:gap-14">
               <div>
-                <p className="font-serif text-4xl text-white lg:text-5xl">12,400+</p>
-                <p className="mt-2 text-sm text-text-muted">restaurants nationwide</p>
-              </div>
-              <div>
                 <p className="font-serif text-4xl text-white lg:text-5xl">Free</p>
                 <p className="mt-2 text-sm text-text-muted">forever for diners</p>
               </div>
               <div>
-                <p className="font-serif text-4xl text-white lg:text-5xl">1.5x</p>
-                <p className="mt-2 text-sm text-text-muted">points on Tuesdays</p>
+                <p className="font-serif text-4xl text-white lg:text-5xl">Voice</p>
+                <p className="mt-2 text-sm text-text-muted">Hey Cenaiva included</p>
+              </div>
+              <div>
+                <p className="font-serif text-4xl text-white lg:text-5xl">CA</p>
+                <p className="mt-2 text-sm text-text-muted">built for Canada</p>
               </div>
             </div>
           </div>
@@ -530,7 +491,7 @@ export default function HomePage() {
                       Reserve · 7:15pm
                     </Button>
                     <p className="text-center text-[11px] text-text-muted">
-                      ✦ Earn 185 points · ≈ $1.85
+                      ✦ Pre-order from the menu before you arrive
                     </p>
                   </div>
                 </div>
@@ -554,87 +515,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Available tonight ─────────────────────────────────── */}
-      <section className="border-t border-border/40 py-24 lg:py-28">
-        <div className="w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
-          <div className="flex items-end justify-between gap-6">
-            <div>
-              <SectionEyebrow>Available tonight near you</SectionEyebrow>
-              <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
-                Toronto · {formatCompactTimeLabel(time)} · {people} {people === "1" ? "guest" : "guests"}
-              </h2>
-            </div>
-            <Link
-              to="/discover"
-              className="hidden items-center gap-1.5 text-base text-gold hover:underline sm:inline-flex"
-            >
-              See all 142
-              <ArrowRight className="size-5" />
-            </Link>
-          </div>
-
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {RESTAURANTS.map((r, i) => (
-              <motion.div
-                key={r.id}
-                initial={{ opacity: 0, y: 16 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: "-50px" }}
-                transition={{ duration: 0.45, delay: i * 0.06 }}
-                className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface transition-colors hover:border-gold/40"
-              >
-                <div className="relative">
-                  <StripePlaceholder label={r.initials} />
-                  <button
-                    type="button"
-                    onClick={() => toggleFavorite(r.id)}
-                    aria-label="Save restaurant"
-                    className="absolute right-3 top-3 rounded-full border border-border bg-black/60 p-2 backdrop-blur transition-colors hover:border-gold/50"
-                  >
-                    <Heart
-                      className={cn(
-                        "size-5",
-                        favorites.has(r.id) ? "fill-gold text-gold" : "text-white",
-                      )}
-                    />
-                  </button>
-                </div>
-                <div className="flex flex-1 flex-col gap-4 p-6">
-                  <div>
-                    <p className="font-serif text-2xl text-white">{r.name}</p>
-                    <div className="mt-1.5 flex items-center gap-2 text-sm text-text-secondary">
-                      <span className="text-gold">★★★★☆</span>
-                      <span>{r.reviews.toLocaleString()} reviews</span>
-                    </div>
-                  </div>
-                  <p className="text-sm text-text-secondary">
-                    {r.cuisine} · {r.price} · {r.area}
-                  </p>
-                  <p className="flex items-center gap-2 text-sm text-text-muted">
-                    <ArrowUpRight className="size-4 text-gold" />
-                    Booked {r.bookedToday} times today
-                  </p>
-                  <div className="mt-auto grid grid-cols-3 gap-2 pt-2">
-                    {r.slots.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() =>
-                          goToDiscover({ restaurant: r.id, slot: s })
-                        }
-                        className="rounded-md bg-gold py-2.5 text-sm font-semibold text-black transition-opacity hover:opacity-90"
-                      >
-                        {formatCompactTimeLabel(s)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* ── For Restaurants ─────────────────────────────────── */}
       <section
         id="for-restaurants"
@@ -649,48 +529,11 @@ export default function HomePage() {
               <span className="italic text-gold">We replaced the stack.</span>
             </h2>
             <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
-              Reservations, floor plan, kitchen display, staff scheduling, CRM,
-              analytics, payments — on one ledger, in one login.{" "}
-              <span className="text-gold">$1.00 per confirmed booking.</span> Zero
-              commission on orders, ever.
+              Reservations, floor plan, pre-orders, deposits, payments — on one
+              dashboard, one login.{" "}
+              <span className="text-gold">$199/mo · $1 per confirmed booking.</span>{" "}
+              Zero commission on your menu prices.
             </p>
-
-            <ul className="mt-12 space-y-8">
-              {[
-                {
-                  icon: CalendarDays,
-                  title: "Reservations + waitlist",
-                  desc: "Realtime floor plan, deposit policies, no-show risk scoring built in.",
-                },
-                {
-                  icon: Wallet,
-                  title: "Orders & KDS",
-                  desc: "Pre-orders, dine-in QR, takeout, optional delivery — one ticket pipeline to the kitchen.",
-                },
-                {
-                  icon: Coins,
-                  title: "Honest pricing",
-                  desc: "$1 per confirmed booking. No cut of your menu prices. Native CAD, billed monthly.",
-                },
-                {
-                  icon: Sparkles,
-                  title: "AI that pays its rent",
-                  desc: "Demand forecasts, menu performance, no-show flags, receipt scanning, accountant exports.",
-                },
-              ].map((item) => (
-                <li key={item.title} className="flex gap-5">
-                  <span className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
-                    <item.icon className="size-6 text-gold" />
-                  </span>
-                  <div>
-                    <p className="text-base font-semibold text-white">{item.title}</p>
-                    <p className="mt-1.5 text-base leading-relaxed text-text-muted">
-                      {item.desc}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ul>
 
             <div className="mt-12 flex flex-wrap items-center gap-4">
               <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
@@ -714,89 +557,44 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Live dashboard mock */}
-          <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-80px" }}
-            transition={{ duration: 0.6, ease }}
-            className="rounded-2xl border border-border bg-bg-surface p-6 shadow-2xl shadow-black/30"
-          >
-            <div className="flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
-              <span>Live · Maison Verre · Saturday Service</span>
-              <span>7:42pm</span>
-            </div>
-
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div>
+            <ul className="space-y-8">
               {[
-                { label: "Tonight", value: "142", trend: "+18%" },
-                { label: "Revenue", value: "$24.8k", trend: "+13%" },
-                { label: "Avg cover", value: "$87", trend: "—" },
-                { label: "No-show", value: "3", trend: "flag" },
-              ].map((s) => (
-                <div
-                  key={s.label}
-                  className="rounded-xl border border-border bg-bg-elevated/50 p-4 sm:p-5"
-                >
-                  <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted">
-                    {s.label}
-                  </p>
-                  <p className="mt-2 font-serif text-3xl text-white sm:text-4xl">{s.value}</p>
-                  <p className="mt-1 text-xs text-gold">{s.trend}</p>
-                </div>
+                {
+                  icon: CalendarDays,
+                  title: "Reservations + floor plan",
+                  desc: "Realtime availability, deposit policies, modify and cancel flows, cover-cap enforcement built in.",
+                },
+                {
+                  icon: Wallet,
+                  title: "Pre-orders & deposits",
+                  desc: "Pre-orders attached to bookings. Tier-based deposit policy. Stripe Connect handles payments.",
+                },
+                {
+                  icon: Coins,
+                  title: "Honest pricing",
+                  desc: "$199/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
+                },
+                {
+                  icon: Sparkles,
+                  title: "Service overview",
+                  desc: "Tonight's covers, paid pre-order income, today's pre-orders, and a live reservation timeline on one dashboard.",
+                },
+              ].map((item) => (
+                <li key={item.title} className="flex gap-5">
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                    <item.icon className="size-6 text-gold" />
+                  </span>
+                  <div>
+                    <p className="text-base font-semibold text-white">{item.title}</p>
+                    <p className="mt-1.5 text-base leading-relaxed text-text-muted">
+                      {item.desc}
+                    </p>
+                  </div>
+                </li>
               ))}
-            </div>
-
-            <div className="mt-6">
-              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-gold sm:text-xs">
-                — Tonight's timeline
-              </p>
-              <ul className="mt-4 divide-y divide-border/50">
-                {TIMELINE.map((row) => (
-                  <li
-                    key={row.time + row.who}
-                    className="flex items-center justify-between py-3.5 text-base"
-                  >
-                    <span className="flex items-center gap-4">
-                      <span className="w-14 font-mono text-sm text-text-muted">
-                        {row.time}
-                      </span>
-                      <span className="text-text-secondary">{row.who}</span>
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-full px-3 py-1 text-xs font-medium sm:text-sm",
-                        STATUS_STYLES[row.status],
-                      )}
-                    >
-                      {row.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border/50 pt-6 text-sm sm:text-base">
-              <div>
-                <p className="font-mono uppercase tracking-[0.18em] text-text-muted">
-                  Floor plan
-                </p>
-                <p className="mt-1 text-text-secondary">24/30 occupied</p>
-              </div>
-              <div>
-                <p className="font-mono uppercase tracking-[0.18em] text-text-muted">
-                  KDS
-                </p>
-                <p className="mt-1 text-text-secondary">7 tickets active</p>
-              </div>
-              <div>
-                <p className="font-mono uppercase tracking-[0.18em] text-text-muted">
-                  Staff
-                </p>
-                <p className="mt-1 text-text-secondary">12 clocked in</p>
-              </div>
-            </div>
-          </motion.div>
+            </ul>
+          </div>
         </div>
       </section>
 
@@ -814,32 +612,32 @@ export default function HomePage() {
               We'll book it.
             </h2>
             <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
-              Hey Cenaiva is the voice concierge built into the app, your watch,
-              your car, and your home speaker. Plan an outing, hold a table, pre-order
-              a course, redeem points — without thumbing through a single screen.
+              Hey Cenaiva is the voice concierge on iOS, Android, and your
+              browser. Plan an outing, book a table, and pre-order a course —
+              without thumbing through a single screen.
             </p>
 
             <ul className="mt-12 space-y-8">
               {[
                 {
                   icon: Sparkles,
-                  title: "Always on, never creepy",
-                  desc: "One trigger phrase. Audio is processed on-device until you confirm.",
+                  title: "Triggered by your voice",
+                  desc: "Hey Cenaiva only wakes when you say the trigger phrase. Nothing is sent for transcription until then.",
                 },
                 {
                   icon: Sparkles,
                   title: "Knows your taste",
-                  desc: "Remembers your dietary restrictions, favourite neighbourhoods, and who you usually dine with.",
+                  desc: "Remembers your dietary restrictions and preferences — every recommendation respects them.",
                 },
                 {
                   icon: CalendarDays,
                   title: "Plans the whole evening",
-                  desc: '"Book dinner before the 8pm Leafs game" — it picks a place, a time, and warns you about traffic.',
+                  desc: '"Book dinner for two on Friday" — Cenaiva picks a place and a time that work, with the deposit handled in the same conversation.',
                 },
                 {
-                  icon: Coins,
-                  title: "Redeems your points",
-                  desc: '"Use my points for the wine pairing tonight" — done at checkout, automatically.',
+                  icon: CalendarHeart,
+                  title: "Change of plans? No problem.",
+                  desc: "Modify the time, party size, or cancel — right from your reservation. Refunds follow the restaurant's policy.",
                 },
               ].map((item) => (
                 <li key={item.title} className="flex gap-5">
@@ -857,110 +655,18 @@ export default function HomePage() {
             </ul>
 
             <div className="mt-12 flex flex-wrap items-center gap-4">
-              <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
-                <Link to="/hey-cenaiva">
-                  Try Hey Cenaiva <ArrowRight className="ml-1.5 size-5" />
-                </Link>
-              </Button>
               <Button
-                variant="outline"
-                className="h-12 rounded-md px-6 text-base"
-                onClick={() => toast("Voice demo coming soon.", { icon: "🎙️" })}
+                type="button"
+                onClick={handleTryHeyCenaiva}
+                className="h-12 rounded-md px-6 text-base font-semibold"
               >
-                <span className="mr-1.5 size-1.5 rounded-full bg-gold" />
-                Listen to a demo
+                Try Hey Cenaiva <ArrowRight className="ml-1.5 size-5" />
               </Button>
             </div>
           </div>
 
-          {/* Voice mock */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.97 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true, margin: "-80px" }}
-            transition={{ duration: 0.6, ease }}
-            className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-b from-bg-surface to-black/60 p-6"
-          >
-            <div className="flex items-center justify-end gap-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
-              {(["phone", "watch", "car", "homepod"] as const).map((d, i) => (
-                <span
-                  key={d}
-                  className={cn(
-                    "rounded-full px-3 py-1",
-                    i === 0
-                      ? "border border-gold/40 bg-gold/15 text-gold"
-                      : "text-text-muted",
-                  )}
-                >
-                  {d}
-                </span>
-              ))}
-            </div>
-
-            <div className="mt-6 space-y-5">
-              <div className="flex items-start gap-3">
-                <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-text-muted sm:text-xs">
-                  You
-                </span>
-                <div className="flex-1 rounded-2xl border border-border bg-bg-surface px-4 py-3.5 text-base leading-relaxed text-text-secondary">
-                  Hey Cenaiva, I have a hundred bucks for a date night Friday.
-                  Somewhere quiet, walkable from the Annex.
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <span className="ml-auto order-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold sm:text-xs">
-                  Cenaiva
-                </span>
-                <div className="order-1 ml-auto max-w-[80%] rounded-2xl border border-gold/30 bg-gold/5 px-4 py-3.5 text-base leading-relaxed text-white">
-                  I found three tables under $50/person within a 12-minute walk.{" "}
-                  <span className="text-gold">Bistro Lumière</span> at 7:30 has your
-                  favourite Côtes du Rhône on the list. Want me to hold it?
-                </div>
-              </div>
-            </div>
-
-            <div className="my-10 flex items-center justify-center">
-              <div className="relative flex size-32 items-center justify-center rounded-full border border-gold/30">
-                <div className="absolute inset-3 rounded-full border border-gold/20" />
-                <div className="absolute inset-6 rounded-full border border-gold/10" />
-                <div className="flex size-16 items-center justify-center rounded-full bg-gold text-black shadow-lg shadow-gold/30">
-                  <AudioLines className="size-7" />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-4 pt-2">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => toast.success("Bistro Lumière held for 6 minutes.")}
-                  className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated px-4 py-2 text-sm text-white hover:border-gold/40"
-                >
-                  <Check className="size-4 text-gold" /> Hold the table
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate("/discover")}
-                  className="rounded-full border border-border bg-bg-elevated px-4 py-2 text-sm text-white hover:border-gold/40"
-                >
-                  Show all 3
-                </button>
-              </div>
-              <div className="flex items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3.5 text-sm">
-                <span className="flex size-10 items-center justify-center rounded-md bg-gold/15 font-mono text-xs text-gold">
-                  BL
-                </span>
-                <div>
-                  <p className="text-base text-white">Bistro Lumière · Friday 7:30pm</p>
-                  <p className="text-sm text-text-muted">Held for 6 min · MTL-3F2A8K</p>
-                </div>
-                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-emerald-400">
-                  Held
-                </span>
-              </div>
-            </div>
-          </motion.div>
+          {/* Voice mock — mirrors the real Cenaiva voice shell */}
+          <HeyCenaivaVoiceMock />
         </div>
       </section>
 
@@ -977,20 +683,17 @@ export default function HomePage() {
               </h2>
             </div>
             <p className="max-w-2xl self-end text-lg leading-relaxed text-text-secondary lg:text-xl">
-              Free for life. Use it once a year, or twice a week — Cenaiva learns
-              your taste, banks your loyalty across every restaurant on the
-              platform, and quietly handles the boring parts of going out.
+              Free for life. Use it once a year, or twice a week — Cenaiva
+              remembers your dietary preferences and quietly handles the boring
+              parts of going out.
             </p>
           </div>
 
           <div className="mt-10 flex flex-col gap-4 sm:flex-row">
             <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
-              <Link to="/loyalty">
-                Explore loyalty <ArrowRight className="ml-1.5 size-5" />
+              <Link to="/register">
+                Join free <ArrowRight className="ml-1.5 size-5" />
               </Link>
-            </Button>
-            <Button asChild variant="outline" className="h-12 rounded-md px-6 text-base">
-              <Link to="/register">Join free</Link>
             </Button>
           </div>
 
@@ -1023,20 +726,31 @@ export default function HomePage() {
 
       {/* ── FAQ ─────────────────────────────────────────── */}
       <section className="border-t border-border/40 py-20">
-        <div className="mx-auto w-full max-w-3xl px-12 text-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
-          <SectionEyebrow>Questions</SectionEyebrow>
-          <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
-            The small print, made plain.
-          </h2>
+        <div className="mx-auto w-full px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
+          <div className="mx-auto max-w-3xl text-center">
+            <SectionEyebrow>Questions</SectionEyebrow>
+            <h2 className="mt-4 font-serif text-5xl text-white sm:text-6xl">
+              The small print, made plain.
+            </h2>
+            <p className="mt-5 text-base leading-relaxed text-text-muted sm:text-lg">
+              Quick answers to what diners ask before they sign up. Can't find
+              what you're looking for? Reach out — we're a small team and
+              actually reply.
+            </p>
+          </div>
 
-          <Accordion type="single" collapsible className="mt-14 space-y-3 text-left">
+          <Accordion
+            type="single"
+            collapsible
+            className="mx-auto mt-14 grid w-full gap-3 text-left lg:grid-cols-2 lg:gap-x-5"
+          >
             {FAQ.map((item) => (
               <AccordionItem
                 key={item.q}
                 value={item.q}
-                className="overflow-hidden rounded-xl border border-border bg-bg-surface/60 px-6"
+                className="overflow-hidden rounded-xl border border-border bg-bg-surface/60 px-6 h-fit"
               >
-                <AccordionTrigger className="py-6 text-lg font-medium text-white hover:no-underline">
+                <AccordionTrigger className="py-6 text-left text-lg font-medium text-white hover:no-underline">
                   {item.q}
                 </AccordionTrigger>
                 <AccordionContent className="pb-6 text-base leading-relaxed text-text-secondary">

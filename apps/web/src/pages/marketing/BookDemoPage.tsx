@@ -154,8 +154,9 @@ export default function BookDemoPage() {
                 Already convinced?
               </p>
               <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-                Skip the demo and start setting up your restaurant now. Takes
-                about 20 minutes.
+                Skip the demo and start setting up your restaurant now. Most
+                restaurants finish in about an hour, depending on menu size and
+                photos.
               </p>
               <Button asChild variant="outline" className="mt-4 h-10 rounded-md font-semibold">
                 <Link to="/setup">

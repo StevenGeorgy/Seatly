@@ -4,24 +4,16 @@ import {
   CalendarDays,
   MapPin,
   UtensilsCrossed,
-  Globe,
   Users,
   BarChart3,
   Sparkles,
-  Clock,
-  Receipt,
-  UserCircle,
-  PartyPopper,
-  Tag,
   Search,
   Heart,
   CreditCard,
-  Scissors,
   Zap,
-  Palette,
-  Building2,
-  Download,
-  Bell,
+  CalendarHeart,
+  Wallet,
+  ShieldCheck,
   Mic,
   MessageCircle,
   Check,
@@ -37,62 +29,47 @@ const RESTAURANT_FEATURES = [
   {
     icon: CalendarDays,
     title: "Reservations",
-    desc: "Online booking with confirmation codes, no-show risk scores, deposits, and automated reminders.",
+    desc: "Online booking with confirmation codes, deposit policies, cover-cap enforcement, modify and cancel flows.",
   },
   {
     icon: MapPin,
     title: "Live Floor Plan",
-    desc: "Drag-and-drop tables across multiple floors with live status, sections, and 30-step undo/redo.",
+    desc: "Drag-and-drop tables across multiple floors with live status and sections. Multi-table combiner picks the right combo automatically.",
   },
   {
     icon: UtensilsCrossed,
-    title: "Point of Sale",
-    desc: "Dine-in orders managed from a single real-time dashboard.",
-  },
-  {
-    icon: Globe,
     title: "Menu Management",
-    desc: "86 items instantly, flag allergens per dish, and surface AI-powered menu suggestions.",
+    desc: "Add menu items, flag allergens per dish, set per-item availability and price.",
   },
   {
-    icon: Users,
-    title: "Staff & Roster",
-    desc: "Manage roles, hourly rates, and employment types. Full team roster in one place.",
+    icon: Wallet,
+    title: "Pre-orders & Deposits",
+    desc: "Pre-orders attached to bookings. Tier-based deposit policy with multi-payer split. Stripe Connect handles payments.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Diner double-book guard",
+    desc: "Reservation locks at the database level prevent the same diner from being double-booked across overlapping times.",
   },
   {
     icon: BarChart3,
-    title: "Analytics",
-    desc: "Revenue, average spend, covers, no-show rate, and peak-hour heatmaps across 7 or 30 days.",
+    title: "Service Overview",
+    desc: "Tonight's covers, paid pre-order income, today's pre-orders, and a live reservation timeline — all on one dashboard.",
   },
   {
-    icon: Sparkles,
-    title: "AI Insights",
-    desc: "Claude-powered no-show prediction, demand forecasting, lifetime value, auto-tagging, and shift briefings.",
+    icon: Users,
+    title: "Guest profiles",
+    desc: "Dietary restrictions, allergies, and visit history attached to bookings. Diners' preferences come pre-filled.",
   },
   {
-    icon: Clock,
-    title: "Waitlist",
-    desc: "Real-time queue with estimated waits, remote join from a guest's phone, and one-tap seat or notify.",
+    icon: CalendarHeart,
+    title: "Cancellation & refunds",
+    desc: "Cancel right from the dashboard or by the diner. Refunds follow the restaurant's deposit policy — handled automatically through Stripe.",
   },
   {
-    icon: Receipt,
-    title: "Expense Tracking",
-    desc: "Scan receipts with your camera. Auto-categorised and export-ready for your accountant.",
-  },
-  {
-    icon: UserCircle,
-    title: "Guest CRM",
-    desc: "Visit history, spend totals, dietary restrictions, VIP and blocked flags, tags, and loyalty balance.",
-  },
-  {
-    icon: PartyPopper,
-    title: "Events & Tickets",
-    desc: "Create events, set capacity, sell tickets — managed entirely within Cenaiva.",
-  },
-  {
-    icon: Tag,
-    title: "Promotions Builder",
-    desc: "BOGO, %-off, fixed discount, free-item, and promo codes — with scheduling and usage limits.",
+    icon: CreditCard,
+    title: "Stripe Connect onboarding",
+    desc: "Embedded KYC inside Cenaiva. Get charges-enabled without leaving the dashboard. Native CAD.",
   },
 ];
 
@@ -100,42 +77,42 @@ const DINER_FEATURES = [
   {
     icon: Search,
     title: "Discover",
-    desc: "Search restaurants by cuisine, city, rating, or dietary preference.",
+    desc: "Search restaurants by cuisine, city, rating, or dietary preference. Map-first view with real-time availability.",
   },
   {
     icon: CalendarDays,
-    title: "Book & Preorder in one flow",
-    desc: "Dine-in reservations with optional preorder from the menu — no app-switching.",
+    title: "Book & pre-order in one flow",
+    desc: "Dine-in reservations with optional pre-order from the menu — no app-switching.",
   },
   {
     icon: Sparkles,
     title: "Allergen-aware menus",
-    desc: "Set your restrictions once and see them flagged across every menu, automatically.",
+    desc: "Set your restrictions once and see them respected across every menu, automatically.",
   },
   {
-    icon: Scissors,
-    title: "Split the bill",
-    desc: "Divide the check between up to 10 cards without any awkward conversations.",
+    icon: Mic,
+    title: "Hey Cenaiva voice",
+    desc: "Voice booking on iOS, Android, and your browser. Tell Cenaiva what you want and it picks a place and time that work.",
   },
   {
     icon: CreditCard,
-    title: "Saved cards & tipping",
-    desc: "Pay with a tap. Choose 15 / 18 / 20% or a custom tip, before or after the meal.",
+    title: "Saved cards",
+    desc: "Pay deposits and pre-orders with a saved card — the same card-on-file flow as the restaurants you already book at.",
   },
   {
-    icon: Heart,
-    title: "Loyalty points",
-    desc: "Earn on every order. Redeem for menu items, discounts, and event tickets.",
+    icon: CalendarHeart,
+    title: "Modify or cancel",
+    desc: "Change the time, party size, or cancel right from your reservation. Refunds follow the restaurant's policy.",
   },
 ];
 
 const PLATFORM = [
-  { icon: Zap, label: "Real-time live updates" },
-  { icon: Globe, label: "Bilingual — EN & FR" },
-  { icon: Building2, label: "Multi-location" },
-  { icon: Palette, label: "Custom branding & multi-currency" },
-  { icon: Download, label: "Data export (CSV)" },
-  { icon: Bell, label: "Automated guest messaging" },
+  { icon: Zap, label: "Real-time availability with caching" },
+  { icon: ShieldCheck, label: "Cover-cap + double-book prevention" },
+  { icon: CreditCard, label: "Stripe Connect (CAD)" },
+  { icon: Wallet, label: "Tier-based deposit policies" },
+  { icon: Sparkles, label: "Allergen flags on every menu item" },
+  { icon: Mic, label: "Hey Cenaiva voice booking" },
 ];
 
 export default function FeaturesPage() {
@@ -154,7 +131,7 @@ export default function FeaturesPage() {
               transition={{ duration: 0.5, ease }}
               className="mb-4 inline-flex items-center rounded-full bg-gold/10 px-4 py-1.5 text-xs font-semibold text-gold"
             >
-              The complete restaurant OS
+              The Canadian restaurant OS
             </motion.span>
             <motion.h1
               initial={{ opacity: 0, y: 16 }}
@@ -171,9 +148,9 @@ export default function FeaturesPage() {
               transition={{ duration: 0.6, delay: 0.16, ease }}
               className="mx-auto mt-5 max-w-lg text-base leading-relaxed text-text-secondary lg:mx-0"
             >
-              One bilingual platform replacing every disconnected tool — with Cenaiva AI,
-              the concierge that books, orders, and answers questions for both
-              diners and staff.
+              One platform connecting reservations, pre-orders, deposits, and
+              payments — with Cenaiva AI, the voice concierge that books and
+              pre-orders for diners in natural language.
             </motion.p>
           </div>
 
@@ -233,19 +210,18 @@ export default function FeaturesPage() {
                   Signature feature
                 </p>
                 <h2 className="text-2xl font-bold text-white">
-                  Cenaiva AI — concierge for diners and staff
+                  Cenaiva AI — voice concierge for diners
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-relaxed text-text-secondary">
-                  Cenaiva AI is a bilingual, voice-enabled assistant. Diners use it to
-                  discover restaurants, book tables, browse allergen-filtered menus, place
-                  orders, and pay with a saved card. Restaurant staff use it to seat guests,
-                  update order status, and get a daily revenue summary — all by voice or text.
+                  Cenaiva AI is a voice-enabled assistant on iOS, Android, and the web. Diners use it
+                  to discover restaurants, book tables, browse allergen-filtered menus,
+                  and pre-order from the menu. Say "Hey Cenaiva" to start.
                 </p>
                 <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   {[
                     { icon: MessageCircle, label: "Natural conversation — voice or text" },
                     { icon: Mic, label: '"Hey Cenaiva" wake word' },
-                    { icon: Globe, label: "English & French" },
+                    { icon: Sparkles, label: "Voice booking included" },
                     { icon: Check, label: "Allergen & preference aware" },
                   ].map((item) => (
                     <div
@@ -276,10 +252,11 @@ export default function FeaturesPage() {
             <UtensilsCrossed className="size-3" /> For Restaurants
           </span>
           <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            Run your entire restaurant from one dashboard
+            Run your reservations, pre-orders, and payments from one dashboard
           </h2>
           <p className="mt-3 max-w-lg text-sm text-text-secondary">
-            No more five tabs for five tools. Every operational need, in one place.
+            No more five tabs for five tools. Reservations, deposits, and payments
+            in one place.
           </p>
         </motion.div>
 
@@ -317,11 +294,11 @@ export default function FeaturesPage() {
               <Heart className="size-3" /> For Diners
             </span>
             <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-              The best way to discover, book, and dine
+              The best way to discover, book, and pre-order
             </h2>
             <p className="mt-3 max-w-lg text-sm text-text-secondary">
-              From browsing to booking to paying — all in one place, with an AI that
-              knows your preferences.
+              From browsing to booking — all in one place, with an AI concierge
+              that knows your preferences.
             </p>
           </motion.div>
 
@@ -390,7 +367,7 @@ export default function FeaturesPage() {
           </h2>
           <p className="mt-3 text-sm text-text-secondary">
             Restaurants get a full-featured dashboard. Diners get instant access to
-            book, order, and pay.
+            book and pre-order.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
             <Button size="lg" className="h-12 px-10 text-base" asChild>

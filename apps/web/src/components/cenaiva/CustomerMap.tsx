@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MarkerClusterer, type Cluster, type Renderer } from "@googlemaps/markerclusterer";
 
 import {
   CENAIVA_MAP_STYLES,
@@ -10,19 +11,19 @@ import {
 } from "@/lib/google-maps";
 import type { Restaurant } from "@/hooks/useRestaurant";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
+import { useAssistant } from "@/components/cenaiva/AssistantProvider";
 import { toUserFacingError } from "@/lib/errors";
+import { normalizeRestaurantPriceLevel } from "@/lib/restaurant-price-level";
 
 // Local lightweight slice of `google.maps.Map` we actually call. Mirrors the
 // shape used in `DiscoverPage.tsx` so both consumers stay in lock-step.
 type GoogleMapInstance = {
   panTo: (point: { lat: number; lng: number }) => void;
   setZoom: (zoom: number) => void;
-};
-
-type CenaivaMarkerEntry = {
-  id: string;
-  marker: GoogleMapsMarker;
-  listener: { remove: () => void };
+  fitBounds: (
+    bounds: unknown,
+    padding?: number | { top: number; right: number; bottom: number; left: number },
+  ) => void;
 };
 
 interface CustomerMapProps {
@@ -32,47 +33,84 @@ interface CustomerMapProps {
 const DEFAULT_CENTER = { lat: 43.6532, lng: -79.3832 }; // Toronto fallback
 const DEFAULT_ZOOM = 11;
 
-function pinIconSvg(active: boolean): { url: string; size: { width: number; height: number } } {
-  // Restaurant name pill rendered as an SVG so we can swap the active style
-  // imperatively without re-creating the marker. Selected = gold fill +
-  // black text; idle = dark fill + white text.
-  const fill = active ? "#C8A951" : "#1A1A1A";
-  const stroke = active ? "#A68B3E" : "rgba(255,255,255,0.2)";
-  const textColor = active ? "#0A0A0A" : "#FFFFFF";
-  const strokeWidth = active ? 2 : 1;
-  const radius = 14;
-  // The actual width is variable per label; we render a circle here and let
-  // the `label` option on the Marker draw the name. Keeping the icon to a
-  // fixed-size circle avoids the Google Maps SDK fighting with custom SVG
-  // text positioning on retina screens.
-  const size = active ? 28 : 22;
-  const cx = size / 2;
-  const cy = size / 2;
-  const r = active ? 11 : 8;
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'>
-    <defs>
-      <filter id='cenaiva-shadow' x='-50%' y='-50%' width='200%' height='200%'>
-        <feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000000' flood-opacity='0.55'/>
-      </filter>
-    </defs>
-    <circle cx='${cx}' cy='${cy}' r='${r}' fill='${fill}' stroke='${stroke}' stroke-width='${strokeWidth}' filter='url(#cenaiva-shadow)'/>
-  </svg>`;
-  void textColor;
-  void radius;
+// Restaurant pin — matches Discover/Promotions style.
+// • priceLevel null → small gold circle marker
+// • priceLevel 1–3 → gold-bordered dark pill with $/$$/$$$ text
+// `active` is the brighter/larger variant used when a restaurant is selected.
+function pinIconSvg({
+  active,
+  priceLevel,
+}: {
+  active: boolean;
+  priceLevel: number | null;
+}): { url: string; size: { width: number; height: number } } {
+  const filterId = `s${active ? "a" : "d"}`;
+
+  if (priceLevel == null) {
+    const size = active ? 32 : 24;
+    const cx = size / 2;
+    const cy = size / 2;
+    const r = active ? 11 : 8;
+    const fill = active ? "#F5E6C8" : "#C9A84C";
+    const stroke = active ? "#0A0A0A" : "rgba(10,10,10,0.6)";
+    const strokeWidth = active ? 2 : 1.25;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><defs><filter id='${filterId}' x='-50%' y='-50%' width='200%' height='200%'><feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000000' flood-opacity='0.55'/></filter></defs><circle cx='${cx}' cy='${cy}' r='${r}' fill='${fill}' stroke='${stroke}' stroke-width='${strokeWidth}' filter='url(#${filterId})'/></svg>`;
+    return {
+      url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+      size: { width: size, height: size },
+    };
+  }
+
+  const dollarCount = Math.min(Math.max(priceLevel, 1), 3);
+  const dollars = "$".repeat(dollarCount);
+  const fontSize = active ? 14 : 12;
+  const padX = active ? 10 : 8;
+  const height = active ? 28 : 22;
+  const charWidth = fontSize * 0.65;
+  const width = Math.round(dollars.length * charWidth + padX * 2);
+  const fill = active ? "#F5E6C8" : "#0A0A0A";
+  const textColor = active ? "#0A0A0A" : "#C9A84C";
+  const stroke = active ? "#C9A84C" : "rgba(201,168,76,0.65)";
+  const strokeWidth = active ? 2 : 1.25;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${width}' height='${height}' viewBox='0 0 ${width} ${height}'><defs><filter id='${filterId}' x='-50%' y='-50%' width='200%' height='200%'><feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000000' flood-opacity='0.55'/></filter></defs><rect x='${strokeWidth / 2}' y='${strokeWidth / 2}' width='${width - strokeWidth}' height='${height - strokeWidth}' rx='${height / 2}' ry='${height / 2}' fill='${fill}' stroke='${stroke}' stroke-width='${strokeWidth}' filter='url(#${filterId})'/><text x='50%' y='50%' dominant-baseline='central' text-anchor='middle' font-family='ui-monospace, SFMono-Regular, Menlo, monospace' font-weight='700' font-size='${fontSize}' fill='${textColor}'>${dollars}</text></svg>`;
   return {
     url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-    size: { width: size, height: size },
+    size: { width, height },
   };
+}
+
+function clusterIconSvg(count: number): { url: string; size: number } {
+  const size = count >= 50 ? 56 : count >= 10 ? 48 : 40;
+  const cx = size / 2;
+  const cy = size / 2;
+  const halo = size / 2 - 2;
+  const r = size / 2 - 7;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}' viewBox='0 0 ${size} ${size}'><defs><filter id='cs' x='-50%' y='-50%' width='200%' height='200%'><feDropShadow dx='0' dy='2' stdDeviation='2.5' flood-color='#000000' flood-opacity='0.55'/></filter></defs><circle cx='${cx}' cy='${cy}' r='${halo}' fill='rgba(201,168,76,0.16)' stroke='rgba(245,230,200,0.35)' stroke-width='1.5'/><circle cx='${cx}' cy='${cy}' r='${r}' fill='#C9A84C' stroke='#0A0A0A' stroke-width='2' filter='url(#cs)'/></svg>`;
+  return { url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, size };
 }
 
 export function CustomerMap({ restaurants }: CustomerMapProps) {
   const { state, dispatch } = useAssistantStore();
   const { map: mapState, booking } = state;
+  const assistant = useAssistant();
 
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<GoogleMapInstance | null>(null);
   const mapsRef = useRef<GoogleMapsNamespace | null>(null);
-  const markersRef = useRef<Map<string, CenaivaMarkerEntry>>(new Map());
+  const markersRef = useRef<GoogleMapsMarker[]>([]);
+  const clustererRef = useRef<MarkerClusterer | null>(null);
+  // Refs that mirror the latest voiceStatus + assistant so the marker click
+  // handler reads the *current* values at click time. Using state directly in
+  // the effect deps would force a full marker rebuild on every voice-status
+  // change (listening → processing → speaking → idle), which flashes the map.
+  const voiceStatusRef = useRef(state.voiceStatus);
+  voiceStatusRef.current = state.voiceStatus;
+  const assistantRef = useRef(assistant);
+  assistantRef.current = assistant;
+  // State mirror of mapRef readiness — refs don't trigger re-renders, so the
+  // marker-sync effect below would never fire after async `loadGoogleMaps()`
+  // resolves. This flag re-triggers that effect once the map is mounted.
+  const [mapReady, setMapReady] = useState(false);
 
   const googleReady = hasGoogleMapsApiKey();
   // Surface map load + auth failures in UI instead of swallowing them. The
@@ -109,10 +147,6 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
   useEffect(() => {
     if (!googleReady || !mapNodeRef.current) return;
     let cancelled = false;
-    // Capture the marker map ref locally so the cleanup runs against the
-    // same Map instance that this effect populated, even if a future render
-    // swaps the ref. (react-hooks/exhaustive-deps wants this pattern.)
-    const markerEntries = markersRef.current;
 
     void loadGoogleMaps()
       .then((maps) => {
@@ -138,6 +172,7 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
           backgroundColor: "#0A0A0A",
           styles: CENAIVA_MAP_STYLES,
         }) as GoogleMapInstance;
+        setMapReady(true);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -148,14 +183,15 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
 
     return () => {
       cancelled = true;
-      // Drop markers on unmount so a remount doesn't leak the previous set.
-      for (const entry of markerEntries.values()) {
-        entry.listener.remove();
-        entry.marker.setMap(null);
+      if (clustererRef.current) {
+        clustererRef.current.clearMarkers();
+        clustererRef.current = null;
       }
-      markerEntries.clear();
+      markersRef.current.forEach((marker) => marker.setMap(null));
+      markersRef.current = [];
       mapRef.current = null;
       mapsRef.current = null;
+      setMapReady(false);
     };
     // Initial center/zoom are read from state; subsequent state changes are
     // handled by the panTo effect below to avoid re-creating the map.
@@ -168,6 +204,40 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
     mapRef.current.panTo({ lat: mapState.center.lat, lng: mapState.center.lng });
     if (mapState.zoom != null) mapRef.current.setZoom(mapState.zoom);
   }, [mapState.center, mapState.zoom]);
+
+  // ── First-load auto-fit: when the orchestrator hasn't picked a center yet,
+  // fit the viewport to every mappable restaurant so the user sees all pins
+  // immediately (mirrors Discover/Promotions UX). Runs once per map mount.
+  const didAutoFitRef = useRef(false);
+  useEffect(() => {
+    if (!mapReady || didAutoFitRef.current) return;
+    if (mapState.center) {
+      // Orchestrator already chose a focus point — don't override it.
+      didAutoFitRef.current = true;
+      return;
+    }
+    const maps = mapsRef.current;
+    const map = mapRef.current;
+    if (!maps || !map || visibleRestaurants.length === 0) return;
+    if (visibleRestaurants.length === 1) {
+      // Single point — fitBounds would over-zoom, so just pan + sensible zoom.
+      const only = visibleRestaurants[0];
+      if (only.lat != null && only.lng != null) {
+        map.panTo({ lat: only.lat, lng: only.lng });
+        map.setZoom(13);
+      }
+      didAutoFitRef.current = true;
+      return;
+    }
+    const bounds = new maps.LatLngBounds();
+    for (const r of visibleRestaurants) {
+      if (r.lat != null && r.lng != null) {
+        bounds.extend({ lat: r.lat, lng: r.lng });
+      }
+    }
+    map.fitBounds(bounds, 64);
+    didAutoFitRef.current = true;
+  }, [mapReady, visibleRestaurants, mapState.center]);
 
   // ── Pan to selected restaurant after booking flow picks one ────────────
   const selectedRestaurant = booking.restaurant_id
@@ -186,81 +256,96 @@ export function CustomerMap({ restaurants }: CustomerMapProps) {
     mapRef.current.setZoom(15);
   }, [selectedRestaurant]);
 
-  // ── Marker sync — diff visibleRestaurants against the existing set ─────
+  // ── Marker sync — full-rebuild with clusterer (matches Discover) ───────
   useEffect(() => {
+    if (!mapReady) return;
     const maps = mapsRef.current;
     const map = mapRef.current as unknown as Parameters<GoogleMapsMarker["setMap"]>[0];
     if (!maps || !map) return;
 
     const highlightedId =
       mapState.highlighted_restaurant_id ?? booking.restaurant_id ?? null;
-    const visibleIds = new Set(visibleRestaurants.map((r) => r.id));
 
-    // Remove markers that are no longer visible.
-    for (const [id, entry] of markersRef.current) {
-      if (visibleIds.has(id)) continue;
-      entry.listener.remove();
-      entry.marker.setMap(null);
-      markersRef.current.delete(id);
+    // Tear down previous clusterer + markers.
+    if (clustererRef.current) {
+      clustererRef.current.clearMarkers();
+      clustererRef.current = null;
     }
+    markersRef.current.forEach((marker) => marker.setMap(null));
 
-    // Add/update visible markers.
-    for (const r of visibleRestaurants) {
-      if (r.lat == null || r.lng == null) continue;
-      const isActive = highlightedId === r.id;
-      const icon = pinIconSvg(isActive);
-      const labelColor = isActive ? "#0A0A0A" : "#FFFFFF";
-      const existing = markersRef.current.get(r.id);
+    // Build fresh markers for every visible restaurant.
+    markersRef.current = visibleRestaurants
+      .filter((r) => r.lat != null && r.lng != null)
+      .map((r) => {
+        const isActive = highlightedId === r.id;
+        const { url, size } = pinIconSvg({
+          active: isActive,
+          priceLevel: normalizeRestaurantPriceLevel(r.price_range),
+        });
+        const marker = new maps.Marker({
+          position: { lat: r.lat as number, lng: r.lng as number },
+          title: r.name,
+          icon: {
+            url,
+            scaledSize: new maps.Size(size.width, size.height),
+            anchor: new maps.Point(size.width / 2, size.height / 2),
+          },
+          zIndex: isActive ? 999 : 1,
+        });
+        marker.addListener("click", () => {
+          // Mirror RestaurantRail.handleSelect — pin click should start the
+          // booking conversation just like clicking a restaurant card does.
+          if (voiceStatusRef.current === "processing") return;
+          dispatch({
+            type: "PRESELECT_RESTAURANT",
+            restaurant_id: r.id,
+            restaurant_name: r.name,
+          });
+          dispatch({ type: "highlight_restaurant", restaurant_id: r.id });
+          void assistantRef.current?.sendTranscript(`I want to book at ${r.name}`, {
+            restaurantId: r.id,
+          });
+        });
+        return marker;
+      });
 
-      if (existing) {
-        // Marker already present — refresh icon + label to reflect highlight
-        // changes. Casting because our slim type only exposes setMap; the
-        // actual google.maps.Marker has setIcon/setLabel.
-        const m = existing.marker as GoogleMapsMarker & {
-          setIcon?: (icon: Record<string, unknown>) => void;
-          setLabel?: (label: Record<string, unknown> | string | null) => void;
-        };
-        m.setIcon?.({
-          url: icon.url,
-          scaledSize: new maps.Size(icon.size.width, icon.size.height),
-          anchor: new maps.Point(icon.size.width / 2, icon.size.height / 2),
-        });
-        m.setLabel?.({
-          text: r.name,
-          color: labelColor,
-          fontSize: "12px",
-          fontWeight: "600",
-          className: "cenaiva-map-label",
-        });
-        continue;
+    const renderer: Renderer = {
+      render: ({ count, position }: Cluster) => {
+        const { url, size } = clusterIconSvg(count);
+        return new maps.Marker({
+          position,
+          icon: {
+            url,
+            scaledSize: new maps.Size(size, size),
+            anchor: new maps.Point(size / 2, size / 2),
+          },
+          label: {
+            text: String(count),
+            color: "#0a0907",
+            fontWeight: "700",
+            fontSize: count >= 50 ? "13px" : "12px",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          },
+          zIndex: 1000 + count,
+        }) as unknown as google.maps.Marker;
+      },
+    };
+
+    clustererRef.current = new MarkerClusterer({
+      map: map as unknown as google.maps.Map,
+      markers: markersRef.current as unknown as google.maps.Marker[],
+      renderer,
+    });
+
+    return () => {
+      if (clustererRef.current) {
+        clustererRef.current.clearMarkers();
+        clustererRef.current = null;
       }
-
-      const marker = new maps.Marker({
-        position: { lat: r.lat, lng: r.lng },
-        map,
-        title: r.name,
-        label: {
-          text: r.name,
-          color: labelColor,
-          fontSize: "12px",
-          fontWeight: "600",
-          className: "cenaiva-map-label",
-        },
-        icon: {
-          url: icon.url,
-          scaledSize: new maps.Size(icon.size.width, icon.size.height),
-          anchor: new maps.Point(icon.size.width / 2, icon.size.height / 2),
-        },
-        zIndex: isActive ? 100 : 1,
-      });
-
-      const listener = marker.addListener("click", () => {
-        dispatch({ type: "highlight_restaurant", restaurant_id: r.id });
-      });
-
-      markersRef.current.set(r.id, { id: r.id, marker, listener });
-    }
-  }, [visibleRestaurants, mapState.highlighted_restaurant_id, booking.restaurant_id, dispatch]);
+      markersRef.current.forEach((marker) => marker.setMap(null));
+      markersRef.current = [];
+    };
+  }, [mapReady, visibleRestaurants, mapState.highlighted_restaurant_id, booking.restaurant_id, dispatch]);
 
   if (!googleReady) {
     return (

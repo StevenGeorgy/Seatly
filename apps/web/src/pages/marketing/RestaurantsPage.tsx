@@ -6,11 +6,10 @@ import {
   CalendarDays,
   Check,
   ClipboardList,
+  Coins,
   CreditCard,
   Receipt,
   Settings,
-  Sparkles,
-  Users,
   UtensilsCrossed,
   WalletCards,
 } from "lucide-react";
@@ -22,48 +21,26 @@ import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 const ease = [0.25, 0.46, 0.45, 0.94] as const;
 
-const DASHBOARD_STATS = [
-  { label: "Tonight", value: "142", trend: "+18%" },
-  { label: "Revenue", value: "$24.8k", trend: "+13%" },
-  { label: "Avg cover", value: "$87", trend: "" },
-  { label: "No-show", value: "3", trend: "flag" },
-];
-
-const TIMELINE = [
-  { time: "7:30pm", guest: "Lefebvre - party of 4", status: "seated" },
-  { time: "7:45pm", guest: "Chen - party of 2", status: "confirmed" },
-  { time: "8pm", guest: "Singh - party of 6 - VIP", status: "at-risk" },
-  { time: "8:15pm", guest: "Walk-in - party of 2", status: "waiting" },
-  { time: "8:30pm", guest: "Tremblay - party of 3 - anniversary", status: "confirmed" },
-];
-
-const STATUS_STYLES: Record<string, string> = {
-  seated: "border-success/30 bg-success/10 text-success",
-  confirmed: "border-gold/30 bg-gold/10 text-gold",
-  "at-risk": "border-warning/30 bg-warning/10 text-warning",
-  waiting: "border-border bg-bg-elevated text-text-muted",
-};
-
 const FEATURES = [
   {
     icon: CalendarDays,
-    title: "Reservations + waitlist",
-    desc: "Realtime floor plan, deposit policies, no-show risk scoring built in.",
+    title: "Reservations + floor plan",
+    desc: "Realtime availability, deposit policies, modify and cancel flows, cover-cap enforcement built in.",
   },
   {
     icon: ClipboardList,
-    title: "Orders & KDS",
-    desc: "Pre-orders, dine-in QR, takeout, optional delivery - one ticket pipeline to the kitchen.",
+    title: "Pre-orders & deposits",
+    desc: "Pre-orders attached to bookings. Tier-based deposit policy. Stripe Connect handles payments.",
   },
   {
     icon: CreditCard,
     title: "Honest pricing",
-    desc: "No cut of your menu prices. Native CAD, billed monthly.",
+    desc: "$199/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
   },
   {
-    icon: Sparkles,
-    title: "AI that pays its rent",
-    desc: "Demand forecasts, menu performance, no-show flags, receipt scanning, accountant exports.",
+    icon: BarChart3,
+    title: "Service overview",
+    desc: "Tonight's covers, paid pre-order income, today's pre-orders, and a live reservation timeline on one dashboard.",
   },
 ];
 
@@ -71,84 +48,87 @@ const MODULES = [
   {
     icon: CalendarDays,
     title: "Reservations",
-    desc: "Realtime floor plan, deposit policies, no-show risk scoring, waitlist with SMS.",
+    desc: "Realtime availability, deposit policies, modify and cancel flows, cover-cap enforcement at the database level.",
   },
   {
     icon: WalletCards,
     title: "Floor plan",
-    desc: "Drag tables, merge for parties, see covers in real time. No iPad-only nonsense.",
+    desc: "Drag tables across multiple floors, merge for parties, see covers in real time. Multi-table combiner picks the right combo automatically.",
   },
   {
     icon: UtensilsCrossed,
-    title: "Orders + KDS",
-    desc: "One ticket pipeline for dine-in QR, pre-orders, takeout, optional delivery.",
+    title: "Pre-orders",
+    desc: "Pre-orders attached to bookings with tier-based deposits. Multi-payer deposit split. Stripe Connect handles payments.",
   },
   {
     icon: Receipt,
-    title: "Menu & wine",
-    desc: "Live 86 list, allergen flags, wine pairings - pushed to every channel at once.",
+    title: "Menu management",
+    desc: "Add menu items, flag allergens per dish, set per-item availability and price. Pre-orders pull live from this menu.",
   },
   {
     icon: CreditCard,
     title: "Payments",
-    desc: "Native CAD, no third-party processor lock-in. Tip pooling, splits, auto-tax handling.",
-  },
-  {
-    icon: Users,
-    title: "Staff",
-    desc: "Schedule, time clock, tip declaration, document storage. T4s come ready.",
+    desc: "Stripe Connect Embedded onboarding. Native CAD. Cenaiva covers Stripe processing fees out of the 5.5% commission.",
   },
   {
     icon: BarChart3,
-    title: "Analytics",
-    desc: "Demand forecasts, menu-item performance, server scoreboards, accountant exports.",
+    title: "Service overview",
+    desc: "Tonight's covers, paid pre-order income, today's pre-orders, and a live reservation timeline on one dashboard.",
   },
   {
     icon: Settings,
-    title: "CRM",
-    desc: "Guest profiles, allergies, anniversaries, lifetime spend. The host knows.",
+    title: "Guest profiles",
+    desc: "Dietary restrictions and allergies attached to every booking. The host knows before they greet.",
+  },
+  {
+    icon: Coins,
+    title: "Income & Expenses",
+    desc: "Log money in and out by category. Tax separated. Recurring rules for rent, payroll, suppliers. Income-vs-expenses chart over time.",
   },
 ];
 
 const VALUE_CARDS = [
   {
-    badge: "Confirmed bookings",
+    badge: "Per month",
+    title: "Subscription",
+    priceKey: "subscription" as const,
+    cta: "Book a demo",
+    href: "/register",
+    highlighted: false,
+    features: [
+      "Reservations + floor plan",
+      "Modify and cancel flows",
+      "Stripe Connect onboarding",
+      "Service overview dashboard",
+    ],
+  },
+  {
+    badge: "Per booking",
     title: "Booking fee",
+    priceKey: "booking" as const,
     cta: "Book a demo",
     href: "/register",
     highlighted: false,
     features: [
-      "All eight modules",
-      "Staff workflows included",
-      "Email and chat support",
-      "Weekly accountant export",
+      "Zero commission on menu prices",
+      "Native CAD",
+      "Confirmation codes + reminders",
+      "Diner double-book prevention",
     ],
   },
   {
-    badge: "Restaurant friendly",
-    title: "No commission",
+    badge: "Pre-orders + deposits",
+    title: "Platform fee",
+    priceKey: "platform" as const,
     cta: "Book a demo",
-    href: "/register",
-    highlighted: true,
-    features: [
-      "Keep your menu prices",
-      "Unlimited staff seats",
-      "Priority support response",
-      "Custom branded confirmations",
-      "API and webhook access",
-    ],
-  },
-  {
-    badge: "Multi-location",
-    title: "Tailored rollout",
-    cta: "Talk to sales",
     href: "/register",
     highlighted: false,
     features: [
-      "Cross-location reporting",
-      "Dedicated success manager",
-      "SSO and custom roles",
-      "Onboarding migration",
+      "Pre-orders attached to bookings",
+      "Tier-based deposit policy",
+      "Multi-payer deposit splitting",
+      "Cenaiva covers Stripe processing",
+      "Cancellation refunds handled automatically",
     ],
   },
 ];
@@ -156,15 +136,15 @@ const VALUE_CARDS = [
 const VALUE_NOTES = [
   {
     title: "No setup fee",
-    desc: "Migration from your current stack is included.",
+    desc: "Self-serve onboarding takes about an hour.",
   },
   {
-    title: "No card-rate markup",
-    desc: "You pay your processor's rate. We do not skim a cent.",
+    title: "Stripe processing included",
+    desc: "Cenaiva covers Stripe fees out of the 5.5% on pre-orders & deposits.",
   },
   {
     title: "Cancel any month",
-    desc: "30-day data export, free, no questions.",
+    desc: "No questions, no cancellation fee.",
   },
 ];
 
@@ -174,66 +154,6 @@ function SectionEyebrow({ children }: { children: string }) {
       <span className="h-px w-4 bg-gold/60" />
       {children}
     </span>
-  );
-}
-
-function DashboardMock() {
-  return (
-    <div className="rounded-3xl border border-border bg-bg-surface/80 p-6 shadow-2xl shadow-black/30">
-      <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">
-        <span>Live - Maison Verre - Saturday service</span>
-        <span>7:42pm</span>
-      </div>
-
-      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {DASHBOARD_STATS.map((stat) => (
-          <div key={stat.label} className="rounded-xl border border-border bg-bg-elevated/60 p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-              {stat.label}
-            </p>
-            <p className="mt-2 font-serif text-2xl text-white">{stat.value}</p>
-            <p className="mt-1 text-[11px] text-gold">{stat.trend || " "}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-6">
-        <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-gold">
-          Tonight's timeline
-        </p>
-        <ul className="mt-3 divide-y divide-border/50">
-          {TIMELINE.map((row) => (
-            <li key={row.time + row.guest} className="flex items-center justify-between py-3 text-sm">
-              <span className="flex items-center gap-4">
-                <span className="w-12 font-mono text-xs text-gold">{row.time}</span>
-                <span className="text-text-secondary">{row.guest}</span>
-              </span>
-              <span
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 text-[11px] font-medium",
-                  STATUS_STYLES[row.status],
-                )}
-              >
-                {row.status}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border/50 pt-5 text-xs">
-        {[
-          ["Floor plan", "24/30 occupied"],
-          ["KDS", "7 tickets active"],
-          ["Staff", "12 clocked in"],
-        ].map(([label, value]) => (
-          <div key={label}>
-            <p className="font-mono uppercase tracking-[0.18em] text-text-muted">{label}</p>
-            <p className="mt-1 text-text-secondary">{value}</p>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -260,9 +180,9 @@ export default function RestaurantsPage() {
               </span>
             </h1>
             <p className="mt-7 max-w-2xl text-base leading-relaxed text-text-secondary sm:text-lg">
-              Reservations, floor plan, kitchen display, staff scheduling, CRM,
-              analytics, payments - on one ledger, in one login. {bookingFee} per
-              confirmed booking. Zero commission, ever.
+              Reservations, floor plan, pre-orders, deposits, payments — on one
+              dashboard, one login. {bookingFee} per confirmed booking + 5.5%
+              on pre-orders & deposits. Zero commission on your menu prices.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row">
               <Button asChild className="h-11 rounded-md px-6 font-semibold">
@@ -283,7 +203,7 @@ export default function RestaurantsPage() {
       </section>
 
       <section className="border-b border-border/40 py-24">
-        <div className="grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-24 xl:px-32 2xl:px-40">
+        <div className="mx-auto grid w-full gap-12 px-12 sm:px-16 md:px-20 lg:grid-cols-[1fr_1.1fr] lg:gap-16 lg:px-24 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, x: -16 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -291,52 +211,62 @@ export default function RestaurantsPage() {
             transition={{ duration: 0.5, ease }}
           >
             <SectionEyebrow>For restaurants</SectionEyebrow>
-            <h2 className="mt-5 font-serif text-5xl leading-[0.98] text-white">
+            <h2 className="mt-4 font-serif text-6xl leading-[1.05] text-white lg:text-7xl">
               Run a restaurant?
               <br />
               <span className="italic text-gold">We replaced the stack.</span>
             </h2>
-            <p className="mt-7 max-w-md text-base leading-relaxed text-text-secondary">
-              Reservations, floor plan, kitchen display, staff scheduling, CRM,
-              analytics, payments - on one ledger, in one login. {bookingFee} per
-              confirmed booking. Zero commission on orders, ever.
+            <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
+              Reservations, floor plan, pre-orders, deposits, payments — on one
+              dashboard, one login.{" "}
+              <span className="text-gold">$199/mo · {bookingFee} per confirmed booking.</span>{" "}
+              Zero commission on your menu prices.
             </p>
 
-            <ul className="mt-10 space-y-5">
-              {FEATURES.map((item) => (
-                <li key={item.title} className="flex gap-4">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-gold/20 bg-gold/10 text-gold">
-                    <item.icon className="size-4" />
-                  </span>
-                  <span>
-                    <span className="block text-sm font-semibold text-white">{item.title}</span>
-                    <span className="mt-1 block text-sm leading-relaxed text-text-muted">
-                      {item.desc}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-              <Button asChild className="h-11 rounded-md px-6 font-semibold">
+            <div className="mt-12 flex flex-wrap items-center gap-4">
+              <Button asChild className="h-12 rounded-md px-6 text-base font-semibold">
                 <Link to="/setup">
-                  List your restaurant <ArrowRight className="ml-1 size-4" />
+                  List your restaurant <ArrowRight className="ml-1.5 size-5" />
                 </Link>
               </Button>
-              <Button asChild variant="outline" className="h-11 rounded-md px-6">
+              <Button asChild variant="outline" className="h-12 rounded-md px-6 text-base">
                 <Link to="/book-a-demo">Book a demo</Link>
               </Button>
+              <a
+                href="#pricing"
+                className="text-sm text-text-secondary transition-colors hover:text-white"
+              >
+                See pricing →
+              </a>
             </div>
+            <p className="mt-5 text-sm text-text-muted">
+              <span className="text-gold">Free 3 months</span>, then $199 CAD/month.
+              {bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
+              Cancel any month.
+            </p>
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.97 }}
-            whileInView={{ opacity: 1, scale: 1 }}
+            initial={{ opacity: 0, x: 16 }}
+            whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true, margin: "-80px" }}
-            transition={{ duration: 0.55, ease }}
+            transition={{ duration: 0.5, ease }}
           >
-            <DashboardMock />
+            <ul className="space-y-8">
+              {FEATURES.map((item) => (
+                <li key={item.title} className="flex gap-5">
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-lg border border-gold/30 bg-gold/10">
+                    <item.icon className="size-6 text-gold" />
+                  </span>
+                  <div>
+                    <p className="text-base font-semibold text-white">{item.title}</p>
+                    <p className="mt-1.5 text-base leading-relaxed text-text-muted">
+                      {item.desc}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </motion.div>
         </div>
       </section>
@@ -391,8 +321,9 @@ export default function RestaurantsPage() {
               </h2>
             </div>
             <p className="max-w-2xl text-base leading-relaxed text-text-secondary lg:justify-self-end">
-              A flat dollar per confirmed booking. No commission on your menu prices.
-              No card-network markups. Cancel any month.
+              $199 CAD/month per restaurant. A flat dollar per confirmed booking,
+              plus 5.5% on pre-orders & deposits. Zero commission on your menu
+              prices. Cancel any month.
             </p>
           </div>
 
@@ -405,10 +336,10 @@ export default function RestaurantsPage() {
                 viewport={{ once: true, margin: "-60px" }}
                 transition={{ duration: 0.4, delay: index * 0.05, ease }}
                 className={cn(
-                  "rounded-2xl border bg-bg-surface/70 p-6",
+                  "group rounded-2xl border bg-bg-surface/70 p-6 transition-all duration-200",
                   card.highlighted
                     ? "border-gold/50 shadow-2xl shadow-gold/10 ring-1 ring-gold/20"
-                    : "border-border",
+                    : "border-border hover:border-gold/50 hover:shadow-2xl hover:shadow-gold/10",
                 )}
               >
                 <span
@@ -423,15 +354,27 @@ export default function RestaurantsPage() {
                 </span>
                 <h3 className="mt-7 font-serif text-3xl text-white">{card.title}</h3>
                 <p className="mt-6 flex items-baseline gap-2 font-serif text-5xl text-gold">
-                  {card.title === "Booking fee" ? bookingFee : card.title === "No commission" ? "0%" : "Custom"}
+                  {card.priceKey === "subscription"
+                    ? "$199"
+                    : card.priceKey === "booking"
+                      ? bookingFee
+                      : "5.5%"}
                   <span className="text-sm font-normal text-text-muted">
-                    {card.title === "Booking fee" ? "per booking" : ""}
+                    {card.priceKey === "subscription"
+                      ? "CAD / month"
+                      : card.priceKey === "booking"
+                        ? "per booking"
+                        : "on pre-orders & deposits"}
                   </span>
                 </p>
                 <Button
                   asChild
                   variant={card.highlighted ? "default" : "outline"}
-                  className="mt-7 h-11 w-full rounded-md font-semibold"
+                  className={cn(
+                    "mt-7 h-11 w-full rounded-md font-semibold transition-colors duration-200",
+                    !card.highlighted &&
+                      "group-hover:border-gold group-hover:bg-gold group-hover:text-black",
+                  )}
                 >
                   <Link to={card.href}>{card.cta}</Link>
                 </Button>

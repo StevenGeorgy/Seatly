@@ -37,7 +37,7 @@ export default function AboutPage() {
               <span className="text-gold">reimagined for Canada.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-text-secondary">
-              Cenaiva is a bilingual restaurant platform connecting diners with the
+              Cenaiva is a Canadian restaurant platform connecting diners with the
               best restaurants while giving owners everything they need to run their
               operation — in a single, beautifully designed product.
             </p>
@@ -100,8 +100,8 @@ export default function AboutPage() {
               },
               {
                 icon: Globe,
-                title: "Bilingual from day one",
-                desc: "Full English and French support throughout — not an afterthought. Built specifically for the Canadian market.",
+                title: "Built for Canada",
+                desc: "Native CAD pricing, Stripe Connect KYC, and ca-central-1 hosting from day one. Toronto, on purpose.",
               },
             ].map((pillar, i) => (
               <motion.div
@@ -216,13 +216,13 @@ export default function AboutPage() {
               },
               {
                 icon: Globe,
-                title: "Bilingual is not optional",
-                desc: "Canada is bilingual. Our platform is fully English and French from the very first release — not a future roadmap item.",
+                title: "Canadian by design",
+                desc: "Native CAD, Stripe Connect, and Canadian-hosted infrastructure. Built for the way restaurants here actually run.",
               },
               {
                 icon: Sparkles,
                 title: "AI that earns its keep",
-                desc: "Cenaiva AI books, orders, and manages service. Claude-powered insights forecast demand and reduce no-shows. No AI fluff — only features that save real time.",
+                desc: "Cenaiva AI lets diners book and pre-order in natural language. No AI fluff, just real conversation that saves time.",
               },
               {
                 icon: Database,

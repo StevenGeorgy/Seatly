@@ -1,5 +1,4 @@
 import { type ReactNode, useState } from "react";
-import { useTranslation } from "react-i18next";
 import { Link, NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X, Search } from "lucide-react";
@@ -155,9 +154,6 @@ export function MarketingShell({ children }: MarketingShellProps) {
 }
 
 function MarketingFooter() {
-  const { i18n } = useTranslation();
-  const lang = (i18n.language || "en").startsWith("fr") ? "fr" : "en";
-
   const cols: Array<{ heading: string; links: Array<{ label: string; to: string }> }> = [
     {
       heading: "Diners",
@@ -208,21 +204,6 @@ function MarketingFooter() {
           <p className="mt-4 text-sm leading-relaxed text-text-muted">
             The operating system for the modern dining room. Made in Toronto, on purpose.
           </p>
-          <div className="mt-5 inline-flex items-center gap-1 rounded-full border border-border bg-bg-surface/60 p-1 text-xs font-medium">
-            {(["en", "fr"] as const).map((code) => (
-              <button
-                key={code}
-                type="button"
-                onClick={() => void i18n.changeLanguage(code)}
-                className={cn(
-                  "rounded-full px-2.5 py-0.5 uppercase tracking-wider transition-colors",
-                  lang === code ? "bg-gold/15 text-gold" : "text-text-muted hover:text-white",
-                )}
-              >
-                {code}
-              </button>
-            ))}
-          </div>
         </div>
         {cols.map((col) => (
           <div key={col.heading}>
@@ -246,7 +227,6 @@ function MarketingFooter() {
       </div>
       <div className="mx-auto mt-12 flex w-full flex-col items-start justify-between gap-2 border-t border-border/40 px-12 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
-        <span className="font-mono">v2.4.1</span>
       </div>
     </footer>
   );

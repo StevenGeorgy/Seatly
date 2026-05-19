@@ -62,6 +62,10 @@ export type GoogleMapsNamespace = {
   Size: new (width: number, height: number) => unknown;
   Point: new (x: number, y: number) => unknown;
   SymbolPath: { CIRCLE: unknown };
+  LatLngBounds: new () => {
+    extend: (point: { lat: number; lng: number }) => void;
+    isEmpty: () => boolean;
+  };
   places?: {
     Autocomplete: new (
       input: HTMLInputElement,
