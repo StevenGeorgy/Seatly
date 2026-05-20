@@ -6,14 +6,18 @@
 // slots for users who bail mid-checkout). Metadata gets reservation_id added
 // via stripe.paymentIntents.update() once the reservation is created.
 //
-// Fee model:
-//   - 5.5% application_fee_amount to Cenaiva (taken off top via destination charge)
-//   - Rest flows to restaurant's Connect account (transfer_data.destination)
-//   - Cenaiva absorbs Stripe processing fees (~2.9% + 30¢) out of its 5.5%;
-//     restaurants receive the full 94.5%. Destination-charge default behavior.
-//   - If restaurant has no stripe_account_id (grandfathered pre-launch), uses
-//     a platform-only charge — Cenaiva collects the full amount; manual payout
-//     to the restaurant happens out-of-band.
+// Fee model (2026-05-19 update — diner pays Stripe fee on top):
+//   - Diner pays base + Stripe processing fee (2.9% + 30¢ grossed up).
+//     `amount_cents` in the payload is the BASE (the deposit/preorder amount
+//     the diner agreed to); the PaymentIntent `amount` is the grossed-up
+//     diner total. Server returns `processing_fee_cents` so the UI can show
+//     it as a line item.
+//   - 5.5% application_fee_amount to Cenaiva, computed on the BASE (we don't
+//     take commission on the pass-through Stripe fee we don't keep).
+//   - Restaurant nets 94.5% of base after Stripe's fee and our 5.5%.
+//   - If restaurant has no stripe_account_id (grandfathered pre-launch), the
+//     same gross-up still applies but Cenaiva collects the full amount;
+//     manual payout to the restaurant happens out-of-band.
 //
 // Two modes, fork on `saved_card_id`:
 //
@@ -41,6 +45,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { computeDinerCharge } from "../_shared/stripe-fee.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -57,6 +62,12 @@ type Payload = {
   // stripe_payment_intent_id stamped so the partial-unique-index serializes
   // any concurrent PI creation for the same hold.
   hold_id?: unknown;
+  // Save-card flag (2026-05-20 fix). When true AND a valid bearer token is
+  // present, the PI is created with `customer` + `setup_future_usage` so
+  // Stripe saves the PM during the charge. The post-charge attach call
+  // (stripe-attach-payment-method) then just records the saved_cards row.
+  // Without this flag, the diner pays one-time and the PM is detached.
+  save_card?: unknown;
 };
 
 interface ReservationHoldRow {
@@ -94,7 +105,200 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const PLATFORM_FEE_PERCENT = 0.055;
+// Resolve a saved card identifier to its Stripe PaymentMethod id. Accepts
+// either a saved_cards.id UUID or a raw Stripe PM id (pm_*) — the diner
+// UI's stripe-list-methods returns pm_* directly when there is no saved_cards
+// row yet, so charging paths must accept both shapes.
+async function resolveSavedCard(
+  // deno-lint-ignore no-explicit-any
+  client: any,
+  profileId: string,
+  savedCardId: string,
+): Promise<{ id: string | null; stripe_payment_method_id: string } | null> {
+  if (savedCardId.startsWith("pm_")) {
+    const { data } = await client
+      .from("saved_cards")
+      .select("id, stripe_payment_method_id")
+      .eq("user_profile_id", profileId)
+      .eq("stripe_payment_method_id", savedCardId)
+      .maybeSingle();
+    if (data) return data;
+    // Allow charging a Stripe PM the customer owns but that has no
+    // saved_cards row yet (UI shows it via stripe-list-methods which lists
+    // directly from Stripe). We'll verify customer-ownership at the
+    // PaymentIntent layer (Stripe enforces PM is attached to the customer
+    // before allowing off-session confirm).
+    return { id: null, stripe_payment_method_id: savedCardId };
+  }
+  const { data } = await client
+    .from("saved_cards")
+    .select("id, stripe_payment_method_id")
+    .eq("id", savedCardId)
+    .eq("user_profile_id", profileId)
+    .maybeSingle();
+  return data ?? null;
+}
+
+// Charge a saved card against an active hold. Used when both saved_card_id
+// and hold_id are present on the request — runs the saved-card off-session
+// confirm flow and stamps the resulting PI onto the hold row so the
+// reservation settle path can find it.
+async function chargeSavedCardWithHold(opts: {
+  req: Request;
+  // deno-lint-ignore no-explicit-any
+  stripe: any;
+  // deno-lint-ignore no-explicit-any
+  supabaseAdmin: any;
+  savedCardId: string;
+  holdId: string;
+  restaurantId: string;
+  restaurantName: string;
+  stripeAccountId: string | null;
+  amountCents: number;
+  dinerTotalCents: number;
+  processingFeeCents: number;
+  applicationFeeCents: number;
+  currency: string;
+  metadata: Record<string, string>;
+}): Promise<{ body: Record<string, unknown>; status: number }> {
+  const authHeader = opts.req.headers.get("authorization") ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+  if (!token) {
+    return { body: { error: "Authentication required for saved-card payment" }, status: 401 };
+  }
+  const jwtPayload = decodeJwtPayload(token);
+  const authUserId = jwtPayload?.sub as string | undefined;
+  if (!authUserId) return { body: { error: "Unauthorized" }, status: 401 };
+
+  const { data: profileRaw, error: profileErr } = await opts.supabaseAdmin
+    .from("user_profiles")
+    .select("id, stripe_customer_id")
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+  if (profileErr) return { body: { error: profileErr.message }, status: 400 };
+  if (!profileRaw) return { body: { error: "User profile not found" }, status: 404 };
+  const profile = profileRaw as { id: string; stripe_customer_id: string | null };
+  if (!profile.stripe_customer_id) {
+    return {
+      body: { error: "No Stripe customer on file. Re-add your card." },
+      status: 400,
+    };
+  }
+
+  const savedCard = await resolveSavedCard(
+    opts.supabaseAdmin,
+    profile.id,
+    opts.savedCardId,
+  );
+  if (!savedCard) return { body: { error: "Saved card not found" }, status: 404 };
+
+  const params: Record<string, unknown> = {
+    amount: opts.dinerTotalCents,
+    currency: opts.currency,
+    customer: profile.stripe_customer_id,
+    payment_method: savedCard.stripe_payment_method_id,
+    off_session: true,
+    confirm: true,
+    metadata: {
+      ...opts.metadata,
+      saved_card_id: savedCard.id ?? savedCard.stripe_payment_method_id,
+      hold_id: opts.holdId,
+      base_amount_cents: String(opts.amountCents),
+      processing_fee_cents: String(opts.processingFeeCents),
+    },
+    description: `Reservation at ${opts.restaurantName}`,
+  };
+  if (opts.stripeAccountId) {
+    params.application_fee_amount = opts.applicationFeeCents;
+    params.transfer_data = { destination: opts.stripeAccountId };
+  }
+
+  let paymentIntent;
+  try {
+    // Idempotency: same hold + same diner-paying amount → same PI within
+    // Stripe's 24h window. Prevents double-charge on browser retry after
+    // a 5xx, or on a fast double-tap of Place Order.
+    const idempKey = `saved_card_${opts.holdId ?? opts.profile.id}_${opts.dinerTotalCents}`;
+    paymentIntent = await opts.stripe.paymentIntents.create(params, {
+      idempotencyKey: idempKey,
+    });
+  } catch (stripeErr) {
+    const code = (stripeErr as { code?: string }).code;
+    const msg = stripeErr instanceof Error ? stripeErr.message : String(stripeErr);
+    const piFromError = (stripeErr as {
+      raw?: { payment_intent?: { id?: string; client_secret?: string } };
+    }).raw?.payment_intent;
+    if (code === "authentication_required" && piFromError?.client_secret) {
+      // Stamp the failed-but-resumable PI on the hold so the SCA continuation
+      // can find it after the diner completes the 3DS challenge.
+      if (piFromError.id) {
+        await opts.supabaseAdmin
+          .from("reservation_holds")
+          .update({ stripe_payment_intent_id: piFromError.id })
+          .eq("id", opts.holdId)
+          .is("stripe_payment_intent_id", null);
+      }
+      return {
+        body: {
+          mode: "saved_card",
+          status: "requires_action",
+          payment_intent_id: piFromError.id ?? null,
+          client_secret: piFromError.client_secret,
+          hold_id: opts.holdId,
+        },
+        status: 200,
+      };
+    }
+    return {
+      body: { mode: "saved_card", status: "failed", error: msg },
+      status: 402,
+    };
+  }
+
+  // Stamp PI onto the hold so reservation creation post-charge can wire it up.
+  await opts.supabaseAdmin
+    .from("reservation_holds")
+    .update({ stripe_payment_intent_id: paymentIntent.id })
+    .eq("id", opts.holdId)
+    .is("stripe_payment_intent_id", null);
+
+  if (paymentIntent.status === "requires_action") {
+    return {
+      body: {
+        mode: "saved_card",
+        status: "requires_action",
+        payment_intent_id: paymentIntent.id,
+        client_secret: paymentIntent.client_secret,
+        hold_id: opts.holdId,
+      },
+      status: 200,
+    };
+  }
+  if (paymentIntent.status === "succeeded" || paymentIntent.status === "processing") {
+    return {
+      body: {
+        mode: "saved_card",
+        status: "succeeded",
+        payment_intent_id: paymentIntent.id,
+        base_amount_cents: opts.amountCents,
+        amount_cents: opts.dinerTotalCents,
+        processing_fee_cents: opts.processingFeeCents,
+        application_fee_cents: opts.stripeAccountId ? opts.applicationFeeCents : 0,
+        destination: opts.stripeAccountId ?? null,
+        hold_id: opts.holdId,
+      },
+      status: 200,
+    };
+  }
+  return {
+    body: {
+      mode: "saved_card",
+      status: "failed",
+      error: `Unexpected PI status: ${paymentIntent.status}`,
+    },
+    status: 402,
+  };
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -131,6 +335,65 @@ Deno.serve(async (req: Request) => {
       typeof payload.hold_id === "string" && payload.hold_id.trim()
         ? payload.hold_id.trim()
         : null;
+    const saveCard = payload.save_card === true;
+
+    // ── Resolve save-card customer (2026-05-20 fix) ─────────────────────
+    // If the diner is logged in AND ticked "save this card", we need to
+    // create the PI with `customer` + `setup_future_usage: 'off_session'`
+    // so Stripe saves the PM during the charge. Otherwise the post-charge
+    // attach-payment-method call fails with 400 (PMs from destination
+    // charges are one-time-use and can't be re-attached after the fact).
+    //
+    // This is a no-op for guest checkouts (no bearer token) — they pay
+    // one-time and no save happens.
+    let saveCardCustomerId: string | null = null;
+    if (saveCard) {
+      const authHeader = req.headers.get("authorization") ?? "";
+      const token = authHeader.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : authHeader;
+      if (token) {
+        const jwtPayload = decodeJwtPayload(token);
+        const authUserId = jwtPayload?.sub as string | undefined;
+        if (authUserId) {
+          const { data: profileRaw } = await supabaseAdmin
+            .from("user_profiles")
+            .select("id, full_name, email, stripe_customer_id")
+            .eq("auth_user_id", authUserId)
+            .maybeSingle();
+          const profile = profileRaw as {
+            id: string;
+            full_name: string | null;
+            email: string | null;
+            stripe_customer_id: string | null;
+          } | null;
+          if (profile) {
+            saveCardCustomerId = profile.stripe_customer_id;
+            // Lazy-create the Stripe customer the first time the diner
+            // saves a card. Mirrors stripe-attach-payment-method's pattern.
+            if (!saveCardCustomerId) {
+              const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+              if (stripeKey) {
+                const { default: Stripe } = await import("npm:stripe@17");
+                const stripe = new Stripe(stripeKey, {
+                  apiVersion: "2024-11-20.acacia",
+                });
+                const customer = await stripe.customers.create({
+                  email: profile.email || undefined,
+                  name: profile.full_name || undefined,
+                  metadata: { user_profile_id: profile.id },
+                });
+                saveCardCustomerId = customer.id;
+                await supabaseAdmin
+                  .from("user_profiles")
+                  .update({ stripe_customer_id: saveCardCustomerId })
+                  .eq("id", profile.id);
+              }
+            }
+          }
+        }
+      }
+    }
 
     if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
     if (amountCents === null || amountCents < 50) {
@@ -159,7 +422,10 @@ Deno.serve(async (req: Request) => {
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
     const currency = (row.currency ?? "CAD").toLowerCase();
-    const applicationFeeCents = Math.round(amountCents * PLATFORM_FEE_PERCENT);
+    const charge = computeDinerCharge(amountCents);
+    const dinerTotalCents = charge.dinerTotalCents;
+    const processingFeeCents = charge.processingFeeCents;
+    const applicationFeeCents = charge.applicationFeeCents;
 
     // reservation_id is intentionally absent here — it gets added via
     // paymentIntents.update() AFTER the reservation is created post-payment.
@@ -231,7 +497,9 @@ Deno.serve(async (req: Request) => {
           status: existingPi.status,
           payment_intent_id: existingPi.id,
           client_secret: existingPi.client_secret,
-          amount_cents: amountCents,
+          base_amount_cents: amountCents,
+          amount_cents: dinerTotalCents,
+          processing_fee_cents: processingFeeCents,
           application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
           destination: row.stripe_account_id ?? null,
           hold_id: hold.id,
@@ -239,17 +507,55 @@ Deno.serve(async (req: Request) => {
         });
       }
 
+      // Saved-card + hold: off-session confirm + stamp PI on hold row.
+      // Frontend's saved-card handler expects mode:"saved_card" with
+      // status:"succeeded"|"requires_action"|"failed".
+      if (savedCardId) {
+        const savedCardResult = await chargeSavedCardWithHold({
+          req,
+          stripe,
+          supabaseAdmin,
+          savedCardId,
+          holdId: hold.id,
+          restaurantId,
+          restaurantName: row.name ?? "Cenaiva restaurant",
+          stripeAccountId: row.stripe_account_id,
+          amountCents,
+          dinerTotalCents,
+          processingFeeCents,
+          applicationFeeCents,
+          currency,
+          metadata,
+        });
+        return jsonRes(savedCardResult.body, savedCardResult.status);
+      }
+
       // Create a fresh PI for this hold (Mode-A-style one-time card).
+      // payment_method_types=['card'] forces card-only on Stripe Elements.
+      // Excludes Klarna, Affirm, Link, and other auto-detected methods —
+      // diners must use a credit/debit card.
       const holdStripeParams: Record<string, unknown> = {
-        amount: amountCents,
+        amount: dinerTotalCents,
         currency,
-        automatic_payment_methods: { enabled: true },
-        metadata: { ...metadata, hold_id: hold.id },
+        payment_method_types: ["card"],
+        metadata: {
+          ...metadata,
+          hold_id: hold.id,
+          base_amount_cents: String(amountCents),
+          processing_fee_cents: String(processingFeeCents),
+        },
         description: `Reservation hold at ${row.name ?? "Cenaiva restaurant"}`,
       };
       if (row.stripe_account_id) {
         holdStripeParams.application_fee_amount = applicationFeeCents;
         holdStripeParams.transfer_data = { destination: row.stripe_account_id };
+      }
+      // Save-card path: tell Stripe to save the PM during charge so the
+      // diner sees it in their saved cards next time. Required because
+      // destination-charge PMs are one-time-use otherwise.
+      if (saveCardCustomerId) {
+        holdStripeParams.customer = saveCardCustomerId;
+        holdStripeParams.setup_future_usage = "off_session";
       }
       const holdPi = await stripe.paymentIntents.create(holdStripeParams);
 
@@ -286,7 +592,9 @@ Deno.serve(async (req: Request) => {
             status: winningPi.status,
             payment_intent_id: winningPi.id,
             client_secret: winningPi.client_secret,
-            amount_cents: amountCents,
+            base_amount_cents: amountCents,
+            amount_cents: dinerTotalCents,
+            processing_fee_cents: processingFeeCents,
             application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
             destination: row.stripe_account_id ?? null,
             hold_id: hold.id,
@@ -315,7 +623,9 @@ Deno.serve(async (req: Request) => {
           status: winningPi.status,
           payment_intent_id: winningPi.id,
           client_secret: winningPi.client_secret,
-          amount_cents: amountCents,
+          base_amount_cents: amountCents,
+          amount_cents: dinerTotalCents,
+          processing_fee_cents: processingFeeCents,
           application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
           destination: row.stripe_account_id ?? null,
           hold_id: hold.id,
@@ -328,7 +638,9 @@ Deno.serve(async (req: Request) => {
         status: holdPi.status,
         payment_intent_id: holdPi.id,
         client_secret: holdPi.client_secret,
-        amount_cents: amountCents,
+        base_amount_cents: amountCents,
+        amount_cents: dinerTotalCents,
+        processing_fee_cents: processingFeeCents,
         application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
         destination: row.stripe_account_id ?? null,
         hold_id: hold.id,
@@ -362,26 +674,22 @@ Deno.serve(async (req: Request) => {
         return jsonRes({ error: "No Stripe customer on file. Re-add your card." }, 400);
       }
 
-      const { data: savedCardRaw, error: cardErr } = await supabaseAdmin
-        .from("saved_cards")
-        .select("id, stripe_payment_method_id")
-        .eq("id", savedCardId)
-        .eq("user_profile_id", profile.id)
-        .maybeSingle();
-      if (cardErr) return jsonRes({ error: cardErr.message }, 400);
-      if (!savedCardRaw) {
-        return jsonRes({ error: "Saved card not found" }, 404);
-      }
-      const savedCard = savedCardRaw as { id: string; stripe_payment_method_id: string };
+      const savedCard = await resolveSavedCard(supabaseAdmin, profile.id, savedCardId);
+      if (!savedCard) return jsonRes({ error: "Saved card not found" }, 404);
 
       const savedCardParams: Record<string, unknown> = {
-        amount: amountCents,
+        amount: dinerTotalCents,
         currency,
         customer: profile.stripe_customer_id,
         payment_method: savedCard.stripe_payment_method_id,
         off_session: true,
         confirm: true,
-        metadata: { ...metadata, saved_card_id: savedCard.id },
+        metadata: {
+          ...metadata,
+          saved_card_id: savedCard.id ?? savedCard.stripe_payment_method_id,
+          base_amount_cents: String(amountCents),
+          processing_fee_cents: String(processingFeeCents),
+        },
         description: `Reservation at ${row.name ?? "Cenaiva restaurant"}`,
       };
 
@@ -395,7 +703,14 @@ Deno.serve(async (req: Request) => {
 
       let paymentIntent;
       try {
-        paymentIntent = await stripe.paymentIntents.create(savedCardParams);
+        // Idempotency: same diner + same saved card + same amount → same
+        // PI within Stripe's 24h window. Mode-B saved-card path
+        // (no hold) needed a key — earlier audit (2026-05-20) flagged
+        // this as a double-charge risk on browser retry.
+        const idempKey = `saved_card_b_${profile.id}_${savedCard.id ?? savedCard.stripe_payment_method_id}_${dinerTotalCents}`;
+        paymentIntent = await stripe.paymentIntents.create(savedCardParams, {
+          idempotencyKey: idempKey,
+        });
       } catch (stripeErr) {
         const code = (stripeErr as { code?: string }).code;
         const msg = stripeErr instanceof Error ? stripeErr.message : String(stripeErr);
@@ -432,7 +747,9 @@ Deno.serve(async (req: Request) => {
           mode: "saved_card",
           status: "succeeded",
           payment_intent_id: paymentIntent.id,
-          amount_cents: amountCents,
+          base_amount_cents: amountCents,
+          amount_cents: dinerTotalCents,
+          processing_fee_cents: processingFeeCents,
           application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
           destination: row.stripe_account_id ?? null,
         });
@@ -445,22 +762,36 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Mode A: One-time card (deferred PI, default path) ──
+    // payment_method_types=['card'] forces card-only on Stripe Elements.
+    // Excludes Klarna, Affirm, Link, and other auto-detected methods —
+    // diners must use a credit/debit card.
     const stripeParams: Record<string, unknown> = {
-      amount: amountCents,
+      amount: dinerTotalCents,
       currency,
-      automatic_payment_methods: { enabled: true },
-      metadata,
+      payment_method_types: ["card"],
+      metadata: {
+        ...metadata,
+        base_amount_cents: String(amountCents),
+        processing_fee_cents: String(processingFeeCents),
+      },
       description: `Reservation at ${row.name ?? "Cenaiva restaurant"}`,
     };
 
     if (row.stripe_account_id) {
       // Destination charge: funds settle to restaurant's Connect account.
-      // application_fee_amount is taken off the top for Cenaiva.
+      // application_fee_amount is 5.5% of BASE (not the grossed-up total).
       stripeParams.application_fee_amount = applicationFeeCents;
       stripeParams.transfer_data = { destination: row.stripe_account_id };
     }
     // If no Connect account, this becomes a platform-only charge; manual
     // payout to the restaurant happens out-of-band. Pre-launch fallback.
+
+    // Save-card path: see hold-side comment above. customer +
+    // setup_future_usage saves the PM during the charge so it's reusable.
+    if (saveCardCustomerId) {
+      stripeParams.customer = saveCardCustomerId;
+      stripeParams.setup_future_usage = "off_session";
+    }
 
     const paymentIntent = await stripe.paymentIntents.create(stripeParams);
 
@@ -468,7 +799,9 @@ Deno.serve(async (req: Request) => {
       mode: "one_time",
       client_secret: paymentIntent.client_secret,
       payment_intent_id: paymentIntent.id,
-      amount_cents: amountCents,
+      base_amount_cents: amountCents,
+      amount_cents: dinerTotalCents,
+      processing_fee_cents: processingFeeCents,
       application_fee_cents: row.stripe_account_id ? applicationFeeCents : 0,
       destination: row.stripe_account_id ?? null,
     });

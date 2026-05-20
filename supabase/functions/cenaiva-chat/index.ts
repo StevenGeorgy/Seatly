@@ -296,27 +296,20 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "charge_saved_card",
       description:
-        "Charge the user's saved card for a completed order. " +
-        "ONLY call this after ALL of these are true: " +
-        "(1) complete_booking succeeded and you have the order_id, " +
-        "(2) you have presented the total and tip to the user, " +
-        "(3) check_saved_card confirmed a card is on file, " +
-        "(4) the user explicitly said 'yes' or 'go ahead' to the charge. " +
-        "NEVER call without explicit user confirmation.",
+        "Hand off the open order to the pay-the-bill screen so the diner " +
+        "can confirm the charge manually. Voice MUST NEVER charge directly — " +
+        "this tool only opens the payment UI for the order. Call this when " +
+        "the diner says they want to pay; the client will navigate to the " +
+        "payment screen where they select tip and confirm.",
       parameters: {
         type: "object",
         properties: {
           order_id: {
             type: "string",
-            description: "The order ID returned by complete_booking.",
-          },
-          tip_percentage: {
-            type: "number",
-            description:
-              "Tip as a percentage of the subtotal (e.g. 15, 18, 20). Pass 0 if the user chose no tip or tip after.",
+            description: "The order ID to open the payment screen for.",
           },
         },
-        required: ["order_id", "tip_percentage"],
+        required: ["order_id"],
       },
     },
   },
@@ -959,13 +952,16 @@ async function executeTool(
     }
 
     case "charge_saved_card": {
-      const { order_id, tip_percentage } = input;
+      // Voice MUST NEVER take payment directly. This tool used to charge
+      // off-session via the diner's saved card — that was wrong (removed
+      // 2026-05-20). The voice assistant always hands off to the visual
+      // payment page so the diner explicitly confirms the charge.
+      //
+      // Lookup the order to give the assistant the context to phrase a
+      // good hand-off response, but never touch Stripe here.
+      const { order_id } = input;
       if (!order_id) return JSON.stringify({ success: false, error: "order_id is required." });
-      if (tip_percentage === undefined || tip_percentage === null) {
-        return JSON.stringify({ success: false, error: "tip_percentage is required (use 0 for no tip)." });
-      }
 
-      // Fetch order — validate ownership
       const { data: order } = await supabaseAdmin
         .from("orders")
         .select("id, restaurant_id, subtotal, tax_amount, discount_amount, paid_at, guest_id")
@@ -974,7 +970,8 @@ async function executeTool(
       if (!order) return JSON.stringify({ success: false, error: "Order not found." });
       if (order.paid_at) return JSON.stringify({ success: false, error: "This order is already paid." });
 
-      // Verify ownership via guest
+      // Verify ownership via guest (still a good gate even though we're
+      // not charging — prevents leaking another diner's order details).
       const { data: guest } = await supabaseAdmin
         .from("guests")
         .select("id")
@@ -983,133 +980,23 @@ async function executeTool(
         .maybeSingle();
       if (!guest) return JSON.stringify({ success: false, error: "Unauthorized." });
 
-      // Fetch the user's default card
-      const { data: savedCard } = await supabaseAdmin
-        .from("saved_cards")
-        .select("id, brand, last4, stripe_payment_method_id")
-        .eq("user_profile_id", userProfileId)
-        .order("is_default", { ascending: false })
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (!savedCard) return JSON.stringify({ success: false, error: "No saved card found. Please add one in Account > Payment." });
-
-      // Calculate totals
       const subtotal = Number(order.subtotal || 0);
       const tax = Number(order.tax_amount || 0);
       const discount = Number(order.discount_amount || 0);
-      const tipAmount = Math.round(subtotal * (Number(tip_percentage) / 100) * 100) / 100;
-      const total = Math.round((subtotal + tax - discount + tipAmount) * 100) / 100;
+      const baseTotal = Math.round((subtotal + tax - discount) * 100) / 100;
 
-      const paidAt = new Date().toISOString();
-
-      // ── Live mode: charge via Stripe ──
-      if (stripeSecretKey) {
-        const { default: Stripe } = await import("npm:stripe@17");
-        const stripe = new Stripe(stripeSecretKey, { apiVersion: "2024-11-20.acacia" });
-
-        const { data: profile } = await supabaseAdmin
-          .from("user_profiles")
-          .select("stripe_customer_id")
-          .eq("id", userProfileId)
-          .single();
-
-        if (!profile?.stripe_customer_id || !savedCard.stripe_payment_method_id) {
-          return JSON.stringify({ success: false, error: "Stripe configuration incomplete. Please use the checkout page." });
-        }
-
-        const { data: rest } = await supabaseAdmin
-          .from("restaurants")
-          .select("currency")
-          .eq("id", order.restaurant_id)
-          .single();
-        const currency = (rest?.currency || "CAD").toLowerCase();
-
-        let paymentIntent: any;
-        try {
-          paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(total * 100),
-            currency,
-            customer: profile.stripe_customer_id,
-            payment_method: savedCard.stripe_payment_method_id,
-            off_session: true,
-            confirm: true,
-            metadata: { order_id, user_profile_id: userProfileId },
-          });
-        } catch (stripeErr: any) {
-          return JSON.stringify({
-            success: false,
-            error: stripeErr?.code === "authentication_required"
-              ? "Your card requires additional verification. Please use the checkout page."
-              : (stripeErr?.message || "Card declined."),
-          });
-        }
-
-        await supabaseAdmin.from("orders").update({
-          tip_amount: tipAmount,
-          total_amount: total,
-          payment_method: "stripe",
-          status: "paid",
-          paid_at: paidAt,
-          billed_at: paidAt,
-          stripe_payment_intent_id: paymentIntent.id,
-        }).eq("id", order_id);
-
-        await supabaseAdmin.from("payments").insert({
-          order_id,
-          restaurant_id: order.restaurant_id,
-          user_profile_id: userProfileId,
-          stripe_payment_intent_id: paymentIntent.id,
-          amount: total,
-          currency,
-          status: "succeeded",
-          payment_type: "stripe",
-        });
-
-        return JSON.stringify({
-          success: true,
-          total_charged: total,
-          tip_amount: tipAmount,
-          currency: rest?.currency || "CAD",
-          paid_at: paidAt,
-          card_brand: savedCard.brand,
-          card_last4: savedCard.last4,
-          mode: "live",
-        });
-      }
-
-      // ── Test mode: simulate payment (no Stripe call) ──
-      const testIntentId = `test_pi_${Math.random().toString(36).slice(2, 12)}`;
-      await supabaseAdmin.from("orders").update({
-        tip_amount: tipAmount,
-        total_amount: total,
-        payment_method: "card_test",
-        status: "paid",
-        paid_at: paidAt,
-        billed_at: paidAt,
-        stripe_payment_intent_id: testIntentId,
-      }).eq("id", order_id);
-
-      await supabaseAdmin.from("payments").insert({
-        order_id,
-        restaurant_id: order.restaurant_id,
-        user_profile_id: userProfileId,
-        stripe_payment_intent_id: testIntentId,
-        amount: total,
-        currency: "cad",
-        status: "succeeded",
-        payment_type: "test",
-      });
-
+      // Hand off to the payment screen. The client recognizes
+      // `action: "open_pay_bill"` and navigates to the pay-the-bill UI
+      // for this order. Diner taps Pay manually.
       return JSON.stringify({
         success: true,
-        total_charged: total,
-        tip_amount: tipAmount,
-        currency: "CAD",
-        paid_at: paidAt,
-        card_brand: savedCard.brand,
-        card_last4: savedCard.last4,
-        mode: "test",
+        handoff: true,
+        action: "open_pay_bill",
+        order_id,
+        restaurant_id: order.restaurant_id,
+        base_total: baseTotal,
+        message:
+          "I'll bring up the payment screen for you — you can choose your tip and confirm the charge there.",
       });
     }
 

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { CreditCard, Plus, Trash2, Star } from "lucide-react";
+import { Link } from "react-router-dom";
+import { CreditCard, ExternalLink, Plus, Star, Trash2 } from "lucide-react";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { isStripeConfigured, stripePromise } from "@/lib/stripe";
 import { getSupabaseAnonKey, getSupabaseBrowserClient, getSupabaseProjectUrl } from "@/lib/supabase/client";
@@ -15,6 +17,29 @@ type SavedCard = {
   exp_year: number | null;
   is_default: boolean;
   stripe_payment_method_id?: string | null;
+};
+
+function formatBrand(brand: string | null): string {
+  if (!brand) return "Card";
+  const lower = brand.toLowerCase();
+  if (lower === "visa") return "Visa";
+  if (lower === "mastercard") return "Mastercard";
+  if (lower === "amex" || lower === "american_express" || lower === "american express") return "Amex";
+  if (lower === "discover") return "Discover";
+  if (lower === "unionpay") return "UnionPay";
+  if (lower === "jcb") return "JCB";
+  if (lower === "diners") return "Diners";
+  return brand.charAt(0).toUpperCase() + brand.slice(1);
+}
+
+type RestaurantSubscriptionCard = {
+  restaurant_id: string;
+  restaurant_name: string;
+  has_card: boolean;
+  brand: string | null;
+  last4: string | null;
+  exp_month: number | null;
+  exp_year: number | null;
 };
 
 // ── Stripe CardElement form (live mode) ─────────────────────────────────────
@@ -190,6 +215,90 @@ export function PaymentMethodsSection() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [stripeMode, setStripeMode] = useState<"test" | "live">("test");
+  // Cards backing restaurant subscriptions the user owns. Loaded in parallel
+  // with saved diner cards so /account shows one unified list. These live on
+  // a DIFFERENT Stripe customer than the diner saved_cards — managed from
+  // /dashboard/settings, surfaced here read-only.
+  const [restaurantSubCards, setRestaurantSubCards] = useState<RestaurantSubscriptionCard[]>([]);
+  const [restaurantSubsLoading, setRestaurantSubsLoading] = useState(true);
+
+  const fetchRestaurantSubCards = useCallback(async () => {
+    if (!profile?.id) {
+      setRestaurantSubsLoading(false);
+      return;
+    }
+    setRestaurantSubsLoading(true);
+
+    // 1. Find the restaurants this user owns.
+    const { data: roles } = await client
+      .from("user_restaurant_roles")
+      .select("restaurant_id, restaurants(id, name)")
+      .eq("user_id", profile.id)
+      .eq("role", "owner");
+    const ownedRestaurants =
+      (roles as Array<{
+        restaurant_id: string;
+        restaurants: { id: string; name: string | null } | null;
+      }> | null) ?? [];
+    if (ownedRestaurants.length === 0) {
+      setRestaurantSubCards([]);
+      setRestaurantSubsLoading(false);
+      return;
+    }
+
+    const { data: { session } } = await client.auth.getSession();
+    if (!session) {
+      setRestaurantSubsLoading(false);
+      return;
+    }
+
+    // 2. For each restaurant, fetch the default PM via the owner-auth fn.
+    const results = await Promise.all(
+      ownedRestaurants.map(async (row) => {
+        const restaurant_id = row.restaurant_id;
+        const restaurant_name = row.restaurants?.name ?? "Restaurant";
+        try {
+          const res = await fetch(
+            `${getSupabaseProjectUrl()}/functions/v1/get-restaurant-payment-method`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${session.access_token}`,
+                apikey: getSupabaseAnonKey(),
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ restaurant_id }),
+            },
+          );
+          if (!res.ok) {
+            return { restaurant_id, restaurant_name, has_card: false, brand: null, last4: null, exp_month: null, exp_year: null };
+          }
+          const body = (await res.json().catch(() => null)) as {
+            has_card?: boolean;
+            brand?: string | null;
+            last4?: string | null;
+            exp_month?: number | null;
+            exp_year?: number | null;
+          } | null;
+          return {
+            restaurant_id,
+            restaurant_name,
+            has_card: Boolean(body?.has_card),
+            brand: body?.brand ?? null,
+            last4: body?.last4 ?? null,
+            exp_month: body?.exp_month ?? null,
+            exp_year: body?.exp_year ?? null,
+          };
+        } catch {
+          return { restaurant_id, restaurant_name, has_card: false, brand: null, last4: null, exp_month: null, exp_year: null };
+        }
+      }),
+    );
+    setRestaurantSubCards(results);
+    setRestaurantSubsLoading(false);
+  }, [client, profile?.id]);
+
+  useEffect(() => { void fetchRestaurantSubCards(); }, [fetchRestaurantSubCards]);
 
   const fetchCards = useCallback(async () => {
     setLoading(true);
@@ -238,11 +347,25 @@ export function PaymentMethodsSection() {
   };
 
   const handleRemove = async (card: SavedCard) => {
-    await client.from("saved_cards").delete().eq("id", card.id);
+    // Reordered (2026-05-20): detach from Stripe FIRST, then delete the local
+    // saved_cards row only on success. If Stripe detach fails we keep the
+    // local row so the user can retry — otherwise the row vanishes but the
+    // PaymentMethod lingers on the Stripe customer (orphan).
     if (isStripeConfigured && card.stripe_payment_method_id) {
       const { data: { session } } = await client.auth.getSession();
-      if (session) {
-        await fetch(
+      if (!session) {
+        const friendly = toUserFacingError(
+          new Error("Not signed in."),
+          "You need to be signed in to remove a card.",
+        );
+        toast.error(friendly.message);
+        console.error("[PaymentMethodsSection.handleRemove.noSession]", friendly.code);
+        return;
+      }
+
+      let detachRes: Response;
+      try {
+        detachRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/stripe-detach-method`,
           {
             method: "POST",
@@ -254,8 +377,37 @@ export function PaymentMethodsSection() {
             body: JSON.stringify({ payment_method_id: card.stripe_payment_method_id }),
           },
         );
+      } catch (err) {
+        const friendly = toUserFacingError(
+          err,
+          "Couldn't reach Stripe to remove the card. Try again.",
+        );
+        toast.error(friendly.message);
+        console.error("[PaymentMethodsSection.handleRemove.network]", friendly.code, friendly.technical ?? err);
+        return;
+      }
+
+      if (!detachRes.ok) {
+        let parsed: unknown = null;
+        try { parsed = await detachRes.json(); } catch { /* ignore */ }
+        const friendly = toUserFacingError(
+          parsed,
+          "Couldn't remove the card. Try again.",
+        );
+        toast.error(friendly.message);
+        console.error("[PaymentMethodsSection.handleRemove.detach]", detachRes.status, friendly.code, friendly.technical ?? parsed);
+        return;
       }
     }
+
+    const { error: dbErr } = await client.from("saved_cards").delete().eq("id", card.id);
+    if (dbErr) {
+      const friendly = toUserFacingError(dbErr, "Couldn't remove the card from your account.");
+      toast.error(friendly.message);
+      console.error("[PaymentMethodsSection.handleRemove.db]", friendly.code, friendly.technical ?? dbErr);
+      return;
+    }
+
     void fetchCards();
   };
 
@@ -272,23 +424,28 @@ export function PaymentMethodsSection() {
     void fetchCards();
   };
 
+  // Restaurant subs always come back as a list (even if empty). Only render
+  // the subsection if the user actually owns at least one restaurant.
+  const hasOwnedRestaurants = restaurantSubCards.length > 0;
+
   return (
-    <div className="flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium">Saved Cards</p>
-          <p className="text-xs text-text-muted">
-            Cenaiva uses your default card to pay automatically.
-          </p>
+    <div className="flex flex-col gap-6">
+      {/* Personal cards header */}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Personal cards</p>
+            <p className="text-xs text-text-muted">
+              Saved for deposits + pre-orders when you book a reservation.
+            </p>
+          </div>
+          {!showAddForm && (
+            <Button variant="outline" size="sm" onClick={() => void handleAddCard()} className="gap-1.5">
+              <Plus className="size-3.5" />
+              Add Card
+            </Button>
+          )}
         </div>
-        {!showAddForm && (
-          <Button variant="outline" size="sm" onClick={() => void handleAddCard()} className="gap-1.5">
-            <Plus className="size-3.5" />
-            Add Card
-          </Button>
-        )}
-      </div>
 
       {/* Add card form */}
       {showAddForm && (
@@ -379,11 +536,73 @@ export function PaymentMethodsSection() {
         </div>
       )}
 
-      {!isStripeConfigured && (
-        <p className="text-xs text-text-muted">
-          Running in test mode — no real charges will occur.{" "}
-          <span className="text-amber-400">Add Stripe keys to enable real payments.</span>
-        </p>
+        {!isStripeConfigured && (
+          <p className="text-xs text-text-muted">
+            Running in test mode — no real charges will occur.{" "}
+            <span className="text-amber-400">Add Stripe keys to enable real payments.</span>
+          </p>
+        )}
+      </div>
+
+      {/* Restaurant subscription cards — owners only. Read-only here; managed
+          via the wizard / dashboard Settings for each restaurant. */}
+      {hasOwnedRestaurants && (
+        <div className="flex flex-col gap-4 border-t border-border pt-6">
+          <div>
+            <p className="text-sm font-medium">Restaurant subscription cards</p>
+            <p className="text-xs text-text-muted">
+              Cards Cenaiva charges for each restaurant&apos;s $199.99/month subscription.
+              These live on the restaurant&apos;s billing — separate from your personal cards above.
+            </p>
+          </div>
+
+          {restaurantSubsLoading ? (
+            <p className="text-sm text-text-muted">Loading…</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {restaurantSubCards.map((sub) => (
+                <div
+                  key={sub.restaurant_id}
+                  className="flex items-center gap-3 rounded-xl border border-border bg-bg-surface px-4 py-3"
+                >
+                  {sub.has_card && sub.brand ? (
+                    <BrandIcon brand={sub.brand} />
+                  ) : (
+                    <div className="flex size-9 items-center justify-center rounded-lg bg-bg-elevated">
+                      <CreditCard className="size-4 text-text-muted" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium">
+                      {sub.restaurant_name}
+                    </p>
+                    {sub.has_card && sub.last4 ? (
+                      <p className="text-xs text-text-muted">
+                        {formatBrand(sub.brand)} <span className="font-mono">****{sub.last4}</span>
+                        {sub.exp_month && sub.exp_year ? (
+                          <> · Expires {String(sub.exp_month).padStart(2, "0")}/{sub.exp_year}</>
+                        ) : null}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-text-muted">No card on file yet</p>
+                    )}
+                  </div>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                  >
+                    <Link to="/dashboard/settings">
+                      Manage
+                      <ExternalLink className="size-3" />
+                    </Link>
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

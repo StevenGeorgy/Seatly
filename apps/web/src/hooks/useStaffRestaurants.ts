@@ -54,6 +54,48 @@ export type StaffRestaurantRow = {
   accepts_walkins: boolean | null;
   deposit_tiers: RestaurantDepositTier[] | null;
   is_published: boolean | null;
+  // 2026-05-20 lifecycle + referral columns. Optional on the row so older
+  // call sites that don't select these columns still type-check; SettingsPage
+  // + the dashboard banners select them explicitly.
+  deleted_at?: string | null;
+  scheduled_purge_at?: string | null;
+  paused_reason?:
+    | "owner_unpublished"
+    | "payment_failed"
+    | "pending_deletion"
+    | "subscription_cancelled"
+    | null;
+  referral_code?: string | null;
+  // Billing status fields — used by BillingStatusPill on the dashboard
+  // header to surface trial/active/past-due state.
+  subscription_status?:
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "unpaid"
+    | "incomplete"
+    | "incomplete_expired"
+    | "canceled"
+    | "paused"
+    | null;
+  trial_ends_at?: string | null;
+  payment_method_attached_at?: string | null;
+  // Subscription lifecycle flags — mirrored from Stripe via the webhook.
+  // Drive the SubscriptionLifecycleControls state machine + BillingStatusPill copy.
+  subscription_cancel_at_period_end?: boolean | null;
+  subscription_paused_at?: string | null;
+  // Billing detail fields used by the in-app BillingDetailsForm.
+  // All editable via update-billing-details edge fn.
+  billing_legal_name?: string | null;
+  billing_email?: string | null;
+  billing_address_line1?: string | null;
+  billing_address_line2?: string | null;
+  billing_address_city?: string | null;
+  billing_address_province?: string | null;
+  billing_address_postal_code?: string | null;
+  billing_address_country?: string | null;
+  billing_tax_id_type?: string | null;
+  billing_tax_id_value?: string | null;
 };
 
 /**
@@ -97,7 +139,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         const client = getSupabaseBrowserClient();
         const query = client
           .from("restaurants")
-          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, lat, lng, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins, deposit_tiers, is_published")
+          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, lat, lng, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins, deposit_tiers, is_published, deleted_at, scheduled_purge_at, paused_reason, referral_code, subscription_status, trial_ends_at, payment_method_attached_at, subscription_cancel_at_period_end, subscription_paused_at, billing_legal_name, billing_email, billing_address_line1, billing_address_line2, billing_address_city, billing_address_province, billing_address_postal_code, billing_address_country, billing_tax_id_type, billing_tax_id_value")
           .in("id", ids);
         const { data, error: qErr } = await promiseWithTimeout(
           Promise.resolve(query) as Promise<{

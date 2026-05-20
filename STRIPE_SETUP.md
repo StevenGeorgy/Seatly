@@ -4,16 +4,16 @@ What needs to be done in the Stripe dashboard + environment variables **before**
 
 The plan file with full context: `/Users/mark_habbi/.claude/plans/okay-make-a-plan-replicated-octopus.md`. Phase D specifically depends on these prerequisites.
 
-**Stack:** Canada (CAD). Stripe Connect Embedded Components (so restaurants never leave Cenaiva to onboard) + Stripe Billing for the $199 CAD/month platform subscription.
+**Stack:** Canada (CAD). Stripe Connect Embedded Components (so restaurants never leave Cenaiva to onboard) + Stripe Billing for the $199.99 CAD/month platform subscription.
 
-**Billing model recap (updated 2026-05-16):**
+**Billing model recap (updated 2026-05-19):**
 
-- Monthly subscription: $199 CAD, 90-day free trial
-- $1 per confirmed reservation (platform fee)
+- Monthly subscription: **$199.99 CAD**, 90-day free trial
+- **$1 per confirmed reservation** — billed to the restaurant via Stripe `invoiceItems.create` on the subscription customer; rolls into the next monthly invoice. Cron sweeper: `bill-booking-fees` (hourly). Cancelled-before-billing reservations don't bill.
 - 5.5% of gross on pre-orders (application fee)
 - 5.5% of gross on deposits (application fee)
-- Cenaiva absorbs Stripe processing fees (~2.9% + 30¢) out of the 5.5% application fee. Restaurants receive the full 94.5% on pre-orders/deposits (Stripe Connect destination-charge default behavior).
-- **Cancellation policy**: diner refunded only the restaurant's 94.5% slice; Cenaiva keeps the 5.5% commission as a cancellation cost.
+- **Diner pays Stripe processing fees (~2.9% + 30¢) on top** of deposits/pre-orders/post-meal pay. Server-side gross-up via `computeDinerCharge` in `_shared/stripe-fee.ts`. Application fee stays 5.5% of the BASE; restaurant nets the full 94.5% after Stripe's fee.
+- **Cancellation policy**: diner refunded only the restaurant's 94.5% slice; Cenaiva keeps the 5.5% commission as a cancellation cost. Already-billed $1 booking fees are NOT auto-credited on cancel.
 
 ---
 
@@ -54,13 +54,15 @@ These show up on the rare Stripe-hosted surfaces (account recovery emails, payou
 - Name: `Cenaiva subscription`
 - Description (optional): "Monthly platform subscription. Free 3 months."
 - Pricing model: Recurring
-- Price: `199.00 CAD`
+- Price: `199.99 CAD`
 - Billing period: Monthly
 - Free trial: `90 days`
 - Save
-- After save, copy the price ID (looks like `price_1AbCdEfGhIjKlMnOp`)
+- After save, copy the **Price ID** — it looks like `price_1AbCdEfGhIjKlMnOp`. **NOT** the Product ID (`prod_…`). The Subscriptions API rejects Product IDs with `resource_missing`.
 
-This price ID will become the `STRIPE_SUBSCRIPTION_PRICE_ID` env var below.
+This Price ID will become the `STRIPE_SUBSCRIPTION_PRICE_ID` env var below.
+
+⚠️ **Existing trials/subs stay on the old $199 Price until they renew.** To migrate them mid-cycle, use the Stripe Dashboard "Update subscription" UI per restaurant, or queue them through the `update_subscription` API with `proration_behavior='none'`.
 
 ### 1.5 Set up the webhook endpoint
 
@@ -128,7 +130,8 @@ Or via the dashboard: Project Settings → Edge Functions → Secrets → Add ne
 |---|---|---|
 | `STRIPE_SECRET_KEY` | Server-side API key | Step 1.6 above — the Secret key (`sk_test_…` or `sk_live_…`) |
 | `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | Step 1.5 above — the `whsec_…` from the webhook endpoint |
-| `STRIPE_SUBSCRIPTION_PRICE_ID` | The $199/mo recurring price | Step 1.4 above — the `price_…` from the product |
+| `STRIPE_SUBSCRIPTION_PRICE_ID` | The $199.99/mo recurring **Price** ID | Step 1.4 above — the `price_…` from the product. Verify with `stripe.prices.retrieve(...)` after every swap; `prod_…` will silently break new sub creation. |
+| `CRON_SECRET` | Cron-call auth header for sweeper jobs | Generate any random string; set the same value as the `x-cron-secret` header in your Supabase pg_cron HTTP wrapper |
 
 **Verify they're set** after adding:
 
@@ -193,7 +196,7 @@ When everything above is done, run through this before calling Phase D ready:
 
 - [ ] Stripe account fully activated (no warnings in dashboard)
 - [ ] Connect platform enabled with Cenaiva branding (logo + name + brand color set)
-- [ ] Product created, recurring monthly $199 CAD price with 90-day trial, `price_id` recorded
+- [ ] Product created, recurring monthly **$199.99 CAD** price with 90-day trial, **`price_…`** (not `prod_…`) recorded
 - [ ] Webhook endpoint created with the 9 events above, signing secret recorded
 - [ ] All 3 Supabase secrets set (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUBSCRIPTION_PRICE_ID`)
 - [ ] `VITE_STRIPE_PUBLISHABLE_KEY` set in `apps/web/.env.local` AND in the production hosting env
@@ -247,7 +250,74 @@ Once all of the above is checked off, the Phase D (Stripe) implementation work c
 
 ---
 
-Last updated: 2026-05-16
+Last updated: 2026-05-19
+
+---
+
+## 10. 2026-05-19 pricing overhaul — operational steps for Mark
+
+What changed in code in this commit:
+
+1. **Subscription bumped $199 → $199.99 CAD/mo** across marketing pages, onboarding wizard, settings page, and `create-subscription` header. The Price ID env var is unchanged.
+2. **Diner pays Stripe processing fee on top** of deposits, pre-orders, and post-meal pay (`create-public-payment-intent`, `stripe-charge-order`, `modify-reservation`). Shared helper at `supabase/functions/_shared/stripe-fee.ts` + client mirror at `apps/web/src/lib/stripe-fee.ts`. `application_fee_amount` stays 5.5% of the BASE (not grossed-up total).
+3. **$1 per-booking fee** to restaurants — new `restaurant_booking_fees` table + triggers, new `bill-booking-fees` edge fn, new hourly pg_cron job. Bills via Stripe `invoiceItems.create` on the subscription customer.
+
+### Steps Mark must do in the Stripe Dashboard + Supabase
+
+1. **Create the new $199.99 CAD Price** under the existing Cenaiva subscription product (Products → Cenaiva subscription → Add another price → Recurring, monthly, 199.99 CAD, 90-day trial). Copy the `price_…` ID.
+2. **Update the Supabase secret** to point at the new Price:
+   ```bash
+   supabase secrets set --project-ref exbjodmnpdiayfzrdyux \
+     STRIPE_SUBSCRIPTION_PRICE_ID=price_NEW_19999_PRICE_ID
+   ```
+   Verify with `supabase secrets list | grep STRIPE_SUBSCRIPTION_PRICE_ID`.
+3. **Set `CRON_SECRET`** if not already set:
+   ```bash
+   supabase secrets set --project-ref exbjodmnpdiayfzrdyux \
+     CRON_SECRET=$(openssl rand -hex 32)
+   ```
+4. **Apply the migrations**:
+   ```bash
+   supabase db push --project-ref exbjodmnpdiayfzrdyux
+   # Creates restaurant_booking_fees + triggers, schedules pg_cron 'cenaiva_bill_booking_fees'
+   ```
+5. **Deploy the new edge fn**:
+   ```bash
+   supabase functions deploy bill-booking-fees --project-ref exbjodmnpdiayfzrdyux
+   ```
+6. **Re-deploy the touched edge fns** so the gross-up logic ships:
+   ```bash
+   supabase functions deploy create-public-payment-intent stripe-charge-order modify-reservation --project-ref exbjodmnpdiayfzrdyux
+   ```
+7. **Manual sanity test** for `bill-booking-fees`:
+   ```bash
+   curl -X POST \
+     -H "x-cron-secret: $CRON_SECRET" \
+     "https://exbjodmnpdiayfzrdyux.supabase.co/functions/v1/bill-booking-fees"
+   # → { ok: true, billed: 0, failed: 0, skipped: 0, scanned: 0 }  (empty until a confirmed booking exists)
+   ```
+8. **Verify the pg_cron job is active**:
+   ```sql
+   SELECT jobname, schedule, active FROM cron.job WHERE jobname = 'cenaiva_bill_booking_fees';
+   ```
+9. **Existing restaurants currently on the $199 Price** stay on $199 until you migrate each subscription manually. To switch one:
+   - Dashboard → Customers → [restaurant] → Subscription → Update → choose the new Price → "Don't prorate" (the trial behavior depends on subscription state; preview before confirming).
+10. **Existing pending bookings**: the migration adds a trigger so any reservation entering `'confirmed'` from now on gets a `restaurant_booking_fees` row. Bookings that were already confirmed BEFORE the migration are NOT retroactively billed — there's no row for them. If you want to retroactively bill, run:
+    ```sql
+    INSERT INTO restaurant_booking_fees (restaurant_id, reservation_id, status)
+    SELECT restaurant_id, id, 'pending'
+    FROM reservations
+    WHERE status = 'confirmed' AND created_at > '<cutoff timestamp>'
+    ON CONFLICT (reservation_id) DO NOTHING;
+    ```
+    (Skip this step unless you actually want backfill billing — could be a surprise to early restaurants.)
+
+### Verification
+
+- Process a test booking on a restaurant with a Stripe-enabled connected account. Deposit checkout should show a "Processing fee" line, and the Stripe Elements card sheet should display the grossed-up total.
+- After confirmation, `select * from restaurant_booking_fees order by created_at desc limit 5;` should show a 'pending' row with `amount_cents = 100`.
+- After the next `bill-booking-fees` cron run, the row flips to 'billed' with a `stripe_invoice_item_id`.
+- In the Stripe Dashboard → Customers → [restaurant] → Upcoming invoice, the $1.00 line item should appear.
 
 ---
 

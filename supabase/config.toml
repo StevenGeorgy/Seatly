@@ -92,6 +92,30 @@ verify_jwt = false
 [functions.create-public-payment-intent]
 verify_jwt = false
 
+[functions.confirm-hold-paid]
+verify_jwt = false
+
+[functions.get-next-bill-preview]
+verify_jwt = false
+
+[functions.list-stripe-payouts]
+verify_jwt = false
+
+[functions.update-billing-details]
+verify_jwt = false
+
+[functions.cancel-subscription]
+verify_jwt = false
+
+[functions.pause-subscription]
+verify_jwt = false
+
+[functions.resume-subscription]
+verify_jwt = false
+
+[functions.restart-subscription]
+verify_jwt = false
+
 [functions.refund-payment-intent]
 verify_jwt = false
 
@@ -129,4 +153,34 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.notify-deposit-payers-refunded]
+verify_jwt = false
+
+[functions.validate-referral-code]
+verify_jwt = false
+
+[functions.apply-referral-credit]
+verify_jwt = false
+
+[functions.cleanup-stale-onboarding-cards]
+verify_jwt = false
+
+[functions.purge-deleted-restaurants]
+verify_jwt = false
+
+[functions.notify-trial-ending]
+verify_jwt = false
+
+[functions.save-subscription-payment-method]
+verify_jwt = false
+
+[functions.publish-restaurant]
+verify_jwt = false
+
+[functions.recover-restaurant]
+verify_jwt = false
+
+[functions.stripe-detach-method]
+verify_jwt = false
+
+[functions.get-restaurant-payment-method]
 verify_jwt = false

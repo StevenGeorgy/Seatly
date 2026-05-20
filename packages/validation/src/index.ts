@@ -7,3 +7,4 @@ export * from "../../../supabase/functions/_shared/validation/transcript.ts";
 export * from "../../../supabase/functions/_shared/validation/restaurant.ts";
 export * from "../../../supabase/functions/_shared/validation/staff.ts";
 export * from "../../../supabase/functions/_shared/validation/profile.ts";
+export * from "../../../supabase/functions/_shared/stripe-fee.ts";

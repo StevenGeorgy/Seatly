@@ -1,5 +1,5 @@
 // create-subscription: Phase D (Stripe wire-up). Creates the Stripe Customer
-// (on the platform account, NOT the connected account) + the $200 CAD/month
+// (on the platform account, NOT the connected account) + the $199.99 CAD/month
 // subscription with 90-day trial. Persists `stripe_customer_id`,
 // `subscription_status`, and `trial_ends_at` to the restaurants row.
 //
@@ -59,6 +59,18 @@ async function ownerOfRestaurant(authUserId: string, restaurantId: string): Prom
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonRes({ error: "POST only" }, 405);
+
+  // 2026-05-20 deprecation gate. The wizard now uses
+  // save-subscription-payment-method + publish-restaurant for the deferred-
+  // trial flow. Direct create-subscription calls are off by default; flip
+  // ALLOW_LEGACY_CREATE_SUBSCRIPTION=true to re-enable for emergency use.
+  const allowLegacy = Deno.env.get("ALLOW_LEGACY_CREATE_SUBSCRIPTION") === "true";
+  if (!allowLegacy) {
+    return jsonRes({
+      error: "create-subscription is deprecated. Use publish-restaurant instead.",
+      deprecated: true,
+    }, 410);
+  }
 
   try {
     const authHeader = req.headers.get("authorization") ?? "";
@@ -179,6 +191,41 @@ Deno.serve(async (req: Request) => {
       invoice_settings: { default_payment_method: paymentMethodId },
     });
 
+    // Pre-check: short-circuit if this customer already has an active
+    // subscription. Prevents duplicate-sub creation from concurrent calls
+    // or browser retries. Stripe-side idempotency key (below) is the
+    // belt-and-suspenders backstop in case the pre-check races.
+    try {
+      const existing = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "all",
+        limit: 5,
+      });
+      const live = existing.data.find((s) =>
+        ["trialing", "active", "past_due", "incomplete"].includes(s.status ?? ""),
+      );
+      if (live) {
+        const trialEndsAtExisting =
+          typeof live.trial_end === "number"
+            ? new Date(live.trial_end * 1000).toISOString()
+            : null;
+        return jsonRes({
+          ok: true,
+          subscription_id: live.id,
+          subscription_status: live.status,
+          trial_ends_at: trialEndsAtExisting,
+          deduplicated: true,
+        });
+      }
+    } catch (err) {
+      // List failure is non-fatal — fall through to create with idempotency
+      // key so Stripe enforces the dedup contract on their side.
+      console.warn(
+        "[create-subscription] subs list pre-check failed; falling back to idempotency key",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
     let subscription;
     try {
       subscription = await stripe.subscriptions.create({
@@ -188,6 +235,11 @@ Deno.serve(async (req: Request) => {
         payment_behavior: "default_incomplete",
         expand: ["latest_invoice.payment_intent"],
         metadata: { restaurant_id: row.id },
+      }, {
+        // Day-bucketed key. Two requests for the same customer within a
+        // calendar day collapse into one subscription. After UTC-midnight
+        // a fresh emergency-operator call can create a new one if needed.
+        idempotencyKey: `subscribe_${customerId}_${new Date().toISOString().slice(0, 10)}`,
       });
     } catch (err) {
       const e = err as { message?: string; code?: string; type?: string; param?: string; raw?: unknown };

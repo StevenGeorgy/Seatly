@@ -3,6 +3,10 @@ import { Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
+import { BillingStatusPill } from "@/components/billing/BillingStatusPill";
+import { PaymentFailedBanner } from "@/components/dashboard/PaymentFailedBanner";
+import { PaymentFailedModal } from "@/components/dashboard/PaymentFailedModal";
+import { RestoreRestaurantBanner } from "@/components/dashboard/RestoreRestaurantBanner";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
@@ -59,7 +63,8 @@ export default function DashboardLayout() {
 
 function DashboardShell() {
   const { pathname } = useLocation();
-  const { selectedRestaurantId } = useRestaurantScope();
+  const { selectedRestaurantId, selectedRestaurant, refreshRestaurants } =
+    useRestaurantScope();
 
   /** Warm floor-plan data + JS chunk while the user is on other dashboard screens. */
   useEffect(() => {
@@ -71,6 +76,50 @@ function DashboardShell() {
   /** Floor plan needs full width/height of the main column (no max-width shell or page padding). */
   const isFloorPlanRoute = pathname.includes("/floor-plan");
 
+  // 2026-05-20 lifecycle banners — surfaced on every dashboard route.
+  // Soft-deleted restaurants show a restore banner; payment-failed pauses
+  // surface both a persistent banner and a one-per-session modal.
+  const lifecycleBanners = selectedRestaurant ? (
+    <>
+      <RestoreRestaurantBanner
+        restaurantId={selectedRestaurant.id}
+        restaurantName={selectedRestaurant.name}
+        deletedAt={selectedRestaurant.deleted_at}
+        scheduledPurgeAt={selectedRestaurant.scheduled_purge_at}
+        onRestored={refreshRestaurants}
+      />
+      <PaymentFailedBanner
+        restaurantId={selectedRestaurant.id}
+        restaurantName={selectedRestaurant.name}
+        pausedReason={selectedRestaurant.paused_reason}
+        deletedAt={selectedRestaurant.deleted_at}
+        onUpdated={refreshRestaurants}
+      />
+      {/* Top-right billing status chip. Renders nothing when paused/deleted
+          (PaymentFailedBanner and RestoreRestaurantBanner above handle those
+          cases). Sits in the dashboard chrome so it's visible on every
+          dashboard page. */}
+      <div className="flex justify-end px-4 pt-2 sm:px-6">
+        <BillingStatusPill
+          subscriptionStatus={selectedRestaurant.subscription_status}
+          trialEndsAt={selectedRestaurant.trial_ends_at}
+          pausedReason={selectedRestaurant.paused_reason}
+          cancelAtPeriodEnd={selectedRestaurant.subscription_cancel_at_period_end}
+          pausedAt={selectedRestaurant.subscription_paused_at}
+        />
+      </div>
+    </>
+  ) : null;
+
+  const lifecycleModal = selectedRestaurant ? (
+    <PaymentFailedModal
+      restaurantId={selectedRestaurant.id}
+      pausedReason={selectedRestaurant.paused_reason}
+      deletedAt={selectedRestaurant.deleted_at}
+      onUpdated={refreshRestaurants}
+    />
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -78,6 +127,7 @@ function DashboardShell() {
         "bg-background",
       )}
     >
+      {lifecycleModal}
       <DashboardSidebar />
       <div
         className={cn(
@@ -85,6 +135,7 @@ function DashboardShell() {
           isFloorPlanRoute && "bg-background",
         )}
       >
+        {lifecycleBanners}
         <main
           className={cn(
             "flex-1 min-h-0",

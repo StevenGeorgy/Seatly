@@ -84,6 +84,7 @@ import {
 } from "@/lib/restaurant-price-level";
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
+import { computeDinerCharge } from "@/lib/stripe-fee";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -1722,6 +1723,15 @@ export default function RestaurantPublicPage() {
       ? previewDepositDollars / depositPayerCount
       : previewDepositDollars;
   const totalNow = total + dinerDepositShareDollars;
+  // Stripe processing fee pass-through: diner pays our 2.9% + 30¢ on top so
+  // the restaurant nets the full base. Display-only; server is the source of
+  // truth on the actual amount charged.
+  const dinerCharge = useMemo(
+    () => computeDinerCharge(Math.round(totalNow * 100)),
+    [totalNow],
+  );
+  const processingFeeDollars = dinerCharge.processingFeeCents / 100;
+  const dinerGrandTotalDollars = dinerCharge.dinerTotalCents / 100;
 
   const splitEachShare = useMemo(() => {
     if (paymentSplitMode !== "split") return NaN;
@@ -3095,9 +3105,15 @@ export default function RestaurantPublicPage() {
                       <span className="text-gold">{formatCurrency(previewDepositDollars, currency)}</span>
                     </div>
                   )}
+                  {processingFeeDollars > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-text-secondary">Processing fee</span>
+                      <span className="text-text-primary">{formatCurrency(processingFeeDollars, currency)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t border-border pt-2 text-base font-bold">
                     <span className="text-text-primary">Total due now</span>
-                    <span className="text-gold">{formatCurrency(totalNow, currency)}</span>
+                    <span className="text-gold">{formatCurrency(dinerGrandTotalDollars, currency)}</span>
                   </div>
                 </div>
               </div>

@@ -694,13 +694,11 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "charge_saved_card",
-      description: "Charge the user's default saved card for a pre-order. Returns success + total charged.",
+      description: "Hand off the open order to the pay-the-bill screen so the diner can confirm the charge manually. Voice MUST NEVER charge directly — this tool only opens the payment UI for the order.",
       parameters: {
         type: "object",
         properties: {
           order_id: { type: "string" },
-          tip_percent: { type: "number", description: "0–100; use 0 if no tip" },
-          tip_amount: { type: "number", description: "Dollar amount (alternative to tip_percent)" },
         },
         required: ["order_id"],
         additionalProperties: false,
@@ -16247,9 +16245,13 @@ Deno.serve(async (req) => {
             }
           }
 
-          // ── charge_saved_card ─────────────────────────────────────────────
+          // ── charge_saved_card (HAND-OFF ONLY — voice never charges) ──
+          // 2026-05-20: removed all Stripe payment logic. Voice MUST NEVER
+          // take payment directly. The tool now returns a hand-off action
+          // so the client navigates to the pay-the-bill screen where the
+          // diner manually confirms the charge.
           else if (toolName === "charge_saved_card") {
-            const { order_id, tip_percent, tip_amount: tipAmountInput } = toolInput;
+            const { order_id } = toolInput;
             if (!order_id) {
               toolResult = JSON.stringify({ success: false, error: "order_id required." });
             } else {
@@ -16264,131 +16266,35 @@ Deno.serve(async (req) => {
               } else if (order.paid_at) {
                 toolResult = JSON.stringify({ success: false, error: "Order already paid." });
               } else {
-                const { data: savedCard } = await supabaseAdmin
-                  .from("saved_cards")
-                  .select("id, brand, last4, stripe_payment_method_id")
+                // Ownership gate (still relevant for context exposure).
+                const { data: guest } = await supabaseAdmin
+                  .from("guests")
+                  .select("id")
+                  .eq("id", order.guest_id)
                   .eq("user_profile_id", userProfileId)
-                  .order("is_default", { ascending: false })
-                  .limit(1)
                   .maybeSingle();
-
-                if (!savedCard) {
-                  toolResult = JSON.stringify({ success: false, error: "No saved card found." });
+                if (!guest) {
+                  toolResult = JSON.stringify({ success: false, error: "Unauthorized." });
                 } else {
                   const subtotal = Number(order.subtotal || 0);
                   const tax = Number(order.tax_amount || 0);
                   const discount = Number(order.discount_amount || 0);
-                  const tipAmt = tip_percent != null
-                    ? Math.round(subtotal * (Number(tip_percent) / 100) * 100) / 100
-                    : Math.round(Number(tipAmountInput || 0) * 100) / 100;
-                  const total = Math.round((subtotal + tax - discount + tipAmt) * 100) / 100;
-                  const paidAt = new Date().toISOString();
-
-                  if (stripeSecretKey) {
-                    const { default: Stripe } = await import("npm:stripe@17");
-                    const stripe = new Stripe(stripeSecretKey, { apiVersion: STRIPE_API_VERSION });
-
-                    const { data: profile } = await supabaseAdmin
-                      .from("user_profiles")
-                      .select("stripe_customer_id")
-                      .eq("id", userProfileId)
-                      .single();
-
-                    if (!profile?.stripe_customer_id || !savedCard.stripe_payment_method_id) {
-                      toolResult = JSON.stringify({ success: false, error: "Stripe not configured. Use checkout page." });
-                    } else {
-                      const { data: rest } = await supabaseAdmin
-                        .from("restaurants")
-                        .select("currency")
-                        .eq("id", order.restaurant_id)
-                        .single();
-                      const currency = (rest?.currency || DEFAULT_CURRENCY).toLowerCase();
-
-                      try {
-                        const paymentIntent = await stripe.paymentIntents.create({
-                          amount: Math.round(total * 100),
-                          currency,
-                          customer: profile.stripe_customer_id,
-                          payment_method: savedCard.stripe_payment_method_id,
-                          off_session: true,
-                          confirm: true,
-                          metadata: { order_id, user_profile_id: userProfileId },
-                        });
-
-                        await supabaseAdmin.from("orders").update({
-                          tip_amount: tipAmt, total_amount: total,
-                          payment_method: "stripe", status: "paid",
-                          paid_at: paidAt, billed_at: paidAt,
-                          stripe_payment_intent_id: paymentIntent.id,
-                        }).eq("id", order_id);
-
-                        await supabaseAdmin.from("payments").insert({
-                          order_id, restaurant_id: order.restaurant_id,
-                          user_profile_id: userProfileId,
-                          stripe_payment_intent_id: paymentIntent.id,
-                          amount: total, currency, status: "succeeded", payment_type: "stripe",
-                        });
-
-                        toolResult = JSON.stringify({
-                          success: true, total_charged: total, tip_amount: tipAmt,
-                          currency: rest?.currency || DEFAULT_CURRENCY, paid_at: paidAt,
-                          card_brand: savedCard.brand, card_last4: savedCard.last4, mode: "live",
-                        });
-                        derivedActions.push({ type: "show_payment_success", amount_charged: total });
-                      } catch (stripeErr: unknown) {
-                        const msg = (stripeErr as { code?: string; message?: string });
-                        toolResult = JSON.stringify({
-                          success: false,
-                          error: msg?.code === "authentication_required"
-                            ? "Card requires verification. Use checkout page."
-                            : (msg?.message || "Card declined."),
-                        });
-                      }
-                    }
-                  } else if (Deno.env.get("CENAIVA_ALLOW_TEST_PAYMENTS") === "1") {
-                    // Test mode — only entered when STRIPE_SECRET_KEY is unset
-                    // AND the operator has explicitly opted in via the
-                    // CENAIVA_ALLOW_TEST_PAYMENTS env flag. In production this
-                    // env must remain unset; otherwise a misconfigured Stripe
-                    // key would silently mint successful payments without
-                    // charging the customer.
-                    const { data: rest } = await supabaseAdmin
-                      .from("restaurants")
-                      .select("currency")
-                      .eq("id", order.restaurant_id)
-                      .single();
-                    const currency = (rest?.currency || DEFAULT_CURRENCY).toLowerCase();
-                    const testId = `test_pi_${Math.random().toString(36).slice(2, 12)}`;
-                    await supabaseAdmin.from("orders").update({
-                      tip_amount: tipAmt, total_amount: total,
-                      payment_method: "card_test", status: "paid",
-                      paid_at: paidAt, billed_at: paidAt,
-                      stripe_payment_intent_id: testId,
-                    }).eq("id", order_id);
-
-                    await supabaseAdmin.from("payments").insert({
-                      order_id, restaurant_id: order.restaurant_id,
-                      user_profile_id: userProfileId,
-                      stripe_payment_intent_id: testId,
-                      amount: total, currency, status: "succeeded", payment_type: "test",
-                    });
-
-                    toolResult = JSON.stringify({
-                      success: true, total_charged: total, tip_amount: tipAmt,
-                      currency: rest?.currency || DEFAULT_CURRENCY, paid_at: paidAt,
-                      card_brand: savedCard.brand, card_last4: savedCard.last4, mode: "test",
-                    });
-                    derivedActions.push({ type: "show_payment_success", amount_charged: total });
-                  } else {
-                    // Stripe key missing AND test-payments not explicitly
-                    // enabled — refuse rather than silently fabricating a
-                    // successful payment. Customer should retry once the
-                    // operator restores the Stripe configuration.
-                    toolResult = JSON.stringify({
-                      success: false,
-                      error: "Payment processing is unavailable. Please try again later.",
-                    });
-                  }
+                  const baseTotal = Math.round((subtotal + tax - discount) * 100) / 100;
+                  toolResult = JSON.stringify({
+                    success: true,
+                    handoff: true,
+                    action: "open_pay_bill",
+                    order_id,
+                    restaurant_id: order.restaurant_id,
+                    base_total: baseTotal,
+                    message:
+                      "I'll bring up the payment screen for you — you can choose your tip and confirm the charge there.",
+                  });
+                  derivedActions.push({
+                    type: "open_pay_bill",
+                    order_id,
+                    restaurant_id: order.restaurant_id,
+                  });
                 }
               }
             }

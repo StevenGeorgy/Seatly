@@ -2,6 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { OrderTipSchema } from "../_shared/validation/charge.ts";
+import { computeDinerCharge } from "../_shared/stripe-fee.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,20 +56,69 @@ Deno.serve(async (req: Request) => {
       .single();
     if (!profile) return jsonRes({ error: "User profile not found" }, 404);
 
+    // Rate limit: 5 charge attempts per minute per user. Prevents
+    // accidental double-charge from a rapid retry storm and abuse.
+    try {
+      await enforceRateLimit(
+        supabaseAdmin,
+        "stripe-charge-order",
+        rateLimitIdentifier(req, profile.id),
+        { limit: 5, windowSeconds: 60 },
+      );
+    } catch (err) {
+      if (err instanceof RateLimitError) return jsonRes({ error: err.message }, 429);
+      throw err;
+    }
+
     const parsed = await parseJsonBody(req, OrderTipSchema, {
       jsonRes: (b, s) => jsonRes(b, s),
     });
     if ("response" in parsed) return parsed.response;
     const { order_id, tip_amount: rawTipAmount, tip_percentage } = parsed.data;
 
-    // Fetch and validate the order
+    // Fetch and validate the order. Pull reservation join so we can reject
+    // charges on cancelled reservations (security: prevents money being
+    // taken after cancel, which would create a refund mess).
     const { data: order } = await supabaseAdmin
       .from("orders")
-      .select("id, restaurant_id, subtotal, tax_amount, discount_amount, paid_at, guest_id")
+      .select("id, restaurant_id, subtotal, tax_amount, discount_amount, paid_at, guest_id, stripe_payment_intent_id, reservation_id")
       .eq("id", order_id)
       .single();
     if (!order) return jsonRes({ error: "Order not found" }, 404);
     if (order.paid_at) return jsonRes({ error: "Order is already paid" }, 400);
+
+    // Reject charges on cancelled reservations. Without this guard, a
+    // diner could cancel → restaurant refunds the deposit → diner walks
+    // back through pay-the-bill and charges anyway, leaving the order
+    // paid on a cancelled reservation. Manual reconciliation hell.
+    const reservationId = (order as { reservation_id?: string | null }).reservation_id;
+    if (reservationId) {
+      const { data: reservation } = await supabaseAdmin
+        .from("reservations")
+        .select("status")
+        .eq("id", reservationId)
+        .maybeSingle();
+      const status = (reservation as { status?: string } | null)?.status;
+      if (status === "cancelled" || status === "no_show") {
+        return jsonRes({
+          ok: false,
+          error: "This reservation was cancelled. You can't charge for it.",
+          reservation_status: status,
+        }, 409);
+      }
+    }
+    // Belt-and-suspenders: if an earlier call stamped a PI on this order
+    // but never reached the success-path UPDATE, the order may still have
+    // paid_at=null AND stripe_payment_intent_id set. The Stripe-side
+    // idempotency key (below) makes the second create idempotent, but
+    // bailing here saves the round-trip + clone.
+    if ((order as { stripe_payment_intent_id?: string | null }).stripe_payment_intent_id) {
+      return jsonRes({
+        ok: false,
+        error: "Order charge already in flight. Please refresh and try again.",
+        already_in_flight: true,
+      }, 409);
+    }
 
     // Verify ownership: user's guest must match this order's guest
     const { data: guest } = await supabaseAdmin
@@ -78,7 +129,9 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
     if (!guest) return jsonRes({ error: "Unauthorized: order does not belong to you" }, 403);
 
-    // Calculate total
+    // Calculate base total (subtotal + tax + tip - discount). This is the
+    // amount the restaurant + Cenaiva expect to net. The diner pays this
+    // plus the Stripe processing fee; see computeDinerCharge below.
     const subtotal = Number(order.subtotal || 0);
     const tax = Number(order.tax_amount || 0);
     const discount = Number(order.discount_amount || 0);
@@ -87,7 +140,7 @@ Deno.serve(async (req: Request) => {
       : tip_percentage !== undefined
         ? Math.round(subtotal * (tip_percentage / 100) * 100) / 100
         : 0;
-    const total = Math.round((subtotal + tax - discount + tipAmount) * 100) / 100;
+    const baseTotal = Math.round((subtotal + tax - discount + tipAmount) * 100) / 100;
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     const paidAt = new Date().toISOString();
@@ -98,7 +151,7 @@ Deno.serve(async (req: Request) => {
 
       await supabaseAdmin.from("orders").update({
         tip_amount: tipAmount,
-        total_amount: total,
+        total_amount: baseTotal,
         payment_method: "card_test",
         status: "paid",
         paid_at: paidAt,
@@ -111,13 +164,13 @@ Deno.serve(async (req: Request) => {
         restaurant_id: order.restaurant_id,
         user_profile_id: profile.id,
         stripe_payment_intent_id: testIntentId,
-        amount: total,
+        amount: baseTotal,
         currency: "cad",
         status: "succeeded",
         payment_type: "test",
       });
 
-      return jsonRes({ ok: true, total_charged: total, tip_amount: tipAmount, paid_at: paidAt, mode: "test" });
+      return jsonRes({ ok: true, total_charged: baseTotal, tip_amount: tipAmount, paid_at: paidAt, mode: "test" });
     }
 
     // ── Live mode ──
@@ -126,10 +179,11 @@ Deno.serve(async (req: Request) => {
     // account. To route money to the restaurant, we clone the
     // PaymentMethod to the connected account (`stripeAccount` option)
     // and create the PI directly on the connected account with a 5.5%
-    // application fee. 94.5% lands on the restaurant; 5.5% on Cenaiva's
-    // platform. Same economics as destination charges, simpler refund
-    // path. Mirrors Phase 4 saved-card-on-booking architecture.
-    // Cenaiva absorbs Stripe processing fees out of the 5.5%.
+    // application fee on the BASE. 2026-05-19 update: diner now pays
+    // Stripe's processing fee on top (see computeDinerCharge); the PI
+    // `amount` is grossed up and `application_fee_amount` stays 5.5%
+    // of base. Restaurant nets 94.5% of base; Cenaiva keeps 5.5% of
+    // base; Stripe's fee is fully covered by the gross-up.
     const { default: Stripe } = await import("npm:stripe@17");
     const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
@@ -176,8 +230,11 @@ Deno.serve(async (req: Request) => {
       }, 400);
     }
 
-    const totalCents = Math.round(total * 100);
-    const applicationFeeCents = Math.max(Math.round(totalCents * 0.055), 1);
+    const baseCents = Math.round(baseTotal * 100);
+    const charge = computeDinerCharge(baseCents);
+    const dinerTotalCents = charge.dinerTotalCents;
+    const processingFeeCents = charge.processingFeeCents;
+    const applicationFeeCents = charge.applicationFeeCents;
 
     let paymentIntent: any;
     let clonedPmId: string | null = null;
@@ -198,9 +255,12 @@ Deno.serve(async (req: Request) => {
       // Step 2: create + confirm the PaymentIntent directly on the
       // connected account. Money lands in the restaurant's Stripe
       // balance; `application_fee_amount` is forwarded to the platform.
+      // Idempotency key keyed on order_id + base amount so the same
+      // request retried within 24h reuses the existing PI rather than
+      // creating a duplicate charge.
       paymentIntent = await stripe.paymentIntents.create(
         {
-          amount: totalCents,
+          amount: dinerTotalCents,
           currency,
           payment_method: clonedPmId,
           off_session: true,
@@ -210,6 +270,8 @@ Deno.serve(async (req: Request) => {
             order_id,
             restaurant_id: order.restaurant_id,
             user_profile_id: profile.id,
+            base_amount_cents: String(baseCents),
+            processing_fee_cents: String(processingFeeCents),
             // Pointer back to the platform-side source for support /
             // reconciliation. Cenaiva's audit trail can find the
             // original PM by walking from this cloned PI.
@@ -217,7 +279,10 @@ Deno.serve(async (req: Request) => {
             platform_source_customer: profile.stripe_customer_id!,
           },
         },
-        { stripeAccount: stripeAccountId },
+        {
+          stripeAccount: stripeAccountId,
+          idempotencyKey: `charge_order_${order_id}_${baseCents}`,
+        },
       );
     } catch (stripeErr: any) {
       const code = stripeErr?.code as string | undefined;
@@ -244,9 +309,11 @@ Deno.serve(async (req: Request) => {
       }, 402);
     }
 
+    // orders.total_amount tracks the BASE the restaurant + Cenaiva net.
+    // The grossed-up diner charge is recoverable from the PI / metadata.
     await supabaseAdmin.from("orders").update({
       tip_amount: tipAmount,
-      total_amount: total,
+      total_amount: baseTotal,
       payment_method: "stripe",
       status: "paid",
       paid_at: paidAt,
@@ -260,13 +327,21 @@ Deno.serve(async (req: Request) => {
       user_profile_id: profile.id,
       stripe_payment_intent_id: paymentIntent.id,
       stripe_charge_id: paymentIntent.latest_charge as string || null,
-      amount: total,
+      amount: baseTotal,
       currency,
       status: "succeeded",
       payment_type: "stripe",
     });
 
-    return jsonRes({ ok: true, total_charged: total, tip_amount: tipAmount, paid_at: paidAt, mode: "live" });
+    return jsonRes({
+      ok: true,
+      total_charged: baseTotal,
+      processing_fee: processingFeeCents / 100,
+      diner_charged: dinerTotalCents / 100,
+      tip_amount: tipAmount,
+      paid_at: paidAt,
+      mode: "live",
+    });
   } catch (err) {
     return jsonRes({ error: String(err) }, 500);
   }

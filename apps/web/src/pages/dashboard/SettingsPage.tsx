@@ -9,7 +9,6 @@ import {
   Bell,
   CalendarDays,
   CreditCard,
-  ExternalLink,
   Loader2,
   Pencil,
   Plus,
@@ -46,6 +45,16 @@ import {
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
 import { showErrorToast, toUserFacingError } from "@/lib/errors";
 import { applyRestaurantTheme } from "@/lib/theme";
+import { stripePromise } from "@/lib/stripe";
+import { ChangeSubscriptionCard } from "@/components/billing/ChangeSubscriptionCard";
+import { CardOnFileBadge } from "@/components/billing/CardOnFileBadge";
+// Referral program disabled — see referral_program task. ReferralCodeCard
+// kept in components/ for future re-enablement.
+// import { ReferralCodeCard } from "@/components/dashboard/ReferralCodeCard";
+import { NextBillCard } from "@/components/billing/NextBillCard";
+import { PayoutsSection } from "@/components/billing/PayoutsSection";
+import { BillingDetailsForm } from "@/components/billing/BillingDetailsForm";
+import { SubscriptionLifecycleControls } from "@/components/billing/SubscriptionLifecycleControls";
 import type { RestaurantBusinessProfile, RestaurantSettings } from "@/hooks/useStaffRestaurants";
 import { cn } from "@/lib/utils";
 import {
@@ -428,12 +437,12 @@ function Card({ children }: { children: ReactNode }) {
   return <div className="rounded-2xl border border-border bg-bg-surface">{children}</div>;
 }
 
-// Cenaiva plan is a single tier: $199 CAD/month with a 90-day free trial.
-// In addition, $1 per confirmed reservation and 5.5% application fee on
-// pre-orders + deposits route to Cenaiva via Stripe Connect. Cenaiva
-// absorbs Stripe processing fees out of the 5.5%; restaurants receive
-// the full 94.5%.
-const PLAN_PRICE_CENTS = 19900;
+// Cenaiva plan is a single tier: $199.99 CAD/month with a 90-day free trial.
+// In addition, $1 per confirmed reservation (billed via Stripe invoice items
+// on the restaurant's subscription) and 5.5% application fee on pre-orders +
+// deposits route to Cenaiva via Stripe Connect. Diners pay Stripe processing
+// fees on top of deposits/orders so restaurants receive the full 94.5%.
+const PLAN_PRICE_CENTS = 19999;
 const PLAN_CURRENCY = "CAD";
 const PLAN_USAGE_FEES = [
   "$1 per confirmed reservation",
@@ -625,6 +634,7 @@ export default function SettingsPage() {
   const [savingRestaurant, setSavingRestaurant] = useState(false);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState("");
   const [deletingRestaurant, setDeletingRestaurant] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [restaurantInitial, setRestaurantInitial] = useState<RestaurantInitialState | null>(null);
   const restaurantDescriptionAtLimit = description.length >= RESTAURANT_DESCRIPTION_MAX_LENGTH;
   const normalizedTurnTime = normalizeTurnTime(turnTimeMinutes);
@@ -652,6 +662,12 @@ export default function SettingsPage() {
   const [invoices, setInvoices] = useState<StripeInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [portalLoading, setPortalLoading] = useState<BillingPortalFlow | null>(null);
+  // In-page "Change card" panel (replaces the Stripe billing-portal redirect
+  // for payment-method updates). Falls back to the portal redirect if
+  // VITE_STRIPE_PUBLISHABLE_KEY is missing.
+  const [showChangeCard, setShowChangeCard] = useState(false);
+  // Bumped after a successful card-swap so the CardOnFileBadge refetches.
+  const [cardRefreshKey, setCardRefreshKey] = useState(0);
 
   // Theme
   const existingTheme = selectedRestaurant?.settings_json?.theme;
@@ -873,9 +889,6 @@ export default function SettingsPage() {
     : { label: "Not set up", tone: "muted" as const };
   const trialDaysLeft = daysUntil(billingSummary?.trial_ends_at ?? null);
   const hasSubscription = Boolean(billingSummary?.stripe_customer_id);
-  const canCancel = hasSubscription
-    && billingSummary?.subscription_status !== "canceled"
-    && billingSummary?.subscription_status !== "incomplete_expired";
 
   const restaurantDirty = useMemo(() => {
     if (!restaurantInitial) return false;
@@ -937,6 +950,7 @@ export default function SettingsPage() {
 
     toast.success(t("dashboard.settings.deleteRestaurantSuccess"));
     setDeleteConfirmationName("");
+    setDeleteDialogOpen(false);
     refreshRestaurants();
     const fallbackRestaurant = restaurants.find((restaurant) => restaurant.id !== selectedRestaurant.id);
     void navigate(fallbackRestaurant ? "/dashboard" : "/setup", { replace: true });
@@ -2147,7 +2161,7 @@ export default function SettingsPage() {
                 subtitle="Permanent actions that affect this entire restaurant."
               />
               <Card>
-                <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] sm:px-7">
+                <div className="grid gap-5 px-6 py-6 sm:grid-cols-[minmax(0,1fr)_minmax(220px,300px)] sm:px-7">
                   <div>
                     <p className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-danger">
                       <Trash2 className="size-3.5" />
@@ -2157,37 +2171,111 @@ export default function SettingsPage() {
                       {t("dashboard.settings.deleteRestaurant")}
                     </h3>
                     <p className="mt-2 max-w-2xl text-sm text-text-muted">
-                      {t("dashboard.settings.deleteRestaurantHint")}
-                    </p>
-                    <p className="mt-3 text-xs text-danger">
-                      {t("dashboard.settings.deleteRestaurantWarning")}
+                      Soft-deletes this restaurant and starts a 30-day grace period
+                      during which you can restore it from this page.
                     </p>
                   </div>
-                  <div className="space-y-3 rounded-2xl border border-danger/30 bg-danger/5 p-4">
-                    <label className="block text-xs font-medium text-text-secondary" htmlFor="delete-restaurant-confirmation">
-                      {t("dashboard.settings.deleteRestaurantConfirmLabel", {
-                        name: selectedRestaurant?.name ?? "",
-                      })}
-                    </label>
-                    <Input
-                      id="delete-restaurant-confirmation"
-                      value={deleteConfirmationName}
-                      onChange={(event) => setDeleteConfirmationName(event.target.value)}
-                      placeholder={selectedRestaurant?.name ?? ""}
-                      disabled={deletingRestaurant || !selectedRestaurant}
-                    />
+                  <div className="flex items-start justify-end">
                     <Button
                       type="button"
                       variant="destructive"
-                      className="w-full"
-                      disabled={!deleteConfirmationMatches || deletingRestaurant || !selectedRestaurant}
-                      onClick={() => void deleteRestaurant()}
+                      disabled={!selectedRestaurant}
+                      onClick={() => {
+                        setDeleteConfirmationName("");
+                        setDeleteDialogOpen(true);
+                      }}
                     >
-                      {deletingRestaurant ? t("routes.loading") : t("dashboard.settings.deleteRestaurantAction")}
+                      {t("dashboard.settings.deleteRestaurantAction")}
                     </Button>
                   </div>
                 </div>
               </Card>
+
+              <Dialog
+                open={deleteDialogOpen}
+                onOpenChange={(open) => {
+                  if (deletingRestaurant) return;
+                  setDeleteDialogOpen(open);
+                  if (!open) setDeleteConfirmationName("");
+                }}
+              >
+                <DialogContent className="max-w-lg gap-0 overflow-hidden border-border bg-bg-base p-0">
+                  <DialogHeader className="px-6 pt-6">
+                    <DialogTitle className="flex items-center gap-2 font-serif text-xl text-white">
+                      <Trash2 className="size-5 text-danger" />
+                      Delete {selectedRestaurant?.name ?? "this restaurant"}?
+                    </DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4 px-6 py-5 text-sm text-text-secondary">
+                    <p>
+                      Your subscription will continue through your current billing
+                      period — you'll be billed once more for the time you've already
+                      used, but never again after that.
+                    </p>
+                    <p>
+                      Your restaurant will be{" "}
+                      <span className="font-semibold text-white">
+                        hidden from diners immediately
+                      </span>
+                      . Existing reservations stay valid — diners can still cancel
+                      them.
+                    </p>
+                    <p>
+                      You have{" "}
+                      <span className="font-semibold text-white">
+                        30 days to restore
+                      </span>{" "}
+                      this restaurant before all data is anonymized.
+                    </p>
+                    <div className="space-y-2 rounded-2xl border border-danger/30 bg-danger/5 p-4">
+                      <label
+                        className="block text-xs font-medium text-text-secondary"
+                        htmlFor="delete-restaurant-confirmation"
+                      >
+                        {t("dashboard.settings.deleteRestaurantConfirmLabel", {
+                          name: selectedRestaurant?.name ?? "",
+                        })}
+                      </label>
+                      <Input
+                        id="delete-restaurant-confirmation"
+                        value={deleteConfirmationName}
+                        onChange={(event) =>
+                          setDeleteConfirmationName(event.target.value)
+                        }
+                        placeholder={selectedRestaurant?.name ?? ""}
+                        disabled={deletingRestaurant || !selectedRestaurant}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter className="border-t border-border bg-bg-surface px-6 py-4">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={deletingRestaurant}
+                      onClick={() => {
+                        setDeleteDialogOpen(false);
+                        setDeleteConfirmationName("");
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={
+                        !deleteConfirmationMatches
+                        || deletingRestaurant
+                        || !selectedRestaurant
+                      }
+                      onClick={() => void deleteRestaurant()}
+                    >
+                      {deletingRestaurant
+                        ? t("routes.loading")
+                        : t("dashboard.settings.deleteRestaurantAction")}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </div>
           )}
 
@@ -2286,48 +2374,78 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 </div>
+                {/* Card-on-file badge — shows the brand + last4 of the
+                    PaymentMethod backing the active subscription so owners
+                    can verify which card is on file before swapping. */}
+                {selectedRestaurant?.id && hasSubscription ? (
+                  <div className="border-t border-border/50 px-6 py-3 sm:px-7">
+                    <CardOnFileBadge
+                      restaurantId={selectedRestaurant.id}
+                      refreshKey={cardRefreshKey}
+                    />
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2 border-t border-border/50 px-6 py-4 sm:px-7">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!hasSubscription || portalLoading !== null}
-                    onClick={() => void openBillingPortal("payment_method_update")}
-                  >
-                    {portalLoading === "payment_method_update" ? (
-                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    ) : (
-                      <CreditCard className="mr-1.5 size-3.5" />
-                    )}
-                    Manage payment
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!hasSubscription || portalLoading !== null}
-                    onClick={() => void openBillingPortal("default")}
-                  >
-                    {portalLoading === "default" ? (
-                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    ) : (
-                      <ExternalLink className="mr-1.5 size-3.5" />
-                    )}
-                    Open billing portal
-                  </Button>
-                  {canCancel && (
+                  {/* Change card — in-page Stripe Elements form when configured,
+                      falls back to the billing-portal redirect otherwise. */}
+                  {stripePromise ? (
                     <Button
                       size="sm"
-                      variant="ghost"
-                      disabled={portalLoading !== null}
-                      onClick={() => void openBillingPortal("subscription_cancel")}
+                      variant="outline"
+                      disabled={!hasSubscription || showChangeCard}
+                      onClick={() => setShowChangeCard(true)}
                     >
-                      {portalLoading === "subscription_cancel" ? (
+                      <CreditCard className="mr-1.5 size-3.5" />
+                      Change card
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!hasSubscription || portalLoading !== null}
+                      onClick={() => void openBillingPortal("payment_method_update")}
+                    >
+                      {portalLoading === "payment_method_update" ? (
                         <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                      ) : null}
-                      Cancel plan
+                      ) : (
+                        <CreditCard className="mr-1.5 size-3.5" />
+                      )}
+                      Change card
                     </Button>
                   )}
+                  {selectedRestaurant ? (
+                    <SubscriptionLifecycleControls
+                      restaurant={selectedRestaurant}
+                      onStateChanged={refreshRestaurants}
+                    />
+                  ) : null}
                 </div>
+                {showChangeCard && stripePromise && selectedRestaurant?.id ? (
+                  <div className="border-t border-border/50 px-6 py-5 sm:px-7">
+                    <ChangeSubscriptionCard
+                      restaurantId={selectedRestaurant.id}
+                      stripePromiseRef={stripePromise}
+                      onSuccess={() => {
+                        setShowChangeCard(false);
+                        setCardRefreshKey((k) => k + 1);
+                        toast.success("Card updated. The new card will be used for your next charge.");
+                        refreshRestaurants();
+                      }}
+                      onCancel={() => setShowChangeCard(false)}
+                    />
+                  </div>
+                ) : null}
               </Card>
+
+              {selectedRestaurant?.id ? (
+                <div className="space-y-3 px-6 sm:px-7">
+                  <NextBillCard restaurantId={selectedRestaurant.id} />
+                  <BillingDetailsForm
+                    restaurant={selectedRestaurant}
+                    onSaved={refreshRestaurants}
+                  />
+                </div>
+              ) : null}
 
               <Card>
                 <div className="flex items-center justify-between px-6 py-5 sm:px-7">
@@ -2410,6 +2528,12 @@ export default function SettingsPage() {
                     })}
                 </div>
               </Card>
+
+              {selectedRestaurant?.id ? (
+                <div className="px-6 sm:px-7">
+                  <PayoutsSection restaurantId={selectedRestaurant.id} />
+                </div>
+              ) : null}
             </div>
           )}
 

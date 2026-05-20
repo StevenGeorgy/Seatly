@@ -35,7 +35,7 @@ const FEATURES = [
   {
     icon: CreditCard,
     title: "Honest pricing",
-    desc: "$199/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
+    desc: "$199.99/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
   },
   {
     icon: BarChart3,
@@ -68,7 +68,7 @@ const MODULES = [
   {
     icon: CreditCard,
     title: "Payments",
-    desc: "Stripe Connect Embedded onboarding. Native CAD. Cenaiva covers Stripe processing fees out of the 5.5% commission.",
+    desc: "Stripe Connect Embedded onboarding. Native CAD. Diners cover Stripe processing fees on deposits and pre-orders, so you keep the full 94.5%.",
   },
   {
     icon: BarChart3,
@@ -127,7 +127,7 @@ const VALUE_CARDS = [
       "Pre-orders attached to bookings",
       "Tier-based deposit policy",
       "Multi-payer deposit splitting",
-      "Cenaiva covers Stripe processing",
+      "Diners cover Stripe processing fees",
       "Cancellation refunds handled automatically",
     ],
   },
@@ -139,8 +139,8 @@ const VALUE_NOTES = [
     desc: "Self-serve onboarding takes about an hour.",
   },
   {
-    title: "Stripe processing included",
-    desc: "Cenaiva covers Stripe fees out of the 5.5% on pre-orders & deposits.",
+    title: "You keep the full 94.5%",
+    desc: "Diners pay Stripe processing fees on top of deposits and pre-orders, so our 5.5% commission is all yours after fees.",
   },
   {
     title: "Cancel any month",
@@ -195,7 +195,7 @@ export default function RestaurantsPage() {
               </Button>
             </div>
             <p className="mt-5 text-sm text-text-muted">
-              <span className="text-gold">Free 3 months</span>, then $199 CAD/month.
+              <span className="text-gold">Free 3 months</span>, then $199.99 CAD/month.
               {" "}{bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
             </p>
           </motion.div>
@@ -219,7 +219,7 @@ export default function RestaurantsPage() {
             <p className="mt-8 max-w-lg text-lg leading-relaxed text-text-secondary">
               Reservations, floor plan, pre-orders, deposits, payments — on one
               dashboard, one login.{" "}
-              <span className="text-gold">$199/mo · {bookingFee} per confirmed booking.</span>{" "}
+              <span className="text-gold">$199.99/mo · {bookingFee} per confirmed booking.</span>{" "}
               Zero commission on your menu prices.
             </p>
 
@@ -240,7 +240,7 @@ export default function RestaurantsPage() {
               </a>
             </div>
             <p className="mt-5 text-sm text-text-muted">
-              <span className="text-gold">Free 3 months</span>, then $199 CAD/month.
+              <span className="text-gold">Free 3 months</span>, then $199.99 CAD/month.
               {bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
               Cancel any month.
             </p>
@@ -321,7 +321,7 @@ export default function RestaurantsPage() {
               </h2>
             </div>
             <p className="max-w-2xl text-base leading-relaxed text-text-secondary lg:justify-self-end">
-              $199 CAD/month per restaurant. A flat dollar per confirmed booking,
+              $199.99 CAD/month per restaurant. A flat dollar per confirmed booking,
               plus 5.5% on pre-orders & deposits. Zero commission on your menu
               prices. Cancel any month.
             </p>
@@ -355,7 +355,7 @@ export default function RestaurantsPage() {
                 <h3 className="mt-7 font-serif text-3xl text-white">{card.title}</h3>
                 <p className="mt-6 flex items-baseline gap-2 font-serif text-5xl text-gold">
                   {card.priceKey === "subscription"
-                    ? "$199"
+                    ? "$199.99"
                     : card.priceKey === "booking"
                       ? bookingFee
                       : "5.5%"}

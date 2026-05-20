@@ -14,6 +14,101 @@ Routine bug fixes do not need an update. Detailed ship notes go to
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-20 Subscription lifecycle rework (full overhaul)** —
+  Decoupled card-save from subscription creation. Trial clock now anchors
+  to publish day, not card capture. Plus: payment-failure auto-pause,
+  30-day soft-delete grace, CRA-compliant anonymization, referral
+  program, Canadian consent audit log, email notifications.
+  - **New flow:** wizard `save-subscription-payment-method` saves card
+    only (no sub); `publish-restaurant` atomically creates the sub +
+    flips `is_published=true` (with `restaurant_live` email). Modal
+    confirms "Your 90-day trial starts now" before publish.
+  - **New publish-gate trigger** at the DB level (`restaurants_publish_gate`).
+    Accepts both old-world (`subscription_status` in trialing/active —
+    grandfathered) and new-world (`payment_method_attached_at IS NOT
+    NULL`) paths. Blocks publishing soft-deleted restaurants.
+  - **`create-subscription` deprecated.** Returns 410 by default;
+    `ALLOW_LEGACY_CREATE_SUBSCRIPTION=true` env flips it back on for
+    emergency operator use.
+  - **Payment failure:** `stripe-webhook` `handleSubscriptionUpsert`
+    now drives `is_published`. On `unpaid`/`canceled` → unpublish +
+    `paused_reason='payment_failed'` + `payment_failed` email. On
+    recovery to `trialing`/`active` while previously failed → republish +
+    `payment_recovered` email. Skips entirely if `deleted_at IS NOT
+    NULL` (deletion state protected).
+  - **Restaurant deletion:** `delete-restaurant` rewritten — soft-delete
+    + `cancel_at_period_end=true` on Stripe sub. 30-day grace with
+    `deleted_at` + `scheduled_purge_at`. `recover-restaurant` undoes
+    within grace. `purge-deleted-restaurants` cron (daily 5am UTC)
+    anonymizes PII while keeping payment FKs intact for CRA 7-year
+    retention.
+  - **Referral program:** every published restaurant gets a unique
+    `referral_code` (auto-generated on first publish). New restaurants
+    pass `referral_code` at signup. `apply-referral-credit` fires from
+    `publish-restaurant` — creates a $199.99 CAD Stripe coupon applied
+    to BOTH subscriptions (`max_redemptions=2`). `referral_credits`
+    audit table. `validate-referral-code` for live wizard validation.
+  - **Canadian consent:** every card-save + publish-confirm writes to
+    `subscription_consent_log` capturing disclosure text + IP + UA.
+    Inline disclosure rendered above the Save card button.
+  - **Owner notifications:** `_shared/owner-notifications.ts` helper
+    (Resend-based, mirrors reservation-notifications). 6 templates:
+    restaurant_live, restaurant_deletion_scheduled, restaurant_restored,
+    payment_failed, payment_recovered, trial_ending_soon.
+    `restaurant_notification_log` table for idempotency + audit.
+    `notify-trial-ending` cron (daily 9am UTC) emails 7 days before
+    trial end.
+  - **Stale-card cleanup:** `cleanup-stale-onboarding-cards` cron
+    (daily 4am UTC) detaches saved cards from unpublished restaurants
+    after 90 days. First-attach timestamp wins (re-saving doesn't
+    reset the clock).
+  - **Diner delete-card bug fixed.** New `stripe-detach-method` edge
+    fn. PaymentMethodsSection reorder: Stripe detach first, then DB
+    delete (recoverable on transient Stripe errors).
+  - **Existing trialing restaurants untouched.** Mark Testing +
+    Onboarding Test Pizza continue on their old-world subs. Publish
+    gate accepts them via the OR clause.
+- **2026-05-19 Pricing overhaul (in same day, after the debug session)** —
+  (A) Subscription bumped **$199 → $199.99 CAD/mo** across marketing
+  pages (HomePage, RestaurantsPage, BookDemoPage), onboarding wizard
+  (Step8PaymentSetup), `SettingsPage` PLAN_PRICE_CENTS (now 19999),
+  and `create-subscription` header. Marketing $200 typo fixed.
+  STRIPE_SUBSCRIPTION_PRICE_ID still points at the old $199 Price —
+  Mark must create a new $199.99 CAD Price under the existing product
+  + swap the secret. Existing trials/subs stay on old Price until
+  renewal unless manually migrated per-customer.
+  (B) **Diner pays Stripe processing fee on top** (~2.9% + 30¢).
+  New `_shared/stripe-fee.ts` helper `computeDinerCharge(baseCents)`
+  returns `{ baseCents, dinerTotalCents, processingFeeCents,
+  applicationFeeCents }` via gross-up formula `ceil((base + 30) /
+  0.971)`. Applied in `create-public-payment-intent` (Mode A + Mode
+  B + hold path), `stripe-charge-order` (post-meal pay), and
+  `modify-reservation` (party-size deposit delta). PI metadata
+  carries `base_amount_cents` + `processing_fee_cents` for
+  reconciliation. `application_fee_amount` stays 5.5% of BASE (we
+  don't take commission on the pass-through Stripe fee). Restaurant
+  nets 94.5% of base after Stripe's fee and our 5.5%. Client mirror
+  at `apps/web/src/lib/stripe-fee.ts` powers the cart "Processing
+  fee" line on `RestaurantPublicPage` + `DepositPayPage`.
+  (C) **$1 per-confirmed-booking fee** to restaurants. New
+  `restaurant_booking_fees` table (one row per reservation,
+  idempotent on `reservation_id`). Triggers seed 'pending' rows on
+  reservation INSERT/UPDATE where status='confirmed', and flip
+  'pending' → 'cancelled' on cancellation. New edge fn
+  `bill-booking-fees` (cron-driven hourly via pg_cron job
+  `cenaiva_bill_booking_fees`) sweeps pending rows into Stripe
+  `invoiceItems.create` on the restaurant's subscription customer;
+  rolls into next monthly subscription invoice. Already-billed rows
+  are NOT auto-credited on later cancellation (manual refund only).
+  Restaurants without an active subscription are skipped (status
+  must be in `trialing|active|past_due|incomplete`). 500-row batch
+  per run; failures flip to 'failed' with `failure_reason` and
+  require manual intervention. RLS: owners can SELECT their own
+  fee rows; writes are service-role only.
+  Operational TODOs (Mark): see STRIPE_SETUP.md §10. Must (a) create
+  $199.99 Price, (b) swap STRIPE_SUBSCRIPTION_PRICE_ID secret, (c)
+  set CRON_SECRET, (d) `supabase db push`, (e) deploy
+  `bill-booking-fees`, (f) re-deploy the 3 modified edge fns.
 - **2026-05-19 Stripe wire-up debugging + handoff state** —
   (A) SetupIntent customer-mismatch fix shipped to `stripe-setup-intent`
   v68: function now accepts `restaurant_id` and creates the SetupIntent
@@ -77,9 +172,9 @@ Routine bug fixes do not need an update. Detailed ship notes go to
   run — assistant FAB-open path in Chrome MCP context blocked on
   mic permission flow; Mark to verify in real browser.
 - **2026-05-16** — Pricing overhaul: platform fee 5%→5.5% on pre-orders
-  & deposits; subscription $200→$199 CAD/mo; cancellation refunds only
-  the restaurant's 94.5% slice (Cenaiva keeps the 5.5% commission);
-  Cenaiva absorbs Stripe processing fees out of the 5.5%. Voice
+  & deposits; subscription $200→$199 CAD/mo (later bumped to $199.99
+  on 2026-05-19); cancellation refunds only the restaurant's 94.5%
+  slice (Cenaiva keeps the 5.5% commission). Voice
   hand-off destination-page fixes (time URL param, deposit banner,
   step=menu) on `RestaurantPublicPage.tsx`.
 - **2026-05-16 OPERATIONAL (Mark)** — Create new $199 CAD/mo recurring
@@ -142,11 +237,28 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   "Cancelled by restaurant"`.
 
 ### Stripe / payments
+- Never compute the diner's PaymentIntent amount as the raw base
+  (deposit/preorder/order total). Always run the base through
+  `computeDinerCharge(baseCents)` from `_shared/stripe-fee.ts` to
+  gross up for Stripe's 2.9% + 30¢ fee. Use `dinerTotalCents` as
+  `amount` and `applicationFeeCents` (5.5% of BASE, not the
+  grossed-up total) as `application_fee_amount`. Mirror on the
+  client lives at `apps/web/src/lib/stripe-fee.ts` for cart display.
 - Never charge a diner via `stripe-charge-order` (post-meal pay-the-
   bill) without the Connect-aware path: clone the platform-account PM
   to the restaurant's `stripe_account_id`, then PI on the connected
-  account with `application_fee_amount = 5.5%` of total. The pre-
-  Phase-9 platform-only path was a silent bug.
+  account with `application_fee_amount = 5.5%` of **base** (not the
+  grossed-up diner total). The pre-Phase-9 platform-only path was a
+  silent bug.
+- Never insert into `restaurant_booking_fees` outside the
+  `seed_booking_fee_on_confirm` trigger. The trigger is the single
+  source of truth for "this reservation owes a $1 fee." Bulk
+  backfills must be paired with operator awareness — surprise
+  invoices break trust.
+- Never bill `restaurant_booking_fees` from any path other than the
+  `bill-booking-fees` edge fn. The function holds the
+  status='pending' guard that prevents double-billing across
+  overlapping cron runs.
 - Never UPDATE `orders` from the diner-facing client. RLS restricts
   UPDATE to staff; diner calls silently fail. Use `mark-order-paid`.
 - Never insert into `reservation_deposit_payments` outside

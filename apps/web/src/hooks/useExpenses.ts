@@ -55,6 +55,11 @@ export type ExpenseRow = {
   created_at: string | null;
   updated_at?: string | null;
   deleted_at: string | null;
+  // Auto-import provenance (Stripe invoice → expense row via webhook).
+  // `source='auto:cenaiva'` marks rows the system created on the owner's
+  // behalf; the UI shows an "Auto" chip + disables inline editing.
+  external_ref?: string | null;
+  source?: string | null;
 };
 
 export type RecurringExpenseRule = {

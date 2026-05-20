@@ -4,6 +4,13 @@ import { ArrowLeft, CalendarDays, Clock, Loader2, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   ModifyBookingFields,
   type ModifyBookingValidity,
   type ModifyBookingValues,
@@ -258,6 +265,11 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
         ok?: boolean;
         error?: string;
         unavailable_reason?: string;
+        deposit_adjustment?: {
+          kind: "none" | "charged" | "refunded" | "failed";
+          amount_cents?: number;
+          reason?: string;
+        };
       };
       if (!res.ok || body.error || body.ok !== true) {
         const friendly = toUserFacingEdgeError(res, body as unknown as Record<string, unknown>);
@@ -268,7 +280,29 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       // Drop cached availability so the previous slot reappears + the new
       // one disappears for this device on the next view.
       invalidateAvailabilityCache(reservation.restaurant_id);
-      setDoneMessage("Your reservation has been updated. We've sent you a confirmation.");
+      // Surface deposit reconciliation outcome to the diner. The modify
+      // edge fn already moved the slot; if the extra deposit charge
+      // failed (e.g. card on file declined), the diner needs to know
+      // — they shouldn't see a clean "success" if money is owed.
+      const adj = body.deposit_adjustment;
+      if (adj?.kind === "failed") {
+        setDoneMessage(
+          "Your slot was updated, but we couldn't charge the extra deposit on your card. " +
+            "Please contact the restaurant or update your payment method to settle the difference."
+        );
+      } else if (adj?.kind === "charged" && typeof adj.amount_cents === "number") {
+        const dollars = (adj.amount_cents / 100).toFixed(2);
+        setDoneMessage(
+          `Your reservation has been updated. We charged an extra $${dollars} deposit to cover the larger party.`
+        );
+      } else if (adj?.kind === "refunded" && typeof adj.amount_cents === "number") {
+        const dollars = (adj.amount_cents / 100).toFixed(2);
+        setDoneMessage(
+          `Your reservation has been updated. We refunded $${dollars} since your party got smaller.`
+        );
+      } else {
+        setDoneMessage("Your reservation has been updated. We've sent you a confirmation.");
+      }
       setMode("done");
     } catch (err) {
       const friendly = toUserFacingError(err, "Couldn't update the reservation. Try again.");
@@ -393,22 +427,41 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
             </div>
           )}
 
-          {mode === "confirmCancel" && (
-            <div className="mt-6 rounded-xl border border-border bg-bg-elevated p-4">
-              <p className="text-sm text-white">Cancel this reservation?</p>
-              <p className="mt-1 text-xs text-text-muted">
-                The restaurant will be notified and the table will be released.
+          <Dialog
+            open={mode === "confirmCancel"}
+            onOpenChange={(open) => {
+              if (!open && !busy) setMode("view");
+            }}
+          >
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Cancel this reservation?</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-text-secondary">
+                Cancelling will release your table and notify the restaurant.
+                Any deposit or pre-order you've paid will be refunded to the
+                card you used. This can't be undone.
               </p>
-              <div className="mt-4 flex gap-2">
-                <Button variant="destructive" onClick={handleCancel} disabled={busy}>
-                  {busy ? "Cancelling…" : "Yes, cancel"}
-                </Button>
-                <Button variant="ghost" onClick={() => setMode("view")} disabled={busy}>
+              <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setMode("view")}
+                  disabled={busy}
+                >
                   Keep booking
                 </Button>
-              </div>
-            </div>
-          )}
+                <Button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={busy}
+                  className="bg-danger text-white hover:bg-danger/90"
+                >
+                  {busy ? "Cancelling…" : "Yes, cancel"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {mode === "modify" && modifyInitial && (
             <div className="mt-6 space-y-4">

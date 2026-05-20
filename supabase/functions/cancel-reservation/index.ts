@@ -140,12 +140,19 @@ Deno.serve(async (req: Request) => {
         return json({ error: "You don't have permission to cancel reservations at this restaurant" }, 403);
       }
       // Look up the linked guest for the cancellation notification.
-      const { data: linkedGuest } = await adminClient
-        .from("guests")
-        .select("id, full_name, email, phone")
-        .eq("id", reservation.guest_id)
-        .maybeSingle<GuestRow>();
-      guest = linkedGuest;
+      // Guard against null guest_id — synthetic test rows and some legacy
+      // bookings have no linked guest. Without the guard, supabase-js
+      // serializes .eq("id", null) as ?id=eq.null which PostgreSQL parses
+      // as the literal string 'null'::uuid → "invalid input syntax for
+      // type uuid" 400.
+      if (reservation.guest_id) {
+        const { data: linkedGuest } = await adminClient
+          .from("guests")
+          .select("id, full_name, email, phone")
+          .eq("id", reservation.guest_id)
+          .maybeSingle<GuestRow>();
+        guest = linkedGuest;
+      }
     } else if (bearerToken) {
       // Diner-initiated cancel (logged-in path).
       const {
@@ -161,28 +168,51 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
       if (profileError) return json({ error: profileError.message }, 400);
       if (!profile) return json({ error: "User profile not found" }, 403);
+      const profileId = (profile as { id: string }).id;
 
-      const { data: ownedGuest, error: guestError } = await adminClient
-        .from("guests")
-        .select("id, full_name, email, phone")
-        .eq("id", reservation.guest_id)
-        .eq("user_profile_id", profile.id)
-        .maybeSingle<GuestRow>();
-      if (guestError) return json({ error: guestError.message }, 400);
-      if (!ownedGuest) return json({ error: "You can only cancel your own reservations" }, 403);
-      guest = ownedGuest;
+      // Authorize: primary check is reservation.user_profile_id matching
+      // this user's profile (set when the diner booked while signed in).
+      // Guest-row ownership is the fallback for legacy or guest-checkout
+      // bookings linked to a profile after the fact.
+      let authorized = reservation.user_profile_id === profileId;
+      if (!authorized && reservation.guest_id) {
+        const { data: ownedRow, error: ownedError } = await adminClient
+          .from("guests")
+          .select("id")
+          .eq("id", reservation.guest_id)
+          .eq("user_profile_id", profileId)
+          .maybeSingle<{ id: string }>();
+        if (ownedError) return json({ error: ownedError.message }, 400);
+        authorized = ownedRow !== null;
+      }
+      if (!authorized) {
+        return json({ error: "You can only cancel your own reservations" }, 403);
+      }
+
+      // Look up the linked guest for the cancellation notification — same
+      // null guard as the owner branch.
+      if (reservation.guest_id) {
+        const { data: linkedGuest } = await adminClient
+          .from("guests")
+          .select("id, full_name, email, phone")
+          .eq("id", reservation.guest_id)
+          .maybeSingle<GuestRow>();
+        guest = linkedGuest;
+      }
     } else if (providedCode) {
       // Diner-initiated cancel (guest path with confirmation code).
       const expectedCode = (reservation.confirmation_code ?? "").trim();
       if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
         return json({ error: "Invalid confirmation code" }, 401);
       }
-      const { data: linkedGuest } = await adminClient
-        .from("guests")
-        .select("id, full_name, email, phone")
-        .eq("id", reservation.guest_id)
-        .maybeSingle<GuestRow>();
-      guest = linkedGuest;
+      if (reservation.guest_id) {
+        const { data: linkedGuest } = await adminClient
+          .from("guests")
+          .select("id, full_name, email, phone")
+          .eq("id", reservation.guest_id)
+          .maybeSingle<GuestRow>();
+        guest = linkedGuest;
+      }
     } else {
       return json({ error: "Authentication required" }, 401);
     }
@@ -501,6 +531,17 @@ Deno.serve(async (req: Request) => {
         }
       }
     }
+
+    // Close out any 'pending' deposit payer rows on this reservation
+    // (split-deposit co-payers who never paid). Without this they sit
+    // as zombies forever — and if a friend later clicks their unpaid
+    // link they'd land on a checkout for a cancelled reservation.
+    // No money moved, no Stripe call needed.
+    await adminClient
+      .from("reservation_deposit_payments")
+      .update({ status: "cancelled" })
+      .eq("reservation_id", reservationId)
+      .eq("status", "pending");
 
     // Notify non-organizer payers (friends who chipped in on a split
     // deposit) that their share was refunded. Fire-and-forget; never

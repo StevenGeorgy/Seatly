@@ -11,6 +11,7 @@ import {
   getSupabaseProjectUrl,
 } from "@/lib/supabase/client";
 import { toUserFacingEdgeError, toUserFacingError } from "@/lib/errors";
+import { computeDinerCharge } from "@/lib/stripe-fee";
 
 // Phase 7 of diner auth overhaul (2026-05-15): public landing page
 // for the magic links emailed to split-deposit payers. Anyone with
@@ -230,15 +231,36 @@ export default function DepositPayPage() {
                   <span className="text-white">{reservedDateLabel}</span> and asked you to
                   pay your share of the deposit.
                 </p>
-                <div className="mt-6 flex items-end justify-between rounded-2xl border border-border bg-bg-base/50 p-5">
-                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
-                    Your share
-                  </span>
-                  <span className="text-3xl font-semibold text-gold">
-                    {context.restaurant.currency} $
-                    {(context.payment.amount_cents / 100).toFixed(2)}
-                  </span>
-                </div>
+                {(() => {
+                  const charge = computeDinerCharge(context.payment.amount_cents);
+                  const ccy = context.restaurant.currency;
+                  return (
+                    <div className="mt-6 rounded-2xl border border-border bg-bg-base/50 p-5 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-secondary">Your share</span>
+                        <span className="text-text-primary">
+                          {ccy} ${(charge.baseCents / 100).toFixed(2)}
+                        </span>
+                      </div>
+                      {charge.processingFeeCents > 0 && (
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-text-secondary">Processing fee</span>
+                          <span className="text-text-primary">
+                            {ccy} ${(charge.processingFeeCents / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="mt-3 flex items-end justify-between border-t border-border pt-3">
+                        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                          Total
+                        </span>
+                        <span className="text-3xl font-semibold text-gold">
+                          {ccy} ${(charge.dinerTotalCents / 100).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -253,7 +275,7 @@ export default function DepositPayPage() {
                   restaurantId={context.restaurant.id}
                   amountCents={context.payment.amount_cents}
                   onPaid={handlePaid}
-                  payButtonLabel={`Pay ${context.restaurant.currency} $${(context.payment.amount_cents / 100).toFixed(2)}`}
+                  payButtonLabel={`Pay ${context.restaurant.currency} $${(computeDinerCharge(context.payment.amount_cents).dinerTotalCents / 100).toFixed(2)}`}
                 />
               </div>
             </div>

@@ -804,7 +804,19 @@ export default function ExpensesPage() {
                     <td className={cn("px-5 py-4 font-mono text-[10px] uppercase tracking-wider", row.type === "income" ? "text-success" : "text-gold")}>
                       {row.kind === "recurring" ? `Recurring ${row.type}` : typeLabel(row.type)}
                     </td>
-                    <td className="px-5 py-4 text-text-primary">{row.vendor}</td>
+                    <td className="px-5 py-4 text-text-primary">
+                      <div className="flex items-center gap-2">
+                        <span>{row.vendor}</span>
+                        {row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
+                          <span
+                            className="inline-flex items-center rounded-full border border-gold/30 bg-gold/10 px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-gold"
+                            title="Auto-imported from Cenaiva billing. Edit it in Stripe."
+                          >
+                            Auto
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="px-5 py-4 text-text-secondary">{categoryLabel(row.category)}</td>
                     <td className="px-5 py-4 text-text-secondary">
                       <div>{row.description}</div>
@@ -825,32 +837,38 @@ export default function ExpensesPage() {
                     </td>
                     <td className="px-5 py-4 text-right lg:px-6">
                       <div className="inline-flex items-center gap-1">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-text-muted hover:text-white"
-                          onClick={() => {
-                            if (row.kind === "expense") openEditForm(row.expense);
-                            else openEditRecurringForm(row.rule);
-                          }}
-                          aria-label={row.kind === "expense" ? `Edit ${row.type}` : `Edit recurring ${row.type}`}
-                        >
-                          <Pencil className="size-3.5" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-text-muted hover:text-danger"
-                          onClick={() => {
-                            if (row.kind === "expense") setDeleteTarget({ kind: "expense", expense: row.expense });
-                            else setDeleteTarget({ kind: "recurring", rule: row.rule });
-                          }}
-                          aria-label={row.kind === "expense" ? `Delete ${row.type}` : `Remove recurring ${row.type}`}
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
+                        {row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
+                          <span className="text-xs text-text-muted">Managed by Cenaiva</span>
+                        ) : (
+                          <>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-text-muted hover:text-white"
+                              onClick={() => {
+                                if (row.kind === "expense") openEditForm(row.expense);
+                                else openEditRecurringForm(row.rule);
+                              }}
+                              aria-label={row.kind === "expense" ? `Edit ${row.type}` : `Edit recurring ${row.type}`}
+                            >
+                              <Pencil className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-text-muted hover:text-danger"
+                              onClick={() => {
+                                if (row.kind === "expense") setDeleteTarget({ kind: "expense", expense: row.expense });
+                                else setDeleteTarget({ kind: "recurring", rule: row.rule });
+                              }}
+                              aria-label={row.kind === "expense" ? `Delete ${row.type}` : `Remove recurring ${row.type}`}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>

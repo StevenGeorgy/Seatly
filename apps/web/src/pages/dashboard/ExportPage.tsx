@@ -128,6 +128,7 @@ export default function ExportPage() {
     expensesData: true,
     payrollData: false,
     analyticsData: false,
+    cenaivaBillingData: false,
   });
 
   const [fromDate, setFromDate] = useState<Date | undefined>(undefined);
@@ -140,6 +141,7 @@ export default function ExportPage() {
     { key: "expensesData", label: t("dashboard.export.expensesData") },
     { key: "payrollData", label: t("dashboard.export.payrollData") },
     { key: "analyticsData", label: t("dashboard.export.analyticsData") },
+    { key: "cenaivaBillingData", label: "Cenaiva billing statements" },
   ];
   const selectedCount = inclusions.filter((inc) => selected[inc.key]).length;
 
@@ -219,6 +221,48 @@ export default function ExportPage() {
           .eq("restaurant_id", selectedRestaurantId);
         if (error) throw error;
         downloadCSV("analytics.csv", toCSV((data ?? []) as Record<string, unknown>[]));
+        exported++;
+      }
+
+      if (selected.cenaivaBillingData) {
+        // Year-end tax doc export. Pulls only the auto-imported Cenaiva
+        // charges from the expenses table (subscription + booking fees).
+        // Owner hands this CSV to their accountant alongside the
+        // Stripe-hosted invoice PDFs from Settings → Billing.
+        let q = client
+          .from("expenses")
+          .select("expense_date, description, total_amount, currency, external_ref, paid_at")
+          .eq("restaurant_id", selectedRestaurantId)
+          .eq("source", "auto:cenaiva")
+          .order("expense_date", { ascending: false });
+        if (from) q = q.gte("expense_date", from.slice(0, 10));
+        if (to) q = q.lte("expense_date", to.slice(0, 10));
+        const { data, error } = await q;
+        if (error) throw error;
+        const rows = (data ?? []).map((r) => {
+          const row = r as {
+            expense_date: string;
+            description: string | null;
+            total_amount: number | string | null;
+            currency: string | null;
+            external_ref: string | null;
+            paid_at: string | null;
+          };
+          const desc = row.description ?? "";
+          const lineType = desc.toLowerCase().includes("booking")
+            ? "booking_fees"
+            : "subscription";
+          return {
+            date: row.expense_date,
+            type: lineType,
+            description: desc,
+            amount_cad: row.total_amount ?? 0,
+            currency: row.currency ?? "cad",
+            invoice_id: row.external_ref ?? "",
+            paid_at: row.paid_at ?? "",
+          };
+        });
+        downloadCSV("cenaiva-billing.csv", toCSV(rows as Record<string, unknown>[]));
         exported++;
       }
 

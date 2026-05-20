@@ -1,20 +1,29 @@
 // Step 8 — Payment setup. Phase D wire-up of:
-//   A. Stripe Connect Embedded onboarding (KYC) — restaurants accept deposits/orders
-//   B. $199 CAD/month Cenaiva subscription with 90-day free trial (Stripe Billing)
+//   A. Stripe Connect Embedded onboarding (KYC) — restaurants accept
+//      deposits/orders.
+//   B. Subscription card collection ($199.99 CAD/month, 90-day free
+//      trial) — collected here as a card-on-file. The trial does NOT
+//      start when the card is saved; it starts when the owner clicks
+//      "Publish my restaurant" and confirms in the modal.
 //
-// Publish gate: enabled only when BOTH
-//   - stripe_charges_enabled === true (set by stripe-webhook on account.updated)
-//   - subscription_status in ('trialing', 'active') (set by create-subscription
-//     immediately + reaffirmed by stripe-webhook on customer.subscription.*)
+// 2026-05-20 lifecycle rework: card-save and trial-start are now
+// decoupled. Three render states for the subscription card section
+// (driven by `payment_method_attached_at` + `subscription_status`):
+//   State A — no card on file, no sub → mount <SubscriptionCard>.
+//   State B — card on file, no sub → "Card on file" notice with a
+//             "Use a different card" toggle that mounts
+//             <ChangeSubscriptionCard>.
+//   State C — sub active → existing "Trial active · Free until …"
+//             notice with the "Change card" toggle.
 //
-// Replaces the interim Step8InterimPublish component which only required a
-// cover photo to flip is_published=true.
+// Publish flow: the big "Publish my restaurant" button opens a
+// shadcn Dialog confirming the trial-start. "Yes, publish" calls the
+// `publish-restaurant` edge fn (which creates the Stripe subscription
+// + flips `is_published=true` atomically).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Rocket } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2, CreditCard, Loader2, Rocket } from "lucide-react";
 import { toast } from "sonner";
-
-import { cn } from "@/lib/utils";
 
 import {
   loadConnectAndInitialize,
@@ -24,15 +33,16 @@ import {
   ConnectAccountOnboarding,
   ConnectComponentsProvider,
 } from "@stripe/react-connect-js";
-import {
-  Elements,
-  PaymentElement,
-  useElements,
-  useStripe,
-} from "@stripe/react-stripe-js";
-import type { Stripe as StripeJs } from "@stripe/stripe-js";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { stripePromise, isStripeConfigured } from "@/lib/stripe";
 import {
@@ -45,6 +55,13 @@ import {
   toUserFacingEdgeError,
   toUserFacingError,
 } from "@/lib/errors";
+
+import {
+  PUBLISH_CONFIRM_DISCLOSURE,
+} from "@/components/billing/disclosures";
+import { SubscriptionCard } from "@/components/billing/SubscriptionCard";
+import { ChangeSubscriptionCard } from "@/components/billing/ChangeSubscriptionCard";
+import { CardOnFileBadge } from "@/components/billing/CardOnFileBadge";
 
 type Step8PaymentSetupProps = {
   restaurantId: string;
@@ -65,6 +82,8 @@ type SummaryRow = {
   stripe_details_submitted: boolean | null;
   subscription_status: string | null;
   trial_ends_at: string | null;
+  payment_method_attached_at: string | null;
+  is_published: boolean | null;
 };
 
 type ShiftRow = { name: string | null; turn_time_minutes: number | null };
@@ -72,6 +91,9 @@ type TableRow = { capacity: number | null };
 type TierItem = { category_name: string | null; count: number };
 
 const SUBSCRIPTION_OK_STATUSES = new Set(["trialing", "active"]);
+
+const RESTAURANT_SELECT_COLUMNS =
+  "cover_photo_url, name, city, price_range, deposit_tiers, hours_json, stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted, subscription_status, trial_ends_at, payment_method_attached_at, is_published";
 
 function priceLabel(level: number | null): string {
   if (level === 1) return "$";
@@ -257,204 +279,6 @@ function StripeConnectEmbeddedKYC({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section B — Subscription card (Stripe Elements + SetupIntent)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function SubscriptionCardInner({
-  restaurantId,
-  onSubscriptionReady,
-}: {
-  restaurantId: string;
-  onSubscriptionReady: (info: { status: string; trial_ends_at: string | null }) => void;
-}) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!stripe || !elements) return;
-      setSubmitting(true);
-      setError(null);
-      try {
-        const { error: submitError } = await elements.submit();
-        if (submitError) {
-          const friendly = toUserFacingError(submitError, "Please check your card details.");
-          setError(friendly.message);
-          console.error("[Step8PaymentSetup.subscription.submit]", friendly.code, friendly.technical ?? submitError);
-          return;
-        }
-        const { setupIntent, error: confirmError } = await stripe.confirmSetup({
-          elements,
-          redirect: "if_required",
-        });
-        // Recovery path: if the SetupIntent was already confirmed in a prior
-        // submit attempt (e.g., create-subscription failed downstream and the
-        // user clicked Submit again without refreshing), Stripe returns
-        // setup_intent_unexpected_state. The error includes the prior
-        // SetupIntent — reuse its PaymentMethod and skip straight to
-        // create-subscription.
-        const recoveredSetupIntent =
-          confirmError &&
-          (confirmError as { code?: string }).code === "setup_intent_unexpected_state"
-            ? (confirmError as { setup_intent?: { status?: string; payment_method?: string } })
-                .setup_intent
-            : null;
-        if (
-          confirmError &&
-          !(recoveredSetupIntent && recoveredSetupIntent.status === "succeeded")
-        ) {
-          const friendly = toUserFacingError(confirmError, "Couldn't confirm your card.");
-          setError(friendly.message);
-          console.error("[Step8PaymentSetup.subscription.confirm]", friendly.code, friendly.technical ?? confirmError);
-          return;
-        }
-        const paymentMethodId =
-          typeof setupIntent?.payment_method === "string"
-            ? setupIntent.payment_method
-            : typeof recoveredSetupIntent?.payment_method === "string"
-              ? recoveredSetupIntent.payment_method
-              : null;
-        if (!paymentMethodId) {
-          setError("Stripe didn't return a payment method. Try again.");
-          return;
-        }
-        const subRes = await invokeEdgeFunction<{
-          subscription_id: string;
-          status: string;
-          trial_ends_at: string | null;
-        }>("create-subscription", {
-          restaurant_id: restaurantId,
-          payment_method_id: paymentMethodId,
-        });
-        if (!subRes.ok) {
-          setError(subRes.error);
-          return;
-        }
-        onSubscriptionReady({
-          status: subRes.data.status,
-          trial_ends_at: subRes.data.trial_ends_at,
-        });
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [stripe, elements, restaurantId, onSubscriptionReady],
-  );
-
-  return (
-    <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
-      {/* Owners paying their monthly subscription won't benefit from Stripe
-          Link (they pay once and forget). paymentMethodOrder=['card'] hides
-          the "Secure, fast checkout with Link" badge and the Apple/Google
-          Pay tabs — clean card-only form. Diner-side payments
-          (StripePaymentForm.tsx) keep Link + wallets enabled for future
-          returning-customer conversion uplift. */}
-      <PaymentElement
-        options={{
-          layout: "tabs",
-          paymentMethodOrder: ["card"],
-          // Hide all wallet upsells including the Link "save your card" prompt
-          // that mounts above the card form even when payment_method_types is
-          // restricted to ["card"].
-          wallets: { applePay: "never", googlePay: "never", link: "never" },
-        }}
-      />
-      {error ? (
-        <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
-          {error}
-        </div>
-      ) : null}
-      <Button type="submit" disabled={!stripe || !elements || submitting} className="w-fit">
-        {submitting ? "Saving…" : "Start free trial"}
-      </Button>
-    </form>
-  );
-}
-
-function SubscriptionCard({
-  restaurantId,
-  stripePromiseRef,
-  onSubscriptionReady,
-}: {
-  restaurantId: string;
-  stripePromiseRef: Promise<StripeJs | null>;
-  onSubscriptionReady: (info: { status: string; trial_ends_at: string | null }) => void;
-}) {
-  // SetupIntent client_secret tied to the *restaurant's* Stripe customer.
-  // stripe-setup-intent accepts restaurant_id to target the restaurant
-  // customer — Stripe blocks moving a PaymentMethod between customers, so the
-  // SetupIntent must be created on the same customer create-subscription bills.
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const fetchedRef = useRef(false);
-
-  useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
-    void (async () => {
-      const res = await invokeEdgeFunction<{ client_secret: string | null }>(
-        "stripe-setup-intent",
-        { restaurant_id: restaurantId },
-      );
-      if (!res.ok) {
-        setError(res.error);
-        return;
-      }
-      if (!res.data.client_secret) {
-        setError("Stripe is not configured on the server.");
-        return;
-      }
-      setClientSecret(res.data.client_secret);
-    })();
-  }, [restaurantId]);
-
-  if (error) {
-    return (
-      <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
-        <p className="font-semibold text-warning">Couldn't load card form.</p>
-        <p className="mt-1">{error}</p>
-      </div>
-    );
-  }
-  if (!clientSecret) {
-    return (
-      <div className="flex items-center gap-2 rounded-2xl border border-border bg-bg-surface p-6 text-sm text-text-muted">
-        <Loader2 className="size-4 animate-spin" /> Preparing checkout…
-      </div>
-    );
-  }
-
-  return (
-    <Elements
-      stripe={stripePromiseRef}
-      options={{
-        clientSecret,
-        appearance: {
-          theme: "night",
-          variables: {
-            colorPrimary: "#D4AF37",
-            colorBackground: "#0A0A0A",
-            colorText: "#FFFFFF",
-            colorDanger: "#EF4444",
-            fontFamily: "system-ui, -apple-system, sans-serif",
-            borderRadius: "10px",
-            spacingUnit: "4px",
-          },
-        },
-      }}
-    >
-      <SubscriptionCardInner
-        restaurantId={restaurantId}
-        onSubscriptionReady={onSubscriptionReady}
-      />
-    </Elements>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Main Step 8 component
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -470,17 +294,29 @@ export function Step8PaymentSetup({
   const [tierItems, setTierItems] = useState<TierItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
+  // Toggles between the "Trial active" / "Card on file" badge and
+  // the in-page Change-card form (see ChangeSubscriptionCard). Owners
+  // stay on cenaiva.com instead of being bounced to billing.stripe.com.
+  const [showChangeCard, setShowChangeCard] = useState(false);
+  // Bumped after a card-change so the CardOnFileBadge refetches.
+  const [cardRefreshKey, setCardRefreshKey] = useState(0);
   // Poll counter for the KYC verification webhook after Connect onExit.
   const [pollingKyc, setPollingKyc] = useState(false);
+  // Trial-start confirmation modal — gates the actual publish call so
+  // owners explicitly opt into the 90-day clock starting.
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  // Referral program is dormant — UI removed, backend accepts but ignores.
+  // Keep this null so the save-subscription-payment-method call never sends
+  // a code. Re-enable by re-mounting <ReferralCodeField> + restoring the
+  // setter wiring.
+  const referralCode: string | null = null;
 
   const refreshRestaurantRow = useCallback(async () => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
     const { data } = await client
       .from("restaurants")
-      .select(
-        "cover_photo_url, name, city, price_range, deposit_tiers, hours_json, stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted, subscription_status, trial_ends_at",
-      )
+      .select(RESTAURANT_SELECT_COLUMNS)
       .eq("id", restaurantId)
       .maybeSingle();
     setSummary((data ?? null) as SummaryRow | null);
@@ -497,9 +333,7 @@ export function Step8PaymentSetup({
       const [restRes, shiftRes, tableRes, catRes] = await Promise.all([
         client
           .from("restaurants")
-          .select(
-            "cover_photo_url, name, city, price_range, deposit_tiers, hours_json, stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted, subscription_status, trial_ends_at",
-          )
+          .select(RESTAURANT_SELECT_COLUMNS)
           .eq("id", restaurantId)
           .maybeSingle(),
         client
@@ -572,19 +406,43 @@ export function Step8PaymentSetup({
     setPollingKyc(false);
   }, [restaurantId, refreshRestaurantRow]);
 
-  const handleSubscriptionReady = useCallback(
-    async (_info: { status: string; trial_ends_at: string | null }) => {
-      await refreshRestaurantRow();
-      toast.success("Subscription started — you're on the 90-day free trial.");
-    },
-    [refreshRestaurantRow],
-  );
+  const handleCardChanged = useCallback(async () => {
+    setShowChangeCard(false);
+    setCardRefreshKey((k) => k + 1);
+    toast.success("Card updated. The new card will be used for your next charge.");
+    await refreshRestaurantRow();
+  }, [refreshRestaurantRow]);
 
+  const handlePaymentMethodSaved = useCallback(async () => {
+    setCardRefreshKey((k) => k + 1);
+    await refreshRestaurantRow();
+    toast.success("Card saved. Your trial starts when you publish.");
+  }, [refreshRestaurantRow]);
+
+  // ────── Derived state (new lifecycle: card-save ≠ trial-start) ─────
   const kycVerified = summary?.stripe_charges_enabled === true;
+  const hasPaymentMethodOnFile = Boolean(summary?.payment_method_attached_at);
   const subscriptionStatus = summary?.subscription_status ?? null;
   const subscriptionActive =
     subscriptionStatus !== null && SUBSCRIPTION_OK_STATUSES.has(subscriptionStatus);
-  const publishReady = kycVerified && subscriptionActive && Boolean(summary?.cover_photo_url);
+  const isPublished = summary?.is_published === true;
+  // "Trial active" is only meaningful when the restaurant is actually live.
+  // If a sub exists but the restaurant isn't published (test artifact, owner
+  // manually unpublished, or grandfathered state) treat it as "card on file"
+  // — don't celebrate the trial until publish has actually occurred.
+  const showTrialActive = subscriptionActive && isPublished;
+  const subscriptionAsCardOnFile = subscriptionActive && !isPublished;
+  const publishReady =
+    kycVerified
+    && (hasPaymentMethodOnFile || subscriptionActive)
+    && Boolean(summary?.cover_photo_url);
+
+  // Client-side preview of the trial end date for the confirm modal.
+  // The server is authoritative — this is for display only.
+  const previewTrialEnd = useMemo(
+    () => formatTrialEnd(new Date(Date.now() + 90 * 86_400_000).toISOString()),
+    [],
+  );
 
   const publish = async () => {
     if (!isSupabaseConfigured()) {
@@ -594,18 +452,21 @@ export function Step8PaymentSetup({
     setPublishing(true);
     onBusyChange(true);
     try {
-      const client = getSupabaseBrowserClient();
-      const { error } = await client
-        .from("restaurants")
-        .update({ is_published: true })
-        .eq("id", restaurantId);
-      if (error) {
-        const friendly = toUserFacingError(error, "Couldn't publish your restaurant.");
-        toast.error(`Couldn't publish: ${friendly.message}`);
-        console.error("[Step8PaymentSetup.publish]", friendly.code, friendly.technical ?? error);
+      const res = await invokeEdgeFunction<{
+        ok: true;
+        subscription_id: string;
+        subscription_status: string;
+        trial_ends_at: string;
+      }>("publish-restaurant", {
+        restaurant_id: restaurantId,
+        disclosure_text: PUBLISH_CONFIRM_DISCLOSURE(previewTrialEnd),
+      });
+      if (!res.ok) {
+        toast.error(`Couldn't publish: ${res.error}`);
         return;
       }
       toast.success("Your restaurant is live!");
+      await refreshRestaurantRow();
       onPublished();
     } finally {
       setPublishing(false);
@@ -615,13 +476,22 @@ export function Step8PaymentSetup({
 
   const stripeNotConfiguredOnFrontend = !isStripeConfigured || !publishableKey;
 
+  // Label for the "Subscription" row in the setup summary list.
+  const subscriptionSummaryLabel = subscriptionActive
+    ? subscriptionStatus === "trialing"
+      ? `Trialing — free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}`
+      : "Active"
+    : hasPaymentMethodOnFile
+      ? "Card on file · trial starts at publish"
+      : "No card on file";
+
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-bold sm:text-3xl">Payments &amp; publish</h1>
         <p className="mt-1 text-sm text-text-muted">
           Set up where your money lands and add a card for your monthly Cenaiva subscription.
-          Free for 90 days, then $199 CAD/month.
+          Free for 90 days, then $199.99 CAD/month.
         </p>
       </div>
 
@@ -702,15 +572,9 @@ export function Step8PaymentSetup({
               }
             />
             <SummaryItem
-              ok={subscriptionActive}
+              ok={subscriptionActive || hasPaymentMethodOnFile}
               label="Subscription"
-              value={
-                subscriptionActive
-                  ? subscriptionStatus === "trialing"
-                    ? `Trialing — free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}`
-                    : "Active"
-                  : "No card on file"
-              }
+              value={subscriptionSummaryLabel}
             />
           </ul>
         )}
@@ -766,28 +630,100 @@ export function Step8PaymentSetup({
             <div>
               <h2 className="text-lg font-semibold">Your Cenaiva subscription</h2>
               <p className="text-sm text-text-muted">
-                $199 CAD/month. Free for the first 90 days — no charge until{" "}
-                {formatTrialEnd(summary?.trial_ends_at ?? null)}. Cancel anytime.
+                $199.99 CAD/month. Free for the first 90 days — your trial starts when you
+                publish. Cancel anytime.
               </p>
             </div>
-            {subscriptionActive ? (
+            {showTrialActive ? (
               <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300">
                 <CheckCircle2 className="size-3.5" />{" "}
                 {subscriptionStatus === "trialing" ? "Trial active" : "Active"}
               </span>
+            ) : hasPaymentMethodOnFile || subscriptionAsCardOnFile ? (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300">
+                <CheckCircle2 className="size-3.5" /> Card on file
+              </span>
             ) : null}
           </div>
-          {subscriptionActive ? (
-            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              {subscriptionStatus === "trialing"
-                ? `Free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}, then $200/month.`
-                : "Subscription is active."}
+
+          {/* State C — subscription active AND restaurant published: trial badge. */}
+          {showTrialActive ? (
+            <div className="space-y-3">
+              {showChangeCard && stripePromise ? (
+                <ChangeSubscriptionCard
+                  restaurantId={restaurantId}
+                  stripePromiseRef={stripePromise}
+                  onSuccess={() => void handleCardChanged()}
+                  onCancel={() => setShowChangeCard(false)}
+                />
+              ) : (
+                <>
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+                    {subscriptionStatus === "trialing"
+                      ? `Free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}, then $199.99/month.`
+                      : "Subscription is active."}
+                  </div>
+                  <div className="rounded-xl border border-border bg-bg-elevated/40 p-3">
+                    <CardOnFileBadge restaurantId={restaurantId} refreshKey={cardRefreshKey} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!stripePromise}
+                      onClick={() => setShowChangeCard(true)}
+                    >
+                      <CreditCard className="mr-1.5 size-3.5" />
+                      Change card
+                    </Button>
+                    <p className="text-xs text-text-muted">
+                      Replace the card on file. Used for your next charge.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : hasPaymentMethodOnFile || subscriptionAsCardOnFile ? (
+            // State B — card on file, no sub yet. Trial starts at publish.
+            <div className="space-y-3">
+              {showChangeCard && stripePromise ? (
+                <ChangeSubscriptionCard
+                  restaurantId={restaurantId}
+                  stripePromiseRef={stripePromise}
+                  onSuccess={() => void handleCardChanged()}
+                  onCancel={() => setShowChangeCard(false)}
+                />
+              ) : (
+                <>
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+                    ✓ Card on file. Your 90-day free trial starts when you publish.
+                  </div>
+                  <div className="rounded-xl border border-border bg-bg-elevated/40 p-3">
+                    <CardOnFileBadge restaurantId={restaurantId} refreshKey={cardRefreshKey} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!stripePromise}
+                      onClick={() => setShowChangeCard(true)}
+                    >
+                      <CreditCard className="mr-1.5 size-3.5" />
+                      Use a different card
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           ) : stripePromise ? (
+            // State A — no card on file, no sub. Mount the card form.
             <SubscriptionCard
               restaurantId={restaurantId}
               stripePromiseRef={stripePromise}
-              onSubscriptionReady={(info) => void handleSubscriptionReady(info)}
+              referralCode={referralCode}
+              onPaymentMethodSaved={() => void handlePaymentMethodSaved()}
             />
           ) : null}
         </section>
@@ -802,6 +738,7 @@ export function Step8PaymentSetup({
             </p>
             <PublishHints
               kycVerified={kycVerified}
+              hasPaymentMethodOnFile={hasPaymentMethodOnFile}
               subscriptionActive={subscriptionActive}
               hasCover={Boolean(summary?.cover_photo_url)}
             />
@@ -812,34 +749,65 @@ export function Step8PaymentSetup({
             type="button"
             size="lg"
             onClick={() => {
-              if (publishing || loading) return;
-              if (!publishReady) {
-                toast.error("Complete the steps above first.");
-                return;
-              }
-              void publish();
+              if (publishing || loading || !publishReady) return;
+              setConfirmPublish(true);
             }}
-            disabled={publishing || loading}
-            className={cn(
-              "gap-2 px-8",
-              !publishReady && !loading && "opacity-60",
-            )}
+            disabled={publishing || loading || !publishReady}
+            title={
+              !publishReady
+                ? "Complete the steps above to publish (see hints)."
+                : undefined
+            }
+            className="gap-2 px-8"
           >
             <Rocket className="size-4" />
             {publishing ? "Publishing…" : "Publish my restaurant"}
           </Button>
         </div>
       </div>
+
+      {/* Trial-start confirmation modal — required step before the
+          publish-restaurant edge fn creates the Stripe subscription. */}
+      <Dialog open={confirmPublish} onOpenChange={setConfirmPublish}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ready to go live?</DialogTitle>
+            <DialogDescription>
+              {PUBLISH_CONFIRM_DISCLOSURE(previewTrialEnd)}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmPublish(false)}
+              disabled={publishing}
+            >
+              Not yet
+            </Button>
+            <Button
+              onClick={() => {
+                setConfirmPublish(false);
+                void publish();
+              }}
+              disabled={publishing}
+            >
+              {publishing ? "Publishing…" : "Yes, publish"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function PublishHints({
   kycVerified,
+  hasPaymentMethodOnFile,
   subscriptionActive,
   hasCover,
 }: {
   kycVerified: boolean;
+  hasPaymentMethodOnFile: boolean;
   subscriptionActive: boolean;
   hasCover: boolean;
 }) {
@@ -847,9 +815,11 @@ function PublishHints({
     const out: string[] = [];
     if (!hasCover) out.push("Add a cover photo on Step 6.");
     if (!kycVerified) out.push("Complete Stripe verification (Section A).");
-    if (!subscriptionActive) out.push("Add a card for the subscription (Section B).");
+    if (!hasPaymentMethodOnFile && !subscriptionActive) {
+      out.push("Save a card so your trial can start (Section B).");
+    }
     return out;
-  }, [hasCover, kycVerified, subscriptionActive]);
+  }, [hasCover, kycVerified, hasPaymentMethodOnFile, subscriptionActive]);
   if (missing.length === 0) return null;
   return (
     <ul className="list-disc space-y-1 pl-5 text-sm text-warning">

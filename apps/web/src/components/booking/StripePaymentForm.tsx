@@ -240,6 +240,18 @@ function PaymentSurface({
         mode: "payment",
         amount: amountCents,
         currency: "cad",
+        // Card + wallets: deferred-PI mode auto-detects methods unless we
+        // explicitly limit. We allow card (which Stripe transparently
+        // includes Apple Pay / Google Pay tokenization for); Klarna /
+        // Affirm / Link are excluded.
+        paymentMethodTypes: ["card"],
+        // Save-card flag — must match the PI's setup_future_usage on
+        // server. When the logged-in diner ticked "Save this card",
+        // both Elements and the server PI need this so Stripe attaches
+        // the PM to their customer during the charge.
+        ...(isLoggedIn && saveCard
+          ? { setupFutureUsage: "off_session" as const }
+          : {}),
         appearance: {
           theme: "night",
           variables: {
@@ -522,19 +534,31 @@ function OneTimeCardForm({
           return;
         }
 
-        // 2. Create the PaymentIntent JIT.
+        // 2. Create the PaymentIntent JIT. When the diner is logged in
+        // and ticked "save this card", we pass `save_card: true` AND a
+        // bearer token so the server can attach the PI to their Stripe
+        // customer with setup_future_usage. Without this the PM is
+        // one-time-use and can't be saved post-charge.
+        const intentHeaders: Record<string, string> = {
+          apikey: getSupabaseAnonKey(),
+          "Content-Type": "application/json",
+        };
+        if (isLoggedIn && saveCard) {
+          const client = getSupabaseBrowserClient();
+          const { data: sessionData } = await client.auth.getSession();
+          const token = sessionData.session?.access_token;
+          if (token) intentHeaders.Authorization = `Bearer ${token}`;
+        }
         const intentRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/create-public-payment-intent`,
           {
             method: "POST",
-            headers: {
-              apikey: getSupabaseAnonKey(),
-              "Content-Type": "application/json",
-            },
+            headers: intentHeaders,
             body: JSON.stringify({
               restaurant_id: restaurantId,
               amount_cents: amountCents,
               hold_id: holdId,
+              save_card: isLoggedIn && saveCard,
             }),
           },
         );
@@ -600,7 +624,18 @@ function OneTimeCardForm({
           ← Use a saved card instead
         </button>
       ) : null}
-      <PaymentElement options={{ layout: "tabs" }} />
+      <PaymentElement
+        options={{
+          layout: "tabs",
+          // Card + wallets only. Server pins payment_method_types=['card']
+          // on the PI which still allows Apple Pay & Google Pay (they're
+          // tokenized cards under the hood) — Klarna / Affirm never appear.
+          // `link: "never"` suppresses the "Secure, fast checkout with
+          // Link" banner that mounts above the card form.
+          paymentMethodOrder: ["card", "apple_pay", "google_pay"],
+          wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+        }}
+      />
       {isLoggedIn ? (
         <label className="flex cursor-pointer items-center gap-2 text-sm text-text-secondary">
           <input

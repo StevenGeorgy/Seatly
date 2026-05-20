@@ -9,6 +9,7 @@ import {
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { computeDinerCharge } from "../_shared/stripe-fee.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ModifyReservationSchema } from "../_shared/validation/booking.ts";
 
@@ -341,6 +342,64 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // Pre-flight: if the party size change requires MORE deposit and the
+    // diner has no saved card on file, reject BEFORE the slot RPC commits.
+    // Otherwise we'd end up with party_size updated but no deposit charged
+    // (the post-RPC charge path returns 402 but the slot is already changed).
+    // Fix shipped 2026-05-20 after audit found this state-mismatch bug.
+    if (partySize !== reservation.party_size) {
+      const { data: newExpectedRaw } = await adminClient.rpc("compute_deposit_for_party", {
+        p_restaurant_id: reservation.restaurant_id,
+        p_party_size: partySize,
+      });
+      const newExpectedCents = Number(newExpectedRaw) || 0;
+      const { data: chargedSumRaw } = await adminClient
+        .from("reservation_deposit_payments")
+        .select("amount_cents")
+        .eq("reservation_id", reservationId)
+        .eq("status", "charged");
+      const currentChargedCents = ((chargedSumRaw ?? []) as Array<{ amount_cents: number }>)
+        .reduce((sum, r) => sum + (r.amount_cents ?? 0), 0);
+      const wouldOweCents = newExpectedCents - currentChargedCents;
+      if (wouldOweCents > 0) {
+        // Need to charge a delta. Verify the diner CAN pay it before we
+        // commit the slot change.
+        if (!reservation.user_profile_id) {
+          return json({
+            error: "Increasing your party size needs a saved card. Please contact the restaurant to update.",
+            unavailable_reason: "modify_requires_card",
+            delta_cents: wouldOweCents,
+          }, 402);
+        }
+        const { data: profileRaw } = await adminClient
+          .from("user_profiles")
+          .select("stripe_customer_id")
+          .eq("id", reservation.user_profile_id)
+          .maybeSingle();
+        const profileCheck = profileRaw as { stripe_customer_id: string | null } | null;
+        if (!profileCheck?.stripe_customer_id) {
+          return json({
+            error: "Increasing your party size needs a card on file. Add one in Account → Payment first.",
+            unavailable_reason: "modify_requires_card",
+            delta_cents: wouldOweCents,
+          }, 402);
+        }
+        const { data: cardCheckRaw } = await adminClient
+          .from("saved_cards")
+          .select("id")
+          .eq("user_profile_id", reservation.user_profile_id)
+          .limit(1)
+          .maybeSingle();
+        if (!cardCheckRaw) {
+          return json({
+            error: "Increasing your party size needs a card on file. Add one in Account → Payment first.",
+            unavailable_reason: "modify_requires_card",
+            delta_cents: wouldOweCents,
+          }, 402);
+        }
+      }
+    }
+
     const marker = `[Diner modified booking at ${new Date().toISOString()}]`;
     const previousNotes = reservation.internal_notes?.trim();
     const internalNotes = previousNotes ? `${previousNotes}\n${marker}` : marker;
@@ -534,9 +593,14 @@ Deno.serve(async (req: Request) => {
           const { default: Stripe } = await import("npm:stripe@17");
           const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
           const currency = (restaurant?.currency ?? "CAD").toLowerCase();
-          const applicationFeeCents = Math.round(deltaCents * 0.055);
+          // Diner pays the deposit delta + Stripe processing fee on top.
+          // application_fee_amount is 5.5% of the BASE delta.
+          const deltaCharge = computeDinerCharge(deltaCents);
+          const dinerDeltaCents = deltaCharge.dinerTotalCents;
+          const deltaProcessingFeeCents = deltaCharge.processingFeeCents;
+          const applicationFeeCents = deltaCharge.applicationFeeCents;
           const piParams: Record<string, unknown> = {
-            amount: deltaCents,
+            amount: dinerDeltaCents,
             currency,
             customer: profile.stripe_customer_id,
             payment_method: pmId,
@@ -545,6 +609,8 @@ Deno.serve(async (req: Request) => {
             metadata: {
               reservation_id: reservationId,
               kind: "modify_deposit_delta",
+              base_amount_cents: String(deltaCents),
+              processing_fee_cents: String(deltaProcessingFeeCents),
             },
             description: `Additional deposit for ${restaurantName}`,
           };
@@ -554,24 +620,43 @@ Deno.serve(async (req: Request) => {
           }
 
           try {
-            const pi = await stripe.paymentIntents.create(piParams);
+            // Idempotency key keyed on reservation + payer + delta so two
+            // concurrent modify requests (e.g. user double-tap) collapse
+            // into a single Stripe charge. Retry within 24h reuses the same
+            // PI per Stripe's idempotency contract.
+            const idempKey =
+              `modify_${reservationId}_${profile.id}_${deltaCents}`;
+            const pi = await stripe.paymentIntents.create(piParams, {
+              idempotencyKey: idempKey,
+            });
             if (pi.status === "succeeded" || pi.status === "processing") {
               const payerEmail =
                 reservation.guest_email?.trim() || guest?.email?.trim() || "diner@unknown";
               const payerName =
                 reservation.guest_full_name?.trim() || guest?.full_name?.trim() || "Diner";
-              await adminClient
+              // Dedup guard: if a prior call already stamped this exact PI
+              // (e.g. browser retry after a 5xx between PI create and DB
+              // insert), don't insert a duplicate row.
+              const { data: existingPay } = await adminClient
                 .from("reservation_deposit_payments")
-                .insert({
-                  reservation_id: reservationId,
-                  amount_cents: deltaCents,
-                  stripe_payment_intent_id: pi.id,
-                  status: "charged",
-                  payer_email: payerEmail,
-                  payer_full_name: payerName,
-                  paid_at: new Date().toISOString(),
-                  payer_user_profile_id: reservation.user_profile_id,
-                });
+                .select("id")
+                .eq("reservation_id", reservationId)
+                .eq("stripe_payment_intent_id", pi.id)
+                .maybeSingle();
+              if (!existingPay) {
+                await adminClient
+                  .from("reservation_deposit_payments")
+                  .insert({
+                    reservation_id: reservationId,
+                    amount_cents: deltaCents,
+                    stripe_payment_intent_id: pi.id,
+                    status: "charged",
+                    payer_email: payerEmail,
+                    payer_full_name: payerName,
+                    paid_at: new Date().toISOString(),
+                    payer_user_profile_id: reservation.user_profile_id,
+                  });
+              }
               depositAdjustment = {
                 kind: "charged",
                 amount_cents: deltaCents,
@@ -593,6 +678,40 @@ Deno.serve(async (req: Request) => {
             const msg = err instanceof Error ? err.message : String(err);
             console.warn("[modify-reservation] deposit delta charge failed:", msg);
             depositAdjustment = { kind: "failed", reason: msg };
+            // Rollback: charge failed but slot was already updated. Revert
+            // party_size to the original so the diner isn't on the hook
+            // for a bigger party without paying the delta. Audit
+            // (2026-05-20) flagged this state-mismatch bug — pre-flight
+            // catches "no card on file", but a card decline after the
+            // RPC committed needs reversal here.
+            if (partySize !== reservation.party_size) {
+              try {
+                await adminClient.rpc("modify_reservation_slot", {
+                  p_reservation_id: reservationId,
+                  p_restaurant_id: reservation.restaurant_id,
+                  p_shift_id: selectedShift.id,
+                  p_new_reserved_at: reservedAtIso,
+                  p_new_party_size: reservation.party_size,
+                  p_turn_minutes: turnMinutes,
+                });
+                depositAdjustment = {
+                  kind: "failed",
+                  reason: `${msg} (party size reverted to ${reservation.party_size})`,
+                };
+              } catch (revertErr) {
+                console.error(
+                  "[modify-reservation] rollback FAILED — diner is on a bigger party with no delta charged:",
+                  revertErr instanceof Error ? revertErr.message : revertErr,
+                );
+                // Worst case: slot got taken by another booking during
+                // the brief window. Surface clearly so the restaurant
+                // can resolve manually.
+                depositAdjustment = {
+                  kind: "failed",
+                  reason: `${msg} (slot change could not be reverted — contact restaurant)`,
+                };
+              }
+            }
           }
         }
       } else if (deltaCents < 0) {

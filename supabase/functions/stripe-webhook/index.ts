@@ -66,6 +66,29 @@ type SubscriptionLike = {
   customer?: string;
   status?: string;
   trial_end?: number | null;
+  cancel_at_period_end?: boolean | null;
+  pause_collection?: { behavior?: string | null } | null;
+};
+
+type InvoiceLineLike = {
+  amount?: number;
+  description?: string | null;
+  quantity?: number | null;
+  price?: { id?: string; recurring?: { interval?: string } | null } | null;
+};
+
+type InvoiceLike = {
+  id?: string;
+  customer?: string;
+  amount_paid?: number;
+  amount_due?: number;
+  currency?: string;
+  status?: string;
+  number?: string | null;
+  hosted_invoice_url?: string | null;
+  invoice_pdf?: string | null;
+  status_transitions?: { paid_at?: number | null } | null;
+  lines?: { data?: InvoiceLineLike[] } | null;
 };
 
 type PaymentIntentLike = {
@@ -103,18 +126,331 @@ async function handleAccountDeauthorized(account: AccountLike): Promise<void> {
   if (error) console.error("[stripe-webhook] account.deauthorized failed", error);
 }
 
+async function dispatchOwnerNotification(
+  restaurantId: string,
+  type:
+    | "payment_failed"
+    | "payment_recovered"
+    | "payment_received",
+  context: Record<string, unknown>,
+): Promise<void> {
+  // Helper may not exist on first deploy — wrap in try/catch so webhook
+  // processing never fails on a missing import.
+  try {
+    const mod = await import("../_shared/owner-notifications.ts").catch(() => null);
+    if (
+      mod &&
+      typeof (mod as { sendOwnerNotification?: unknown }).sendOwnerNotification === "function"
+    ) {
+      void (mod as {
+        sendOwnerNotification: (opts: Record<string, unknown>) => Promise<unknown>;
+      })
+        .sendOwnerNotification({
+          supabase: supabaseAdmin,
+          restaurant_id: restaurantId,
+          type,
+          context,
+        })
+        .catch((e: unknown) => {
+          console.warn(
+            "[stripe-webhook] sendOwnerNotification rejected",
+            e instanceof Error ? e.message : String(e),
+          );
+        });
+    }
+  } catch (notifErr) {
+    console.warn(
+      "[stripe-webhook] notification import/dispatch failed",
+      notifErr instanceof Error ? notifErr.message : String(notifErr),
+    );
+  }
+}
+
+// invoice.payment_succeeded — fires when Stripe charges the owner's monthly
+// subscription invoice (subscription + accumulated booking-fee invoiceItems).
+// We:
+//   1) Look up the restaurant by stripe_customer_id
+//   2) Insert 2 rows into `expenses` (subscription + booking-fee summary) with
+//      external_ref=invoice.id so replays don't duplicate
+//   3) Fire the payment_received notification (Resend email)
+//
+// Idempotency: pre-check on (restaurant_id, external_ref). If any row exists
+// for this invoice id, we skip the entire flow. Replays land here harmlessly.
+async function handleInvoicePaymentSucceeded(invoice: InvoiceLike): Promise<void> {
+  if (!invoice.id || !invoice.customer) {
+    console.warn("[stripe-webhook] invoice.payment_succeeded missing id/customer");
+    return;
+  }
+
+  // 1) Find the restaurant by customer id
+  const { data: restRow, error: restErr } = await supabaseAdmin
+    .from("restaurants")
+    .select("id, name, email, currency")
+    .eq("stripe_customer_id", invoice.customer)
+    .maybeSingle();
+  if (restErr || !restRow) {
+    console.warn(
+      "[stripe-webhook] invoice.payment_succeeded: no restaurant for customer",
+      invoice.customer,
+      restErr,
+    );
+    return;
+  }
+  const restaurant = restRow as {
+    id: string;
+    name: string | null;
+    email: string | null;
+    currency: string | null;
+  };
+
+  // 2) Idempotency pre-check — has any expense row already been written for
+  // this invoice? If yes, skip the whole flow (notification + insert).
+  const { data: existing } = await supabaseAdmin
+    .from("expenses")
+    .select("id")
+    .eq("restaurant_id", restaurant.id)
+    .eq("external_ref", invoice.id)
+    .limit(1);
+  if (existing && existing.length > 0) {
+    console.log(
+      `[stripe-webhook] invoice.payment_succeeded ${invoice.id}: already processed (expense row exists), skipping`,
+    );
+    return;
+  }
+
+  // 3) Compute the line items. Stripe rolls all invoiceItems + the
+  // subscription line into invoice.lines.data.
+  //   - "Cenaiva subscription" line = the subscription line item (has
+  //     `price.recurring` set)
+  //   - "Cenaiva booking fee" lines = the per-booking invoiceItems we
+  //     created via bill-booking-fees
+  // We aggregate booking fees into ONE expense row (description shows the
+  // count). The subscription is its own row.
+  const lines = invoice.lines?.data ?? [];
+  let subscriptionCents = 0;
+  let bookingFeesCents = 0;
+  let bookingCount = 0;
+  for (const line of lines) {
+    const amount = typeof line.amount === "number" ? line.amount : 0;
+    const isRecurring = Boolean(line.price?.recurring);
+    if (isRecurring) {
+      subscriptionCents += amount;
+    } else {
+      // Treat any non-subscription line as a booking fee (bill-booking-fees
+      // is currently the only source of pending invoiceItems for these
+      // customers).
+      bookingFeesCents += amount;
+      bookingCount += typeof line.quantity === "number" ? line.quantity : 1;
+    }
+  }
+
+  // 4) Look up an owner profile to use as `created_by` on the inserted rows
+  // (expenses.created_by is NOT NULL). Any owner role works; pick the
+  // earliest.
+  const { data: ownerRow } = await supabaseAdmin
+    .from("user_restaurant_roles")
+    .select("user_id")
+    .eq("restaurant_id", restaurant.id)
+    .eq("role", "owner")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const createdBy = (ownerRow as { user_id?: string } | null)?.user_id ?? null;
+  if (!createdBy) {
+    console.warn(
+      `[stripe-webhook] invoice.payment_succeeded ${invoice.id}: no owner role found for restaurant ${restaurant.id}; skipping expense rows`,
+    );
+  }
+
+  // 5) Insert expense rows. Currency column expects lowercase 3-char code.
+  const currency = (invoice.currency ?? restaurant.currency ?? "cad").toLowerCase();
+  const paidAtIso = invoice.status_transitions?.paid_at
+    ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
+    : new Date().toISOString();
+  const expenseDate = paidAtIso.slice(0, 10); // YYYY-MM-DD
+
+  const rowsToInsert: Array<Record<string, unknown>> = [];
+  if (createdBy && subscriptionCents > 0) {
+    const dollars = Math.round(subscriptionCents) / 100;
+    rowsToInsert.push({
+      restaurant_id: restaurant.id,
+      created_by: createdBy,
+      category: "other", // closest fit; no software_subscriptions category exists
+      vendor_name: "Cenaiva",
+      description: "Cenaiva subscription",
+      amount: dollars,
+      total_amount: dollars,
+      currency,
+      expense_date: expenseDate,
+      payment_status: "paid",
+      paid_at: paidAtIso,
+      transaction_type: "expense",
+      external_ref: invoice.id,
+      source: "auto:cenaiva",
+    });
+  }
+  if (createdBy && bookingFeesCents > 0) {
+    const dollars = Math.round(bookingFeesCents) / 100;
+    rowsToInsert.push({
+      restaurant_id: restaurant.id,
+      created_by: createdBy,
+      category: "other",
+      vendor_name: "Cenaiva",
+      description: `Cenaiva booking fees (${bookingCount} booking${bookingCount === 1 ? "" : "s"})`,
+      amount: dollars,
+      total_amount: dollars,
+      currency,
+      expense_date: expenseDate,
+      payment_status: "paid",
+      paid_at: paidAtIso,
+      transaction_type: "expense",
+      external_ref: invoice.id,
+      source: "auto:cenaiva",
+    });
+  }
+
+  if (rowsToInsert.length > 0) {
+    const { error: insertErr } = await supabaseAdmin
+      .from("expenses")
+      .insert(rowsToInsert);
+    if (insertErr) {
+      console.error(
+        `[stripe-webhook] invoice.payment_succeeded ${invoice.id}: expense insert failed`,
+        insertErr,
+      );
+      // Don't bail — still try to fire the email notification below.
+    }
+  }
+
+  // 6) Fire the payment_received notification (Resend email).
+  const totalCents =
+    typeof invoice.amount_paid === "number" ? invoice.amount_paid : 0;
+  const amountStr = `$${(Math.round(totalCents) / 100).toFixed(2)} ${currency.toUpperCase()}`;
+  const paidOnStr = new Date(paidAtIso).toLocaleDateString("en-CA", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  await dispatchOwnerNotification(restaurant.id, "payment_received", {
+    amount: amountStr,
+    paidOn: paidOnStr,
+    hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
+    invoicePdfUrl: invoice.invoice_pdf ?? null,
+    invoiceNumber: invoice.number ?? null,
+    bookingCount,
+    restaurantName: restaurant.name ?? "your restaurant",
+  });
+
+  console.log(
+    `[stripe-webhook] invoice.payment_succeeded ${invoice.id}: processed (sub=${subscriptionCents}¢, fees=${bookingFeesCents}¢ from ${bookingCount} bookings)`,
+  );
+}
+
 async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
   if (!sub.customer) return;
   const trialEndsAt =
     typeof sub.trial_end === "number" ? new Date(sub.trial_end * 1000).toISOString() : null;
+  const status = sub.status ?? null;
+  // Mirror cancel/pause flags so the dashboard + lifecycle controls pick
+  // up the latest state without waiting for the user to refresh. Both
+  // optional — only override the column when the field is present on the
+  // event payload.
+  const cancelAtPeriodEnd =
+    typeof sub.cancel_at_period_end === "boolean" ? sub.cancel_at_period_end : null;
+  const pauseBehavior = sub.pause_collection?.behavior ?? null;
+  const update: Record<string, unknown> = {
+    subscription_status: status,
+    trial_ends_at: trialEndsAt,
+  };
+  if (cancelAtPeriodEnd !== null) {
+    update.subscription_cancel_at_period_end = cancelAtPeriodEnd;
+  }
+  // When `pause_collection` is set (any non-null behavior) treat as paused;
+  // when explicitly null on the event, clear the local timestamp.
+  if (sub.pause_collection !== undefined) {
+    update.subscription_paused_at = pauseBehavior
+      ? new Date().toISOString()
+      : null;
+  }
+
+  // Look up the current restaurant state to drive the right side-effect.
+  const { data: rest } = await supabaseAdmin
+    .from("restaurants")
+    .select("id, is_published, paused_reason, deleted_at, name, email")
+    .eq("stripe_customer_id", sub.customer)
+    .maybeSingle();
+
+  if (!rest) {
+    // No matching row yet (rare race with create-customer). Mirror status
+    // without touching publish flags.
+    const { error } = await supabaseAdmin
+      .from("restaurants")
+      .update(update)
+      .eq("stripe_customer_id", sub.customer);
+    if (error) console.error("[stripe-webhook] subscription upsert (no-rest) failed", error);
+    return;
+  }
+
+  const row = rest as {
+    id: string;
+    is_published: boolean | null;
+    paused_reason: string | null;
+    deleted_at: string | null;
+    name: string | null;
+    email: string | null;
+  };
+
+  // Mid-deletion: never republish, never overwrite the deletion banner.
+  // Just mirror the Stripe status fields and stop.
+  if (row.deleted_at !== null) {
+    const { error } = await supabaseAdmin
+      .from("restaurants")
+      .update(update)
+      .eq("stripe_customer_id", sub.customer);
+    if (error) console.error("[stripe-webhook] subscription upsert (deleted) failed", error);
+    return;
+  }
+
+  const wasPaymentFailed = row.paused_reason === "payment_failed";
+  let firedPaymentFailed = false;
+  let firedPaymentRecovered = false;
+
+  if (status === "unpaid" || status === "canceled") {
+    update.is_published = false;
+    update.paused_reason = "payment_failed";
+    if (!wasPaymentFailed) firedPaymentFailed = true;
+  } else if (status === "trialing" || status === "active") {
+    if (wasPaymentFailed) {
+      // Recovery path. The publish-gate trigger will reject if other
+      // conditions (KYC, cover photo) aren't met — that's fine; the row's
+      // is_published stays false and the owner gets a notification anyway.
+      update.is_published = true;
+      update.paused_reason = null;
+      firedPaymentRecovered = true;
+    }
+  }
+  // 'past_due' / 'incomplete': leave publish flags alone — Stripe is still
+  // retrying. We only react to terminal-ish states.
+
   const { error } = await supabaseAdmin
     .from("restaurants")
-    .update({
-      subscription_status: sub.status ?? null,
-      trial_ends_at: trialEndsAt,
-    })
+    .update(update)
     .eq("stripe_customer_id", sub.customer);
   if (error) console.error("[stripe-webhook] subscription upsert failed", error);
+
+  // Fire owner-notification emails on the transitions we care about.
+  if (firedPaymentFailed && row.email) {
+    await dispatchOwnerNotification(row.id, "payment_failed", {
+      restaurant_name: row.name,
+      subscription_status: status,
+    });
+  }
+  if (firedPaymentRecovered && row.email) {
+    await dispatchOwnerNotification(row.id, "payment_recovered", {
+      restaurant_name: row.name,
+      subscription_status: status,
+    });
+  }
 }
 
 async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void> {
@@ -234,13 +570,19 @@ async function handlePaymentIntentFailed(pi: PaymentIntentLike): Promise<void> {
 
 async function handleSubscriptionDeleted(sub: SubscriptionLike): Promise<void> {
   if (!sub.customer) return;
+  // Skip restaurants in the soft-delete pipeline — they have their own
+  // `paused_reason='pending_deletion'` we shouldn't overwrite.
   const { error } = await supabaseAdmin
     .from("restaurants")
     .update({
       subscription_status: "canceled",
       is_published: false,
+      paused_reason: "subscription_cancelled",
+      subscription_cancel_at_period_end: false,
+      subscription_paused_at: null,
     })
-    .eq("stripe_customer_id", sub.customer);
+    .eq("stripe_customer_id", sub.customer)
+    .neq("paused_reason", "pending_deletion");
   if (error) console.error("[stripe-webhook] subscription deleted failed", error);
 }
 
@@ -264,9 +606,16 @@ Deno.serve(async (req: Request) => {
   if (!signature) return jsonRes({ error: "Missing stripe-signature" }, 400);
 
   const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-  const webhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
-  if (!stripeKey || !webhookSecret) {
-    // Don't leak which secret is missing.
+  // Dual-secret verification: Stripe sends Connect events from one endpoint
+  // (signed with STRIPE_WEBHOOK_SECRET) and platform-account events from
+  // another (signed with STRIPE_WEBHOOK_SECRET_PLATFORM). The handler accepts
+  // either signature so a single function serves both endpoints. We try each
+  // in order — whichever verifies wins.
+  const candidateSecrets = [
+    Deno.env.get("STRIPE_WEBHOOK_SECRET"),
+    Deno.env.get("STRIPE_WEBHOOK_SECRET_PLATFORM"),
+  ].filter((s): s is string => Boolean(s));
+  if (!stripeKey || candidateSecrets.length === 0) {
     return jsonRes({ error: "Stripe webhook not configured" }, 500);
   }
 
@@ -275,17 +624,22 @@ Deno.serve(async (req: Request) => {
   const { default: Stripe } = await import("npm:stripe@17");
   const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
 
-  let event: { id: string; type: string; data: { object: Record<string, unknown> } };
-  try {
-    // constructEventAsync is required on Deno — the sync variant uses Node crypto.
-    event = (await stripe.webhooks.constructEventAsync(
-      rawBody,
-      signature,
-      webhookSecret,
-    )) as { id: string; type: string; data: { object: Record<string, unknown> } };
-  } catch (err) {
-    // Strip any text that might echo back the body or secret.
-    const msg = err instanceof Error ? err.message : "Signature verification failed";
+  let event: { id: string; type: string; data: { object: Record<string, unknown> } } | null = null;
+  let lastErr: unknown = null;
+  for (const sec of candidateSecrets) {
+    try {
+      event = (await stripe.webhooks.constructEventAsync(
+        rawBody,
+        signature,
+        sec,
+      )) as { id: string; type: string; data: { object: Record<string, unknown> } };
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!event) {
+    const msg = lastErr instanceof Error ? lastErr.message : "Signature verification failed";
     return jsonRes({ error: `Webhook signature verification failed: ${msg}` }, 400);
   }
 
@@ -320,6 +674,15 @@ Deno.serve(async (req: Request) => {
         break;
       case "invoice.payment_failed":
         console.log(`[stripe-webhook] ${event.type} (${event.id}) — logged, no DB write`);
+        break;
+      case "invoice.payment_succeeded":
+        await handleInvoicePaymentSucceeded(event.data.object as InvoiceLike);
+        break;
+      case "invoice.finalized":
+        // Reserved — fires when Stripe locks in the bill (about to charge).
+        // We could send a "your bill is ready" notification here later. For
+        // now just log it so we can see the events arriving.
+        console.log(`[stripe-webhook] invoice.finalized (${event.id}) — logged, no DB write`);
         break;
       default:
         console.log(`[stripe-webhook] unhandled event ${event.type} (${event.id})`);

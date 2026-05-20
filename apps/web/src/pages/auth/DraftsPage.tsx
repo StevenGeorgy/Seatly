@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, ChevronLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronLeft, CreditCard, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -32,11 +32,29 @@ type DraftRow = {
   hours_json: HoursJson | null;
   cover_photo_url: string | null;
   deposit_tiers: unknown[] | null;
+  payment_method_attached_at: string | null;
   created_at: string;
   hasTables: boolean;
   hasShift: boolean;
   tierItemCount: number;
 };
+
+// 90-day grace period before the stale-card cleanup cron detaches saved
+// cards on never-published drafts. Kept in sync with
+// supabase/functions/cleanup-stale-onboarding-cards/index.ts:58-60.
+const CARD_CLEANUP_DAYS = 90;
+
+function computeCardCountdown(attachedAt: string | null): {
+  daysLeft: number;
+  tone: "neutral" | "amber" | "red";
+} | null {
+  if (!attachedAt) return null;
+  const ms = Date.now() - new Date(attachedAt).getTime();
+  const daysElapsed = Math.floor(ms / 86400000);
+  const daysLeft = Math.max(0, CARD_CLEANUP_DAYS - daysElapsed);
+  const tone = daysLeft < 3 ? "red" : daysLeft < 14 ? "amber" : "neutral";
+  return { daysLeft, tone };
+}
 
 function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -85,7 +103,7 @@ export default function DraftsPage() {
     const { data: restaurants } = await client
       .from("restaurants")
       .select(
-        "id, name, address, city, province, hours_json, cover_photo_url, deposit_tiers, created_at",
+        "id, name, address, city, province, hours_json, cover_photo_url, deposit_tiers, payment_method_attached_at, created_at",
       )
       .in("id", ownedIds)
       .eq("is_published", false)
@@ -100,6 +118,7 @@ export default function DraftsPage() {
       hours_json: HoursJson | null;
       cover_photo_url: string | null;
       deposit_tiers: unknown[] | null;
+      payment_method_attached_at: string | null;
       created_at: string;
     }>;
 
@@ -148,6 +167,7 @@ export default function DraftsPage() {
           hours_json: row.hours_json,
           cover_photo_url: row.cover_photo_url,
           deposit_tiers: row.deposit_tiers,
+          payment_method_attached_at: row.payment_method_attached_at,
           created_at: row.created_at,
           hasTables: (tableCount ?? 0) > 0,
           hasShift: (shiftCount ?? 0) > 0,
@@ -355,6 +375,27 @@ export default function DraftsPage() {
                       {location ? <> · {location}</> : null}
                       <> · Updated {formatRelativeTime(draft.created_at)}</>
                     </div>
+                    {(() => {
+                      const cd = computeCardCountdown(draft.payment_method_attached_at);
+                      if (!cd) return null;
+                      const toneClass =
+                        cd.tone === "red"
+                          ? "text-danger"
+                          : cd.tone === "amber"
+                            ? "text-warning"
+                            : "text-text-muted";
+                      return (
+                        <div
+                          className={`mt-0.5 inline-flex items-center gap-1.5 text-xs ${toneClass}`}
+                          title="If you don't publish before then, your saved card will be removed automatically. You can save a new one any time."
+                        >
+                          <CreditCard className="size-3.5" />
+                          <span>
+                            Card on file · {cd.daysLeft} day{cd.daysLeft === 1 ? "" : "s"} left to publish before card is removed
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </button>
                   <Button
                     asChild

@@ -92,14 +92,22 @@ export async function runPostHoldConversion({
     } else {
       const orderId = order.id as string;
       const { error: itemsErr } = await supabase.from("order_items").insert(
-        cartItems.map((item: Record<string, unknown>) => ({
-          order_id: orderId,
-          status: paymentIntentId ? "paid" : "pending",
-          menu_item_id: item.menu_item_id,
-          name: item.name,
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-        })),
+        cartItems.map((item: Record<string, unknown>) => {
+          const qty = Number(item.quantity ?? 0);
+          const unit = Number(item.unit_price ?? 0);
+          return {
+            order_id: orderId,
+            status: paymentIntentId ? "paid" : "pending",
+            menu_item_id: item.menu_item_id,
+            name: item.name,
+            quantity: qty,
+            unit_price: unit,
+            // line_total is NOT NULL in the schema with no default; the
+            // restaurant dashboard reads this column directly so we have to
+            // compute it here rather than relying on the DB to derive it.
+            line_total: Math.round(qty * unit * 100) / 100,
+          };
+        }),
       );
       if (itemsErr) {
         console.error("runPostHoldConversion: order_items insert failed", itemsErr);
