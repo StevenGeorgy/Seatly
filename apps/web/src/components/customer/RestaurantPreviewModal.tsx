@@ -33,6 +33,8 @@ import { usePublicMenuCategories, usePublicMenuItems } from "@/hooks/useMenuItem
 import { useRestaurant } from "@/hooks/useRestaurant";
 import { useRestaurantReviews } from "@/hooks/useRestaurantReviews";
 import { useRestaurantPhotos, type RestaurantPhoto } from "@/hooks/useRestaurantPhotos";
+import type { RestaurantTheme } from "@/hooks/useStaffRestaurants";
+import { applyRestaurantTheme, resetTheme } from "@/lib/theme";
 import { PhotoReviewDialog } from "@/components/customer/PhotoReviewDialog";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
@@ -76,6 +78,12 @@ type RestaurantPreviewModalProps = {
   currencyCode?: string;
   availabilityNotice?: string | null;
   previewBannerText?: string;
+  /** Optional in-memory theme to apply while the modal is open. Used by
+   *  the onboarding wizard's "Preview as diner" flow so the owner sees
+   *  their picked brand color before the draft has been published. If
+   *  omitted, the modal falls back to the restaurant's saved
+   *  settings_json.theme (which only resolves for published rows). */
+  themeOverride?: RestaurantTheme | null;
   onClose: () => void;
   onToggleFavorite: () => void;
   onReserve: (
@@ -162,6 +170,7 @@ export function RestaurantPreviewModal({
   currencyCode = "cad",
   availabilityNotice,
   previewBannerText,
+  themeOverride,
   onClose,
   onToggleFavorite,
   onReserve,
@@ -463,6 +472,26 @@ export function RestaurantPreviewModal({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [restaurant, onClose]);
+
+  // Re-skin the preview using the restaurant's brand color. Two sources,
+  // in priority order:
+  //   1. `themeOverride` — set by the wizard's "Preview as diner" path,
+  //      which passes the in-memory color picked on Step 6 before the
+  //      draft is publishable (`useRestaurant` filters on is_published
+  //      and won't return it).
+  //   2. `matchedRestaurantDetails.settings_json.theme` — the saved
+  //      theme on a published restaurant (Discover / Deals preview path).
+  // Reset on close or unmount so the wizard chrome / Discover page
+  // return to Cenaiva defaults.
+  const resolvedTheme: RestaurantTheme | null =
+    themeOverride ?? matchedRestaurantDetails?.settings_json?.theme ?? null;
+  useEffect(() => {
+    if (!restaurant) return;
+    applyRestaurantTheme(resolvedTheme);
+    return () => {
+      resetTheme();
+    };
+  }, [restaurant, resolvedTheme]);
 
   return (
     <AnimatePresence>

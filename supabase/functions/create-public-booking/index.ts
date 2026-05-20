@@ -10,6 +10,7 @@ import {
 } from "../_shared/closures.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { BookingInputSchema } from "../_shared/validation/booking.ts";
+import { notifyOwnerNewReservation } from "../_shared/owner-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -440,6 +441,31 @@ Deno.serve(async (req: Request) => {
           reservationId: row.reservation_id,
           paymentIntentId: null,
         });
+        // Owner notification (fire-and-forget). Hold-conversion path doesn't
+        // carry guest/party details in scope — query the reservation row for
+        // them. Skip silently if the owner has the toggle off (the helper
+        // handles preference + restaurants.email bypass internally).
+        void (async () => {
+          try {
+            const { data: r } = await supabase
+              .from("reservations")
+              .select("restaurant_id, reserved_at, party_size, guest_full_name, confirmation_code")
+              .eq("id", row.reservation_id)
+              .maybeSingle();
+            if (!r) return;
+            await notifyOwnerNewReservation({
+              supabase,
+              restaurant_id: (r as any).restaurant_id,
+              reservation_id: row.reservation_id,
+              reserved_at: (r as any).reserved_at,
+              party_size: (r as any).party_size,
+              guest_full_name: (r as any).guest_full_name ?? null,
+              confirmation_code: (r as any).confirmation_code ?? null,
+            });
+          } catch (err) {
+            console.error("[create-public-booking.hold-convert] notifyOwnerNewReservation failed", err);
+          }
+        })();
       }
 
       return jsonResponse({
@@ -724,6 +750,22 @@ Deno.serve(async (req: Request) => {
         campaign_id: reservationId,
       });
     }
+
+    // Owner notification (fire-and-forget). Honors the owner's
+    // notification_preferences_json.new_reservation_email toggle internally
+    // — no need to gate here. Goes to the owner's user_profile.email, never
+    // restaurants.email (the shared inbox).
+    void notifyOwnerNewReservation({
+      supabase,
+      restaurant_id: restaurantId,
+      reservation_id: reservationId,
+      reserved_at: reservedAt.toISOString(),
+      party_size: partySize,
+      guest_full_name: guestName,
+      confirmation_code: savedConfirmationCode,
+    }).catch((err) => {
+      console.error("[create-public-booking] notifyOwnerNewReservation failed", err);
+    });
 
     return jsonResponse({
       reservation_id: reservationId,

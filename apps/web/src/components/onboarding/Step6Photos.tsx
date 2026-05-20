@@ -1,26 +1,35 @@
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon, Trash2, Upload, X } from "lucide-react";
+import { ImageIcon, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import type { RestaurantSettings } from "@/hooks/useStaffRestaurants";
+import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
+import type { RestaurantSettings, RestaurantTheme } from "@/hooks/useStaffRestaurants";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { assertImageSizeOk } from "@/lib/images/assertImageSize";
+import { cn } from "@/lib/utils";
 
 type Step6PhotosProps = {
   restaurantId: string;
-  onComplete: () => void;
+  /** Receives the saved primary theme color so SetupPage can pass it
+   *  to the "Preview as diner" modal without an extra DB roundtrip. */
+  onComplete: (themeColor: string) => void;
   onBusyChange: (busy: boolean) => void;
 };
 
-type GalleryEntry = {
-  key: string;
-  url: string;
-  caption: string;
-};
+const DEFAULT_PRIMARY_COLOR = "#C9A84C";
+const DEFAULT_ACCENT_COLOR = "#22C55E";
+const DEFAULT_BACKGROUND_COLOR = "#0A0A0A";
+
+function isLightHex(hex: string): boolean {
+  const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!match) return false;
+  const r = parseInt(match[1], 16);
+  const g = parseInt(match[2], 16);
+  const b = parseInt(match[3], 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5;
+}
 
 const SUPPORTED_MIME: Array<{ mime: string; extensions: string[] }> = [
   { mime: "image/jpeg", extensions: ["jpg", "jpeg"] },
@@ -41,10 +50,10 @@ function resolveImage(file: File): { mime: string } | null {
   return byExt ? { mime: byExt.mime } : null;
 }
 
-function makeKey(): string {
-  return `g-${crypto.randomUUID()}`;
-}
-
+// galleryUrls stays in the type for pass-through preservation — owners
+// who upload gallery photos post-publish via Settings shouldn't have
+// them wiped when they revisit the wizard. The wizard's submit just
+// forwards whatever was already there.
 type RestaurantSettingsWithGallery = RestaurantSettings & {
   galleryUrls?: Array<{ url: string; caption: string | null }> | null;
 };
@@ -57,16 +66,16 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
-  const [gallery, setGallery] = useState<GalleryEntry[]>([]);
-  const [galleryFiles, setGalleryFiles] = useState<Map<string, File>>(new Map());
   const [existingSettings, setExistingSettings] = useState<RestaurantSettingsWithGallery>({});
+  const [primaryColor, setPrimaryColor] = useState<string>(DEFAULT_PRIMARY_COLOR);
+  const [accentColor, setAccentColor] = useState<string>(DEFAULT_ACCENT_COLOR);
+  const [backgroundColor, setBackgroundColor] = useState<string>(DEFAULT_BACKGROUND_COLOR);
   const [hydrated, setHydrated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const objectUrlsRef = useRef<string[]>([]);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => () => {
     objectUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
@@ -97,16 +106,16 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
         setCoverUrl(row.cover_photo_url);
         setLogoUrl(row.logo_url);
         setExistingSettings(row.settings_json ?? {});
-        const existingGallery = Array.isArray(row.settings_json?.galleryUrls)
-          ? (row.settings_json?.galleryUrls ?? [])
-          : [];
-        setGallery(
-          existingGallery.map((g) => ({
-            key: makeKey(),
-            url: g.url,
-            caption: g.caption ?? "",
-          })),
-        );
+        const savedTheme = row.settings_json?.theme ?? null;
+        if (savedTheme?.primaryColor && /^#[0-9a-f]{6}$/i.test(savedTheme.primaryColor)) {
+          setPrimaryColor(savedTheme.primaryColor);
+        }
+        if (savedTheme?.accentColor && /^#[0-9a-f]{6}$/i.test(savedTheme.accentColor)) {
+          setAccentColor(savedTheme.accentColor);
+        }
+        if (savedTheme?.backgroundColor && /^#[0-9a-f]{6}$/i.test(savedTheme.backgroundColor)) {
+          setBackgroundColor(savedTheme.backgroundColor);
+        }
       }
       setHydrated(true);
     })();
@@ -163,40 +172,6 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
     setLogoPreview(url);
   };
 
-  const addGalleryFiles = (files: FileList) => {
-    const arr = Array.from(files);
-    const valid = arr.filter((f) => Boolean(resolveImage(f)) && assertImageSizeOk(f));
-    if (valid.length < arr.length) {
-      // Either mime or size rejected; assertImageSizeOk has already toasted
-      // for size, so only mention mime when no toast already fired.
-    }
-    if (valid.length === 0) return;
-    const additions: GalleryEntry[] = [];
-    const nextFiles = new Map(galleryFiles);
-    for (const f of valid) {
-      const previewUrl = URL.createObjectURL(f);
-      objectUrlsRef.current.push(previewUrl);
-      const key = makeKey();
-      additions.push({ key, url: previewUrl, caption: "" });
-      nextFiles.set(key, f);
-    }
-    setGalleryFiles(nextFiles);
-    setGallery((prev) => [...prev, ...additions]);
-  };
-
-  const updateCaption = (key: string, caption: string) => {
-    setGallery((prev) => prev.map((g) => (g.key === key ? { ...g, caption } : g)));
-  };
-
-  const removeGalleryEntry = (key: string) => {
-    setGallery((prev) => prev.filter((g) => g.key !== key));
-    setGalleryFiles((prev) => {
-      const next = new Map(prev);
-      next.delete(key);
-      return next;
-    });
-  };
-
   const removeCover = () => {
     setCoverFile(null);
     setCoverPreview(null);
@@ -235,27 +210,22 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
         nextLogoUrl = uploaded;
       }
 
-      const finalGallery: Array<{ url: string; caption: string | null }> = [];
-      for (const entry of gallery) {
-        const pendingFile = galleryFiles.get(entry.key);
-        if (pendingFile) {
-          const uploaded = await uploadFile(pendingFile, "gallery");
-          if (!uploaded) return;
-          finalGallery.push({
-            url: uploaded,
-            caption: entry.caption.trim() || null,
-          });
-        } else {
-          finalGallery.push({
-            url: entry.url,
-            caption: entry.caption.trim() || null,
-          });
-        }
-      }
+      // Gallery is no longer surfaced in the wizard. Pass through any
+      // existing galleryUrls untouched so owners who uploaded them via
+      // Settings post-publish don't lose them when they revisit the
+      // wizard.
+      const passthruGallery = existingSettings.galleryUrls ?? null;
 
+      const nextTheme: RestaurantTheme = {
+        ...(existingSettings.theme ?? {}),
+        primaryColor,
+        accentColor,
+        backgroundColor,
+      };
       const updatedSettings: RestaurantSettingsWithGallery = {
         ...existingSettings,
-        galleryUrls: finalGallery,
+        ...(passthruGallery !== null ? { galleryUrls: passthruGallery } : {}),
+        theme: nextTheme,
       };
 
       const client = getSupabaseBrowserClient();
@@ -275,7 +245,7 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
         return;
       }
       toast.success("Photos saved.");
-      onComplete();
+      onComplete(primaryColor);
     } finally {
       setSubmitting(false);
       onBusyChange(false);
@@ -390,73 +360,44 @@ export function Step6Photos({ restaurantId, onComplete, onBusyChange }: Step6Pho
         />
       </section>
 
-      <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Gallery</h2>
-            <p className="text-xs text-text-muted">
-              Add 3+ photos that show off your space and dishes. Optional.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => galleryInputRef.current?.click()}
-            className="gap-1.5"
-          >
-            <Upload className="size-3.5" />
-            Add photos
-          </Button>
+      <section className="flex flex-col gap-4 rounded-2xl border border-border bg-bg-surface p-5">
+        <div>
+          <h2 className="text-lg font-semibold">Theme colors</h2>
+          <p className="text-xs text-text-muted">
+            Used on your public page&apos;s buttons, accents, and
+            reservation CTA. Matches the picker you&apos;ll see in
+            Settings → Theme after you publish.
+          </p>
         </div>
-        <input
-          ref={galleryInputRef}
-          type="file"
-          accept={ACCEPT_ATTR}
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) {
-              addGalleryFiles(e.target.files);
-            }
-            e.target.value = "";
-          }}
-        />
-        {gallery.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/60 bg-bg-elevated/40 px-4 py-8 text-center text-sm text-text-muted">
-            No gallery photos yet.
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <ColorPicker label="Primary color" value={primaryColor} onChange={setPrimaryColor} />
+          <ColorPicker label="Accent color" value={accentColor} onChange={setAccentColor} />
+          <ColorPicker label="Background color" value={backgroundColor} onChange={setBackgroundColor} presets={BACKGROUND_PRESETS} />
+        </div>
+        <div>
+          <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Preview</span>
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-bg-elevated p-4">
+            <div
+              className={cn("flex h-9 items-center rounded-md px-4 text-sm font-medium")}
+              style={{ backgroundColor: primaryColor, color: isLightHex(primaryColor) ? "#0A0A0A" : "#FFFFFF" }}
+            >
+              Primary button
+            </div>
+            <div
+              className="flex h-9 items-center rounded-md border-2 px-4 text-sm font-medium"
+              style={{ borderColor: primaryColor, color: primaryColor }}
+            >
+              Outline button
+            </div>
+            <div
+              className="flex h-9 items-center rounded-md px-4 text-sm font-medium"
+              style={{ backgroundColor: accentColor, color: isLightHex(accentColor) ? "#0A0A0A" : "#FFFFFF" }}
+            >
+              Accent
+            </div>
+            <span className="text-sm font-semibold" style={{ color: primaryColor }}>Highlighted text</span>
           </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {gallery.map((g) => (
-              <div key={g.key} className="overflow-hidden rounded-xl border border-border bg-bg-elevated/40">
-                <div className="relative h-36 w-full">
-                  <img src={g.url} alt="" className="size-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => removeGalleryEntry(g.key)}
-                    aria-label="Remove photo"
-                    className="absolute right-2 top-2 rounded-full bg-bg-base/80 p-1 text-text-primary hover:bg-bg-base"
-                  >
-                    <X className="size-4" />
-                  </button>
-                </div>
-                <div className="p-3">
-                  <Label htmlFor={`caption-${g.key}`} className="sr-only">
-                    Caption
-                  </Label>
-                  <Input
-                    id={`caption-${g.key}`}
-                    value={g.caption}
-                    onChange={(e) => updateCaption(g.key, e.target.value)}
-                    placeholder="Caption (optional)"
-                    className="h-9"
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        </div>
       </section>
 
       <div className="flex items-center justify-end">

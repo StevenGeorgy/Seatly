@@ -35,6 +35,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
+import { useUser } from "@/hooks/useUser";
+import type { NotificationPreferences } from "@/types/auth";
 import { useRestaurantSeatTotal } from "@/hooks/useRestaurantSeatTotal";
 import {
   getSupabaseAnonKey,
@@ -553,27 +555,23 @@ async function invokeBillingEdgeFunction<TResult>(
   return { ok: true, data: parsed as TResult };
 }
 
-const NOTIFICATION_GROUPS = [
+// Two locked rows backed by real send paths in
+// `_shared/owner-notifications.ts` (`notifyOwnerNewReservation` /
+// `notifyOwnerCancellation`). Each `id` maps 1:1 to the JSON key on
+// `user_profiles.notification_preferences_json` that gates the send.
+// Default-on means a fresh owner sees both toggles checked AND the
+// edge fn treats a missing key as opted-in — adding new toggles
+// later won't silently disable them for existing rows.
+type NotificationToggleId = keyof NotificationPreferences;
+const NOTIFICATION_GROUPS: Array<{
+  title: string;
+  rows: Array<{ id: NotificationToggleId; label: string; desc: string }>;
+}> = [
   {
     title: "Reservations",
     rows: [
-      { id: "n-new-res", label: "New reservation", desc: "Email + push the host on duty.", email: true, push: true },
-      { id: "n-cancel", label: "Cancellations", desc: "Within the no-show window.", email: true, push: false },
-      { id: "n-vip", label: "VIP arriving tonight", desc: "Notify floor lead 90 min before seating.", email: false, push: true },
-    ],
-  },
-  {
-    title: "Operations",
-    rows: [
-      { id: "n-86", label: "86'd menu items", desc: "When inventory hits zero.", email: false, push: true },
-      { id: "n-late", label: "Staff late / no-show", desc: "After 10 minutes past clock-in.", email: true, push: true },
-    ],
-  },
-  {
-    title: "Billing",
-    rows: [
-      { id: "n-invoice", label: "Invoice ready", desc: "Sent to the billing contact.", email: true, push: false },
-      { id: "n-failed", label: "Payment failed", desc: "Card declined or balance issue.", email: true, push: true },
+      { id: "new_reservation_email", label: "New reservation", desc: "Email when a diner books a table." },
+      { id: "cancellation_email", label: "Cancellations", desc: "Email when a diner cancels their booking." },
     ],
   },
 ];
@@ -676,12 +674,60 @@ export default function SettingsPage() {
   const [backgroundColor, setBackgroundColor] = useState(existingTheme?.backgroundColor ?? "#0A0A0A");
   const [savingTheme, setSavingTheme] = useState(false);
 
-  // Notifications local state
-  const [notifPrefs, setNotifPrefs] = useState(() =>
-    Object.fromEntries(
-      NOTIFICATION_GROUPS.flatMap((g) => g.rows.map((r) => [r.id, { email: r.email, push: r.push }])),
-    ) as Record<string, { email: boolean; push: boolean }>,
-  );
+  // Notifications local state. Source-of-truth lives on
+  // `user_profiles.notification_preferences_json` for the signed-in
+  // owner. Missing keys are treated as "on" so a brand-new owner
+  // sees both toggles checked. On toggle change we optimistically
+  // update local state and persist via Supabase; the silent
+  // refreshUser() (from auth-context) refreshes the profile without
+  // unmounting the page.
+  const { profile, refreshUser } = useUser();
+  const profileId = profile?.id ?? null;
+  const [notifPrefs, setNotifPrefs] = useState<Record<NotificationToggleId, boolean>>({
+    new_reservation_email: true,
+    cancellation_email: true,
+  });
+  const [savingPref, setSavingPref] = useState<NotificationToggleId | null>(null);
+
+  useEffect(() => {
+    const saved = profile?.notification_preferences_json ?? null;
+    setNotifPrefs({
+      new_reservation_email: saved?.new_reservation_email !== false,
+      cancellation_email: saved?.cancellation_email !== false,
+    });
+  }, [profile?.notification_preferences_json]);
+
+  const setNotificationPref = async (id: NotificationToggleId, value: boolean) => {
+    // Optimistic UI — flip the switch immediately; revert on error.
+    const previous = notifPrefs[id];
+    setNotifPrefs((p) => ({ ...p, [id]: value }));
+    if (!profileId || !isSupabaseConfigured()) return;
+    setSavingPref(id);
+    try {
+      const client = getSupabaseBrowserClient();
+      const merged: NotificationPreferences = {
+        ...(profile?.notification_preferences_json ?? {}),
+        [id]: value,
+      };
+      const { error } = await client
+        .from("user_profiles")
+        .update({ notification_preferences_json: merged })
+        .eq("id", profileId);
+      if (error) {
+        setNotifPrefs((p) => ({ ...p, [id]: previous }));
+        toast.error("Couldn't save that preference. Try again.");
+        return;
+      }
+      // Silent refresh — auth-context's refreshUser() updates the
+      // profile without flipping `loading=true` (which would unmount
+      // this page). The toggle UI is already up-to-date from the
+      // optimistic flip; this just keeps profile in sync for the
+      // rest of the app.
+      void refreshUser();
+    } finally {
+      setSavingPref(null);
+    }
+  };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset editable form fields when switching restaurants
@@ -2539,7 +2585,7 @@ export default function SettingsPage() {
 
           {section === "notifications" && (
             <div className="flex flex-col gap-6">
-              <SectionHeading title="Notifications" subtitle="Choose which events page you and your team." />
+              <SectionHeading title="Notifications" subtitle="Choose which emails you want sent to your inbox." />
               {NOTIFICATION_GROUPS.map((group) => (
                 <Card key={group.title}>
                   <div className="px-6 py-5 sm:px-7">
@@ -2548,7 +2594,7 @@ export default function SettingsPage() {
                   {group.rows.map((row) => {
                     const value = notifPrefs[row.id];
                     return (
-                      <div key={row.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-t border-border/50 px-6 py-4 sm:px-7">
+                      <div key={row.id} className="grid grid-cols-[1fr_auto] items-center gap-4 border-t border-border/50 px-6 py-4 sm:px-7">
                         <div>
                           <p className="text-sm text-text-primary">{row.label}</p>
                           <p className="text-xs text-text-muted">{row.desc}</p>
@@ -2556,15 +2602,9 @@ export default function SettingsPage() {
                         <label className="flex items-center gap-2 text-xs text-text-muted">
                           Email
                           <Switch
-                            checked={value.email}
-                            onCheckedChange={(v) => setNotifPrefs((p) => ({ ...p, [row.id]: { ...p[row.id], email: v } }))}
-                          />
-                        </label>
-                        <label className="flex items-center gap-2 text-xs text-text-muted">
-                          Push
-                          <Switch
-                            checked={value.push}
-                            onCheckedChange={(v) => setNotifPrefs((p) => ({ ...p, [row.id]: { ...p[row.id], push: v } }))}
+                            checked={value}
+                            disabled={savingPref === row.id || !profileId}
+                            onCheckedChange={(v) => void setNotificationPref(row.id, v)}
                           />
                         </label>
                       </div>

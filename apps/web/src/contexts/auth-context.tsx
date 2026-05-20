@@ -133,15 +133,42 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [viewMode]);
 
   const refreshUser = useCallback(async () => {
-    if (!isSupabaseConfigured()) {
-      return;
-    }
+    // Silent profile refresh. We intentionally do NOT go through
+    // applySession() here because that helper flips `loading=true` while
+    // it re-fetches — and any RequireAuth-gated page (e.g. the onboarding
+    // wizard) renders <RouteFallback/> while loading, which unmounts the
+    // child tree. Awaiting refreshUser() mid-submit therefore destroyed
+    // in-flight wizard state (the setStep(2) call would fire on the
+    // already-unmounted SetupPage and be a no-op), bouncing the user back
+    // to a freshly-mounted Step 1. Refresh in place, no loading flicker.
+    if (!isSupabaseConfigured()) return;
 
     const client = getSupabaseBrowserClient();
     const {
       data: { session: current },
     } = await client.auth.getSession();
-    await applySession(current);
+    if (!mountedRef.current) return;
+
+    if (!current?.user) {
+      // Session vanished — fall through to applySession which handles the
+      // signed-out reset (loading toggle is fine here because the user
+      // already lost their session).
+      await applySession(current);
+      return;
+    }
+
+    const result = await loadUserContext(client, current);
+    if (!mountedRef.current) return;
+
+    setSession(current);
+    setUser(current.user);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setProfile(result.profile);
+    setRestaurantRoles(result.restaurantRoles);
+    setError(null);
   }, [applySession]);
 
   const primaryRestaurantRole = useMemo((): UserRestaurantRole | null => {

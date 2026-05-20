@@ -15,7 +15,7 @@ truth** — re-read the file the doc points at and update this guide. The
 on-disk paths in this doc are relative to repo root
 `/Users/mark_habbi/Seatly-12/`.
 
-This guide is current as of **2026-05-16**.
+This guide is current as of **2026-05-20**.
 
 ---
 
@@ -29,16 +29,24 @@ the charge, minus a 5.5% platform application fee that stays with Cenaiva.
 
 | Charge type | Who pays | Who receives | Platform fee | Stripe fee paid by |
 |---|---|---|---|---|
-| Pre-ordered food + tax | Diner | Restaurant | 5.5% (app fee) | Cenaiva |
-| Booking deposit | Diner | Restaurant | 5.5% (app fee) | Cenaiva |
-| Post-meal pay-the-bill (Phase 9) | Diner | Restaurant | 5.5% (app fee) | Cenaiva |
-| Monthly subscription ($199 CAD) | Restaurant | Cenaiva platform | n/a | Cenaiva |
+| Pre-ordered food + tax | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
+| Booking deposit | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
+| Post-meal pay-the-bill (Phase 9) | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
+| Monthly subscription ($199.99 CAD) | Restaurant | Cenaiva platform | n/a | Cenaiva |
 | Per-reservation fee ($1) | Restaurant | Cenaiva platform | n/a (billed monthly) | Cenaiva |
 
-**Stripe processing fees** (~2.9% + 30¢ per card charge) come off Cenaiva's
-platform balance per Stripe Connect's destination-charge default behavior.
-Restaurants receive the full 94.5% of every diner charge — Cenaiva eats
-the Stripe processing fee out of its 5.5% application fee.
+**Stripe processing fees** (~2.9% + 30¢) are **passed through to the
+diner** via gross-up. As of **2026-05-19** the public-payment-intent +
+charge-order paths run the base amount (deposit/pre-order/order total)
+through `computeDinerCharge(baseCents)` in
+`supabase/functions/_shared/stripe-fee.ts` (and the client mirror at
+`apps/web/src/lib/stripe-fee.ts`). Formula:
+`dinerTotalCents = ceil((base + 30) / 0.971)`. The diner sees a
+"Processing fee" line item on the cart; the PI is charged for the
+grossed-up amount; `application_fee_amount` is still **5.5% of the
+base** (not the grossed-up total — we don't take commission on the
+pass-through). End result: Restaurant nets 94.5% of base; Cenaiva
+keeps 5.5% of base; Stripe takes its 2.9%+30¢ off the gross.
 
 **Cancellation policy** (2026-05-16, see §6): `cancel-reservation` issues
 a **partial refund** of `(total − application_fee_amount)`. The diner gets
@@ -46,15 +54,17 @@ back only the restaurant's 94.5% slice; Cenaiva keeps the 5.5% as a
 cancellation cost. Stripe's processing fee on the original charge is never
 returned by Stripe — Cenaiva paid it and never recovers it.
 
-**Net per cancelled $100 transaction:**
-- Cenaiva: +$2.30 ($5.50 fee − $3.20 Stripe fee)
-- Restaurant: $0 (took $94.50 on book, returned $94.50 on cancel via reverse-transfer)
-- Diner: −$5.50 (lost the 5.5% commission as cancellation cost)
-- Stripe: +$3.20 (processing fee, non-recoverable)
+**Net per cancelled $100 base transaction (post-gross-up):**
+- Diner paid: $103.40 ($100 base + ~$3.40 grossed-up Stripe fee)
+- Stripe took: ~$3.30 (processing fee on the $103.40)
+- Cenaiva kept: $5.50 (5.5% of base = full commission since fee passed through)
+- Restaurant netted on book: $94.50 (base × 94.5%)
+- On cancel: restaurant returns $94.50; diner gets back $94.50; diner loses $5.50 commission + $3.40 Stripe fee
+- Stripe's $3.30 processing fee is non-recoverable
 
-**Break-even** for Cenaiva: any transaction above **$11.54 CAD** is
-profitable after Stripe fees. Mark Testing's 8+ deposit floor ($80) nets
-+$1.78 per booking.
+**Break-even** for Cenaiva: any non-zero transaction is now profitable
+(Cenaiva keeps the full 5.5% commission since Stripe fees are passed
+through to the diner). Pre-2026-05-19 break-even was $11.54.
 
 **Currency:** CAD for all diner-facing charges. Restaurants are
 Canadian-only at launch.
@@ -988,7 +998,7 @@ boundary (savvy actor can't bypass via direct supabase-js writes).
 
 Step 8 mounts two Stripe components side-by-side:
 
-**Part A — Stripe Connect Embedded Onboarding (KYC):**
+**Part A — Stripe Connect Embedded Onboarding (KYC + bank account):**
 - Edge fn `create-stripe-account` creates a Connect Custom account
   (country=CA, business_type=company, mcc=5812 Eating Places,
   card_payments + transfers capabilities, daily payout schedule).
@@ -1001,15 +1011,55 @@ Step 8 mounts two Stripe components side-by-side:
 - On the `onExit` callback, the page polls the restaurant row for ~30s
   waiting for `stripe_charges_enabled` to flip true via webhook.
 
+**Part A.1 — Bank-account / payout setup screen (within the Embedded flow):**
+
+Inside the same `<ConnectAccountOnboarding />` iframe, Stripe renders a
+"Set up payouts to your bank → Add an account for payouts" sub-step.
+Test-mode shows a yellow "You're using a test account" banner and a
+"Use test account" button that auto-fills valid test routing numbers.
+The fields collected are Canadian-bank specific:
+
+| Field | Format | Example |
+|---|---|---|
+| Currency | Locked to CAD for CA-country accounts | `CAD - Canadian Dollar` |
+| Transit number | 5 digits | `11000` |
+| Institution number | 3 digits | `000` |
+| Account number | up to 12 digits | `000123456789` |
+| Confirm account number | matches above | `000123456789` |
+
+These map 1:1 to Stripe's
+[`bank_accounts.create`](https://stripe.com/docs/api/bank_accounts/create-account)
+params; the embedded UI calls Stripe directly — Cenaiva never sees or
+stores the account number. The connected account holds the relationship
+to the bank; payouts are scheduled per
+`create-stripe-account`'s `settings.payouts.schedule.interval = "daily"`.
+
+**For the mobile mirror (out-of-scope for this pass — future work):**
+- Web uses `@stripe/connect-js` + `@stripe/react-connect-js`.
+- Mobile equivalent today is to fall back to a `WebView` hosting
+  Stripe's hosted Onboarding link from `accountLink.create` —
+  `@stripe/stripe-connect-react-native` exists but coverage is limited.
+- If using WebView fallback, treat the Stripe URL as authoritative:
+  parse only the `account.updated` webhook server-side to flip
+  `stripe_charges_enabled`, don't trust any postMessage from the WebView.
+
 **Part B — Subscription card (Stripe Billing):**
-- Edge fn `create-subscription` creates a platform-level Stripe Customer
-  (NOT on the connected account), attaches the payment method, sets it
-  as default, then `stripe.subscriptions.create` with:
-  - `STRIPE_SUBSCRIPTION_PRICE_ID` (the $199 CAD/mo recurring Price)
-  - `trial_period_days: 90`
-  - `payment_behavior: "default_incomplete"`
+- **2026-05-20 lifecycle rework:** card-save is now decoupled from
+  trial-start. Step 8's `<SubscriptionCard>` calls
+  `save-subscription-payment-method` to attach a card to the
+  restaurant's platform Customer. No subscription is created at this
+  point — the trial clock hasn't started yet. `payment_method_attached_at`
+  is set on the `restaurants` row.
+- When the owner clicks "Publish my restaurant" and confirms in the
+  modal, `publish-restaurant` atomically creates the Stripe Subscription
+  (with `STRIPE_SUBSCRIPTION_PRICE_ID` = $199.99 CAD/mo recurring Price,
+  `trial_period_days: 90`, `payment_behavior: "default_incomplete"`) AND
+  flips `is_published=true` — both succeed or both fail.
+- The deprecated `create-subscription` edge fn returns **410 Gone** by
+  default (set `ALLOW_LEGACY_CREATE_SUBSCRIPTION=true` for emergency
+  operator use only).
 - Persists `stripe_customer_id`, `subscription_status`, `trial_ends_at`
-  to the restaurant row.
+  to the restaurant row at publish-time.
 
 ### 11c. The publish gate UI
 
@@ -1044,15 +1094,32 @@ UTC, deleting unpublished drafts older than 30 days.
 
 ### 11f. Operational notes for the platform team
 
-- **Stripe Price for $199/mo subscription:** Stripe doesn't allow editing
-  existing Price amounts. To change the subscription price, create a NEW
-  Price on the Cenaiva subscription Product, copy the new `price_…` id,
-  and update env var `STRIPE_SUBSCRIPTION_PRICE_ID` in Supabase project
-  settings. The old Price stays in Stripe but is unused for new
-  subscriptions.
+- **Stripe Price for the subscription:** current price is **$199.99
+  CAD/mo** (set 2026-05-19, previously $199). Stripe doesn't allow
+  editing existing Price amounts. To change the subscription price,
+  create a NEW Price on the Cenaiva subscription Product, copy the new
+  `price_…` id, and update env var `STRIPE_SUBSCRIPTION_PRICE_ID` in
+  Supabase project settings. The old Price stays in Stripe but is
+  unused for new subscriptions. **`STRIPE_SUBSCRIPTION_PRICE_ID` must
+  be a Price ID (`price_…`) — not a Product ID (`prod_…`).** The
+  Subscriptions API rejects Product IDs with `resource_missing`.
 - **Existing subscribers** are not auto-migrated to new Prices — that
-  requires individual Stripe API calls. As of 2026-05-16 there are zero
-  live subscribers so no migration is needed.
+  requires individual Stripe API calls.
+- **Per-booking $1 fee** (added 2026-05-19): `restaurant_booking_fees`
+  table seeds a `'pending'` row per confirmed reservation via DB
+  trigger; `bill-booking-fees` cron sweeps hourly via
+  `stripe.invoiceItems.create` on the restaurant's subscription
+  customer; rolls into the next monthly invoice.
+- **Referral program** (added 2026-05-20): every published restaurant
+  has a unique `referral_code`. New restaurants can pass it at signup;
+  `apply-referral-credit` creates a $199.99 CAD Stripe coupon applied
+  to BOTH subscriptions (`max_redemptions=2`). Audit lives in the
+  `referral_credits` table.
+- **Auto-pause on payment failure** (added 2026-05-20):
+  `stripe-webhook.handleSubscriptionUpsert` now drives `is_published`.
+  On `unpaid`/`canceled` → unpublish + `paused_reason='payment_failed'`
+  + `payment_failed` email. On recovery → republish +
+  `payment_recovered` email. Skips if `deleted_at IS NOT NULL`.
 
 ---
 

@@ -14,6 +14,7 @@ import {
   formatReservationDate,
   sendReservationNotification,
 } from "./reservation-notifications.ts";
+import { notifyOwnerNewReservation } from "./owner-notifications.ts";
 
 export interface BookingItem {
   menu_item_id: string;
@@ -572,6 +573,22 @@ export async function completeBooking(
     // reservation is already persisted; we just log the failure.
     console.error("[completeBooking] SMS/email notify failed:", notifyErr);
   }
+
+  // Owner notification (fire-and-forget). Covers every caller of
+  // completeBooking — voice (cenaiva-orchestrate), AI chat (cenaiva-chat),
+  // and any future programmatic booking path. Honors the owner's
+  // notification_preferences_json.new_reservation_email toggle internally.
+  void notifyOwnerNewReservation({
+    supabase: supabaseAdmin,
+    restaurant_id,
+    reservation_id: reservationId,
+    reserved_at: date_time,
+    party_size,
+    guest_full_name: guestFields.full_name || null,
+    confirmation_code: persistedConfirmationCode,
+  }).catch((err) => {
+    console.error("[completeBooking] notifyOwnerNewReservation failed:", err);
+  });
 
   return {
     success: true,

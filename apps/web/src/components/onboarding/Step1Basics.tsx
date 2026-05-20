@@ -16,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
-import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
 import { useUser } from "@/hooks/useUser";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -282,39 +281,12 @@ export function Step1Basics({
           <Label htmlFor="address">
             Street address <span className="text-danger">*</span>
           </Label>
-          <Controller
-            control={form.control}
-            name="address"
-            render={({ field }) => (
-              <GoogleAddressAutocompleteInput
-                value={field.value}
-                onChange={(v) => {
-                  field.onChange(v);
-                  setLat(null);
-                  setLng(null);
-                }}
-                onAddressSelected={(parts) => {
-                  if (parts.address) {
-                    form.setValue("address", parts.address, { shouldDirty: true, shouldValidate: true });
-                  }
-                  if (parts.city) {
-                    form.setValue("city", parts.city, { shouldDirty: true, shouldValidate: true });
-                  }
-                  if (parts.province) {
-                    form.setValue("province", parts.province, { shouldDirty: true, shouldValidate: true });
-                  }
-                  if (parts.country) {
-                    form.setValue("country", parts.country, { shouldDirty: true, shouldValidate: true });
-                  }
-                  if (parts.postalCode) {
-                    form.setValue("postalCode", parts.postalCode, { shouldDirty: true });
-                  }
-                  setLat(parts.lat);
-                  setLng(parts.lng);
-                }}
-                placeholder="142 King St W"
-              />
-            )}
+          <Input
+            id="address"
+            maxLength={300}
+            autoComplete="off"
+            {...form.register("address")}
+            placeholder="142 King St W"
           />
           {errors.address ? <p className="text-xs text-danger">{errors.address.message}</p> : null}
         </div>

@@ -361,10 +361,14 @@ export default function BookingDetailsPage() {
       void refreshPayments();
       if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
     } catch (error) {
-      errorToast(error, {
-        fallback: "Couldn't cancel that reservation. Try again.",
-        logTag: "[BookingDetailsPage.cancel]",
-      });
+      // Surface the edge fn's body.error directly — see BookingsPage.cancel.
+      const rawMessage = error instanceof Error ? error.message.trim() : "";
+      const message =
+        rawMessage && !/^(typeerror|failed to fetch|networkerror)/i.test(rawMessage)
+          ? rawMessage
+          : "Couldn't cancel that reservation. Try again.";
+      toast.error(message);
+      console.error("[BookingDetailsPage.cancel]", error);
       setCancelling(false);
     }
   };

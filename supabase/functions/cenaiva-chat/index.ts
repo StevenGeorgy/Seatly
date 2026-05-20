@@ -6,6 +6,7 @@ import {
   findClosedSpecialDayForDate,
   localDateForDateTime,
 } from "../_shared/closures.ts";
+import { notifyOwnerNewReservation } from "../_shared/owner-notifications.ts";
 
 // Stripe is conditionally loaded — only if STRIPE_SECRET_KEY is configured.
 // Without it, payment tools run in test mode (mock responses, DB-only).
@@ -800,6 +801,19 @@ async function executeTool(
       const assignedTableIds: string[] = Array.isArray(bookingRow.table_ids)
         ? (bookingRow.table_ids as unknown[]).filter((id): id is string => typeof id === "string")
         : [];
+
+      // Owner notification (fire-and-forget). Honors per-owner toggle.
+      void notifyOwnerNewReservation({
+        supabase: supabaseAdmin,
+        restaurant_id,
+        reservation_id: reservationId,
+        reserved_at: date_time,
+        party_size,
+        guest_full_name: guestFields.full_name ?? null,
+        confirmation_code: confirmationCode,
+      }).catch((err) => {
+        console.error("[cenaiva-chat] notifyOwnerNewReservation failed", err);
+      });
 
       const { data: rest } = await supabaseAdmin
         .from("restaurants")

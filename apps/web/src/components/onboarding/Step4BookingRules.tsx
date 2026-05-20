@@ -3,7 +3,6 @@ import { ChevronDown, Pizza, Salad, Beef } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -118,7 +117,6 @@ export function Step4BookingRules({
   const { errorToast } = useErrorToast();
   const [shift, setShift] = useState<WizardShift>(seed);
   const [shiftId, setShiftId] = useState<string | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -237,16 +235,6 @@ export function Step4BookingRules({
 
       <section className="flex flex-col gap-4 rounded-2xl border border-border bg-bg-surface p-5">
         <div className="flex flex-col gap-2">
-          <Label htmlFor="shift-name">Shift name</Label>
-          <Input
-            id="shift-name"
-            value={shift.name}
-            onChange={(e) => setShift((prev) => ({ ...prev, name: e.target.value }))}
-            placeholder="Dinner"
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
           <Label>Days of week</Label>
           <div className="flex flex-wrap gap-2">
             {DOW_LABEL.map((d) => {
@@ -315,70 +303,6 @@ export function Step4BookingRules({
             })}
           </div>
         </div>
-      </section>
-
-      <section className="rounded-2xl border border-border bg-bg-surface">
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((v) => !v)}
-          className="flex w-full items-center justify-between px-5 py-3 text-sm font-semibold text-text-primary"
-          aria-expanded={advancedOpen}
-        >
-          Advanced settings
-          <ChevronDown className={`size-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
-        </button>
-        {advancedOpen ? (
-          <div className="grid gap-3 border-t border-border px-5 py-4 sm:grid-cols-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="slot-duration">Slot interval (min)</Label>
-              <Input
-                id="slot-duration"
-                type="number"
-                min={5}
-                max={120}
-                value={shift.slotDurationMinutes}
-                onChange={(e) =>
-                  setShift((prev) => ({
-                    ...prev,
-                    slotDurationMinutes: Math.max(5, Math.min(120, Number.parseInt(e.target.value, 10) || 30)),
-                  }))
-                }
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="max-covers">Max covers (blank = unlimited)</Label>
-              <Input
-                id="max-covers"
-                type="number"
-                min={1}
-                value={shift.maxCovers ?? ""}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  setShift((prev) => ({
-                    ...prev,
-                    maxCovers: raw === "" ? null : Math.max(1, Number.parseInt(raw, 10) || 1),
-                  }));
-                }}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="advance-days">Advance booking (days)</Label>
-              <Input
-                id="advance-days"
-                type="number"
-                min={1}
-                max={3650}
-                value={shift.advanceBookingDays}
-                onChange={(e) =>
-                  setShift((prev) => ({
-                    ...prev,
-                    advanceBookingDays: Math.max(1, Math.min(3650, Number.parseInt(e.target.value, 10) || 30)),
-                  }))
-                }
-              />
-            </div>
-          </div>
-        ) : null}
       </section>
 
       <div className="flex items-center justify-end">

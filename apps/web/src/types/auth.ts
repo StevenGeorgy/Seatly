@@ -43,6 +43,20 @@ export type DashboardPermissionOverrides = {
   deny?: DashboardPermissionKey[];
 };
 
+/**
+ * Per-owner notification opt-in flags stored on
+ * `user_profiles.notification_preferences_json`. Optional booleans —
+ * missing keys default to `true` (send by default) so adding new
+ * toggles later doesn't silently disable them for existing rows.
+ *
+ * Backend mirror lives in `supabase/functions/_shared/owner-notifications.ts`
+ * (`readOwnerPreference`).
+ */
+export type NotificationPreferences = {
+  new_reservation_email?: boolean;
+  cancellation_email?: boolean;
+};
+
 /** Columns we read from user_profiles (see Supabase migration + Bible). */
 export type UserProfile = {
   id: string;
@@ -59,7 +73,7 @@ export type UserProfile = {
   seating_preference: string | null;
   noise_preference: string | null;
   preferred_language: string | null;
-  notification_preferences_json: Record<string, unknown> | null;
+  notification_preferences_json: NotificationPreferences | null;
   car_details_json: Record<string, unknown> | null;
   stripe_payment_method_id: string | null;
   stripe_customer_id: string | null;

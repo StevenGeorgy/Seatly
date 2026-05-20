@@ -30,6 +30,9 @@ type WizardState = {
   hours: HoursJson | null;
   tables: WizardTable[] | null;
   shift: WizardShift | null;
+  /** Brand primary color the owner picked on Step 6. Null until they
+   *  reach Step 6 — the preview modal then falls back to its default. */
+  themeColor: string | null;
 };
 
 const INITIAL_STATE: WizardState = {
@@ -38,6 +41,7 @@ const INITIAL_STATE: WizardState = {
   hours: null,
   tables: null,
   shift: null,
+  themeColor: null,
 };
 
 type ResumeResult = {
@@ -104,7 +108,10 @@ async function loadInProgressRestaurant(
         business_type: string | null;
         hours_json: HoursJson | null;
         accepts_walkins: boolean | null;
-        settings_json: { dietaryTags?: string[] } | null;
+        settings_json: {
+          dietaryTags?: string[];
+          theme?: { primaryColor?: string };
+        } | null;
         cover_photo_url: string | null;
         deposit_tiers: RestaurantDepositTier[] | null;
       }
@@ -198,6 +205,12 @@ async function loadInProgressRestaurant(
       })
     : null;
 
+  const savedPrimary = restaurant.settings_json?.theme?.primaryColor;
+  const themeColor =
+    typeof savedPrimary === "string" && /^#[0-9a-f]{6}$/i.test(savedPrimary)
+      ? savedPrimary
+      : null;
+
   return {
     state: {
       restaurantId: restaurant.id,
@@ -205,6 +218,7 @@ async function loadInProgressRestaurant(
       hours: hasHours ? hours : null,
       tables: hydratedTables,
       shift: null,
+      themeColor,
     },
     startAtStep,
   };
@@ -212,7 +226,7 @@ async function loadInProgressRestaurant(
 
 export default function SetupPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, profile } = useUser();
   const [step, setStep] = useState(1);
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
@@ -278,7 +292,13 @@ export default function SetupPage() {
       tables: result.tables,
     }));
     setStep(2);
-  }, []);
+    // Drop ?new=1 from the URL once we have a real draft. If anything
+    // remounts SetupPage after this point (browser back, refresh, the
+    // Stripe Connect Embedded flow), we want the resume path to kick in
+    // and pick up the draft — not start a brand-new wizard and lose
+    // everything the owner just entered.
+    setSearchParams({ restaurant_id: result.restaurantId }, { replace: true });
+  }, [setSearchParams]);
 
   const handleStep2Complete = useCallback((hours: HoursJson) => {
     setState((prev) => ({ ...prev, hours }));
@@ -299,7 +319,8 @@ export default function SetupPage() {
     setStep(6);
   }, []);
 
-  const handleStep6Complete = useCallback(() => {
+  const handleStep6Complete = useCallback((themeColor: string) => {
+    setState((prev) => ({ ...prev, themeColor }));
     setStep(7);
   }, []);
 
@@ -459,6 +480,7 @@ export default function SetupPage() {
       <PreviewAsDinerButton
         restaurantId={state.restaurantId}
         basics={state.basics}
+        themeColor={state.themeColor}
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
       />

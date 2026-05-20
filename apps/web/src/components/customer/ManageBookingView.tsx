@@ -218,9 +218,15 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
       setDoneMessage(message);
       setMode("done");
     } catch (err) {
-      const friendly = toUserFacingError(err, "Couldn't cancel the reservation. Try again.");
-      setErrorMessage(friendly.message);
-      console.error("[ManageBookingView.cancel]", friendly.code, friendly.technical ?? err);
+      // Prefer the edge fn's user-facing body.error (rethrown as
+      // Error.message above) over the generic friendly fallback.
+      const rawMessage = err instanceof Error ? err.message.trim() : "";
+      const message =
+        rawMessage && !/^(typeerror|failed to fetch|networkerror)/i.test(rawMessage)
+          ? rawMessage
+          : "Couldn't cancel the reservation. Try again.";
+      setErrorMessage(message);
+      console.error("[ManageBookingView.cancel]", err);
       setMode("view");
     } finally {
       setBusy(false);

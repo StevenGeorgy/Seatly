@@ -57,18 +57,25 @@ export function GoogleAddressAutocompleteInput({
           if (!cancelled) setStatus("error");
           return;
         }
-        const autocomplete = new maps.places.Autocomplete(inputRef.current, {
-          fields: ["address_components", "formatted_address", "geometry", "place_id"],
-          types: ["address"],
-        });
-        const listener = autocomplete.addListener("place_changed", () => {
-          const place = autocomplete.getPlace();
-          const parts = parseGooglePlace(place);
-          if (parts.address) onChangeRef.current(parts.address);
-          onAddressSelectedRef.current(parts);
-        });
-        cleanup = () => listener.remove();
-        setStatus("ready");
+        try {
+          const autocomplete = new maps.places.Autocomplete(inputRef.current, {
+            fields: ["address_components", "formatted_address", "geometry", "place_id"],
+            types: ["address"],
+          });
+          const listener = autocomplete.addListener("place_changed", () => {
+            const place = autocomplete.getPlace();
+            const parts = parseGooglePlace(place);
+            if (parts.address) onChangeRef.current(parts.address);
+            onAddressSelectedRef.current(parts);
+          });
+          // Optional-chain both the listener and its `.remove` — when the
+          // Maps key fails referrer auth, `addListener` returns undefined
+          // and an unguarded `.remove()` on unmount blows up the wizard.
+          cleanup = () => listener?.remove?.();
+          setStatus("ready");
+        } catch {
+          setStatus("error");
+        }
       })
       .catch(() => {
         if (!cancelled) setStatus("error");

@@ -9,6 +9,7 @@ import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sm
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { CancelReservationSchema } from "../_shared/validation/booking.ts";
+import { notifyOwnerCancellation } from "../_shared/owner-notifications.ts";
 
 type RefundOutcomeReport = {
   kind: "preorder" | "deposit";
@@ -614,12 +615,33 @@ Deno.serve(async (req: Request) => {
       }
     };
 
+    // Owner cancellation notification (fire-and-forget). Honors the
+    // owner's notification_preferences_json.cancellation_email toggle
+    // internally. Goes to the owner's user_profile.email, never
+    // restaurants.email (the shared inbox).
+    const fireOwnerCancelNotify = () => {
+      void notifyOwnerCancellation({
+        supabase: adminClient,
+        restaurant_id: reservation.restaurant_id,
+        reservation_id: reservationId,
+        reserved_at: reservation.reserved_at,
+        party_size: reservation.party_size,
+        guest_full_name:
+          reservation.guest_full_name ?? guest?.full_name ?? null,
+        confirmation_code: reservation.confirmation_code ?? null,
+        actor,
+      }).catch((err) => {
+        console.error("[cancel-reservation] notifyOwnerCancellation failed", err);
+      });
+    };
+
     const { error: rpcReleaseError } = await adminClient.rpc("release_reservation_tables", {
       p_reservation_id: reservationId,
     });
     if (!rpcReleaseError) {
       await fanOutSlotOpened();
       const notification = await sendCancellationNotice();
+      fireOwnerCancelNotify();
       return json({
         ok: true,
         reservation_id: reservationId,
@@ -674,6 +696,7 @@ Deno.serve(async (req: Request) => {
 
     await fanOutSlotOpened();
     const notification = await sendCancellationNotice();
+    fireOwnerCancelNotify();
     return json({
       ok: true,
       reservation_id: reservationId,

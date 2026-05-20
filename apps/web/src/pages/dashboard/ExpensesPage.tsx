@@ -27,6 +27,7 @@ import {
   type FinanceTransactionType,
   type RecurringExpenseRule,
 } from "@/hooks/useExpenses";
+import { useAutoIncome, type AutoIncomeRow } from "@/hooks/useAutoIncome";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
@@ -249,25 +250,47 @@ function rangeCaption(range: RangeKey): string {
 
 type LedgerRow =
   | { kind: "expense"; type: FinanceTransactionType; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; expense: ExpenseRow }
-  | { kind: "recurring"; type: FinanceTransactionType; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; rule: RecurringExpenseRule };
+  | { kind: "recurring"; type: FinanceTransactionType; id: string; date: string; vendor: string; category: string; description: string; status: string; amount: number; currency: string; rule: RecurringExpenseRule }
+  | { kind: "auto-income"; type: "income"; id: string; date: string; vendor: string; category: string; description: string; status: "paid"; amount: number; currency: string; auto: AutoIncomeRow };
 
 type DeleteTarget =
   | { kind: "expense"; expense: ExpenseRow }
   | { kind: "recurring"; rule: RecurringExpenseRule };
 
 function downloadLedgerCsv(ledgerRows: LedgerRow[]) {
+  // Wider header than the original to surface the payment-side fields
+  // for the auto-income rows (deposits + paid orders) — payer, reference,
+  // payment method, Stripe PI. Manual expense/recurring rows leave them
+  // blank so the column shapes stay stable for accountants who diff
+  // exports across months.
   const rows = [
-    ["row_type", "transaction_type", "date", "name", "category", "description", "status", "amount"],
-    ...ledgerRows.map((row) => [
-      row.kind,
-      row.type,
-      row.date,
-      row.vendor,
-      row.category,
-      row.description,
-      row.status,
-      String(row.amount),
-    ]),
+    ["row_type", "transaction_type", "date", "name", "category", "description", "status", "amount", "currency", "payer", "reference", "reservation_id", "order_id", "deposit_payment_id", "payment_method", "stripe_payment_intent_id"],
+    ...ledgerRows.map((row) => {
+      const base = [
+        row.kind,
+        row.type,
+        row.date,
+        row.vendor,
+        row.category,
+        row.description,
+        row.status,
+        String(row.amount),
+        row.currency,
+      ];
+      if (row.kind === "auto-income") {
+        return [
+          ...base,
+          row.auto.payerName ?? "",
+          row.auto.reference ?? "",
+          row.auto.reservationId ?? "",
+          row.auto.orderId ?? "",
+          row.auto.depositPaymentId ?? "",
+          row.auto.paymentMethod ?? "",
+          row.auto.stripePaymentIntentId ?? "",
+        ];
+      }
+      return [...base, "", "", "", "", "", "", ""];
+    }),
   ];
   const csv = rows.map((row) => row.map((cell) => `"${cell.replace(/"/g, "\"\"")}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -371,6 +394,7 @@ export default function ExpensesPage() {
     return { dateFrom: rangeStart(range, today), dateTo: rangeEnd(range, today) };
   }, [customDateFrom, customDateTo, range]);
   const { expenses, recurringRules, loading, saving, refetch: refetchExpenses, createExpense, updateExpense, updateRecurringRule, deleteExpense, deleteRecurringRule } = useExpenses(filters);
+  const { rows: autoIncomeRows, loading: autoIncomeLoading } = useAutoIncome(filters);
   const form = useForm<ExpenseFormValues>({
     resolver: zodResolver(expenseSchema),
     defaultValues: {
@@ -425,9 +449,13 @@ export default function ExpensesPage() {
     () => actualExpenses.reduce((sum, expense) => sum + expense.total_amount, 0),
     [actualExpenses],
   );
+  const autoIncomeTotal = useMemo(
+    () => autoIncomeRows.reduce((sum, row) => sum + row.amount, 0),
+    [autoIncomeRows],
+  );
   const totalIncome = useMemo(
-    () => actualIncome.reduce((sum, income) => sum + income.total_amount, 0),
-    [actualIncome],
+    () => actualIncome.reduce((sum, income) => sum + income.total_amount, 0) + autoIncomeTotal,
+    [actualIncome, autoIncomeTotal],
   );
   const dueSpend = useMemo(
     () => actualExpenses.filter((expense) => ["due", "overdue", "scheduled"].includes(expense.payment_status ?? "paid")).reduce((sum, expense) => sum + expense.total_amount, 0),
@@ -464,12 +492,17 @@ export default function ExpensesPage() {
       const existing = totals.get(key);
       totals.set(key, { type, category: rule.category, amount: (existing?.amount ?? 0) + recurringOccurrenceAmount(rule) });
     });
+    autoIncomeRows.forEach((row) => {
+      const key = `income:${row.category}`;
+      const existing = totals.get(key);
+      totals.set(key, { type: "income", category: row.category, amount: (existing?.amount ?? 0) + row.amount });
+    });
     const rows = Array.from(totals.values())
       .map((row) => ({ ...row, label: `${typeLabel(row.type)} · ${categoryLabel(row.category)}` }))
       .sort((a, b) => b.amount - a.amount);
     const total = rows.reduce((sum, row) => sum + row.amount, 0);
     return rows.map((row) => ({ ...row, pct: total > 0 ? (row.amount / total) * 100 : 0 }));
-  }, [expenses, recurringRules]);
+  }, [autoIncomeRows, expenses, recurringRules]);
   const ledgerRows = useMemo<LedgerRow[]>(() => {
     const actualRows: LedgerRow[] = expenses.map((expense) => ({
       kind: "expense",
@@ -497,10 +530,46 @@ export default function ExpensesPage() {
       currency: rule.currency || currency,
       rule,
     }));
-    return [...actualRows, ...recurringRows].sort((a, b) => b.date.localeCompare(a.date));
-  }, [currency, expenses, recurringRules]);
+    const autoRows: LedgerRow[] = autoIncomeRows.map((row) => {
+      const vendor =
+        row.source === "deposit"
+          ? row.payerName ?? "Reservation deposit"
+          : row.source === "order_preorder"
+            ? `Pre-order ${row.reference ?? row.orderId ?? ""}`.trim()
+            : `Order ${row.reference ?? row.orderId ?? ""}`.trim();
+      const description =
+        row.source === "deposit"
+          ? "Reservation deposit · paid"
+          : row.source === "order_preorder"
+            ? "Pre-order · paid"
+            : row.source === "order_dinein"
+              ? "Dine-in / POS · paid"
+              : "Order · paid";
+      return {
+        kind: "auto-income",
+        type: "income",
+        id: row.id,
+        date: row.paidAt,
+        vendor,
+        category: row.category,
+        description,
+        status: "paid",
+        amount: row.amount,
+        currency: row.currency || currency,
+        auto: row,
+      };
+    });
+    return [...actualRows, ...recurringRows, ...autoRows].sort((a, b) => b.date.localeCompare(a.date));
+  }, [autoIncomeRows, currency, expenses, recurringRules]);
+  const incomeEntryCount = actualIncome.length + autoIncomeRows.length;
   const stats = [
-    { label: "Income", value: formatCurrency(totalIncome + recurringIncomeTotal, currency), caption: `${actualIncome.length} actual income entries ${selectedRangeCaption}` },
+    {
+      label: "Income",
+      value: formatCurrency(totalIncome + recurringIncomeTotal, currency),
+      caption: autoIncomeRows.length > 0
+        ? `${incomeEntryCount} income entries (${autoIncomeRows.length} auto-tracked) ${selectedRangeCaption}`
+        : `${actualIncome.length} actual income entries ${selectedRangeCaption}`,
+    },
     { label: "Expenses", value: formatCurrency(totalSpend + recurringSpend, currency), caption: `${actualExpenses.length} actual expense entries ${selectedRangeCaption}` },
     { label: "Net", value: formatCurrency(netIncome, currency), caption: `${netIncome >= 0 ? "Positive" : "Negative"} tracked cash flow` },
     { label: "Due or scheduled", value: formatCurrency(dueSpend, currency), caption: `Upcoming cash out ${selectedRangeCaption}` },
@@ -761,7 +830,7 @@ export default function ExpensesPage() {
             <div>
               <h2 className="font-serif text-2xl text-white">Recent transactions</h2>
               <p className="mt-1 text-xs text-text-muted">
-                {displayRangeLabel} · {expenses.length} actual entries · {recurringRules.length} upcoming recurring entries
+                {displayRangeLabel} · {expenses.length} actual · {autoIncomeRows.length} auto-tracked · {recurringRules.length} recurring
               </p>
             </div>
             <Button variant="outline" size="sm" className="gap-2" onClick={() => downloadLedgerCsv(ledgerRows)}>
@@ -784,21 +853,21 @@ export default function ExpensesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/50">
-                {loading && (
+                {(loading || autoIncomeLoading) && ledgerRows.length === 0 && (
                   <tr>
                     <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={8}>
                       Loading finance entries...
                     </td>
                   </tr>
                 )}
-                {!loading && ledgerRows.length === 0 && (
+                {!loading && !autoIncomeLoading && ledgerRows.length === 0 && (
                   <tr>
                     <td className="px-5 py-8 text-sm text-text-muted lg:px-6" colSpan={8}>
                       No income, expenses, or recurring rules saved for this range.
                     </td>
                   </tr>
                 )}
-                {!loading && ledgerRows.map((row) => (
+                {ledgerRows.map((row) => (
                   <tr key={`${row.kind}-${row.id}`} className="text-sm transition-colors hover:bg-bg-elevated/30">
                     <td className="px-5 py-4 font-mono text-text-muted lg:px-6">{shortDate(row.date)}</td>
                     <td className={cn("px-5 py-4 font-mono text-[10px] uppercase tracking-wider", row.type === "income" ? "text-success" : "text-gold")}>
@@ -807,10 +876,15 @@ export default function ExpensesPage() {
                     <td className="px-5 py-4 text-text-primary">
                       <div className="flex items-center gap-2">
                         <span>{row.vendor}</span>
-                        {row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
+                        {(row.kind === "expense" && row.expense.source === "auto:cenaiva") ||
+                        row.kind === "auto-income" ? (
                           <span
                             className="inline-flex items-center rounded-full border border-gold/30 bg-gold/10 px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-gold"
-                            title="Auto-imported from Cenaiva billing. Edit it in Stripe."
+                            title={
+                              row.kind === "auto-income"
+                                ? "Auto-tracked from payments. Source row lives in orders or reservation_deposit_payments."
+                                : "Auto-imported from Cenaiva billing. Edit it in Stripe."
+                            }
                           >
                             Auto
                           </span>
@@ -837,7 +911,9 @@ export default function ExpensesPage() {
                     </td>
                     <td className="px-5 py-4 text-right lg:px-6">
                       <div className="inline-flex items-center gap-1">
-                        {row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
+                        {row.kind === "auto-income" ? (
+                          <span className="text-xs text-text-muted">From payments</span>
+                        ) : row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
                           <span className="text-xs text-text-muted">Managed by Cenaiva</span>
                         ) : (
                           <>
@@ -848,7 +924,7 @@ export default function ExpensesPage() {
                               className="text-text-muted hover:text-white"
                               onClick={() => {
                                 if (row.kind === "expense") openEditForm(row.expense);
-                                else openEditRecurringForm(row.rule);
+                                else if (row.kind === "recurring") openEditRecurringForm(row.rule);
                               }}
                               aria-label={row.kind === "expense" ? `Edit ${row.type}` : `Edit recurring ${row.type}`}
                             >
@@ -861,7 +937,7 @@ export default function ExpensesPage() {
                               className="text-text-muted hover:text-danger"
                               onClick={() => {
                                 if (row.kind === "expense") setDeleteTarget({ kind: "expense", expense: row.expense });
-                                else setDeleteTarget({ kind: "recurring", rule: row.rule });
+                                else if (row.kind === "recurring") setDeleteTarget({ kind: "recurring", rule: row.rule });
                               }}
                               aria-label={row.kind === "expense" ? `Delete ${row.type}` : `Remove recurring ${row.type}`}
                             >

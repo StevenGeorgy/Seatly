@@ -10,6 +10,9 @@ import type { WizardBasics } from "./wizardTypes";
 type PreviewAsDinerButtonProps = {
   restaurantId: string | null;
   basics: WizardBasics | null;
+  /** Brand color picked on Step 6. Null = use Cenaiva default in the
+   *  preview. The modal applies this via applyRestaurantTheme on open. */
+  themeColor: string | null;
   open: boolean;
   onClose: () => void;
 };
@@ -24,6 +27,7 @@ function buildInitials(name: string): string {
 export function PreviewAsDinerButton({
   restaurantId,
   basics,
+  themeColor,
   open,
   onClose,
 }: PreviewAsDinerButtonProps) {
@@ -57,6 +61,7 @@ export function PreviewAsDinerButton({
       favorite={favorite}
       partySize="2"
       previewBannerText="🔒 Preview only — diners can't see this yet"
+      themeOverride={themeColor ? { primaryColor: themeColor } : null}
       onClose={onClose}
       onToggleFavorite={() => setFavorite((v) => !v)}
       onReserve={() => Promise.resolve()}

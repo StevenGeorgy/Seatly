@@ -123,6 +123,7 @@ export default function ExportPage() {
   const { selectedRestaurantId } = useRestaurantScope();
 
   const [selected, setSelected] = useState<Record<string, boolean>>({
+    revenueData: true,
     reservationsData: true,
     ordersData: true,
     expensesData: true,
@@ -136,6 +137,7 @@ export default function ExportPage() {
   const [generating, setGenerating] = useState(false);
 
   const inclusions = [
+    { key: "revenueData", label: "Revenue (paid orders + deposits)" },
     { key: "reservationsData", label: t("dashboard.export.reservationsData") },
     { key: "ordersData", label: t("dashboard.export.ordersData") },
     { key: "expensesData", label: t("dashboard.export.expensesData") },
@@ -158,6 +160,155 @@ export default function ExportPage() {
     let exported = 0;
 
     try {
+      if (selected.revenueData) {
+        // Revenue = everything the restaurant has actually been paid for,
+        // unified across two source tables so the accountant gets one
+        // chronological income ledger:
+        //
+        //   1. `orders` — POS dine-in, online orders, and pre-orders
+        //      (`is_preorder=true`). Only rows with `paid_at IS NOT NULL`
+        //      count, since unpaid/cancelled orders aren't income.
+        //   2. `reservation_deposit_payments` — diner-paid deposits at
+        //      booking time (one row per payer, supports split-pay).
+        //      Only `status='charged'` rows count.
+        //
+        // Date filter applies to `paid_at` for both, since the accountant
+        // cares about when money landed, not when the row was created.
+        // Gross amount only — netting out Cenaiva's 5.5% commission and
+        // Stripe's 2.9%+30¢ would require per-row Stripe lookups; leave
+        // that reconciliation to the accountant alongside the Stripe
+        // payout reports.
+        let oq = client
+          .from("orders")
+          .select("id, reservation_id, paid_at, billed_at, created_at, order_type, is_preorder, source, payment_method, status, subtotal, tax_amount, tip_amount, total_amount, discount_amount, confirmation_code, stripe_payment_intent_id")
+          .eq("restaurant_id", selectedRestaurantId)
+          .not("paid_at", "is", null)
+          .order("paid_at", { ascending: false });
+        if (from) oq = oq.gte("paid_at", from);
+        if (to) oq = oq.lte("paid_at", to);
+        const { data: paidOrders, error: ordersErr } = await oq;
+        if (ordersErr) throw ordersErr;
+
+        let dq = client
+          .from("reservation_deposit_payments")
+          .select("id, reservation_id, payer_full_name, payer_email, amount_cents, status, stripe_payment_intent_id, paid_at, created_at")
+          .eq("status", "charged")
+          .not("paid_at", "is", null)
+          .order("paid_at", { ascending: false });
+        if (from) dq = dq.gte("paid_at", from);
+        if (to) dq = dq.lte("paid_at", to);
+        // reservation_deposit_payments has no restaurant_id column —
+        // RLS already scopes to rows the caller can see, but we want to
+        // be explicit about which restaurant's deposits these are. Use
+        // an inner-join via PostgREST so unrelated rows are filtered
+        // server-side rather than client-side.
+        const { data: depositRows, error: depErr } = await dq;
+        if (depErr) throw depErr;
+        const depositReservationIds = Array.from(
+          new Set(
+            ((depositRows ?? []) as Array<{ reservation_id: string | null }>)
+              .map((r) => r.reservation_id)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        );
+        let ownReservationIds = new Set<string>();
+        if (depositReservationIds.length > 0) {
+          const { data: scopedRes, error: scopedErr } = await client
+            .from("reservations")
+            .select("id")
+            .eq("restaurant_id", selectedRestaurantId)
+            .in("id", depositReservationIds);
+          if (scopedErr) throw scopedErr;
+          ownReservationIds = new Set(
+            ((scopedRes ?? []) as Array<{ id: string }>).map((r) => r.id),
+          );
+        }
+
+        type OrderRow = {
+          id: string;
+          reservation_id: string | null;
+          paid_at: string | null;
+          billed_at: string | null;
+          created_at: string | null;
+          order_type: string | null;
+          is_preorder: boolean | null;
+          source: string | null;
+          payment_method: string | null;
+          status: string | null;
+          subtotal: number | string | null;
+          tax_amount: number | string | null;
+          tip_amount: number | string | null;
+          total_amount: number | string | null;
+          discount_amount: number | string | null;
+          confirmation_code: string | null;
+          stripe_payment_intent_id: string | null;
+        };
+        type DepositRow = {
+          id: string;
+          reservation_id: string | null;
+          payer_full_name: string | null;
+          payer_email: string | null;
+          amount_cents: number | null;
+          status: string | null;
+          stripe_payment_intent_id: string | null;
+          paid_at: string | null;
+          created_at: string | null;
+        };
+        const toDollars = (cents: number | null | undefined): number =>
+          typeof cents === "number" ? Math.round(cents) / 100 : 0;
+        const orderRows = ((paidOrders ?? []) as OrderRow[]).map((o) => ({
+          paid_at: o.paid_at ?? "",
+          source: o.is_preorder
+            ? "preorder"
+            : o.order_type === "pos" || o.order_type === "dine_in"
+              ? "order_dinein"
+              : o.order_type
+                ? `order_${o.order_type}`
+                : "order",
+          gross_amount: o.total_amount ?? 0,
+          subtotal: o.subtotal ?? 0,
+          tax_amount: o.tax_amount ?? 0,
+          tip_amount: o.tip_amount ?? 0,
+          discount_amount: o.discount_amount ?? 0,
+          currency: "cad",
+          payer: "",
+          reference: o.confirmation_code ?? o.id,
+          reservation_id: o.reservation_id ?? "",
+          order_id: o.id,
+          deposit_payment_id: "",
+          status: o.status ?? "",
+          payment_method: o.payment_method ?? "",
+          stripe_payment_intent_id: o.stripe_payment_intent_id ?? "",
+          created_at: o.created_at ?? "",
+        }));
+        const depositRowsFiltered = ((depositRows ?? []) as DepositRow[])
+          .filter((d) => d.reservation_id && ownReservationIds.has(d.reservation_id))
+          .map((d) => ({
+            paid_at: d.paid_at ?? "",
+            source: "deposit",
+            gross_amount: toDollars(d.amount_cents),
+            subtotal: toDollars(d.amount_cents),
+            tax_amount: 0,
+            tip_amount: 0,
+            discount_amount: 0,
+            currency: "cad",
+            payer: d.payer_full_name ?? d.payer_email ?? "",
+            reference: d.stripe_payment_intent_id ?? d.id,
+            reservation_id: d.reservation_id ?? "",
+            order_id: "",
+            deposit_payment_id: d.id,
+            status: d.status ?? "",
+            payment_method: "card",
+            stripe_payment_intent_id: d.stripe_payment_intent_id ?? "",
+            created_at: d.created_at ?? "",
+          }));
+        const revenueRows = [...orderRows, ...depositRowsFiltered].sort((a, b) =>
+          (b.paid_at ?? "").localeCompare(a.paid_at ?? ""),
+        );
+        downloadCSV("revenue.csv", toCSV(revenueRows as Record<string, unknown>[]));
+        exported++;
+      }
+
       if (selected.reservationsData) {
         let q = client
           .from("reservations")

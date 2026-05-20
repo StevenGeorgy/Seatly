@@ -2,19 +2,26 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 export default defineConfig({
   envDir: repoRoot,
   envPrefix: ["VITE_", "NEXT_PUBLIC_"],
-  plugins: [react(), tailwindcss()],
+  // basicSsl: serve dev over HTTPS with a self-signed cert. Required so
+  // the Stripe Elements iframe sees a secure parent context — otherwise
+  // Chrome shows "Automatic payment methods filling is disabled because
+  // this form does not use a secure connection." on Step 8. Accept the
+  // cert-warning interstitial once and Chrome remembers.
+  plugins: [react(), tailwindcss(), basicSsl()],
   // Exclude harness/test output paths from chokidar so a running
   // `cenaiva-test-harness.mjs` doesn't trigger HMR full-reloads when it
   // rewrites `apps/web/scripts/test-results.json` after every test (root
   // cause of the reload-loop the user hit on 2026-05-11 while inspecting
   // newly-added restaurants in /dashboard).
   server: {
+    https: true,
     watch: {
       ignored: [
         "**/scripts/test-results.json",

@@ -327,7 +327,8 @@ function NextReservationCard({
 }: {
   b: BookingCard;
   onModify: () => void;
-  onCancel: () => void;
+  /** Omit to hide the Cancel CTA — e.g. once reserved_at is in the past. */
+  onCancel?: () => void;
   cancelling: boolean;
 }) {
   const [now] = useState(() => Date.now());
@@ -406,14 +407,16 @@ function NextReservationCard({
         >
           <PencilLine className="size-4" /> Modify
         </Button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={cancelling}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-danger/50 bg-danger/10 text-sm font-medium text-danger transition-colors hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <X className="size-4" /> {cancelling ? "Cancelling..." : "Cancel"}
-        </button>
+        {onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelling}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-danger/50 bg-danger/10 text-sm font-medium text-danger transition-colors hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <X className="size-4" /> {cancelling ? "Cancelling..." : "Cancel"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -660,10 +663,19 @@ export default function BookingsPage() {
       toast.success("Reservation cancelled.");
       void refresh();
     } catch (error) {
-      errorToast(error, {
-        fallback: "Couldn't cancel that reservation. Try again.",
-        logTag: "[BookingsPage.cancel]",
-      });
+      // The cancel edge fn returns user-facing strings like
+      // "Past reservations cannot be cancelled" in `body.error`, which
+      // cancelReservation() rethrows as `new Error(body.error)`. The
+      // generic friendly-error mapper would replace that with the
+      // fallback toast, hiding the real reason. Surface the original
+      // message directly so the diner sees why the cancel failed.
+      const rawMessage = error instanceof Error ? error.message.trim() : "";
+      const message =
+        rawMessage && !/^(typeerror|failed to fetch|networkerror)/i.test(rawMessage)
+          ? rawMessage
+          : "Couldn't cancel that reservation. Try again.";
+      toast.error(message);
+      console.error("[BookingsPage.cancel]", error);
       setCancellingId(null);
     }
   };
@@ -833,17 +845,28 @@ export default function BookingsPage() {
                   />
                 ) : (
                   <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                    {upcomingFiltered.map((b) => (
-                      <BookingCardView
-                        key={b.id}
-                        b={b}
-                        variant="upcoming"
-                        onPrimary={() => handleDetails(b)}
-                        onModify={() => handleModify(b)}
-                        onCancel={() => void handleCancel(b)}
-                        cancelling={cancellingId === b.id}
-                      />
-                    ))}
+                    {upcomingFiltered.map((b) => {
+                      // The cancel-reservation edge fn rejects any reservation
+                      // whose `reserved_at` is already in the past with a 400
+                      // "Past reservations cannot be cancelled". The Upcoming
+                      // tab lumps `current` (in-service) and `upcoming` rows
+                      // together via reservationDisplayStatus, so a reservation
+                      // can show here yet be uncancellable. Mirror the edge
+                      // fn's strict cutoff so the Cancel button only appears
+                      // when the backend will actually accept it.
+                      const canCancel = b.reservedAt.getTime() > Date.now();
+                      return (
+                        <BookingCardView
+                          key={b.id}
+                          b={b}
+                          variant="upcoming"
+                          onPrimary={() => handleDetails(b)}
+                          onModify={() => handleModify(b)}
+                          onCancel={canCancel ? () => void handleCancel(b) : undefined}
+                          cancelling={cancellingId === b.id}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </>
@@ -913,7 +936,11 @@ export default function BookingsPage() {
               <NextReservationCard
                 b={next}
                 onModify={() => handleModify(next)}
-                onCancel={() => void handleCancel(next)}
+                onCancel={
+                  next.reservedAt.getTime() > Date.now()
+                    ? () => void handleCancel(next)
+                    : undefined
+                }
                 cancelling={cancellingId === next.id}
               />
             )}
