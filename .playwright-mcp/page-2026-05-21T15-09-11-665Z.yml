@@ -1,0 +1,166 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - status:
+      - generic [ref=e5]:
+        - img [ref=e6]
+        - generic [ref=e8]: Stripe TEST mode — no real money is moving. Configure live keys before launch.
+        - button "Dismiss test-mode banner" [ref=e9]:
+          - img [ref=e10]
+    - complementary [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e16]: CENAIVA
+        - button "Switch restaurant" [ref=e18]:
+          - generic [ref=e19]:
+            - generic [ref=e20]: Q1
+            - generic [ref=e21]:
+              - paragraph [ref=e22]: qoop 1
+              - paragraph [ref=e23]: Owner
+            - img [ref=e24]
+        - paragraph [ref=e26]: Tonight
+        - navigation "Dashboard navigation" [ref=e27]:
+          - link "Overview" [ref=e29] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e30]
+            - generic [ref=e35]: Overview
+          - link "Reservations" [ref=e37] [cursor=pointer]:
+            - /url: /dashboard/reservations
+            - img [ref=e38]
+            - generic [ref=e40]: Reservations
+          - link "Floor plan" [ref=e42] [cursor=pointer]:
+            - /url: /dashboard/floor-plan
+            - img [ref=e43]
+            - generic [ref=e46]: Floor plan
+          - link "Staff Invites" [ref=e48] [cursor=pointer]:
+            - /url: /dashboard/staff-invites
+            - img [ref=e49]
+            - generic [ref=e52]: Staff Invites
+          - link "Pre-orders" [ref=e54] [cursor=pointer]:
+            - /url: /dashboard/orders
+            - img [ref=e55]
+            - generic [ref=e60]: Pre-orders
+          - link "Menu" [ref=e62] [cursor=pointer]:
+            - /url: /dashboard/menu
+            - img [ref=e63]
+            - generic [ref=e65]: Menu
+          - link "CRM" [ref=e67] [cursor=pointer]:
+            - /url: /dashboard/crm
+            - img [ref=e68]
+            - generic [ref=e72]: CRM
+          - link "Analytics" [ref=e74] [cursor=pointer]:
+            - /url: /dashboard/analytics
+            - img [ref=e75]
+            - generic [ref=e77]: Analytics
+          - link "Income & Expenses" [ref=e79] [cursor=pointer]:
+            - /url: /dashboard/expenses
+            - img [ref=e81]
+            - generic [ref=e84]: Income & Expenses
+          - link "Events" [ref=e86] [cursor=pointer]:
+            - /url: /dashboard/events
+            - img [ref=e87]
+            - generic [ref=e93]: Events
+          - link "Promotions" [ref=e95] [cursor=pointer]:
+            - /url: /dashboard/promotions
+            - img [ref=e96]
+            - generic [ref=e99]: Promotions
+          - link "Export" [ref=e101] [cursor=pointer]:
+            - /url: /dashboard/export
+            - img [ref=e102]
+            - generic [ref=e106]: Export
+          - link "Restaurant info" [ref=e108] [cursor=pointer]:
+            - /url: /dashboard/restaurant
+            - img [ref=e109]
+            - generic [ref=e113]: Restaurant info
+        - generic [ref=e114]:
+          - generic [ref=e115]:
+            - button "My account" [ref=e117]: MH
+            - button "Notifications" [ref=e118]:
+              - img [ref=e119]
+            - button "Sign out" [ref=e123]:
+              - img [ref=e124]
+          - button "Exit dashboard" [ref=e127]:
+            - img [ref=e128]
+            - generic [ref=e131]: Exit dashboard
+          - button "Preview" [ref=e132]:
+            - img [ref=e133]
+            - generic [ref=e136]: Preview
+          - link "Settings" [ref=e137] [cursor=pointer]:
+            - /url: /dashboard/settings
+            - img [ref=e138]
+            - generic [ref=e141]: Settings
+    - generic [ref=e142]:
+      - 'link "Billing status: Trial active · Free until Aug 18. Tap for details." [ref=e145] [cursor=pointer]':
+        - /url: /dashboard/settings
+        - generic [ref=e147]: Trial active · Free until Aug 18
+        - img [ref=e148]
+      - main [ref=e150]:
+        - generic [ref=e153]:
+          - generic [ref=e154]:
+            - generic [ref=e155]:
+              - paragraph [ref=e156]:
+                - img [ref=e157]
+                - text: Finance ledger
+              - heading "Income & Expenses" [level=1] [ref=e162]
+              - paragraph [ref=e163]: Log money going out and money coming in by category, status, and recurring cycle.
+            - generic [ref=e164]:
+              - generic [ref=e165]:
+                - button "Today" [ref=e166]
+                - button "This week" [ref=e167]
+                - button "This month" [ref=e168]
+                - button "This quarter" [ref=e169]
+                - button "This year" [ref=e170]
+                - button "Custom" [ref=e171]
+              - generic [ref=e172]:
+                - button "Entries" [ref=e173]:
+                  - img [ref=e174]
+                  - text: Entries
+                - button "Receipts" [ref=e177]:
+                  - img [ref=e178]
+                  - text: Receipts
+              - button "Log entry" [ref=e181]:
+                - img
+                - text: Log entry
+          - generic [ref=e182]:
+            - article [ref=e183]:
+              - paragraph [ref=e184]: Income
+              - paragraph [ref=e185]: CA$0.00
+              - paragraph [ref=e186]: 0 actual income entries this month
+            - article [ref=e187]:
+              - paragraph [ref=e188]: Expenses
+              - paragraph [ref=e189]: CA$0.00
+              - paragraph [ref=e190]: 0 actual expense entries this month
+            - article [ref=e191]:
+              - paragraph [ref=e192]: Net
+              - paragraph [ref=e193]: CA$0.00
+              - paragraph [ref=e194]: Positive tracked cash flow
+            - article [ref=e195]:
+              - paragraph [ref=e196]: Due or scheduled
+              - paragraph [ref=e197]: CA$0.00
+              - paragraph [ref=e198]: Upcoming cash out this month
+          - generic [ref=e199]:
+            - article [ref=e200]:
+              - heading "By category" [level=2] [ref=e201]
+              - paragraph [ref=e202]: Actual entries plus upcoming recurring entries · This month
+              - paragraph [ref=e204]: Log an expense or income entry to populate this category graph.
+            - article [ref=e205]:
+              - generic [ref=e206]:
+                - generic [ref=e207]:
+                  - heading "Recent transactions" [level=2] [ref=e208]
+                  - paragraph [ref=e209]: This month · 0 actual · 0 auto-tracked · 0 recurring
+                - button "Export CSV" [ref=e210]:
+                  - img
+                  - text: Export CSV
+              - table [ref=e212]:
+                - rowgroup [ref=e213]:
+                  - row "Date Type Name Category Description Status Amount Actions" [ref=e214]:
+                    - columnheader "Date" [ref=e215]
+                    - columnheader "Type" [ref=e216]
+                    - columnheader "Name" [ref=e217]
+                    - columnheader "Category" [ref=e218]
+                    - columnheader "Description" [ref=e219]
+                    - columnheader "Status" [ref=e220]
+                    - columnheader "Amount" [ref=e221]
+                    - columnheader "Actions" [ref=e222]
+                - rowgroup [ref=e223]:
+                  - row "No income, expenses, or recurring rules saved for this range." [ref=e224]:
+                    - cell "No income, expenses, or recurring rules saved for this range." [ref=e225]
+  - region "Notifications alt+T"

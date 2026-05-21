@@ -1,0 +1,74 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e35]:
+        - button "Go to Details" [ref=e199]:
+          - img [ref=e201]
+          - generic [ref=e203]: Details
+        - generic [ref=e40]:
+          - generic [ref=e41]: "2"
+          - generic [ref=e42]: Menu
+        - generic [ref=e44]:
+          - generic [ref=e45]: "3"
+          - generic [ref=e46]: Payment
+      - generic [ref=e204]:
+        - generic [ref=e205]:
+          - heading "Preorder (optional)" [level=2] [ref=e206]
+          - button "← Back to booking" [ref=e207]
+        - generic [ref=e208]:
+          - button "All" [ref=e209]
+          - button "Mains" [ref=e210]
+        - generic [ref=e211]:
+          - generic [ref=e212]:
+            - img [ref=e214]
+            - generic [ref=e217]:
+              - generic [ref=e219]: SAVYO
+              - paragraph
+            - generic [ref=e220]:
+              - generic [ref=e221]: CA$69.00
+              - button [ref=e222]:
+                - img [ref=e223]
+          - generic [ref=e224]:
+            - img [ref=e226]
+            - generic [ref=e229]:
+              - generic [ref=e231]: STEVEN
+              - paragraph
+            - generic [ref=e232]:
+              - generic [ref=e233]: CA$67.00
+              - button [ref=e234]:
+                - img [ref=e235]
+          - generic [ref=e236]:
+            - img [ref=e238]
+            - generic [ref=e241]:
+              - generic [ref=e243]: MARK
+              - paragraph
+            - generic [ref=e244]:
+              - generic [ref=e245]: CA$88.00
+              - button [ref=e246]:
+                - img [ref=e247]
+        - button "Continue to checkout · Deposit CA$20.00" [ref=e249]:
+          - text: Continue to checkout · Deposit CA$20.00
+          - img
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

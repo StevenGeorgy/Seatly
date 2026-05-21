@@ -1,0 +1,118 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e35]:
+        - button "Go to Details" [ref=e198]:
+          - img [ref=e200]
+          - generic [ref=e202]: Details
+        - button "Go to Menu" [ref=e249]:
+          - img [ref=e251]
+          - generic [ref=e253]: Menu
+        - generic [ref=e44]:
+          - generic [ref=e45]: "3"
+          - generic [ref=e46]: Payment
+      - generic [ref=e254]:
+        - generic [ref=e255]:
+          - heading "Review & Pay" [level=2] [ref=e256]
+          - button "Edit details" [ref=e257]:
+            - img [ref=e258]
+            - text: Edit details
+        - generic [ref=e260]:
+          - paragraph [ref=e261]: Order Summary
+          - generic [ref=e262]:
+            - generic [ref=e263]:
+              - generic [ref=e264]: Subtotal
+              - generic [ref=e265]: CA$0.00
+            - generic [ref=e266]:
+              - generic [ref=e267]: Tax (HST 13%)
+              - generic [ref=e268]: CA$0.00
+            - generic [ref=e269]:
+              - generic [ref=e270]: Deposit (2 × CA$10.00)
+              - generic [ref=e271]: CA$20.00
+            - generic [ref=e272]:
+              - generic [ref=e273]: Platform fee (5.5%)
+              - generic [ref=e274]: CA$1.10
+            - generic [ref=e275]:
+              - generic [ref=e276]: Processing fee
+              - generic [ref=e277]: CA$0.94
+            - generic [ref=e278]:
+              - generic [ref=e279]: Total due now
+              - generic [ref=e280]: CA$22.04
+            - paragraph [ref=e281]:
+              - text: Platform and processing fees are non-refundable. Your
+              - strong [ref=e282]: CA$20.00
+              - text: deposit is fully refundable when the restaurant marks you seated.
+        - generic [ref=e283]:
+          - paragraph [ref=e284]: Reservation
+          - generic [ref=e285]:
+            - generic [ref=e286]:
+              - paragraph [ref=e287]: Name
+              - paragraph [ref=e288]: Mark Habbi
+            - generic [ref=e289]:
+              - paragraph [ref=e290]: Date & Time
+              - paragraph [ref=e291]: 2026-05-22 · 7pm
+            - generic [ref=e292]:
+              - paragraph [ref=e293]: Party size
+              - paragraph [ref=e294]: 2 guests
+            - generic [ref=e295]:
+              - paragraph [ref=e296]: Dietary notes
+              - paragraph [ref=e297]: Tree Nuts
+        - generic [ref=e298]:
+          - generic [ref=e299]:
+            - generic [ref=e300]:
+              - img [ref=e301]
+              - paragraph [ref=e306]: Split tender
+            - paragraph [ref=e307]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e308]:
+              - button "Single payment" [ref=e309]
+              - button "Split tender" [ref=e310]
+          - generic [ref=e311]:
+            - img [ref=e312]
+            - paragraph [ref=e314]: Payment
+            - img [ref=e315]
+            - generic [ref=e318]: Secured
+          - generic [ref=e327]:
+            - paragraph [ref=e328]: Pay with
+            - generic [ref=e329] [cursor=pointer]:
+              - radio "visa •••• 4242Default 12/30" [checked] [ref=e330]
+              - img [ref=e331]
+              - generic [ref=e333]: visa •••• 4242Default
+              - generic [ref=e334]: 12/30
+            - button "Use a different card" [ref=e335]:
+              - img [ref=e336]
+              - text: Use a different card
+        - generic [ref=e337]: We couldn't reach the server. Check your connection and try again. Your card has been refunded.
+        - button "Place Order" [ref=e322]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e323]:
+          - text: By booking, you agree to our
+          - link "Terms" [ref=e324] [cursor=pointer]:
+            - /url: /terms
+          - text: and
+          - link "Refund Policy" [ref=e325] [cursor=pointer]:
+            - /url: /refund-policy
+          - text: . Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

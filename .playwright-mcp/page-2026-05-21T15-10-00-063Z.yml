@@ -1,0 +1,617 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "Cenaiva home" [ref=e6] [cursor=pointer]:
+          - /url: /
+        - navigation "Primary" [ref=e7]:
+          - link "Discover" [ref=e8] [cursor=pointer]:
+            - /url: /discover
+          - link "Promotions" [ref=e9] [cursor=pointer]:
+            - /url: /deals
+          - link "Bookings" [ref=e10] [cursor=pointer]:
+            - /url: /bookings
+          - link "Loyalty" [ref=e11] [cursor=pointer]:
+            - /url: /loyalty
+          - button "Concierge" [ref=e12]
+        - generic [ref=e13]:
+          - button "Notifications" [ref=e14]:
+            - img [ref=e15]
+          - button "My account" [ref=e18]:
+            - generic [ref=e20]: MH
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]: THURSDAY · MAY 21
+        - heading "Good evening, Mark." [level=1] [ref=e51]
+        - paragraph [ref=e26]: 17 restaurants on Cenaiva.
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - img
+          - textbox "Search restaurants, cuisines, neighbourhoods, or dishes…" [ref=e29]
+          - generic [ref=e30]: ⌘K
+        - button "Filters" [ref=e31]:
+          - img [ref=e32]
+          - text: Filters
+        - generic [ref=e33]:
+          - button "Map" [ref=e34]:
+            - img [ref=e35]
+            - text: Map
+          - button "Grid" [ref=e37]:
+            - img [ref=e38]
+            - text: Grid
+      - generic [ref=e52]:
+        - generic [ref=e53]:
+          - generic [ref=e54]:
+            - paragraph [ref=e55]: 12 restaurants · sorted by Best match
+            - paragraph [ref=e56]: Hover to highlight on map
+          - generic [ref=e57]:
+            - button "The Keg Mansion cover Steakhouse Vegetarian Gluten-free Favorite restaurant Save restaurant The Keg Mansion $ $ $ Steakhouse Toronto Steakhouse Steakhouse Walk-Ins Accepted 4pm 4:15pm 4:30pm 4:45pm 5pm 5:15pm Walk-ins accepted when available" [ref=e58] [cursor=pointer]:
+              - generic [ref=e59]:
+                - img "The Keg Mansion cover" [ref=e61]
+                - generic [ref=e63]: Steakhouse
+                - generic [ref=e64]:
+                  - generic [ref=e65]: Vegetarian
+                  - generic [ref=e66]: Gluten-free
+                - generic [ref=e67]:
+                  - button "Favorite restaurant" [ref=e68]:
+                    - img [ref=e69]
+                  - button "Save restaurant" [ref=e71]:
+                    - img [ref=e72]
+              - generic [ref=e74]:
+                - paragraph [ref=e75]: The Keg Mansion
+                - generic [ref=e76]:
+                  - generic [ref=e77]:
+                    - generic [ref=e78]: $
+                    - generic [ref=e79]: $
+                    - generic [ref=e80]: $
+                  - generic [ref=e81]: Steakhouse
+                  - generic [ref=e82]: Toronto
+                  - generic [ref=e83]: Steakhouse
+                  - generic [ref=e84]: Steakhouse
+                  - generic [ref=e85]: Walk-Ins Accepted
+                - generic [ref=e86]:
+                  - button "4pm" [ref=e87]
+                  - button "4:15pm" [ref=e88]
+                  - button "4:30pm" [ref=e89]
+                  - button "4:45pm" [ref=e90]
+                  - button "5pm" [ref=e91]
+                  - button "5:15pm" [ref=e92]
+                - paragraph [ref=e93]: Walk-ins accepted when available
+            - button "qoop 1 cover Restaurant Favorite restaurant Save restaurant qoop 1 $ $ $ African Milton African Restaurant Walk-Ins Accepted 5pm 5:30pm 6pm 6:30pm 7pm 7:30pm Walk-ins accepted when available" [ref=e94] [cursor=pointer]:
+              - generic [ref=e95]:
+                - img "qoop 1 cover" [ref=e97]
+                - generic [ref=e99]: Restaurant
+                - generic [ref=e100]:
+                  - button "Favorite restaurant" [ref=e101]:
+                    - img [ref=e102]
+                  - button "Save restaurant" [ref=e104]:
+                    - img [ref=e105]
+              - generic [ref=e107]:
+                - paragraph [ref=e108]: qoop 1
+                - generic [ref=e109]:
+                  - generic [ref=e110]:
+                    - generic [ref=e111]: $
+                    - generic [ref=e112]: $
+                    - generic [ref=e113]: $
+                  - generic [ref=e114]: African
+                  - generic [ref=e115]: Milton
+                  - generic [ref=e116]: African
+                  - generic [ref=e117]: Restaurant
+                  - generic [ref=e118]: Walk-Ins Accepted
+                - generic [ref=e119]:
+                  - button "5pm" [ref=e120]
+                  - button "5:30pm" [ref=e121]
+                  - button "6pm" [ref=e122]
+                  - button "6:30pm" [ref=e123]
+                  - button "7pm" [ref=e124]
+                  - button "7:30pm" [ref=e125]
+                - paragraph [ref=e126]: Walk-ins accepted when available
+            - button "Webhook Test Pizza cover Restaurant Vegetarian Vegan Favorite restaurant Save restaurant Webhook Test Pizza $ $ $ Pizza Toronto Pizza Restaurant Walk-Ins Accepted 11:15am 11:30am 11:45am 12pm 12:15pm 12:30pm Walk-ins accepted when available" [ref=e127] [cursor=pointer]:
+              - generic [ref=e128]:
+                - img "Webhook Test Pizza cover" [ref=e130]
+                - generic [ref=e132]: Restaurant
+                - generic [ref=e133]:
+                  - generic [ref=e134]: Vegetarian
+                  - generic [ref=e135]: Vegan
+                - generic [ref=e136]:
+                  - button "Favorite restaurant" [ref=e137]:
+                    - img [ref=e138]
+                  - button "Save restaurant" [ref=e140]:
+                    - img [ref=e141]
+              - generic [ref=e143]:
+                - paragraph [ref=e144]: Webhook Test Pizza
+                - generic [ref=e145]:
+                  - generic [ref=e146]:
+                    - generic [ref=e147]: $
+                    - generic [ref=e148]: $
+                    - generic [ref=e149]: $
+                  - generic [ref=e150]: Pizza
+                  - generic [ref=e151]: Toronto
+                  - generic [ref=e152]: Pizza
+                  - generic [ref=e153]: Restaurant
+                  - generic [ref=e154]: Walk-Ins Accepted
+                - generic [ref=e155]:
+                  - button "11:15am" [ref=e156]
+                  - button "11:30am" [ref=e157]
+                  - button "11:45am" [ref=e158]
+                  - button "12pm" [ref=e159]
+                  - button "12:15pm" [ref=e160]
+                  - button "12:30pm" [ref=e161]
+                - paragraph [ref=e162]: Walk-ins accepted when available
+            - button "Bâton Rouge Eaton Centre cover Casual dining Vegetarian Gluten-free Favorite restaurant Save restaurant Bâton Rouge Eaton Centre $ $ $ Steakhouse Toronto Steakhouse Casual Dining Walk-Ins Accepted 11:30am 11:45am 12pm 12:15pm 12:30pm 12:45pm Walk-ins accepted when available" [ref=e163] [cursor=pointer]:
+              - generic [ref=e164]:
+                - img "Bâton Rouge Eaton Centre cover" [ref=e166]
+                - generic [ref=e168]: Casual dining
+                - generic [ref=e169]:
+                  - generic [ref=e170]: Vegetarian
+                  - generic [ref=e171]: Gluten-free
+                - generic [ref=e172]:
+                  - button "Favorite restaurant" [ref=e173]:
+                    - img [ref=e174]
+                  - button "Save restaurant" [ref=e176]:
+                    - img [ref=e177]
+              - generic [ref=e179]:
+                - paragraph [ref=e180]: Bâton Rouge Eaton Centre
+                - generic [ref=e181]:
+                  - generic [ref=e182]:
+                    - generic [ref=e183]: $
+                    - generic [ref=e184]: $
+                    - generic [ref=e185]: $
+                  - generic [ref=e186]: Steakhouse
+                  - generic [ref=e187]: Toronto
+                  - generic [ref=e188]: Steakhouse
+                  - generic [ref=e189]: Casual Dining
+                  - generic [ref=e190]: Walk-Ins Accepted
+                - generic [ref=e191]:
+                  - button "11:30am" [ref=e192]
+                  - button "11:45am" [ref=e193]
+                  - button "12pm" [ref=e194]
+                  - button "12:15pm" [ref=e195]
+                  - button "12:30pm" [ref=e196]
+                  - button "12:45pm" [ref=e197]
+                - paragraph [ref=e198]: Walk-ins accepted when available
+            - button "Ruth's Chris Steak House cover Steakhouse Vegetarian Gluten-free Favorite restaurant Save restaurant Ruth's Chris Steak House $ $ $ Steakhouse Toronto Steakhouse Steakhouse 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e199] [cursor=pointer]:
+              - generic [ref=e200]:
+                - img "Ruth's Chris Steak House cover" [ref=e202]
+                - generic [ref=e204]: Steakhouse
+                - generic [ref=e205]:
+                  - generic [ref=e206]: Vegetarian
+                  - generic [ref=e207]: Gluten-free
+                - generic [ref=e208]:
+                  - button "Favorite restaurant" [ref=e209]:
+                    - img [ref=e210]
+                  - button "Save restaurant" [ref=e212]:
+                    - img [ref=e213]
+              - generic [ref=e215]:
+                - paragraph [ref=e216]: Ruth's Chris Steak House
+                - generic [ref=e217]:
+                  - generic [ref=e218]:
+                    - generic [ref=e219]: $
+                    - generic [ref=e220]: $
+                    - generic [ref=e221]: $
+                  - generic [ref=e222]: Steakhouse
+                  - generic [ref=e223]: Toronto
+                  - generic [ref=e224]: Steakhouse
+                  - generic [ref=e225]: Steakhouse
+                - generic [ref=e226]:
+                  - button "5pm" [ref=e227]
+                  - button "5:15pm" [ref=e228]
+                  - button "5:30pm" [ref=e229]
+                  - button "5:45pm" [ref=e230]
+                  - button "6pm" [ref=e231]
+                  - button "6:15pm" [ref=e232]
+                - paragraph [ref=e233]: Reservations only
+            - button "Favorite restaurant Save restaurant Qoop $ $ $ 111 Duncan Lane Walk-Ins Accepted 5pm 5:30pm 6pm 6:30pm 7pm 7:30pm Walk-ins accepted when available" [ref=e234] [cursor=pointer]:
+              - generic [ref=e240]:
+                - button "Favorite restaurant" [ref=e241]:
+                  - img [ref=e242]
+                - button "Save restaurant" [ref=e244]:
+                  - img [ref=e245]
+              - generic [ref=e247]:
+                - paragraph [ref=e248]: Qoop
+                - generic [ref=e249]:
+                  - generic [ref=e250]:
+                    - generic [ref=e251]: $
+                    - generic [ref=e252]: $
+                    - generic [ref=e253]: $
+                  - generic [ref=e254]: 111 Duncan Lane
+                  - generic [ref=e255]: Walk-Ins Accepted
+                - generic [ref=e256]:
+                  - button "5pm" [ref=e257]
+                  - button "5:30pm" [ref=e258]
+                  - button "6pm" [ref=e259]
+                  - button "6:30pm" [ref=e260]
+                  - button "7pm" [ref=e261]
+                  - button "7:30pm" [ref=e262]
+                - paragraph [ref=e263]: Walk-ins accepted when available
+            - button "Blue Blood Steakhouse cover Steakhouse Gluten-free Dairy-free Favorite restaurant Save restaurant Blue Blood Steakhouse $ $ $ Steakhouse Toronto Steakhouse Steakhouse 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e264] [cursor=pointer]:
+              - generic [ref=e265]:
+                - img "Blue Blood Steakhouse cover" [ref=e267]
+                - generic [ref=e269]: Steakhouse
+                - generic [ref=e270]:
+                  - generic [ref=e271]: Gluten-free
+                  - generic [ref=e272]: Dairy-free
+                - generic [ref=e273]:
+                  - button "Favorite restaurant" [ref=e274]:
+                    - img [ref=e275]
+                  - button "Save restaurant" [ref=e277]:
+                    - img [ref=e278]
+              - generic [ref=e280]:
+                - paragraph [ref=e281]: Blue Blood Steakhouse
+                - generic [ref=e282]:
+                  - generic [ref=e283]:
+                    - generic [ref=e284]: $
+                    - generic [ref=e285]: $
+                    - generic [ref=e286]: $
+                  - generic [ref=e287]: Steakhouse
+                  - generic [ref=e288]: Toronto
+                  - generic [ref=e289]: Steakhouse
+                  - generic [ref=e290]: Steakhouse
+                - generic [ref=e291]:
+                  - button "5pm" [ref=e292]
+                  - button "5:15pm" [ref=e293]
+                  - button "5:30pm" [ref=e294]
+                  - button "5:45pm" [ref=e295]
+                  - button "6pm" [ref=e296]
+                  - button "6:15pm" [ref=e297]
+                - paragraph [ref=e298]: Reservations only
+            - button "Jacobs & Co. Steakhouse cover Steakhouse Vegetarian Gluten-free Favorite restaurant Save restaurant Jacobs & Co. Steakhouse $ $ $ Steakhouse Toronto Steakhouse Steakhouse 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e299] [cursor=pointer]:
+              - generic [ref=e300]:
+                - img "Jacobs & Co. Steakhouse cover" [ref=e302]
+                - generic [ref=e304]: Steakhouse
+                - generic [ref=e305]:
+                  - generic [ref=e306]: Vegetarian
+                  - generic [ref=e307]: Gluten-free
+                - generic [ref=e308]:
+                  - button "Favorite restaurant" [ref=e309]:
+                    - img [ref=e310]
+                  - button "Save restaurant" [ref=e312]:
+                    - img [ref=e313]
+              - generic [ref=e315]:
+                - paragraph [ref=e316]: Jacobs & Co. Steakhouse
+                - generic [ref=e317]:
+                  - generic [ref=e318]:
+                    - generic [ref=e319]: $
+                    - generic [ref=e320]: $
+                    - generic [ref=e321]: $
+                  - generic [ref=e322]: Steakhouse
+                  - generic [ref=e323]: Toronto
+                  - generic [ref=e324]: Steakhouse
+                  - generic [ref=e325]: Steakhouse
+                - generic [ref=e326]:
+                  - button "5pm" [ref=e327]
+                  - button "5:15pm" [ref=e328]
+                  - button "5:30pm" [ref=e329]
+                  - button "5:45pm" [ref=e330]
+                  - button "6pm" [ref=e331]
+                  - button "6:15pm" [ref=e332]
+                - paragraph [ref=e333]: Reservations only
+            - button "Harbour Sixty Steakhouse cover Steakhouse Vegetarian Gluten-free Favorite restaurant Save restaurant Harbour Sixty Steakhouse $ $ $ Steakhouse Toronto Steakhouse Steakhouse 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e334] [cursor=pointer]:
+              - generic [ref=e335]:
+                - img "Harbour Sixty Steakhouse cover" [ref=e337]
+                - generic [ref=e339]: Steakhouse
+                - generic [ref=e340]:
+                  - generic [ref=e341]: Vegetarian
+                  - generic [ref=e342]: Gluten-free
+                - generic [ref=e343]:
+                  - button "Favorite restaurant" [ref=e344]:
+                    - img [ref=e345]
+                  - button "Save restaurant" [ref=e347]:
+                    - img [ref=e348]
+              - generic [ref=e350]:
+                - paragraph [ref=e351]: Harbour Sixty Steakhouse
+                - generic [ref=e352]:
+                  - generic [ref=e353]:
+                    - generic [ref=e354]: $
+                    - generic [ref=e355]: $
+                    - generic [ref=e356]: $
+                  - generic [ref=e357]: Steakhouse
+                  - generic [ref=e358]: Toronto
+                  - generic [ref=e359]: Steakhouse
+                  - generic [ref=e360]: Steakhouse
+                - generic [ref=e361]:
+                  - button "5pm" [ref=e362]
+                  - button "5:15pm" [ref=e363]
+                  - button "5:30pm" [ref=e364]
+                  - button "5:45pm" [ref=e365]
+                  - button "6pm" [ref=e366]
+                  - button "6:15pm" [ref=e367]
+                - paragraph [ref=e368]: Reservations only
+            - button "STK Toronto cover Cocktail bar / Lounge Vegetarian Gluten-free Favorite restaurant Save restaurant STK Toronto $ $ $ Steakhouse Toronto Steakhouse Cocktail Bar / Lounge 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e369] [cursor=pointer]:
+              - generic [ref=e370]:
+                - img "STK Toronto cover" [ref=e372]
+                - generic [ref=e374]: Cocktail bar / Lounge
+                - generic [ref=e375]:
+                  - generic [ref=e376]: Vegetarian
+                  - generic [ref=e377]: Gluten-free
+                - generic [ref=e378]:
+                  - button "Favorite restaurant" [ref=e379]:
+                    - img [ref=e380]
+                  - button "Save restaurant" [ref=e382]:
+                    - img [ref=e383]
+              - generic [ref=e385]:
+                - paragraph [ref=e386]: STK Toronto
+                - generic [ref=e387]:
+                  - generic [ref=e388]:
+                    - generic [ref=e389]: $
+                    - generic [ref=e390]: $
+                    - generic [ref=e391]: $
+                  - generic [ref=e392]: Steakhouse
+                  - generic [ref=e393]: Toronto
+                  - generic [ref=e394]: Steakhouse
+                  - generic [ref=e395]: Cocktail Bar / Lounge
+                - generic [ref=e396]:
+                  - button "5pm" [ref=e397]
+                  - button "5:15pm" [ref=e398]
+                  - button "5:30pm" [ref=e399]
+                  - button "5:45pm" [ref=e400]
+                  - button "6pm" [ref=e401]
+                  - button "6:15pm" [ref=e402]
+                - paragraph [ref=e403]: Reservations only
+            - button "MICKY cover Restaurant Vegan Favorite restaurant Save restaurant MICKY $ $ $ African Oakville African Restaurant Walk-Ins Accepted 5pm 5:30pm 6pm 6:30pm 7pm 7:30pm Walk-ins accepted when available" [ref=e404] [cursor=pointer]:
+              - generic [ref=e405]:
+                - img "MICKY cover" [ref=e407]
+                - generic [ref=e409]: Restaurant
+                - generic [ref=e411]: Vegan
+                - generic [ref=e412]:
+                  - button "Favorite restaurant" [ref=e413]:
+                    - img [ref=e414]
+                  - button "Save restaurant" [ref=e416]:
+                    - img [ref=e417]
+              - generic [ref=e419]:
+                - paragraph [ref=e420]: MICKY
+                - generic [ref=e421]:
+                  - generic [ref=e422]:
+                    - generic [ref=e423]: $
+                    - generic [ref=e424]: $
+                    - generic [ref=e425]: $
+                  - generic [ref=e426]: African
+                  - generic [ref=e427]: Oakville
+                  - generic [ref=e428]: African
+                  - generic [ref=e429]: Restaurant
+                  - generic [ref=e430]: Walk-Ins Accepted
+                - generic [ref=e431]:
+                  - button "5pm" [ref=e432]
+                  - button "5:30pm" [ref=e433]
+                  - button "6pm" [ref=e434]
+                  - button "6:30pm" [ref=e435]
+                  - button "7pm" [ref=e436]
+                  - button "7:30pm" [ref=e437]
+                - paragraph [ref=e438]: Walk-ins accepted when available
+            - button "David Duncan House cover Vegetarian Gluten-free Favorite restaurant Save restaurant David Duncan House $ $ $ Steakhouse Toronto Steakhouse 5pm 5:15pm 5:30pm 5:45pm 6pm 6:15pm Reservations only" [ref=e439] [cursor=pointer]:
+              - generic [ref=e440]:
+                - img "David Duncan House cover" [ref=e442]
+                - generic [ref=e444]:
+                  - generic [ref=e445]: Vegetarian
+                  - generic [ref=e446]: Gluten-free
+                - generic [ref=e447]:
+                  - button "Favorite restaurant" [ref=e448]:
+                    - img [ref=e449]
+                  - button "Save restaurant" [ref=e451]:
+                    - img [ref=e452]
+              - generic [ref=e454]:
+                - paragraph [ref=e455]: David Duncan House
+                - generic [ref=e456]:
+                  - generic [ref=e457]:
+                    - generic [ref=e458]: $
+                    - generic [ref=e459]: $
+                    - generic [ref=e460]: $
+                  - generic [ref=e461]: Steakhouse
+                  - generic [ref=e462]: Toronto
+                  - generic [ref=e463]: Steakhouse
+                - generic [ref=e464]:
+                  - button "5pm" [ref=e465]
+                  - button "5:15pm" [ref=e466]
+                  - button "5:30pm" [ref=e467]
+                  - button "5:45pm" [ref=e468]
+                  - button "6pm" [ref=e469]
+                  - button "6:15pm" [ref=e470]
+                - paragraph [ref=e471]: Reservations only
+        - generic [ref=e473]:
+          - generic [ref=e474]:
+            - generic [ref=e476]:
+              - generic:
+                - button "Keyboard shortcuts"
+              - region "Map" [ref=e477]
+              - generic [ref=e478]:
+                - iframe [ref=e518]:
+                  
+                - link "Open this area in Google Maps (opens a new window)" [ref=e520] [cursor=pointer]:
+                  - /url: https://maps.google.com/maps?ll=43.6671,-79.3789&z=11&t=m&hl=en-US&gl=US&mapclient=apiv3
+                  - img "Google" [ref=e522]
+                - generic [ref=e523]:
+                  - button "Keyboard shortcuts" [ref=e529] [cursor=pointer]
+                  - generic [ref=e534]: Map data ©2026 Google
+                  - link "Terms (opens in new tab)" [ref=e539] [cursor=pointer]:
+                    - /url: https://www.google.com/intl/en-US_US/help/terms_maps.html
+                    - text: Terms
+                  - link "Report a map error" [ref=e544] [cursor=pointer]:
+                    - /url: https://www.google.com/maps/@43.6671,-79.3789,11z/data=!10m1!1e1!12b1?source=apiv3&rapsrc=apiv3
+            - generic [ref=e545]:
+              - button "Zoom in" [ref=e546]: +
+              - button "Zoom out" [ref=e547]: "-"
+          - button "Find near me" [ref=e548]:
+            - img [ref=e549]
+            - text: Find near me
+          - generic [ref=e552]: Location is unavailable. Search by city or restaurant name to browse manually.
+  - generic [ref=e553]:
+    - button "Close assistant" [ref=e554]:
+      - img [ref=e555]
+    - button "Mute microphone" [ref=e558]:
+      - img [ref=e559]
+    - button "Mark response as good" [ref=e562]:
+      - img [ref=e563]
+    - button "Report bad response" [ref=e565]:
+      - img [ref=e566]
+    - generic [ref=e568]:
+      - generic [ref=e570]:
+        - generic:
+          - button "Keyboard shortcuts"
+        - region "Map" [ref=e571]
+        - generic [ref=e572]:
+          - generic [ref=e573]:
+            - generic [ref=e642]: "8"
+            - generic [ref=e666]:
+              - generic:
+                - generic:
+                  - button "Georgy Inc" [ref=e668] [cursor=pointer]
+                  - button "8" [ref=e669] [cursor=pointer]
+                  - button "MICKY" [ref=e670] [cursor=pointer]
+                  - button "David Duncan House" [ref=e671] [cursor=pointer]
+          - iframe [ref=e672]:
+            
+          - link "Open this area in Google Maps (opens a new window)" [ref=e674] [cursor=pointer]:
+            - /url: https://maps.google.com/maps?ll=43.608806,-79.6135&z=10&t=m&hl=en-US&gl=US&mapclient=apiv3
+            - img "Google" [ref=e676]
+          - generic [ref=e677]:
+            - button "Keyboard shortcuts" [ref=e683] [cursor=pointer]
+            - generic [ref=e688]: Map data ©2026 Google
+            - link "Terms (opens in new tab)" [ref=e693] [cursor=pointer]:
+              - /url: https://www.google.com/intl/en-US_US/help/terms_maps.html
+              - text: Terms
+            - link "Report a map error" [ref=e698] [cursor=pointer]:
+              - /url: https://www.google.com/maps/@43.608806,-79.6135,10z/data=!10m1!1e1!12b1?source=apiv3&rapsrc=apiv3
+      - generic [ref=e700]: Hey, Mark! How can I help?
+    - generic [ref=e702]:
+      - button "Georgy Inc Georgy Inc 4.0 Milton Egyptian" [ref=e703]:
+        - img "Georgy Inc" [ref=e705]
+        - generic [ref=e706]:
+          - paragraph [ref=e707]: Georgy Inc
+          - generic [ref=e708]:
+            - generic [ref=e709]:
+              - img [ref=e710]
+              - text: "4.0"
+            - generic [ref=e712]:
+              - img [ref=e713]
+              - text: Milton
+          - paragraph [ref=e716]: Egyptian
+      - button "qoop main qoop main Milton African" [ref=e717]:
+        - img "qoop main" [ref=e719]
+        - generic [ref=e720]:
+          - paragraph [ref=e721]: qoop main
+          - generic [ref=e723]:
+            - img [ref=e724]
+            - text: Milton
+          - paragraph [ref=e727]: African
+      - button "qoop qoop Milton Jewish" [ref=e728]:
+        - img "qoop" [ref=e730]
+        - generic [ref=e731]:
+          - paragraph [ref=e732]: qoop
+          - generic [ref=e734]:
+            - img [ref=e735]
+            - text: Milton
+          - paragraph [ref=e738]: Jewish
+      - button "The Keg Mansion The Keg Mansion Toronto Steakhouse" [ref=e739]:
+        - img "The Keg Mansion" [ref=e741]
+        - generic [ref=e742]:
+          - paragraph [ref=e743]: The Keg Mansion
+          - generic [ref=e745]:
+            - img [ref=e746]
+            - text: Toronto
+          - paragraph [ref=e749]: Steakhouse
+      - button "qoop 1 qoop 1 Milton African" [ref=e750]:
+        - img "qoop 1" [ref=e752]
+        - generic [ref=e753]:
+          - paragraph [ref=e754]: qoop 1
+          - generic [ref=e756]:
+            - img [ref=e757]
+            - text: Milton
+          - paragraph [ref=e760]: African
+      - button "Webhook Test Pizza Webhook Test Pizza Toronto Pizza" [ref=e761]:
+        - img "Webhook Test Pizza" [ref=e763]
+        - generic [ref=e764]:
+          - paragraph [ref=e765]: Webhook Test Pizza
+          - generic [ref=e767]:
+            - img [ref=e768]
+            - text: Toronto
+          - paragraph [ref=e771]: Pizza
+      - button "Bâton Rouge Eaton Centre Bâton Rouge Eaton Centre Toronto Steakhouse" [ref=e772]:
+        - img "Bâton Rouge Eaton Centre" [ref=e774]
+        - generic [ref=e775]:
+          - paragraph [ref=e776]: Bâton Rouge Eaton Centre
+          - generic [ref=e778]:
+            - img [ref=e779]
+            - text: Toronto
+          - paragraph [ref=e782]: Steakhouse
+      - button "Ruth's Chris Steak House Ruth's Chris Steak House Toronto Steakhouse" [ref=e783]:
+        - img "Ruth's Chris Steak House" [ref=e785]
+        - generic [ref=e786]:
+          - paragraph [ref=e787]: Ruth's Chris Steak House
+          - generic [ref=e789]:
+            - img [ref=e790]
+            - text: Toronto
+          - paragraph [ref=e793]: Steakhouse
+      - button "🍽️ Qoop" [ref=e794]:
+        - generic [ref=e796]: 🍽️
+        - paragraph [ref=e798]: Qoop
+      - button "Blue Blood Steakhouse Blue Blood Steakhouse Toronto Steakhouse" [ref=e799]:
+        - img "Blue Blood Steakhouse" [ref=e801]
+        - generic [ref=e802]:
+          - paragraph [ref=e803]: Blue Blood Steakhouse
+          - generic [ref=e805]:
+            - img [ref=e806]
+            - text: Toronto
+          - paragraph [ref=e809]: Steakhouse
+      - button "Jacobs & Co. Steakhouse Jacobs & Co. Steakhouse Toronto Steakhouse" [ref=e810]:
+        - img "Jacobs & Co. Steakhouse" [ref=e812]
+        - generic [ref=e813]:
+          - paragraph [ref=e814]: Jacobs & Co. Steakhouse
+          - generic [ref=e816]:
+            - img [ref=e817]
+            - text: Toronto
+          - paragraph [ref=e820]: Steakhouse
+      - button "Harbour Sixty Steakhouse Harbour Sixty Steakhouse Toronto Steakhouse" [ref=e821]:
+        - img "Harbour Sixty Steakhouse" [ref=e823]
+        - generic [ref=e824]:
+          - paragraph [ref=e825]: Harbour Sixty Steakhouse
+          - generic [ref=e827]:
+            - img [ref=e828]
+            - text: Toronto
+          - paragraph [ref=e831]: Steakhouse
+      - button "leo leo Milton African" [ref=e832]:
+        - img "leo" [ref=e834]
+        - generic [ref=e835]:
+          - paragraph [ref=e836]: leo
+          - generic [ref=e838]:
+            - img [ref=e839]
+            - text: Milton
+          - paragraph [ref=e842]: African
+      - button "STK Toronto STK Toronto Toronto Steakhouse" [ref=e843]:
+        - img "STK Toronto" [ref=e845]
+        - generic [ref=e846]:
+          - paragraph [ref=e847]: STK Toronto
+          - generic [ref=e849]:
+            - img [ref=e850]
+            - text: Toronto
+          - paragraph [ref=e853]: Steakhouse
+      - button "MICKY MICKY Oakville African" [ref=e854]:
+        - img "MICKY" [ref=e856]
+        - generic [ref=e857]:
+          - paragraph [ref=e858]: MICKY
+          - generic [ref=e860]:
+            - img [ref=e861]
+            - text: Oakville
+          - paragraph [ref=e864]: African
+      - button "David Duncan House David Duncan House Toronto Steakhouse" [ref=e865]:
+        - img "David Duncan House" [ref=e867]
+        - generic [ref=e868]:
+          - paragraph [ref=e869]: David Duncan House
+          - generic [ref=e871]:
+            - img [ref=e872]
+            - text: Toronto
+          - paragraph [ref=e875]: Steakhouse
+      - button "qoop v67 qoop v67 Milton Barbecue" [ref=e876]:
+        - img "qoop v67" [ref=e878]
+        - generic [ref=e879]:
+          - paragraph [ref=e880]: qoop v67
+          - generic [ref=e882]:
+            - img [ref=e883]
+            - text: Milton
+          - paragraph [ref=e886]: Barbecue
+    - generic [ref=e887]:
+      - button "Stop listening" [ref=e888] [cursor=pointer]:
+        - img [ref=e900]
+      - paragraph [ref=e896]: Listening…
+      - button "Toggle text input" [ref=e897]:
+        - img [ref=e898]
+  - region "Notifications alt+T"

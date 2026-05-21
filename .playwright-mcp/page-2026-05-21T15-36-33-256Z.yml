@@ -1,0 +1,45 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - link "Back" [ref=e14] [cursor=pointer]:
+        - /url: /discover
+        - img
+        - text: Back
+      - generic [ref=e16]:
+        - generic [ref=e18]:
+          - heading "MICKY" [level=1] [ref=e19]
+          - generic [ref=e20]:
+            - generic [ref=e21]: African
+            - generic [ref=e22]:
+              - generic [ref=e23]: $
+              - generic [ref=e24]: $
+              - generic [ref=e25]: $
+            - generic [ref=e26]: Vegan
+            - generic [ref=e27]:
+              - img [ref=e28]
+              - text: Oakville
+            - link "2894000883" [ref=e31] [cursor=pointer]:
+              - /url: tel:2894000883
+              - img [ref=e32]
+              - text: "2894000883"
+        - generic [ref=e679]:
+          - img [ref=e681]
+          - generic [ref=e683]:
+            - heading "Table Booked!" [level=2] [ref=e684]
+            - paragraph [ref=e685]: Your table at MICKY is reserved for 2 on 2026-05-29 at 7pm.
+          - generic [ref=e686]:
+            - paragraph [ref=e687]: Confirmation code
+            - paragraph [ref=e688]: SEAT-D5LB
+            - paragraph [ref=e689]: A confirmation has been sent to your email.
+          - generic [ref=e690]:
+            - button "Book again" [ref=e691]
+            - link "Back to Discover" [ref=e692] [cursor=pointer]:
+              - /url: /discover
+    - button "Start listening" [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+    - region "Notifications alt+T"
+  - iframe [ref=e353]:
+    - button "Open Stripe Developer Tools" [ref=f87e5] [cursor=pointer]:
+      - banner [ref=f87e8]:
+        - img [ref=f87e9]
+        - img [ref=f87e11]

@@ -1,0 +1,122 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: Pizza
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegetarian
+          - generic [ref=e27]: Vegan
+          - generic [ref=e28]:
+            - img [ref=e29]
+            - text: Toronto
+          - link "+14165551234" [ref=e32] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e33]
+            - text: "+14165551234"
+      - generic [ref=e36]:
+        - generic [ref=e37]:
+          - generic [ref=e38]: "1"
+          - generic [ref=e39]: Details
+        - generic [ref=e41]:
+          - generic [ref=e42]: "2"
+          - generic [ref=e43]: Menu
+        - generic [ref=e45]:
+          - generic [ref=e46]: "3"
+          - generic [ref=e47]: Payment
+      - generic [ref=e48]:
+        - heading "Book your table" [level=2] [ref=e50]
+        - generic [ref=e52]:
+          - generic [ref=e138]: "Party of 4: a CA$40.00 deposit (CA$10.00/guest) is collected at checkout to hold this booking."
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - button "Date Thu, May 21" [ref=e55]:
+                - img [ref=e56]
+                - generic [ref=e58]:
+                  - paragraph [ref=e59]: Date
+                  - paragraph [ref=e60]: Thu, May 21
+              - button "Time 12:00 PM" [ref=e148]:
+                - img [ref=e62]
+                - generic [ref=e65]:
+                  - paragraph [ref=e66]: Time
+                  - paragraph [ref=e67]: 12:00 PM
+              - button "Party 4 guests" [ref=e139]:
+                - img [ref=e69]
+                - generic [ref=e74]:
+                  - paragraph [ref=e75]: Party
+                  - paragraph [ref=e76]: 4 guests
+            - generic [ref=e78]:
+              - button "11am" [ref=e140]
+              - button "11:15am" [ref=e141]
+              - button "11:30am" [ref=e142]
+              - button "11:45am" [ref=e143]
+              - button "12pm" [active] [ref=e144]
+              - button "12:15pm" [ref=e145]
+              - button "12:30pm" [ref=e146]
+              - button "12:45pm" [ref=e147]
+            - generic [ref=e87]:
+              - paragraph [ref=e88]: "Some times are hidden because you're already booked:"
+              - list [ref=e89]:
+                - listitem [ref=e90]: Webhook Test Pizza · 3:30 PM–5:00 PM
+                - listitem [ref=e91]: Webhook Test Pizza · 12:30 PM–2:00 PM
+                - listitem [ref=e92]: The Keg Mansion · 5:00 PM–6:30 PM
+          - generic [ref=e94]:
+            - generic [ref=e95]: Full Name *
+            - textbox "Full Name *" [ref=e96]:
+              - /placeholder: Jane Smith
+              - text: Mark Habbi
+          - generic [ref=e97]:
+            - generic [ref=e98]:
+              - generic [ref=e99]: Email *
+              - textbox "Email *" [ref=e100]:
+                - /placeholder: jane@example.com
+                - text: markhabbi2@gmail.com
+            - generic [ref=e101]:
+              - generic [ref=e102]: Phone *
+              - textbox "Phone *" [ref=e103]:
+                - /placeholder: +1 (416) 555-0100
+                - text: "+12894000883"
+          - generic [ref=e105]:
+            - generic [ref=e106]: Table preference (optional)
+            - generic [ref=e107]:
+              - combobox [ref=e108]:
+                - option "No preference" [selected]
+                - option "By the window"
+                - option "Middle of dining room"
+                - option "Booth seating"
+                - option "Lounge seating"
+                - option "Patio"
+                - option "Bar seating"
+                - option "Quiet corner"
+              - img
+          - generic [ref=e109]:
+            - generic [ref=e110]: Occasion (optional)
+            - generic [ref=e111]:
+              - combobox [ref=e112]:
+                - option "Select occasion…" [selected]
+                - option "Anniversary"
+                - option "Birthday"
+                - option "Business Dinner"
+                - option "Date Night"
+                - option "Family Gathering"
+              - img
+          - generic [ref=e113]:
+            - generic [ref=e114]: Dietary restrictions & allergies
+            - textbox "Dietary restrictions & allergies" [ref=e115]:
+              - /placeholder: e.g. Nut allergy (2 guests), 1 vegan, gluten-free
+              - text: Tree Nuts
+            - paragraph [ref=e116]: Please list restrictions for every guest in your party.
+        - button "Continue — add preorder (optional)" [ref=e117]:
+          - text: Continue — add preorder (optional)
+          - img
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

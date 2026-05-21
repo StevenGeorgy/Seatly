@@ -1,0 +1,110 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e35]:
+        - button "Go to Details" [ref=e279]:
+          - img [ref=e281]
+          - generic [ref=e283]: Details
+        - button "Go to Menu" [ref=e330]:
+          - img [ref=e332]
+          - generic [ref=e334]: Menu
+        - generic [ref=e44]:
+          - generic [ref=e45]: "3"
+          - generic [ref=e46]: Payment
+      - generic [ref=e335]:
+        - generic [ref=e336]:
+          - heading "Review & Pay" [level=2] [ref=e337]
+          - button "Edit details" [ref=e338]:
+            - img [ref=e339]
+            - text: Edit details
+        - generic [ref=e341]:
+          - paragraph [ref=e342]: Order Summary
+          - generic [ref=e343]:
+            - generic [ref=e344]:
+              - generic [ref=e345]: Subtotal
+              - generic [ref=e346]: CA$0.00
+            - generic [ref=e347]:
+              - generic [ref=e348]: Tax (HST 13%)
+              - generic [ref=e349]: CA$0.00
+            - generic [ref=e350]:
+              - generic [ref=e351]: Deposit (2 × CA$10.00)
+              - generic [ref=e352]: CA$20.00
+            - generic [ref=e353]:
+              - generic [ref=e354]: Platform fee (5.5%)
+              - generic [ref=e355]: CA$1.10
+            - generic [ref=e356]:
+              - generic [ref=e357]: Processing fee
+              - generic [ref=e358]: CA$0.94
+            - generic [ref=e359]:
+              - generic [ref=e360]: Total due now
+              - generic [ref=e361]: CA$22.04
+            - paragraph [ref=e362]:
+              - text: Platform and processing fees are non-refundable. Your
+              - strong [ref=e363]: CA$20.00
+              - text: deposit is fully refundable when the restaurant marks you seated.
+        - generic [ref=e364]:
+          - paragraph [ref=e365]: Reservation
+          - generic [ref=e366]:
+            - generic [ref=e367]:
+              - paragraph [ref=e368]: Name
+              - paragraph [ref=e369]: Mark Habbi
+            - generic [ref=e370]:
+              - paragraph [ref=e371]: Date & Time
+              - paragraph [ref=e372]: 2026-05-30 · 8:30pm
+            - generic [ref=e373]:
+              - paragraph [ref=e374]: Party size
+              - paragraph [ref=e375]: 2 guests
+            - generic [ref=e376]:
+              - paragraph [ref=e377]: Dietary notes
+              - paragraph [ref=e378]: Tree Nuts
+        - generic [ref=e379]:
+          - generic [ref=e380]:
+            - generic [ref=e381]:
+              - img [ref=e382]
+              - paragraph [ref=e387]: Split tender
+            - paragraph [ref=e388]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e389]:
+              - button "Single payment" [ref=e390]
+              - button "Split tender" [ref=e391]
+          - generic [ref=e392]:
+            - img [ref=e393]
+            - paragraph [ref=e395]: Payment
+            - img [ref=e396]
+            - generic [ref=e399]: Secured
+          - generic [ref=e400]:
+            - img [ref=e401]
+            - text: Loading payment options…
+        - button "Place Order" [ref=e403]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e404]:
+          - text: By booking, you agree to our
+          - link "Terms" [ref=e405] [cursor=pointer]:
+            - /url: /terms
+          - text: and
+          - link "Refund Policy" [ref=e406] [cursor=pointer]:
+            - /url: /refund-policy
+          - text: . Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

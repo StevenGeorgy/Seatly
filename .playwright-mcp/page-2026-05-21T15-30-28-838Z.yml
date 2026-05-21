@@ -1,0 +1,115 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: "1"
+          - generic [ref=e38]: Details
+        - generic [ref=e40]:
+          - generic [ref=e41]: "2"
+          - generic [ref=e42]: Menu
+        - generic [ref=e44]:
+          - generic [ref=e45]: "3"
+          - generic [ref=e46]: Payment
+      - generic [ref=e47]:
+        - heading "Book your table" [level=2] [ref=e49]
+        - generic [ref=e51]:
+          - generic [ref=e52]: "Party of 2: a CA$20.00 deposit (CA$10.00/guest) is collected at checkout to hold this booking."
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - button "Date Thu, May 28" [active] [ref=e189]:
+                - img [ref=e56]
+                - generic [ref=e58]:
+                  - paragraph [ref=e59]: Date
+                  - paragraph [ref=e60]: Thu, May 28
+              - button "Time 5:00 PM" [ref=e61]:
+                - img [ref=e62]
+                - generic [ref=e65]:
+                  - paragraph [ref=e66]: Time
+                  - paragraph [ref=e67]: 5:00 PM
+              - button "Party 2 guests" [ref=e68]:
+                - img [ref=e69]
+                - generic [ref=e74]:
+                  - paragraph [ref=e75]: Party
+                  - paragraph [ref=e76]: 2 guests
+            - generic [ref=e78]:
+              - button "5pm" [ref=e190]
+              - button "5:30pm" [ref=e191]
+              - button "6pm" [ref=e192]
+              - button "6:30pm" [ref=e193]
+              - button "7pm" [ref=e194]
+              - button "7:30pm" [ref=e195]
+              - button "8pm" [ref=e196]
+              - button "8:30pm" [ref=e197]
+          - generic [ref=e95]:
+            - generic [ref=e96]: Full Name *
+            - textbox "Full Name *" [ref=e97]:
+              - /placeholder: Jane Smith
+              - text: Mark Habbi
+          - generic [ref=e98]:
+            - generic [ref=e99]:
+              - generic [ref=e100]: Email *
+              - textbox "Email *" [ref=e101]:
+                - /placeholder: jane@example.com
+                - text: markhabbi2@gmail.com
+            - generic [ref=e102]:
+              - generic [ref=e103]: Phone *
+              - textbox "Phone *" [ref=e104]:
+                - /placeholder: +1 (416) 555-0100
+                - text: "+12894000883"
+          - generic [ref=e106]:
+            - generic [ref=e107]: Table preference (optional)
+            - generic [ref=e108]:
+              - combobox [ref=e109]:
+                - option "No preference" [selected]
+                - option "By the window"
+                - option "Middle of dining room"
+                - option "Booth seating"
+                - option "Lounge seating"
+                - option "Patio"
+                - option "Bar seating"
+                - option "Quiet corner"
+              - img
+          - generic [ref=e110]:
+            - generic [ref=e111]: Occasion (optional)
+            - generic [ref=e112]:
+              - combobox [ref=e113]:
+                - option "Select occasion…" [selected]
+                - option "Anniversary"
+                - option "Birthday"
+                - option "Business Dinner"
+                - option "Date Night"
+                - option "Family Gathering"
+              - img
+          - generic [ref=e114]:
+            - generic [ref=e115]: Dietary restrictions & allergies
+            - textbox "Dietary restrictions & allergies" [ref=e116]:
+              - /placeholder: e.g. Nut allergy (2 guests), 1 vegan, gluten-free
+              - text: Tree Nuts
+            - paragraph [ref=e117]: Please list restrictions for every guest in your party.
+        - button "Continue — add preorder (optional)" [ref=e118]:
+          - text: Continue — add preorder (optional)
+          - img
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

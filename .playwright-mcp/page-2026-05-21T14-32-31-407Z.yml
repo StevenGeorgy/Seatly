@@ -1,0 +1,156 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - status:
+      - generic [ref=e5]:
+        - img [ref=e6]
+        - generic [ref=e8]: Stripe TEST mode — no real money is moving. Configure live keys before launch.
+        - button "Dismiss test-mode banner" [ref=e9]:
+          - img [ref=e10]
+    - complementary [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e16]: CENAIVA
+        - button "Switch restaurant" [ref=e18]:
+          - generic [ref=e19]:
+            - generic [ref=e20]: Q1
+            - generic [ref=e21]:
+              - paragraph [ref=e22]: qoop 1
+              - paragraph [ref=e23]: Owner
+            - img [ref=e24]
+        - paragraph [ref=e26]: Tonight
+        - navigation "Dashboard navigation" [ref=e27]:
+          - link "Overview" [ref=e29] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e31]
+            - generic [ref=e36]: Overview
+          - link "Reservations" [ref=e38] [cursor=pointer]:
+            - /url: /dashboard/reservations
+            - img [ref=e39]
+            - generic [ref=e41]: Reservations
+          - link "Floor plan" [ref=e43] [cursor=pointer]:
+            - /url: /dashboard/floor-plan
+            - img [ref=e44]
+            - generic [ref=e47]: Floor plan
+          - link "Staff Invites" [ref=e49] [cursor=pointer]:
+            - /url: /dashboard/staff-invites
+            - img [ref=e50]
+            - generic [ref=e53]: Staff Invites
+          - link "Pre-orders" [ref=e55] [cursor=pointer]:
+            - /url: /dashboard/orders
+            - img [ref=e56]
+            - generic [ref=e61]: Pre-orders
+          - link "Menu" [ref=e63] [cursor=pointer]:
+            - /url: /dashboard/menu
+            - img [ref=e64]
+            - generic [ref=e66]: Menu
+          - link "CRM" [ref=e68] [cursor=pointer]:
+            - /url: /dashboard/crm
+            - img [ref=e69]
+            - generic [ref=e73]: CRM
+          - link "Analytics" [ref=e75] [cursor=pointer]:
+            - /url: /dashboard/analytics
+            - img [ref=e76]
+            - generic [ref=e78]: Analytics
+          - link "Income & Expenses" [ref=e80] [cursor=pointer]:
+            - /url: /dashboard/expenses
+            - img [ref=e81]
+            - generic [ref=e84]: Income & Expenses
+          - link "Events" [ref=e86] [cursor=pointer]:
+            - /url: /dashboard/events
+            - img [ref=e87]
+            - generic [ref=e93]: Events
+          - link "Promotions" [ref=e95] [cursor=pointer]:
+            - /url: /dashboard/promotions
+            - img [ref=e96]
+            - generic [ref=e99]: Promotions
+          - link "Export" [ref=e101] [cursor=pointer]:
+            - /url: /dashboard/export
+            - img [ref=e102]
+            - generic [ref=e106]: Export
+          - link "Restaurant info" [ref=e108] [cursor=pointer]:
+            - /url: /dashboard/restaurant
+            - img [ref=e109]
+            - generic [ref=e113]: Restaurant info
+        - generic [ref=e114]:
+          - generic [ref=e115]:
+            - button "My account" [ref=e117]: MH
+            - button "Notifications" [ref=e118]:
+              - img [ref=e119]
+            - button "Sign out" [ref=e123]:
+              - img [ref=e124]
+          - button "Exit dashboard" [ref=e127]:
+            - img [ref=e128]
+            - generic [ref=e131]: Exit dashboard
+          - button "Preview" [ref=e132]:
+            - img [ref=e133]
+            - generic [ref=e136]: Preview
+          - link "Settings" [ref=e137] [cursor=pointer]:
+            - /url: /dashboard/settings
+            - img [ref=e138]
+            - generic [ref=e141]: Settings
+    - generic [ref=e142]:
+      - 'link "Billing status: Trial active · Free until Aug 18. Tap for details." [ref=e145] [cursor=pointer]':
+        - /url: /dashboard/settings
+        - generic [ref=e147]: Trial active · Free until Aug 18
+        - img [ref=e148]
+      - main [ref=e150]:
+        - generic [ref=e153]:
+          - generic [ref=e154]:
+            - generic [ref=e155]:
+              - paragraph [ref=e156]: Thursday · May 21 · 0 covers booked
+              - heading "Service tonight" [level=1] [ref=e157]
+            - button "Thu, May 21" [ref=e159]:
+              - img [ref=e160]
+              - text: Thu, May 21
+          - generic [ref=e162]:
+            - article [ref=e163]:
+              - generic [ref=e164]:
+                - generic [ref=e165]:
+                  - paragraph [ref=e166]: Tonight's covers
+                  - paragraph [ref=e167]: "0"
+                  - paragraph [ref=e168]: from active reservations
+                - img [ref=e170]
+            - article [ref=e175]:
+              - generic [ref=e176]:
+                - generic [ref=e177]:
+                  - paragraph [ref=e178]: Paid pre-order income
+                  - paragraph [ref=e179]: CA$0.00
+                  - paragraph [ref=e180]: 0 paid pre-orders today
+                - img [ref=e182]
+            - article [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e186]:
+                  - paragraph [ref=e187]: Today's pre-orders
+                  - paragraph [ref=e188]: "0"
+                  - paragraph [ref=e189]: 0 active now
+                - img [ref=e191]
+          - generic [ref=e195]:
+            - generic [ref=e196]:
+              - generic [ref=e197]:
+                - heading "Tonight's timeline" [level=2] [ref=e198]
+                - paragraph [ref=e199]: No reservations today · 0 reservations
+              - generic [ref=e200]:
+                - generic [ref=e201]: Current · 0
+                - generic [ref=e202]: Upcoming · 0
+                - generic [ref=e203]: Past · 0
+            - generic [ref=e204]:
+              - generic [ref=e205]: No reservations scheduled for today.
+              - generic [ref=e206]: Now · 10:32am
+          - generic [ref=e207]:
+            - generic [ref=e208]:
+              - generic [ref=e209]:
+                - heading "Reservations · 10:32am - 12:32pm" [level=2] [ref=e210]
+                - button "New booking" [ref=e211]:
+                  - img [ref=e212]
+                  - text: New booking
+              - generic [ref=e213]: No reservations in the next two hours.
+            - generic [ref=e214]:
+              - paragraph [ref=e215]:
+                - img [ref=e216]
+                - text: Service summary
+              - heading "Live overview" [level=2] [ref=e218]
+              - generic [ref=e219]:
+                - paragraph [ref=e220]: 0 covers booked across 0 active reservations today.
+                - paragraph [ref=e221]: No upcoming reservations remain for today.
+                - paragraph [ref=e222]: 0 pre-orders logged today, with 0 active pre-orders still in service.
+                - paragraph [ref=e223]: CA$0.00 paid income from 0 paid pre-orders today.
+  - region "Notifications alt+T"

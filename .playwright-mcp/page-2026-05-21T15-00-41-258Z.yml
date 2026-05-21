@@ -1,0 +1,4 @@
+- generic [ref=e2]:
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

@@ -1,0 +1,31 @@
+- generic [ref=e2]:
+  - generic [ref=e14]:
+    - link "Back to MICKY" [ref=e15] [cursor=pointer]:
+      - /url: /micky
+      - img
+      - text: Back to MICKY
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - heading "Manage your reservation" [level=1] [ref=e18]
+        - generic [ref=e19]: confirmed
+      - paragraph [ref=e20]: MICKY
+      - paragraph [ref=e21]: Mark Habbi
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - img [ref=e24]
+          - generic [ref=e26]: Fri, May 22, 2026
+        - generic [ref=e27]:
+          - img [ref=e28]
+          - generic [ref=e31]: 5:00 PM
+        - generic [ref=e32]:
+          - img [ref=e33]
+          - generic [ref=e38]: 8 guests
+        - generic [ref=e39]:
+          - generic [ref=e40]: Notes
+          - generic [ref=e41]: Tree Nuts
+      - generic [ref=e116]: Your reservation has been updated. We refunded $60.00 since your party got smaller.
+      - link "Back to MICKY" [ref=e118] [cursor=pointer]:
+        - /url: /micky
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

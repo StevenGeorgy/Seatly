@@ -1,0 +1,77 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: Pizza
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegetarian
+          - generic [ref=e27]: Vegan
+          - generic [ref=e28]:
+            - img [ref=e29]
+            - text: Toronto
+          - link "+14165551234" [ref=e32] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e33]
+            - text: "+14165551234"
+      - generic [ref=e36]:
+        - button "Go to Details" [ref=e149]:
+          - img [ref=e151]
+          - generic [ref=e153]: Details
+        - generic [ref=e41]:
+          - generic [ref=e288]: "2"
+          - generic [ref=e289]: Menu
+        - generic [ref=e45]:
+          - generic [ref=e46]: "3"
+          - generic [ref=e47]: Payment
+      - generic [ref=e290]:
+        - generic [ref=e291]:
+          - heading "Preorder (optional)" [level=2] [ref=e292]
+          - button "← Back to booking" [ref=e293]
+        - generic [ref=e294]:
+          - button "All" [ref=e295]
+          - button "Pizzas" [ref=e296]
+          - button "Mains" [ref=e297]
+          - button "Entrées" [ref=e298]
+        - generic [ref=e299]:
+          - generic [ref=e300]:
+            - img [ref=e302]
+            - generic [ref=e305]:
+              - generic [ref=e307]: Margherita Pizza
+              - paragraph
+            - generic [ref=e308]:
+              - generic [ref=e309]: CA$18.99
+              - button [ref=e310]:
+                - img [ref=e311]
+          - generic [ref=e312]:
+            - img [ref=e314]
+            - generic [ref=e317]:
+              - generic [ref=e319]: Pepperoni Pizza
+              - paragraph
+            - generic [ref=e320]:
+              - generic [ref=e321]: CA$21.99
+              - button [ref=e322]:
+                - img [ref=e323]
+          - generic [ref=e324]:
+            - img [ref=e326]
+            - generic [ref=e329]:
+              - generic [ref=e331]: Quattro Formaggi
+              - paragraph
+            - generic [ref=e332]:
+              - generic [ref=e333]: CA$23.99
+              - button [ref=e334]:
+                - img [ref=e335]
+        - button "Continue to checkout · Deposit CA$40.00" [ref=e337]:
+          - text: Continue to checkout · Deposit CA$40.00
+          - img
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

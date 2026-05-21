@@ -1,0 +1,115 @@
+- generic [ref=e2]:
+  - generic [ref=e9]:
+    - link "Back" [ref=e10] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e13]:
+      - generic [ref=e15]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e16]
+        - generic [ref=e17]:
+          - generic [ref=e18]: Pizza
+          - generic [ref=e19]:
+            - generic [ref=e20]: $
+            - generic [ref=e21]: $
+            - generic [ref=e22]: $
+          - generic [ref=e23]: Vegetarian
+          - generic [ref=e24]: Vegan
+          - generic [ref=e25]:
+            - img [ref=e26]
+            - text: Toronto
+          - link "+14165551234" [ref=e29] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e30]
+            - text: "+14165551234"
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - generic [ref=e35]: "1"
+          - generic [ref=e36]: Details
+        - generic [ref=e38]:
+          - generic [ref=e39]: "2"
+          - generic [ref=e40]: Menu
+        - generic [ref=e42]:
+          - generic [ref=e43]: "3"
+          - generic [ref=e44]: Payment
+      - generic [ref=e45]:
+        - heading "Book your table" [level=2] [ref=e47]
+        - generic [ref=e49]:
+          - generic [ref=e50]:
+            - generic [ref=e51]:
+              - button "Date Fri, May 22" [ref=e111]:
+                - img [ref=e53]
+                - generic [ref=e55]:
+                  - paragraph [ref=e56]: Date
+                  - paragraph [ref=e57]: Fri, May 22
+              - button "Time 11:00 AM" [ref=e112]:
+                - img [ref=e59]
+                - generic [ref=e62]:
+                  - paragraph [ref=e63]: Time
+                  - paragraph [ref=e64]: 11:00 AM
+              - button "Party 2 guests" [ref=e65]:
+                - img [ref=e66]
+                - generic [ref=e71]:
+                  - paragraph [ref=e72]: Party
+                  - paragraph [ref=e73]: 2 guests
+            - generic [ref=e113]:
+              - button "11am" [ref=e114]
+              - button "11:15am" [ref=e115]
+              - button "11:30am" [ref=e116]
+              - button "11:45am" [ref=e117]
+              - button "12pm" [ref=e118]
+              - button "12:15pm" [ref=e119]
+              - button "12:30pm" [ref=e120]
+              - button "12:45pm" [ref=e121]
+          - generic [ref=e87]:
+            - generic [ref=e88]: Full Name *
+            - textbox "Full Name *" [ref=e89]:
+              - /placeholder: Jane Smith
+              - text: Mark Habbi
+          - generic [ref=e90]:
+            - generic [ref=e91]:
+              - generic [ref=e92]: Email *
+              - textbox "Email *" [ref=e93]:
+                - /placeholder: jane@example.com
+                - text: markhabbi2@gmail.com
+            - generic [ref=e94]:
+              - generic [ref=e95]: Phone *
+              - textbox "Phone *" [ref=e96]:
+                - /placeholder: +1 (416) 555-0100
+                - text: "+12894000883"
+          - generic [ref=e98]:
+            - generic [ref=e99]: Table preference (optional)
+            - generic [ref=e100]:
+              - combobox [ref=e101]:
+                - option "No preference" [selected]
+                - option "By the window"
+                - option "Middle of dining room"
+                - option "Booth seating"
+                - option "Lounge seating"
+                - option "Patio"
+                - option "Bar seating"
+                - option "Quiet corner"
+              - img
+          - generic [ref=e102]:
+            - generic [ref=e103]: Occasion (optional)
+            - generic [ref=e104]:
+              - combobox [ref=e105]:
+                - option "Select occasion…" [selected]
+                - option "Anniversary"
+                - option "Birthday"
+                - option "Business Dinner"
+                - option "Date Night"
+                - option "Family Gathering"
+              - img
+          - generic [ref=e106]:
+            - generic [ref=e107]: Dietary restrictions & allergies
+            - textbox "Dietary restrictions & allergies" [ref=e108]:
+              - /placeholder: e.g. Nut allergy (2 guests), 1 vegan, gluten-free
+              - text: Tree Nuts
+            - paragraph [ref=e109]: Please list restrictions for every guest in your party.
+        - button "Continue — add preorder (optional)" [ref=e122]:
+          - text: Continue — add preorder (optional)
+          - img
+  - button "Start listening" [ref=e5] [cursor=pointer]:
+    - img [ref=e6]
+  - region "Notifications alt+T"

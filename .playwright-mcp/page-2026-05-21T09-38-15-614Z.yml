@@ -1,0 +1,248 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - complementary [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e8]: CENAIVA
+          - button "Switch restaurant" [ref=e10]:
+            - generic [ref=e11]:
+              - generic [ref=e13]:
+                - paragraph [ref=e14]: Harbour Sixty Steakhouse
+                - paragraph [ref=e15]: Owner
+              - img [ref=e16]
+          - paragraph [ref=e18]: Tonight
+          - navigation "Dashboard navigation" [ref=e19]:
+            - link "Overview" [ref=e21] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e22]
+              - generic [ref=e27]: Overview
+            - link "Reservations" [ref=e29] [cursor=pointer]:
+              - /url: /dashboard/reservations
+              - img [ref=e31]
+              - generic [ref=e33]: Reservations
+            - link "Floor plan" [ref=e35] [cursor=pointer]:
+              - /url: /dashboard/floor-plan
+              - img [ref=e36]
+              - generic [ref=e39]: Floor plan
+            - link "Staff Invites" [ref=e41] [cursor=pointer]:
+              - /url: /dashboard/staff-invites
+              - img [ref=e42]
+              - generic [ref=e45]: Staff Invites
+            - link "Pre-orders" [ref=e47] [cursor=pointer]:
+              - /url: /dashboard/orders
+              - img [ref=e48]
+              - generic [ref=e53]: Pre-orders
+            - link "Menu" [ref=e55] [cursor=pointer]:
+              - /url: /dashboard/menu
+              - img [ref=e56]
+              - generic [ref=e58]: Menu
+            - link "CRM" [ref=e60] [cursor=pointer]:
+              - /url: /dashboard/crm
+              - img [ref=e61]
+              - generic [ref=e65]: CRM
+            - link "Analytics" [ref=e67] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e68]
+              - generic [ref=e70]: Analytics
+            - link "Income & Expenses" [ref=e72] [cursor=pointer]:
+              - /url: /dashboard/expenses
+              - img [ref=e73]
+              - generic [ref=e76]: Income & Expenses
+            - link "Events" [ref=e78] [cursor=pointer]:
+              - /url: /dashboard/events
+              - img [ref=e79]
+              - generic [ref=e85]: Events
+            - link "Promotions" [ref=e87] [cursor=pointer]:
+              - /url: /dashboard/promotions
+              - img [ref=e88]
+              - generic [ref=e91]: Promotions
+            - link "Export" [ref=e93] [cursor=pointer]:
+              - /url: /dashboard/export
+              - img [ref=e94]
+              - generic [ref=e98]: Export
+            - link "Restaurant info" [ref=e100] [cursor=pointer]:
+              - /url: /dashboard/restaurant
+              - img [ref=e101]
+              - generic [ref=e105]: Restaurant info
+          - generic [ref=e106]:
+            - generic [ref=e107]:
+              - button "My account" [ref=e109]: MH
+              - button "Notifications" [ref=e110]:
+                - img [ref=e111]
+              - button "Sign out" [ref=e115]:
+                - img [ref=e116]
+            - button "Exit dashboard" [ref=e119]:
+              - img [ref=e120]
+              - generic [ref=e123]: Exit dashboard
+            - button "Preview" [ref=e124]:
+              - img [ref=e125]
+              - generic [ref=e128]: Preview
+            - link "Settings" [ref=e129] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e130]
+              - generic [ref=e133]: Settings
+      - main [ref=e136]:
+        - generic [ref=e139]:
+          - generic [ref=e140]:
+            - generic [ref=e141]:
+              - paragraph [ref=e142]: Thursday, May 21 · Dinner service
+              - heading "Reservations" [level=1] [ref=e143]
+            - button "Thu, May 21" [ref=e145]:
+              - img [ref=e146]
+              - text: Thu, May 21
+          - generic [ref=e148]:
+            - generic [ref=e149]:
+              - paragraph [ref=e150]: Booked tonight
+              - paragraph [ref=e151]: "0"
+              - paragraph [ref=e152]: 0 covers expected
+            - generic [ref=e153]:
+              - paragraph [ref=e154]: Current bookings
+              - paragraph [ref=e155]: "0"
+              - paragraph [ref=e156]: 0 active now
+            - generic [ref=e157]:
+              - paragraph [ref=e158]: Upcoming
+              - paragraph [ref=e159]: "0"
+              - paragraph [ref=e160]: 0 past for this view
+          - generic [ref=e162]:
+            - generic [ref=e163]:
+              - generic [ref=e164]:
+                - generic [ref=e165]:
+                  - button "Day" [ref=e166]
+                  - button "Week" [ref=e167]
+                  - button "List" [ref=e168]
+                - generic [ref=e169]:
+                  - button "Previous day" [ref=e170]:
+                    - img [ref=e171]
+                  - button "Today · May 21" [expanded] [ref=e173]
+                  - button "Next day" [ref=e174]:
+                    - img [ref=e175]
+              - button "Add reservation" [ref=e177]:
+                - img
+                - text: Add reservation
+            - generic [ref=e179]:
+              - img [ref=e180]
+              - textbox "Search guest, phone, table, code..." [ref=e183]
+            - generic [ref=e184]:
+              - paragraph [ref=e185]: Status
+              - generic [ref=e186]:
+                - button "All · 0" [ref=e187]
+                - button "Upcoming · 0" [ref=e188]
+                - button "Current · 0" [ref=e189]
+                - button "Past · 0" [ref=e190]
+                - button "Cancelled · 0" [ref=e191]
+                - button "Modified · 0" [ref=e192]
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - generic [ref=e195]:
+                - heading "Floor timeline" [level=2] [ref=e196]
+                - paragraph [ref=e197]: Drag a booking to reassign - click to open guest
+              - generic [ref=e198]:
+                - generic [ref=e199]: Upcoming
+                - generic [ref=e201]: Current
+                - generic [ref=e203]: Past
+                - generic [ref=e205]: Available
+            - generic [ref=e207]:
+              - img [ref=e209]
+              - generic [ref=e212]:
+                - heading "No reservations for this day" [level=3] [ref=e213]
+                - paragraph [ref=e214]: Account bookings and guest checkout bookings will appear here with their assigned table and duration.
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - generic [ref=e217]:
+                - heading "All reservations · 0" [level=2] [ref=e218]
+                - paragraph [ref=e219]: Sorted by reservation time
+              - paragraph [ref=e220]: "Sort: Time · Party size · Status"
+            - generic [ref=e221]:
+              - img [ref=e223]
+              - generic [ref=e226]:
+                - heading "No reservations for this day" [level=3] [ref=e227]
+                - paragraph [ref=e228]: Account bookings and guest checkout bookings will appear here with their assigned table and duration.
+    - region "Notifications alt+T"
+  - dialog [ref=e230]:
+    - generic [ref=e232]:
+      - navigation "Navigation bar" [ref=e233]:
+        - button "Go to the Previous Month" [active] [ref=e234]:
+          - img
+        - button "Go to the Next Month" [ref=e235]:
+          - img
+      - generic [ref=e236]:
+        - status [ref=e238]: May 2026
+        - grid "May 2026" [ref=e239]:
+          - rowgroup [ref=e240]:
+            - row [ref=e241]:
+              - columnheader [ref=e242]: Su
+              - columnheader [ref=e243]: Mo
+              - columnheader [ref=e244]: Tu
+              - columnheader [ref=e245]: We
+              - columnheader [ref=e246]: Th
+              - columnheader [ref=e247]: Fr
+              - columnheader [ref=e248]: Sa
+          - rowgroup [ref=e249]:
+            - row "Friday, May 1st, 2026 Saturday, May 2nd, 2026" [ref=e250]:
+              - gridcell "Friday, May 1st, 2026" [ref=e251]:
+                - button "Friday, May 1st, 2026" [ref=e252]: "1"
+              - gridcell "Saturday, May 2nd, 2026" [ref=e253]:
+                - button "Saturday, May 2nd, 2026" [ref=e254]: "2"
+            - row "Sunday, May 3rd, 2026 Monday, May 4th, 2026 Tuesday, May 5th, 2026 Wednesday, May 6th, 2026 Thursday, May 7th, 2026 Friday, May 8th, 2026 Saturday, May 9th, 2026" [ref=e255]:
+              - gridcell "Sunday, May 3rd, 2026" [ref=e256]:
+                - button "Sunday, May 3rd, 2026" [ref=e257]: "3"
+              - gridcell "Monday, May 4th, 2026" [ref=e258]:
+                - button "Monday, May 4th, 2026" [ref=e259]: "4"
+              - gridcell "Tuesday, May 5th, 2026" [ref=e260]:
+                - button "Tuesday, May 5th, 2026" [ref=e261]: "5"
+              - gridcell "Wednesday, May 6th, 2026" [ref=e262]:
+                - button "Wednesday, May 6th, 2026" [ref=e263]: "6"
+              - gridcell "Thursday, May 7th, 2026" [ref=e264]:
+                - button "Thursday, May 7th, 2026" [ref=e265]: "7"
+              - gridcell "Friday, May 8th, 2026" [ref=e266]:
+                - button "Friday, May 8th, 2026" [ref=e267]: "8"
+              - gridcell "Saturday, May 9th, 2026" [ref=e268]:
+                - button "Saturday, May 9th, 2026" [ref=e269]: "9"
+            - row "Sunday, May 10th, 2026 Monday, May 11th, 2026 Tuesday, May 12th, 2026 Wednesday, May 13th, 2026 Thursday, May 14th, 2026 Friday, May 15th, 2026 Saturday, May 16th, 2026" [ref=e270]:
+              - gridcell "Sunday, May 10th, 2026" [ref=e271]:
+                - button "Sunday, May 10th, 2026" [ref=e272]: "10"
+              - gridcell "Monday, May 11th, 2026" [ref=e273]:
+                - button "Monday, May 11th, 2026" [ref=e274]: "11"
+              - gridcell "Tuesday, May 12th, 2026" [ref=e275]:
+                - button "Tuesday, May 12th, 2026" [ref=e276]: "12"
+              - gridcell "Wednesday, May 13th, 2026" [ref=e277]:
+                - button "Wednesday, May 13th, 2026" [ref=e278]: "13"
+              - gridcell "Thursday, May 14th, 2026" [ref=e279]:
+                - button "Thursday, May 14th, 2026" [ref=e280]: "14"
+              - gridcell "Friday, May 15th, 2026" [ref=e281]:
+                - button "Friday, May 15th, 2026" [ref=e282]: "15"
+              - gridcell "Saturday, May 16th, 2026" [ref=e283]:
+                - button "Saturday, May 16th, 2026" [ref=e284]: "16"
+            - row "Sunday, May 17th, 2026 Monday, May 18th, 2026 Tuesday, May 19th, 2026 Wednesday, May 20th, 2026 Today, Thursday, May 21st, 2026, selected Friday, May 22nd, 2026 Saturday, May 23rd, 2026" [ref=e285]:
+              - gridcell "Sunday, May 17th, 2026" [ref=e286]:
+                - button "Sunday, May 17th, 2026" [ref=e287]: "17"
+              - gridcell "Monday, May 18th, 2026" [ref=e288]:
+                - button "Monday, May 18th, 2026" [ref=e289]: "18"
+              - gridcell "Tuesday, May 19th, 2026" [ref=e290]:
+                - button "Tuesday, May 19th, 2026" [ref=e291]: "19"
+              - gridcell "Wednesday, May 20th, 2026" [ref=e292]:
+                - button "Wednesday, May 20th, 2026" [ref=e293]: "20"
+              - gridcell "Today, Thursday, May 21st, 2026, selected" [selected] [ref=e294]:
+                - button "Today, Thursday, May 21st, 2026, selected" [ref=e295]: "21"
+              - gridcell "Friday, May 22nd, 2026" [ref=e296]:
+                - button "Friday, May 22nd, 2026" [ref=e297]: "22"
+              - gridcell "Saturday, May 23rd, 2026" [ref=e298]:
+                - button "Saturday, May 23rd, 2026" [ref=e299]: "23"
+            - row "Sunday, May 24th, 2026 Monday, May 25th, 2026 Tuesday, May 26th, 2026 Wednesday, May 27th, 2026 Thursday, May 28th, 2026 Friday, May 29th, 2026 Saturday, May 30th, 2026" [ref=e300]:
+              - gridcell "Sunday, May 24th, 2026" [ref=e301]:
+                - button "Sunday, May 24th, 2026" [ref=e302]: "24"
+              - gridcell "Monday, May 25th, 2026" [ref=e303]:
+                - button "Monday, May 25th, 2026" [ref=e304]: "25"
+              - gridcell "Tuesday, May 26th, 2026" [ref=e305]:
+                - button "Tuesday, May 26th, 2026" [ref=e306]: "26"
+              - gridcell "Wednesday, May 27th, 2026" [ref=e307]:
+                - button "Wednesday, May 27th, 2026" [ref=e308]: "27"
+              - gridcell "Thursday, May 28th, 2026" [ref=e309]:
+                - button "Thursday, May 28th, 2026" [ref=e310]: "28"
+              - gridcell "Friday, May 29th, 2026" [ref=e311]:
+                - button "Friday, May 29th, 2026" [ref=e312]: "29"
+              - gridcell "Saturday, May 30th, 2026" [ref=e313]:
+                - button "Saturday, May 30th, 2026" [ref=e314]: "30"
+            - row "Sunday, May 31st, 2026" [ref=e315]:
+              - gridcell "Sunday, May 31st, 2026" [ref=e316]:
+                - button "Sunday, May 31st, 2026" [ref=e317]: "31"

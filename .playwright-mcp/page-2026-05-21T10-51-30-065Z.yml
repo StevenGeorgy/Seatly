@@ -1,0 +1,117 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: Pizza
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegetarian
+          - generic [ref=e27]: Vegan
+          - generic [ref=e28]:
+            - img [ref=e29]
+            - text: Toronto
+          - link "+14165551234" [ref=e32] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e33]
+            - text: "+14165551234"
+      - generic [ref=e36]:
+        - button "Go to Details" [ref=e149]:
+          - img [ref=e151]
+          - generic [ref=e153]: Details
+        - button "Go to Menu" [ref=e345]:
+          - img [ref=e347]
+          - generic [ref=e349]: Menu
+        - generic [ref=e45]:
+          - generic [ref=e46]: "3"
+          - generic [ref=e47]: Payment
+      - generic [ref=e350]:
+        - generic [ref=e351]:
+          - heading "Review & Pay" [level=2] [ref=e352]
+          - button "Edit details" [ref=e353]:
+            - img [ref=e354]
+            - text: Edit details
+        - generic [ref=e356]:
+          - paragraph [ref=e357]: Order Summary
+          - generic [ref=e359]:
+            - img [ref=e361]
+            - generic [ref=e364]: 1× Margherita Pizza
+            - generic [ref=e365]: CA$18.99
+            - button [ref=e366]:
+              - img [ref=e367]
+          - generic [ref=e370]:
+            - generic [ref=e371]:
+              - generic [ref=e372]: Subtotal
+              - generic [ref=e373]: CA$18.99
+            - generic [ref=e374]:
+              - generic [ref=e375]: Tax (13%)
+              - generic [ref=e376]: CA$2.47
+            - generic [ref=e377]:
+              - generic [ref=e378]: Deposit (4 × CA$10.00)
+              - generic [ref=e379]: CA$40.00
+            - generic [ref=e380]:
+              - generic [ref=e381]: Platform fee (5.5%)
+              - generic [ref=e382]: CA$3.38
+            - generic [ref=e383]:
+              - generic [ref=e384]: Processing fee
+              - generic [ref=e385]: CA$2.25
+            - generic [ref=e386]:
+              - generic [ref=e387]: Total due now
+              - generic [ref=e388]: CA$67.09
+            - paragraph [ref=e389]:
+              - text: Platform and processing fees are non-refundable. Your
+              - strong [ref=e390]: CA$40.00
+              - text: deposit is fully refundable when the restaurant marks you seated.
+        - generic [ref=e391]:
+          - paragraph [ref=e392]: Reservation
+          - generic [ref=e393]:
+            - generic [ref=e394]:
+              - paragraph [ref=e395]: Name
+              - paragraph [ref=e396]: Mark Habbi
+            - generic [ref=e397]:
+              - paragraph [ref=e398]: Date & Time
+              - paragraph [ref=e399]: 2026-05-21 · 12pm
+            - generic [ref=e400]:
+              - paragraph [ref=e401]: Party size
+              - paragraph [ref=e402]: 4 guests
+            - generic [ref=e403]:
+              - paragraph [ref=e404]: Dietary notes
+              - paragraph [ref=e405]: Tree Nuts
+        - generic [ref=e406]:
+          - generic [ref=e407]:
+            - generic [ref=e408]:
+              - img [ref=e409]
+              - paragraph [ref=e414]: Split tender
+            - paragraph [ref=e415]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e416]:
+              - button "Single payment" [ref=e417]
+              - button "Split tender" [ref=e418]
+          - generic [ref=e419]:
+            - img [ref=e420]
+            - paragraph [ref=e422]: Payment
+            - img [ref=e423]
+            - generic [ref=e426]: Secured
+          - generic [ref=e428]:
+            - paragraph [ref=e429]: Pay with
+            - generic [ref=e430] [cursor=pointer]:
+              - radio "visa •••• 4242Default 12/30" [checked] [ref=e431]
+              - img [ref=e432]
+              - generic [ref=e434]: visa •••• 4242Default
+              - generic [ref=e435]: 12/30
+            - button "Use a different card" [ref=e436]:
+              - img [ref=e437]
+              - text: Use a different card
+        - button "Place Order" [ref=e438]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e439]: By placing your order you agree to our terms. Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

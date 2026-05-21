@@ -1,0 +1,64 @@
+- generic [ref=e2]:
+  - generic [ref=e14]:
+    - link "Back to MICKY" [ref=e15] [cursor=pointer]:
+      - /url: /micky
+      - img
+      - text: Back to MICKY
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - heading "Manage your reservation" [level=1] [ref=e18]
+        - generic [ref=e19]: confirmed
+      - paragraph [ref=e20]: MICKY
+      - paragraph [ref=e21]: Mark Habbi
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - img [ref=e24]
+          - generic [ref=e26]: Fri, May 22, 2026
+        - generic [ref=e27]:
+          - img [ref=e28]
+          - generic [ref=e31]: 5:00 PM
+        - generic [ref=e32]:
+          - img [ref=e33]
+          - generic [ref=e38]: 8 guests
+        - generic [ref=e39]:
+          - generic [ref=e40]: Notes
+          - generic [ref=e41]: Tree Nuts
+      - generic [ref=e42]:
+        - generic [ref=e43]:
+          - generic [ref=e44]:
+            - generic [ref=e45]:
+              - button "Date Fri, May 22" [ref=e46]:
+                - img [ref=e47]
+                - generic [ref=e49]:
+                  - paragraph [ref=e50]: Date
+                  - paragraph [ref=e51]: Fri, May 22
+              - button "Time 5:00 PM" [ref=e52]:
+                - img [ref=e53]
+                - generic [ref=e56]:
+                  - paragraph [ref=e57]: Time
+                  - paragraph [ref=e58]: 5:00 PM
+              - button "Party 2 guests" [active] [ref=e106]:
+                - img [ref=e60]
+                - generic [ref=e65]:
+                  - paragraph [ref=e66]: Party
+                  - paragraph [ref=e67]: 2 guests
+            - generic [ref=e69]:
+              - button "5pm" [ref=e107]
+              - button "5:30pm" [ref=e108]
+              - button "6pm" [ref=e109]
+              - button "6:30pm" [ref=e110]
+              - button "7pm" [ref=e111]
+              - button "7:30pm" [ref=e112]
+              - button "8pm" [ref=e113]
+              - button "8:30pm" [ref=e114]
+          - generic [ref=e78]:
+            - generic [ref=e79]: Special request / notes
+            - textbox "Special request / notes" [ref=e80]:
+              - /placeholder: Allergies, occasion, seating notes…
+              - text: Tree Nuts
+        - generic [ref=e81]:
+          - button "Confirm 5pm changes" [ref=e115]
+          - button "Keep current booking" [ref=e82]
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

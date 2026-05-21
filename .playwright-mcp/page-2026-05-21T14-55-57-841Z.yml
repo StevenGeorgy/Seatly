@@ -1,0 +1,123 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e35]:
+        - button "Go to Details" [ref=e199]:
+          - img [ref=e201]
+          - generic [ref=e203]: Details
+        - button "Go to Menu" [ref=e264]:
+          - img [ref=e266]
+          - generic [ref=e268]: Menu
+        - generic [ref=e44]:
+          - generic [ref=e45]: "3"
+          - generic [ref=e46]: Payment
+      - generic [ref=e269]:
+        - generic [ref=e270]:
+          - heading "Review & Pay" [level=2] [ref=e271]
+          - button "Edit details" [ref=e272]:
+            - img [ref=e273]
+            - text: Edit details
+        - generic [ref=e275]:
+          - paragraph [ref=e276]: Order Summary
+          - generic [ref=e277]:
+            - generic [ref=e278]:
+              - img [ref=e280]
+              - generic [ref=e283]: 1× MARK
+              - generic [ref=e284]: CA$88.00
+              - button [ref=e285]:
+                - img [ref=e286]
+            - generic [ref=e289]:
+              - img [ref=e291]
+              - generic [ref=e294]: 1× SAVYO
+              - generic [ref=e295]: CA$69.00
+              - button [ref=e296]:
+                - img [ref=e297]
+          - generic [ref=e300]:
+            - generic [ref=e301]:
+              - generic [ref=e302]: Subtotal
+              - generic [ref=e303]: CA$157.00
+            - generic [ref=e304]:
+              - generic [ref=e305]: Tax (HST 13%)
+              - generic [ref=e306]: CA$20.41
+            - generic [ref=e307]:
+              - generic [ref=e308]: Deposit (2 × CA$10.00)
+              - generic [ref=e309]: CA$20.00
+            - generic [ref=e310]:
+              - generic [ref=e311]: Platform fee (5.5%)
+              - generic [ref=e312]: CA$10.86
+            - generic [ref=e313]:
+              - generic [ref=e314]: Processing fee
+              - generic [ref=e315]: CA$6.53
+            - generic [ref=e316]:
+              - generic [ref=e317]: Total due now
+              - generic [ref=e318]: CA$214.80
+            - paragraph [ref=e319]:
+              - text: Platform and processing fees are non-refundable. Your
+              - strong [ref=e320]: CA$20.00
+              - text: deposit is fully refundable when the restaurant marks you seated.
+        - generic [ref=e321]:
+          - paragraph [ref=e322]: Reservation
+          - generic [ref=e323]:
+            - generic [ref=e324]:
+              - paragraph [ref=e325]: Name
+              - paragraph [ref=e326]: Mark Habbi
+            - generic [ref=e327]:
+              - paragraph [ref=e328]: Date & Time
+              - paragraph [ref=e329]: 2026-05-23 · 7pm
+            - generic [ref=e330]:
+              - paragraph [ref=e331]: Party size
+              - paragraph [ref=e332]: 2 guests
+            - generic [ref=e333]:
+              - paragraph [ref=e334]: Dietary notes
+              - paragraph [ref=e335]: Tree Nuts
+        - generic [ref=e336]:
+          - generic [ref=e337]:
+            - generic [ref=e338]:
+              - img [ref=e339]
+              - paragraph [ref=e344]: Split tender
+            - paragraph [ref=e345]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e346]:
+              - button "Single payment" [ref=e347]
+              - button "Split tender" [ref=e348]
+          - generic [ref=e349]:
+            - img [ref=e350]
+            - paragraph [ref=e352]: Payment
+            - img [ref=e353]
+            - generic [ref=e356]: Secured
+          - generic [ref=e357]:
+            - img [ref=e358]
+            - text: Loading payment options…
+        - button "Place Order" [ref=e360]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e361]:
+          - text: By booking, you agree to our
+          - link "Terms" [ref=e362] [cursor=pointer]:
+            - /url: /terms
+          - text: and
+          - link "Refund Policy" [ref=e363] [cursor=pointer]:
+            - /url: /refund-policy
+          - text: . Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

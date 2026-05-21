@@ -1,0 +1,39 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "MICKY" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: African
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegan
+          - generic [ref=e27]:
+            - img [ref=e28]
+            - text: Oakville
+          - link "2894000883" [ref=e31] [cursor=pointer]:
+            - /url: tel:2894000883
+            - img [ref=e32]
+            - text: "2894000883"
+      - generic [ref=e339]:
+        - img [ref=e341]
+        - generic [ref=e343]:
+          - heading "Table Booked!" [level=2] [ref=e344]
+          - paragraph [ref=e345]: Your table at MICKY is reserved for 2 on 2026-05-24 at 7pm.
+        - generic [ref=e346]:
+          - paragraph [ref=e347]: Confirmation code
+          - paragraph [ref=e348]: SEAT-90H1
+          - paragraph [ref=e349]: A confirmation has been sent to your email.
+        - generic [ref=e350]:
+          - button "Book again" [ref=e351]
+          - link "Back to Discover" [ref=e352] [cursor=pointer]:
+            - /url: /discover
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

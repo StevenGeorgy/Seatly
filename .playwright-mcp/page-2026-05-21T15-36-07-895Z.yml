@@ -1,0 +1,80 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - link "Back" [ref=e14] [cursor=pointer]:
+        - /url: /discover
+        - img
+        - text: Back
+      - generic [ref=e16]:
+        - generic [ref=e18]:
+          - heading "MICKY" [level=1] [ref=e19]
+          - generic [ref=e20]:
+            - generic [ref=e21]: African
+            - generic [ref=e22]:
+              - generic [ref=e23]: $
+              - generic [ref=e24]: $
+              - generic [ref=e25]: $
+            - generic [ref=e26]: Vegan
+            - generic [ref=e27]:
+              - img [ref=e28]
+              - text: Oakville
+            - link "2894000883" [ref=e31] [cursor=pointer]:
+              - /url: tel:2894000883
+              - img [ref=e32]
+              - text: "2894000883"
+        - generic [ref=e383]:
+          - button "Go to Details" [ref=e543]:
+            - img [ref=e545]
+            - generic [ref=e547]: Details
+          - generic [ref=e388]:
+            - generic [ref=e389]: "2"
+            - generic [ref=e390]: Menu
+          - generic [ref=e392]:
+            - generic [ref=e393]: "3"
+            - generic [ref=e394]: Payment
+        - generic [ref=e548]:
+          - generic [ref=e549]:
+            - heading "Preorder (optional)" [level=2] [ref=e550]
+            - button "← Back to booking" [ref=e551]
+          - generic [ref=e552]:
+            - button "All" [ref=e553]
+            - button "Mains" [ref=e554]
+          - generic [ref=e555]:
+            - generic [ref=e556]:
+              - img [ref=e558]
+              - generic [ref=e561]:
+                - generic [ref=e563]: SAVYO
+                - paragraph
+              - generic [ref=e564]:
+                - generic [ref=e565]: CA$69.00
+                - button [ref=e566]:
+                  - img [ref=e567]
+            - generic [ref=e568]:
+              - img [ref=e570]
+              - generic [ref=e573]:
+                - generic [ref=e575]: STEVEN
+                - paragraph
+              - generic [ref=e576]:
+                - generic [ref=e577]: CA$67.00
+                - button [ref=e578]:
+                  - img [ref=e579]
+            - generic [ref=e580]:
+              - img [ref=e582]
+              - generic [ref=e585]:
+                - generic [ref=e587]: MARK
+                - paragraph
+              - generic [ref=e588]:
+                - generic [ref=e589]: CA$88.00
+                - button [ref=e590]:
+                  - img [ref=e591]
+          - button "Continue to checkout · Deposit CA$20.00" [ref=e593]:
+            - text: Continue to checkout · Deposit CA$20.00
+            - img
+    - button "Start listening" [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+    - region "Notifications alt+T"
+  - iframe [ref=e353]:
+    - button "Open Stripe Developer Tools" [ref=f87e5] [cursor=pointer]:
+      - banner [ref=f87e8]:
+        - img [ref=f87e9]
+        - img [ref=f87e11]

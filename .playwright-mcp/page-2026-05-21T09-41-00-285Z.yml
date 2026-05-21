@@ -1,0 +1,382 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - complementary [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e8]: CENAIVA
+        - button "Switch restaurant" [ref=e10]:
+          - generic [ref=e11]:
+            - generic [ref=e12]: WT
+            - generic [ref=e13]:
+              - paragraph [ref=e14]: Webhook Test Pizza
+              - paragraph [ref=e15]: Owner
+            - img [ref=e16]
+        - paragraph [ref=e18]: Tonight
+        - navigation "Dashboard navigation" [ref=e19]:
+          - link "Overview" [ref=e21] [cursor=pointer]:
+            - /url: /dashboard
+            - img [ref=e22]
+            - generic [ref=e27]: Overview
+          - link "Reservations" [ref=e29] [cursor=pointer]:
+            - /url: /dashboard/reservations
+            - img [ref=e31]
+            - generic [ref=e33]: Reservations
+          - link "Floor plan" [ref=e35] [cursor=pointer]:
+            - /url: /dashboard/floor-plan
+            - img [ref=e36]
+            - generic [ref=e39]: Floor plan
+          - link "Staff Invites" [ref=e41] [cursor=pointer]:
+            - /url: /dashboard/staff-invites
+            - img [ref=e42]
+            - generic [ref=e45]: Staff Invites
+          - link "Pre-orders" [ref=e47] [cursor=pointer]:
+            - /url: /dashboard/orders
+            - img [ref=e48]
+            - generic [ref=e53]: Pre-orders
+          - link "Menu" [ref=e55] [cursor=pointer]:
+            - /url: /dashboard/menu
+            - img [ref=e56]
+            - generic [ref=e58]: Menu
+          - link "CRM" [ref=e60] [cursor=pointer]:
+            - /url: /dashboard/crm
+            - img [ref=e61]
+            - generic [ref=e65]: CRM
+          - link "Analytics" [ref=e67] [cursor=pointer]:
+            - /url: /dashboard/analytics
+            - img [ref=e68]
+            - generic [ref=e70]: Analytics
+          - link "Income & Expenses" [ref=e72] [cursor=pointer]:
+            - /url: /dashboard/expenses
+            - img [ref=e73]
+            - generic [ref=e76]: Income & Expenses
+          - link "Events" [ref=e78] [cursor=pointer]:
+            - /url: /dashboard/events
+            - img [ref=e79]
+            - generic [ref=e85]: Events
+          - link "Promotions" [ref=e87] [cursor=pointer]:
+            - /url: /dashboard/promotions
+            - img [ref=e88]
+            - generic [ref=e91]: Promotions
+          - link "Export" [ref=e93] [cursor=pointer]:
+            - /url: /dashboard/export
+            - img [ref=e94]
+            - generic [ref=e98]: Export
+          - link "Restaurant info" [ref=e100] [cursor=pointer]:
+            - /url: /dashboard/restaurant
+            - img [ref=e101]
+            - generic [ref=e105]: Restaurant info
+        - generic [ref=e106]:
+          - generic [ref=e107]:
+            - button "My account" [ref=e109]: MH
+            - button "Notifications" [ref=e110]:
+              - img [ref=e111]
+            - button "Sign out" [ref=e115]:
+              - img [ref=e116]
+          - button "Exit dashboard" [ref=e119]:
+            - img [ref=e120]
+            - generic [ref=e123]: Exit dashboard
+          - button "Preview" [ref=e124]:
+            - img [ref=e125]
+            - generic [ref=e128]: Preview
+          - link "Settings" [ref=e129] [cursor=pointer]:
+            - /url: /dashboard/settings
+            - img [ref=e130]
+            - generic [ref=e133]: Settings
+    - generic [ref=e134]:
+      - 'link "Billing status: Trial active · Free until Aug 18. Tap for details." [ref=e431] [cursor=pointer]':
+        - /url: /dashboard/settings
+        - generic [ref=e433]: Trial active · Free until Aug 18
+        - img [ref=e434]
+      - main [ref=e136]:
+        - generic [ref=e139]:
+          - generic [ref=e140]:
+            - generic [ref=e141]:
+              - paragraph [ref=e142]: Wednesday, May 20 · Dinner service
+              - heading "Reservations" [level=1] [ref=e143]
+            - button "Wed, May 20" [ref=e318]:
+              - img [ref=e146]
+              - text: Wed, May 20
+          - generic [ref=e148]:
+            - generic [ref=e149]:
+              - paragraph [ref=e150]: Booked tonight
+              - paragraph [ref=e151]: "8"
+              - paragraph [ref=e152]: 16 covers expected
+            - generic [ref=e153]:
+              - paragraph [ref=e154]: Current bookings
+              - paragraph [ref=e155]: "0"
+              - paragraph [ref=e156]: 0 active now
+            - generic [ref=e157]:
+              - paragraph [ref=e158]: Upcoming
+              - paragraph [ref=e159]: "0"
+              - paragraph [ref=e160]: 3 past for this view
+          - generic [ref=e162]:
+            - generic [ref=e163]:
+              - generic [ref=e164]:
+                - generic [ref=e165]:
+                  - button "Day" [ref=e166]
+                  - button "Week" [ref=e167]
+                  - button "List" [ref=e168]
+                - generic [ref=e169]:
+                  - button "Previous day" [ref=e170]:
+                    - img [ref=e171]
+                  - button "Wed · May 20" [ref=e319]
+                  - button "Next day" [ref=e174]:
+                    - img [ref=e175]
+              - button "Add reservation" [ref=e177]:
+                - img
+                - text: Add reservation
+            - generic [ref=e179]:
+              - img [ref=e180]
+              - textbox "Search guest, phone, table, code..." [ref=e183]
+            - generic [ref=e184]:
+              - paragraph [ref=e185]: Status
+              - generic [ref=e186]:
+                - button "All · 8" [ref=e775]
+                - button "Upcoming · 0" [ref=e188]
+                - button "Current · 0" [ref=e189]
+                - button "Past · 3" [ref=e776]
+                - button "Cancelled · 5" [ref=e438]
+                - button "Modified · 0" [ref=e192]
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - generic [ref=e195]:
+                - heading "Floor timeline" [level=2] [ref=e196]
+                - paragraph [ref=e197]: Drag a booking to reassign - click to open guest
+              - generic [ref=e198]:
+                - generic [ref=e199]: Upcoming
+                - generic [ref=e201]: Current
+                - generic [ref=e203]: Past
+                - generic [ref=e205]: Available
+            - generic [ref=e1076]:
+              - generic [ref=e1077]:
+                - generic [ref=e1078]: Table
+                - generic [ref=e1079]:
+                  - generic [ref=e1080]: 11am
+                  - generic [ref=e1081]: 11:30am
+                  - generic [ref=e1082]: 12pm
+                  - generic [ref=e1083]: 12:30pm
+                  - generic [ref=e1084]: 1pm
+                  - generic [ref=e1085]: 1:30pm
+                  - generic [ref=e1086]: 2pm
+                  - generic [ref=e1087]: 2:30pm
+                  - generic [ref=e1088]: 3pm
+                  - generic [ref=e1089]: 3:30pm
+                  - generic [ref=e1090]: 4pm
+                  - generic [ref=e1091]: 4:30pm
+                  - generic [ref=e1092]: 5pm
+                  - generic [ref=e1093]: 5:30pm
+                  - generic [ref=e1094]: 6pm
+                  - generic [ref=e1095]: 6:30pm
+                  - generic [ref=e1096]: 7pm
+                  - generic [ref=e1097]: 7:30pm
+                  - generic [ref=e1098]: 8pm
+                  - generic [ref=e1099]: 8:30pm
+                  - generic [ref=e1100]: 9pm
+                  - generic [ref=e1101]: 9:30pm
+                  - generic [ref=e1102]: 10pm
+              - generic [ref=e1103]:
+                - generic [ref=e1104]:
+                  - paragraph [ref=e1105]: T1
+                  - paragraph [ref=e1106]: Floor · 4
+                - generic [ref=e1107]:
+                  - button "Mark Habbi · 12:30pm 83B27D2A" [ref=e1131]:
+                    - generic [ref=e1133]: Mark Habbi · 12:30pm
+                    - generic [ref=e1134]: 83B27D2A
+                  - button "Mark Habbi · 3:30pm 87C4149A" [ref=e1135]:
+                    - generic [ref=e1137]: Mark Habbi · 3:30pm
+                    - generic [ref=e1138]: 87C4149A
+              - generic [ref=e1139]:
+                - generic [ref=e1140]:
+                  - paragraph [ref=e1141]: T2
+                  - paragraph [ref=e1142]: Floor · 4
+                - button "N/A · 4pm 839A4024" [ref=e1167]:
+                  - generic [ref=e1169]: N/A · 4pm
+                  - generic [ref=e1170]: 839A4024
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - generic [ref=e217]:
+                - heading "All reservations · 8" [level=2] [ref=e872]
+                - paragraph [ref=e219]: Sorted by reservation time
+              - paragraph [ref=e220]: "Sort: Time · Party size · Status"
+            - table [ref=e1171]:
+              - rowgroup [ref=e1172]:
+                - row "Time Guest Party Table Duration Status Notes Action" [ref=e1173]:
+                  - columnheader "Time" [ref=e1174]
+                  - columnheader "Guest" [ref=e1175]
+                  - columnheader "Party" [ref=e1176]
+                  - columnheader "Table" [ref=e1177]
+                  - columnheader "Duration" [ref=e1178]
+                  - columnheader "Status" [ref=e1179]
+                  - columnheader "Notes" [ref=e1180]
+                  - columnheader "Action" [ref=e1181]
+              - rowgroup [ref=e1182]:
+                - row "12:30pm Mark Habbi +12894000883 83B27D2A 2 Table T1 4 seats assigned 1 hr 30 min Past Tree Nuts Seated No-show Cancel" [ref=e1183]:
+                  - cell "12:30pm" [ref=e1184]
+                  - cell "Mark Habbi +12894000883 83B27D2A" [ref=e1185]:
+                    - button "Mark Habbi" [ref=e1186]
+                    - paragraph [ref=e1187]: "+12894000883"
+                    - paragraph [ref=e1188]: 83B27D2A
+                  - cell "2" [ref=e1189]:
+                    - generic [ref=e1191]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1192]:
+                    - generic [ref=e1193]:
+                      - generic [ref=e1194]: Table T1
+                      - generic [ref=e1195]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1196]
+                  - cell "Past" [ref=e1197]:
+                    - generic [ref=e1199]: Past
+                  - cell "Tree Nuts" [ref=e1200]:
+                    - generic [ref=e1202]: Tree Nuts
+                  - cell "Seated No-show Cancel" [ref=e1203]:
+                    - generic [ref=e1204]:
+                      - button "Seated" [ref=e1205]
+                      - button "No-show" [ref=e1206]
+                      - button "Cancel" [ref=e1207]
+                - row "2pm Mark Habbi +12894000883 2D2D4265 2 Table T1 4 seats assigned 1 hr 30 min Cancelled Tree Nuts Open reservation" [ref=e1208]:
+                  - cell "2pm" [ref=e1209]
+                  - cell "Mark Habbi +12894000883 2D2D4265" [ref=e1210]:
+                    - button "Mark Habbi" [ref=e1211]
+                    - paragraph [ref=e1212]: "+12894000883"
+                    - paragraph [ref=e1213]: 2D2D4265
+                  - cell "2" [ref=e1214]:
+                    - generic [ref=e1216]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1217]:
+                    - generic [ref=e1218]:
+                      - generic [ref=e1219]: Table T1
+                      - generic [ref=e1220]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1221]
+                  - cell "Cancelled" [ref=e1222]:
+                    - generic [ref=e1224]: Cancelled
+                  - cell "Tree Nuts" [ref=e1225]:
+                    - generic [ref=e1227]: Tree Nuts
+                  - cell "Open reservation" [ref=e1228]:
+                    - button "Open reservation" [ref=e1229]:
+                      - img
+                - row "2pm Mark Habbi +12894000883 CD857EDE 2 Table T1 4 seats assigned 1 hr 30 min Cancelled Tree Nuts Open reservation" [ref=e1230]:
+                  - cell "2pm" [ref=e1231]
+                  - cell "Mark Habbi +12894000883 CD857EDE" [ref=e1232]:
+                    - button "Mark Habbi" [ref=e1233]
+                    - paragraph [ref=e1234]: "+12894000883"
+                    - paragraph [ref=e1235]: CD857EDE
+                  - cell "2" [ref=e1236]:
+                    - generic [ref=e1238]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1239]:
+                    - generic [ref=e1240]:
+                      - generic [ref=e1241]: Table T1
+                      - generic [ref=e1242]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1243]
+                  - cell "Cancelled" [ref=e1244]:
+                    - generic [ref=e1246]: Cancelled
+                  - cell "Tree Nuts" [ref=e1247]:
+                    - generic [ref=e1249]: Tree Nuts
+                  - cell "Open reservation" [ref=e1250]:
+                    - button "Open reservation" [ref=e1251]:
+                      - img
+                - row "2pm Mark Habbi +12894000883 0213B81C 2 Table T1 4 seats assigned 1 hr 30 min Cancelled Tree Nuts Open reservation" [ref=e1252]:
+                  - cell "2pm" [ref=e1253]
+                  - cell "Mark Habbi +12894000883 0213B81C" [ref=e1254]:
+                    - button "Mark Habbi" [ref=e1255]
+                    - paragraph [ref=e1256]: "+12894000883"
+                    - paragraph [ref=e1257]: 0213B81C
+                  - cell "2" [ref=e1258]:
+                    - generic [ref=e1260]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1261]:
+                    - generic [ref=e1262]:
+                      - generic [ref=e1263]: Table T1
+                      - generic [ref=e1264]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1265]
+                  - cell "Cancelled" [ref=e1266]:
+                    - generic [ref=e1268]: Cancelled
+                  - cell "Tree Nuts" [ref=e1269]:
+                    - generic [ref=e1271]: Tree Nuts
+                  - cell "Open reservation" [ref=e1272]:
+                    - button "Open reservation" [ref=e1273]:
+                      - img
+                - row "3:30pm Mark Habbi +12894000883 87C4149A 2 Table T1 4 seats assigned 1 hr 30 min Past Tree Nuts Seated No-show Cancel" [ref=e1274]:
+                  - cell "3:30pm" [ref=e1275]
+                  - cell "Mark Habbi +12894000883 87C4149A" [ref=e1276]:
+                    - button "Mark Habbi" [ref=e1277]
+                    - paragraph [ref=e1278]: "+12894000883"
+                    - paragraph [ref=e1279]: 87C4149A
+                  - cell "2" [ref=e1280]:
+                    - generic [ref=e1282]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1283]:
+                    - generic [ref=e1284]:
+                      - generic [ref=e1285]: Table T1
+                      - generic [ref=e1286]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1287]
+                  - cell "Past" [ref=e1288]:
+                    - generic [ref=e1290]: Past
+                  - cell "Tree Nuts" [ref=e1291]:
+                    - generic [ref=e1293]: Tree Nuts
+                  - cell "Seated No-show Cancel" [ref=e1294]:
+                    - generic [ref=e1295]:
+                      - button "Seated" [ref=e1296]
+                      - button "No-show" [ref=e1297]
+                      - button "Cancel" [ref=e1298]
+                - row "4pm N/A - 839A4024 2 Table T2 4 seats assigned 1 hr 30 min Past - Seated No-show Cancel" [ref=e1299]:
+                  - cell "4pm" [ref=e1300]
+                  - cell "N/A - 839A4024" [ref=e1301]:
+                    - button "N/A" [ref=e1302]
+                    - paragraph [ref=e1303]: "-"
+                    - paragraph [ref=e1304]: 839A4024
+                  - cell "2" [ref=e1305]:
+                    - generic [ref=e1307]: "2"
+                  - cell "Table T2 4 seats assigned" [ref=e1308]:
+                    - generic [ref=e1309]:
+                      - generic [ref=e1310]: Table T2
+                      - generic [ref=e1311]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1312]
+                  - cell "Past" [ref=e1313]:
+                    - generic [ref=e1315]: Past
+                  - cell "-" [ref=e1316]:
+                    - generic [ref=e1318]: "-"
+                  - cell "Seated No-show Cancel" [ref=e1319]:
+                    - generic [ref=e1320]:
+                      - button "Seated" [ref=e1321]
+                      - button "No-show" [ref=e1322]
+                      - button "Cancel" [ref=e1323]
+                - row "5pm Mark Habbi +12894000883 SEAT-XRZN 2 Table T1 4 seats assigned 1 hr 30 min Cancelled Tree Nuts Open reservation" [ref=e1324]:
+                  - cell "5pm" [ref=e1325]
+                  - cell "Mark Habbi +12894000883 SEAT-XRZN" [ref=e1326]:
+                    - button "Mark Habbi" [ref=e1327]
+                    - paragraph [ref=e1328]: "+12894000883"
+                    - paragraph [ref=e1329]: SEAT-XRZN
+                  - cell "2" [ref=e1330]:
+                    - generic [ref=e1332]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1333]:
+                    - generic [ref=e1334]:
+                      - generic [ref=e1335]: Table T1
+                      - generic [ref=e1336]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1337]
+                  - cell "Cancelled" [ref=e1338]:
+                    - generic [ref=e1340]: Cancelled
+                  - cell "Tree Nuts" [ref=e1341]:
+                    - generic [ref=e1343]: Tree Nuts
+                  - cell "Open reservation" [ref=e1344]:
+                    - button "Open reservation" [ref=e1345]:
+                      - img
+                - row "8pm Aug Tester +16475616561 SEAT-MB6I 2 Table T1 4 seats assigned 1 hr 30 min Cancelled - Open reservation" [ref=e1346]:
+                  - cell "8pm" [ref=e1347]
+                  - cell "Aug Tester +16475616561 SEAT-MB6I" [ref=e1348]:
+                    - button "Aug Tester" [ref=e1349]
+                    - paragraph [ref=e1350]: "+16475616561"
+                    - paragraph [ref=e1351]: SEAT-MB6I
+                  - cell "2" [ref=e1352]:
+                    - generic [ref=e1354]: "2"
+                  - cell "Table T1 4 seats assigned" [ref=e1355]:
+                    - generic [ref=e1356]:
+                      - generic [ref=e1357]: Table T1
+                      - generic [ref=e1358]: 4 seats assigned
+                  - cell "1 hr 30 min" [ref=e1359]
+                  - cell "Cancelled" [ref=e1360]:
+                    - generic [ref=e1362]: Cancelled
+                  - cell "-" [ref=e1363]:
+                    - generic [ref=e1365]: "-"
+                  - cell "Open reservation" [ref=e1366]:
+                    - button "Open reservation" [ref=e1367]:
+                      - img
+  - region "Notifications alt+T":
+    - list:
+      - listitem [ref=e1368]:
+        - img [ref=e1370]
+        - generic [ref=e1373]: Seated. Deposit refunded.

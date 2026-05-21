@@ -1,0 +1,104 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Back" [ref=e14] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e16]:
+      - generic [ref=e18]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e19]
+        - generic [ref=e20]:
+          - generic [ref=e21]: Pizza
+          - generic [ref=e22]:
+            - generic [ref=e23]: $
+            - generic [ref=e24]: $
+            - generic [ref=e25]: $
+          - generic [ref=e26]: Vegetarian
+          - generic [ref=e27]: Vegan
+          - generic [ref=e28]:
+            - img [ref=e29]
+            - text: Toronto
+          - link "+14165551234" [ref=e32] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e33]
+            - text: "+14165551234"
+      - generic [ref=e36]:
+        - button "Go to Details" [ref=e149]:
+          - img [ref=e151]
+          - generic [ref=e153]: Details
+        - button "Go to Menu" [ref=e202]:
+          - img [ref=e204]
+          - generic [ref=e206]: Menu
+        - generic [ref=e45]:
+          - generic [ref=e46]: "3"
+          - generic [ref=e47]: Payment
+      - generic [ref=e207]:
+        - generic [ref=e208]:
+          - heading "Review & Pay" [level=2] [ref=e209]
+          - button "Edit details" [ref=e210]:
+            - img [ref=e211]
+            - text: Edit details
+        - generic [ref=e213]:
+          - paragraph [ref=e214]: Order Summary
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - generic [ref=e217]: Subtotal
+              - generic [ref=e218]: CA$0.00
+            - generic [ref=e219]:
+              - generic [ref=e220]: Tax (13%)
+              - generic [ref=e221]: CA$0.00
+            - generic [ref=e222]:
+              - generic [ref=e223]: Deposit (4 × CA$10.00)
+              - generic [ref=e224]: CA$40.00
+            - generic [ref=e225]:
+              - generic [ref=e226]: Platform fee (5.5%)
+              - generic [ref=e227]: CA$2.20
+            - generic [ref=e228]:
+              - generic [ref=e229]: Processing fee
+              - generic [ref=e230]: CA$1.57
+            - generic [ref=e231]:
+              - generic [ref=e232]: Total due now
+              - generic [ref=e233]: CA$43.77
+            - paragraph [ref=e234]:
+              - text: Platform and processing fees are non-refundable. Your
+              - strong [ref=e235]: CA$40.00
+              - text: deposit is fully refundable when the restaurant marks you seated.
+        - generic [ref=e236]:
+          - paragraph [ref=e237]: Reservation
+          - generic [ref=e238]:
+            - generic [ref=e239]:
+              - paragraph [ref=e240]: Name
+              - paragraph [ref=e241]: Mark Habbi
+            - generic [ref=e242]:
+              - paragraph [ref=e243]: Date & Time
+              - paragraph [ref=e244]: 2026-05-21 · 12pm
+            - generic [ref=e245]:
+              - paragraph [ref=e246]: Party size
+              - paragraph [ref=e247]: 4 guests
+            - generic [ref=e248]:
+              - paragraph [ref=e249]: Dietary notes
+              - paragraph [ref=e250]: Tree Nuts
+        - generic [ref=e251]:
+          - generic [ref=e252]:
+            - generic [ref=e253]:
+              - img [ref=e254]
+              - paragraph [ref=e259]: Split tender
+            - paragraph [ref=e260]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e261]:
+              - button "Single payment" [ref=e262]
+              - button "Split tender" [ref=e263]
+          - generic [ref=e264]:
+            - img [ref=e265]
+            - paragraph [ref=e267]: Payment
+            - img [ref=e268]
+            - generic [ref=e271]: Secured
+          - generic [ref=e272]:
+            - img [ref=e273]
+            - text: Loading payment options…
+        - button "Place Order" [ref=e275]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e276]: By placing your order you agree to our terms. Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e10] [cursor=pointer]:
+    - img [ref=e11]
+  - region "Notifications alt+T"

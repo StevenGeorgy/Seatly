@@ -1,0 +1,501 @@
+- generic:
+  - generic:
+    - generic:
+      - complementary:
+        - generic:
+          - generic:
+            - generic: CENAIVA
+          - generic:
+            - button:
+              - generic:
+                - generic: WT
+                - generic:
+                  - paragraph: Webhook Test Pizza
+                  - paragraph: Owner
+                - img
+          - paragraph: Tonight
+          - navigation:
+            - generic:
+              - link:
+                - /url: /dashboard
+                - img
+                - generic: Overview
+            - generic:
+              - link:
+                - /url: /dashboard/reservations
+                - img
+                - generic: Reservations
+            - generic:
+              - link:
+                - /url: /dashboard/floor-plan
+                - img
+                - generic: Floor plan
+            - generic:
+              - link:
+                - /url: /dashboard/staff-invites
+                - img
+                - generic: Staff Invites
+            - generic:
+              - link:
+                - /url: /dashboard/orders
+                - img
+                - generic: Pre-orders
+            - generic:
+              - link:
+                - /url: /dashboard/menu
+                - img
+                - generic: Menu
+            - generic:
+              - link:
+                - /url: /dashboard/crm
+                - img
+                - generic: CRM
+            - generic:
+              - link:
+                - /url: /dashboard/analytics
+                - img
+                - generic: Analytics
+            - generic:
+              - link:
+                - /url: /dashboard/expenses
+                - img
+                - generic: Income & Expenses
+            - generic:
+              - link:
+                - /url: /dashboard/events
+                - img
+                - generic: Events
+            - generic:
+              - link:
+                - /url: /dashboard/promotions
+                - img
+                - generic: Promotions
+            - generic:
+              - link:
+                - /url: /dashboard/export
+                - img
+                - generic: Export
+            - generic:
+              - link:
+                - /url: /dashboard/restaurant
+                - img
+                - generic: Restaurant info
+          - generic:
+            - generic:
+              - generic:
+                - button: MH
+              - button:
+                - img
+              - button:
+                - img
+            - button:
+              - img
+              - generic: Exit dashboard
+            - button:
+              - img
+              - generic: Preview
+            - link:
+              - /url: /dashboard/settings
+              - img
+              - generic: Settings
+      - generic:
+        - generic:
+          - link:
+            - /url: /dashboard/settings
+            - generic: Trial active · Free until Aug 18
+            - img
+        - main:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - paragraph: Wednesday, May 20 · Dinner service
+                    - heading [level=1]: Reservations
+                  - generic:
+                    - button:
+                      - img
+                      - text: Wed, May 20
+                - generic:
+                  - generic:
+                    - paragraph: Booked tonight
+                    - paragraph: "10"
+                    - paragraph: 20 covers expected
+                  - generic:
+                    - paragraph: Current bookings
+                    - paragraph: "0"
+                    - paragraph: 0 active now
+                  - generic:
+                    - paragraph: Upcoming
+                    - paragraph: "0"
+                    - paragraph: 5 past for this view
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - button: Day
+                          - button: Week
+                          - button: List
+                        - generic:
+                          - button:
+                            - img
+                          - button: Wed · May 20
+                          - button:
+                            - img
+                      - button:
+                        - img
+                        - text: Add reservation
+                    - generic:
+                      - generic:
+                        - img
+                        - textbox:
+                          - /placeholder: Search guest, phone, table, code...
+                    - generic:
+                      - paragraph: Status
+                      - generic:
+                        - button: All · 10
+                        - button: Upcoming · 0
+                        - button: Current · 0
+                        - button: Past · 5
+                        - button: Cancelled · 5
+                        - button: Modified · 0
+                - generic:
+                  - generic:
+                    - generic:
+                      - heading [level=2]: Floor timeline
+                      - paragraph: Drag a booking to reassign - click to open guest
+                    - generic:
+                      - generic: Upcoming
+                      - generic: Current
+                      - generic: Past
+                      - generic: Available
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic: Table
+                        - generic:
+                          - generic: 11am
+                          - generic: 11:30am
+                          - generic: 12pm
+                          - generic: 12:30pm
+                          - generic: 1pm
+                          - generic: 1:30pm
+                          - generic: 2pm
+                          - generic: 2:30pm
+                          - generic: 3pm
+                          - generic: 3:30pm
+                          - generic: 4pm
+                          - generic: 4:30pm
+                          - generic: 5pm
+                          - generic: 5:30pm
+                          - generic: 6pm
+                          - generic: 6:30pm
+                          - generic: 7pm
+                          - generic: 7:30pm
+                          - generic: 8pm
+                          - generic: 8:30pm
+                          - generic: 9pm
+                          - generic: 9:30pm
+                          - generic: 10pm
+                      - generic:
+                        - generic:
+                          - paragraph: T1
+                          - paragraph: Floor · 4
+                        - generic:
+                          - button:
+                            - generic:
+                              - generic: Mark Habbi · 11am
+                            - generic: A8512752
+                          - button:
+                            - generic:
+                              - generic: Mark Habbi · 12:30pm
+                            - generic: 83B27D2A
+                          - button:
+                            - generic:
+                              - generic: Mark Habbi · 3:30pm
+                            - generic: 87C4149A
+                      - generic:
+                        - generic:
+                          - paragraph: T2
+                          - paragraph: Floor · 4
+                        - generic:
+                          - button:
+                            - generic:
+                              - generic: Guest Diner · 11am
+                            - generic: 77CF8D64
+                          - button:
+                            - generic:
+                              - generic: N/A · 4pm
+                            - generic: 839A4024
+                - generic:
+                  - generic:
+                    - generic:
+                      - heading [level=2]: All reservations · 10
+                      - paragraph: Sorted by reservation time
+                    - paragraph: "Sort: Time · Party size · Status"
+                  - generic:
+                    - table:
+                      - rowgroup:
+                        - row:
+                          - columnheader: Time
+                          - columnheader: Guest
+                          - columnheader: Party
+                          - columnheader: Table
+                          - columnheader: Duration
+                          - columnheader: Status
+                          - columnheader: Notes
+                          - columnheader: Action
+                      - rowgroup:
+                        - row:
+                          - cell: 11am
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: A8512752
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Past
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - generic:
+                              - button: Seated
+                              - button: No-show
+                              - button: Cancel
+                        - row:
+                          - cell: 11am
+                          - cell:
+                            - button: Guest Diner
+                            - paragraph: "+14165551235"
+                            - paragraph: 77CF8D64
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T2
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Past
+                          - cell:
+                            - generic:
+                              - generic: "-"
+                          - cell:
+                            - generic:
+                              - button: Seated
+                              - button: No-show
+                              - button: Cancel
+                        - row:
+                          - cell: 12:30pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: 83B27D2A
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Past
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - generic:
+                              - button: Seated
+                              - button: No-show
+                              - button: Cancel
+                        - row:
+                          - cell: 2pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: 2D2D4265
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Cancelled
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - button:
+                              - img
+                        - row:
+                          - cell: 2pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: CD857EDE
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Cancelled
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - button:
+                              - img
+                        - row:
+                          - cell: 2pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: 0213B81C
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Cancelled
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - button:
+                              - img
+                        - row:
+                          - cell: 3:30pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: 87C4149A
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Past
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - generic:
+                              - button: Seated
+                              - button: No-show
+                              - button: Cancel
+                        - row:
+                          - cell: 4pm
+                          - cell:
+                            - button: N/A
+                            - paragraph: "-"
+                            - paragraph: 839A4024
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T2
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Past
+                          - cell:
+                            - generic:
+                              - generic: "-"
+                          - cell:
+                            - generic:
+                              - button: Seated
+                              - button: No-show
+                              - button: Cancel
+                        - row:
+                          - cell: 5pm
+                          - cell:
+                            - button: Mark Habbi
+                            - paragraph: "+12894000883"
+                            - paragraph: SEAT-XRZN
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Cancelled
+                          - cell:
+                            - generic:
+                              - generic: Tree Nuts
+                          - cell:
+                            - button:
+                              - img
+                        - row:
+                          - cell: 8pm
+                          - cell:
+                            - button: Aug Tester
+                            - paragraph: "+16475616561"
+                            - paragraph: SEAT-MB6I
+                          - cell:
+                            - generic:
+                              - generic: "2"
+                          - cell:
+                            - generic:
+                              - generic: Table T1
+                              - generic: 4 seats assigned
+                          - cell: 1 hr 30 min
+                          - cell:
+                            - generic:
+                              - generic: Cancelled
+                          - cell:
+                            - generic:
+                              - generic: "-"
+                          - cell:
+                            - button:
+                              - img
+    - region "Notifications alt+T"
+  - dialog "Mark as no-show?" [ref=e754]:
+    - heading "Mark as no-show?" [level=2] [ref=e756]
+    - generic [ref=e757]:
+      - paragraph [ref=e758]: The restaurant will keep the CA$0.00 deposit. This is reversible — you can undo this later if needed.
+      - paragraph [ref=e759]: Mark Habbi · Party of 2
+    - generic [ref=e760]:
+      - button "Keep reservation" [active] [ref=e761]
+      - button "Mark as no-show" [ref=e762]
+    - button "Close" [ref=e763]:
+      - img
+      - generic [ref=e764]: Close

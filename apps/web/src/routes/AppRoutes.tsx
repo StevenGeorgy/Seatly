@@ -18,6 +18,16 @@ const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
 const TermsPage = lazy(() => import("@/pages/legal/TermsPage"));
 const PrivacyPage = lazy(() => import("@/pages/legal/PrivacyPage"));
 const RefundPolicyPage = lazy(() => import("@/pages/legal/RefundPolicyPage"));
+const SubProcessorsPage = lazy(() => import("@/pages/legal/SubProcessorsPage"));
+const PartnerAgreementPage = lazy(
+  () => import("@/pages/legal/PartnerAgreementPage"),
+);
+const PartnerSubProcessorsPage = lazy(
+  () => import("@/pages/legal/PartnerSubProcessorsPage"),
+);
+const PartnerAgreementHistoryPage = lazy(
+  () => import("@/pages/legal/PartnerAgreementHistoryPage"),
+);
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
 const ConnectedAccountsPage = lazy(() => import("@/pages/customer/ConnectedAccountsPage"));
@@ -76,6 +86,19 @@ export function AppRoutes() {
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/refund-policy" element={<RefundPolicyPage />} />
+        <Route path="/legal/sub-processors" element={<SubProcessorsPage />} />
+        <Route
+          path="/partners/agreement"
+          element={<PartnerAgreementPage />}
+        />
+        <Route
+          path="/partners/sub-processors"
+          element={<PartnerSubProcessorsPage />}
+        />
+        <Route
+          path="/partners/agreement-history"
+          element={<PartnerAgreementHistoryPage />}
+        />
 
         <Route
           path="/login"

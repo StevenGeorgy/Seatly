@@ -181,7 +181,7 @@ export default function RegisterPage() {
         />
         <span>
           I confirm I am 18+ or have parental consent to make payments on
-          Cenaiva. Users under 13 may not register. See{" "}
+          Cenaiva. Users under 16 may not register. See{" "}
           <Link
             to="/terms#eligibility"
             className="text-gold underline-offset-2 hover:underline"

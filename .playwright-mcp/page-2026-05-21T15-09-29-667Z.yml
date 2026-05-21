@@ -1,0 +1,42 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "Cenaiva home" [ref=e6] [cursor=pointer]:
+          - /url: /
+        - navigation "Primary" [ref=e7]:
+          - link "Discover" [ref=e8] [cursor=pointer]:
+            - /url: /discover
+          - link "Promotions" [ref=e9] [cursor=pointer]:
+            - /url: /deals
+          - link "Bookings" [ref=e10] [cursor=pointer]:
+            - /url: /bookings
+          - link "Loyalty" [ref=e11] [cursor=pointer]:
+            - /url: /loyalty
+          - button "Concierge" [ref=e12]
+        - generic [ref=e13]:
+          - button "Notifications" [ref=e14]:
+            - img [ref=e15]
+          - button "My account" [ref=e18]:
+            - generic [ref=e20]: "?"
+    - main [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]: THURSDAY · MAY 21
+        - heading "Good evening, guest." [level=1] [ref=e25]
+        - paragraph [ref=e26]: 0 restaurants on Cenaiva.
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - img
+          - textbox "Search restaurants, cuisines, neighbourhoods, or dishes…" [ref=e29]
+          - generic [ref=e30]: ⌘K
+        - button "Filters" [ref=e31]:
+          - img [ref=e32]
+          - text: Filters
+        - generic [ref=e33]:
+          - button "Map" [ref=e34]:
+            - img [ref=e35]
+            - text: Map
+          - button "Grid" [ref=e37]:
+            - img [ref=e38]
+            - text: Grid
+  - region "Notifications alt+T"

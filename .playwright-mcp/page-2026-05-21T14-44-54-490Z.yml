@@ -1,0 +1,210 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - link "Back" [ref=e14] [cursor=pointer]:
+        - /url: /discover
+        - img
+        - text: Back
+      - generic [ref=e16]:
+        - generic [ref=e18]:
+          - heading "MICKY" [level=1] [ref=e19]
+          - generic [ref=e20]:
+            - generic [ref=e21]: African
+            - generic [ref=e22]:
+              - generic [ref=e23]: $
+              - generic [ref=e24]: $
+              - generic [ref=e25]: $
+            - generic [ref=e26]: Vegan
+            - generic [ref=e27]:
+              - img [ref=e28]
+              - text: Oakville
+            - link "2894000883" [ref=e31] [cursor=pointer]:
+              - /url: tel:2894000883
+              - img [ref=e32]
+              - text: "2894000883"
+        - generic [ref=e35]:
+          - generic [ref=e36]:
+            - generic [ref=e37]: "1"
+            - generic [ref=e38]: Details
+          - generic [ref=e40]:
+            - generic [ref=e41]: "2"
+            - generic [ref=e42]: Menu
+          - generic [ref=e44]:
+            - generic [ref=e45]: "3"
+            - generic [ref=e46]: Payment
+        - generic [ref=e47]:
+          - heading "Book your table" [level=2] [ref=e49]
+          - generic [ref=e51]:
+            - generic [ref=e52]: "Party of 2: a CA$20.00 deposit (CA$10.00/guest) is collected at checkout to hold this booking."
+            - generic [ref=e53]:
+              - generic [ref=e54]:
+                - button "Date Thu, May 21" [expanded] [ref=e55]:
+                  - img [ref=e56]
+                  - generic [ref=e58]:
+                    - paragraph [ref=e59]: Date
+                    - paragraph [ref=e60]: Thu, May 21
+                - button "Time 5:00 PM" [ref=e61]:
+                  - img [ref=e62]
+                  - generic [ref=e65]:
+                    - paragraph [ref=e66]: Time
+                    - paragraph [ref=e67]: 5:00 PM
+                - button "Party 2 guests" [ref=e68]:
+                  - img [ref=e69]
+                  - generic [ref=e74]:
+                    - paragraph [ref=e75]: Party
+                    - paragraph [ref=e76]: 2 guests
+              - generic [ref=e78]:
+                - button "5pm" [ref=e79]
+                - button "5:30pm" [ref=e80]
+                - button "6pm" [ref=e81]
+                - button "6:30pm" [ref=e82]
+                - button "7pm" [ref=e83]
+                - button "7:30pm" [ref=e84]
+                - button "8pm" [ref=e85]
+                - button "8:30pm" [ref=e86]
+              - generic [ref=e87]:
+                - paragraph [ref=e88]: "Some times are hidden because you're already booked:"
+                - list [ref=e89]:
+                  - listitem [ref=e90]: Webhook Test Pizza · 3:30 PM–5:00 PM
+                  - listitem [ref=e91]: Webhook Test Pizza · 12:30 PM–2:00 PM
+                  - listitem [ref=e92]: The Keg Mansion · 5:00 PM–6:30 PM
+            - generic [ref=e94]:
+              - generic [ref=e95]: Full Name *
+              - textbox "Full Name *" [ref=e96]:
+                - /placeholder: Jane Smith
+                - text: Mark Habbi
+            - generic [ref=e97]:
+              - generic [ref=e98]:
+                - generic [ref=e99]: Email *
+                - textbox "Email *" [ref=e100]:
+                  - /placeholder: jane@example.com
+                  - text: markhabbi2@gmail.com
+              - generic [ref=e101]:
+                - generic [ref=e102]: Phone *
+                - textbox "Phone *" [ref=e103]:
+                  - /placeholder: +1 (416) 555-0100
+                  - text: "+12894000883"
+            - generic [ref=e105]:
+              - generic [ref=e106]: Table preference (optional)
+              - generic [ref=e107]:
+                - combobox [ref=e108]:
+                  - option "No preference" [selected]
+                  - option "By the window"
+                  - option "Middle of dining room"
+                  - option "Booth seating"
+                  - option "Lounge seating"
+                  - option "Patio"
+                  - option "Bar seating"
+                  - option "Quiet corner"
+                - img
+            - generic [ref=e109]:
+              - generic [ref=e110]: Occasion (optional)
+              - generic [ref=e111]:
+                - combobox [ref=e112]:
+                  - option "Select occasion…" [selected]
+                  - option "Anniversary"
+                  - option "Birthday"
+                  - option "Business Dinner"
+                  - option "Date Night"
+                  - option "Family Gathering"
+                - img
+            - generic [ref=e113]:
+              - generic [ref=e114]: Dietary restrictions & allergies
+              - textbox "Dietary restrictions & allergies" [ref=e115]:
+                - /placeholder: e.g. Nut allergy (2 guests), 1 vegan, gluten-free
+                - text: Tree Nuts
+              - paragraph [ref=e116]: Please list restrictions for every guest in your party.
+          - button "Continue — add preorder (optional)" [ref=e117]:
+            - text: Continue — add preorder (optional)
+            - img
+    - button "Start listening" [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+    - region "Notifications alt+T"
+  - dialog [ref=e120]:
+    - generic [ref=e122]:
+      - navigation "Navigation bar" [ref=e123]:
+        - button "Go to the Previous Month" [active] [ref=e124]:
+          - img
+        - button "Go to the Next Month" [ref=e125]:
+          - img
+      - generic [ref=e126]:
+        - status [ref=e128]: May 2026
+        - grid "May 2026" [ref=e129]:
+          - rowgroup [ref=e130]:
+            - row [ref=e131]:
+              - columnheader [ref=e132]: Su
+              - columnheader [ref=e133]: Mo
+              - columnheader [ref=e134]: Tu
+              - columnheader [ref=e135]: We
+              - columnheader [ref=e136]: Th
+              - columnheader [ref=e137]: Fr
+              - columnheader [ref=e138]: Sa
+          - rowgroup [ref=e139]:
+            - row "Friday, May 1st, 2026 Saturday, May 2nd, 2026" [ref=e140]:
+              - gridcell "Friday, May 1st, 2026" [ref=e141]:
+                - button "Friday, May 1st, 2026" [disabled]: "1"
+              - gridcell "Saturday, May 2nd, 2026" [ref=e142]:
+                - button "Saturday, May 2nd, 2026" [disabled]: "2"
+            - row "Sunday, May 3rd, 2026 Monday, May 4th, 2026 Tuesday, May 5th, 2026 Wednesday, May 6th, 2026 Thursday, May 7th, 2026 Friday, May 8th, 2026 Saturday, May 9th, 2026" [ref=e143]:
+              - gridcell "Sunday, May 3rd, 2026" [ref=e144]:
+                - button "Sunday, May 3rd, 2026" [disabled]: "3"
+              - gridcell "Monday, May 4th, 2026" [ref=e145]:
+                - button "Monday, May 4th, 2026" [disabled]: "4"
+              - gridcell "Tuesday, May 5th, 2026" [ref=e146]:
+                - button "Tuesday, May 5th, 2026" [disabled]: "5"
+              - gridcell "Wednesday, May 6th, 2026" [ref=e147]:
+                - button "Wednesday, May 6th, 2026" [disabled]: "6"
+              - gridcell "Thursday, May 7th, 2026" [ref=e148]:
+                - button "Thursday, May 7th, 2026" [disabled]: "7"
+              - gridcell "Friday, May 8th, 2026" [ref=e149]:
+                - button "Friday, May 8th, 2026" [disabled]: "8"
+              - gridcell "Saturday, May 9th, 2026" [ref=e150]:
+                - button "Saturday, May 9th, 2026" [disabled]: "9"
+            - row "Sunday, May 10th, 2026 Monday, May 11th, 2026 Tuesday, May 12th, 2026 Wednesday, May 13th, 2026 Thursday, May 14th, 2026 Friday, May 15th, 2026 Saturday, May 16th, 2026" [ref=e151]:
+              - gridcell "Sunday, May 10th, 2026" [ref=e152]:
+                - button "Sunday, May 10th, 2026" [disabled]: "10"
+              - gridcell "Monday, May 11th, 2026" [ref=e153]:
+                - button "Monday, May 11th, 2026" [disabled]: "11"
+              - gridcell "Tuesday, May 12th, 2026" [ref=e154]:
+                - button "Tuesday, May 12th, 2026" [disabled]: "12"
+              - gridcell "Wednesday, May 13th, 2026" [ref=e155]:
+                - button "Wednesday, May 13th, 2026" [disabled]: "13"
+              - gridcell "Thursday, May 14th, 2026" [ref=e156]:
+                - button "Thursday, May 14th, 2026" [disabled]: "14"
+              - gridcell "Friday, May 15th, 2026" [ref=e157]:
+                - button "Friday, May 15th, 2026" [disabled]: "15"
+              - gridcell "Saturday, May 16th, 2026" [ref=e158]:
+                - button "Saturday, May 16th, 2026" [disabled]: "16"
+            - row "Sunday, May 17th, 2026 Monday, May 18th, 2026 Tuesday, May 19th, 2026 Wednesday, May 20th, 2026 Today, Thursday, May 21st, 2026, selected Friday, May 22nd, 2026 Saturday, May 23rd, 2026" [ref=e159]:
+              - gridcell "Sunday, May 17th, 2026" [ref=e160]:
+                - button "Sunday, May 17th, 2026" [disabled]: "17"
+              - gridcell "Monday, May 18th, 2026" [ref=e161]:
+                - button "Monday, May 18th, 2026" [disabled]: "18"
+              - gridcell "Tuesday, May 19th, 2026" [ref=e162]:
+                - button "Tuesday, May 19th, 2026" [disabled]: "19"
+              - gridcell "Wednesday, May 20th, 2026" [ref=e163]:
+                - button "Wednesday, May 20th, 2026" [disabled]: "20"
+              - gridcell "Today, Thursday, May 21st, 2026, selected" [selected] [ref=e164]:
+                - button "Today, Thursday, May 21st, 2026, selected" [ref=e165]: "21"
+              - gridcell "Friday, May 22nd, 2026" [ref=e166]:
+                - button "Friday, May 22nd, 2026" [ref=e167]: "22"
+              - gridcell "Saturday, May 23rd, 2026" [ref=e168]:
+                - button "Saturday, May 23rd, 2026" [ref=e169]: "23"
+            - row "Sunday, May 24th, 2026 Monday, May 25th, 2026 Tuesday, May 26th, 2026 Wednesday, May 27th, 2026 Thursday, May 28th, 2026 Friday, May 29th, 2026 Saturday, May 30th, 2026" [ref=e170]:
+              - gridcell "Sunday, May 24th, 2026" [ref=e171]:
+                - button "Sunday, May 24th, 2026" [ref=e172]: "24"
+              - gridcell "Monday, May 25th, 2026" [ref=e173]:
+                - button "Monday, May 25th, 2026" [ref=e174]: "25"
+              - gridcell "Tuesday, May 26th, 2026" [ref=e175]:
+                - button "Tuesday, May 26th, 2026" [ref=e176]: "26"
+              - gridcell "Wednesday, May 27th, 2026" [ref=e177]:
+                - button "Wednesday, May 27th, 2026" [ref=e178]: "27"
+              - gridcell "Thursday, May 28th, 2026" [ref=e179]:
+                - button "Thursday, May 28th, 2026" [ref=e180]: "28"
+              - gridcell "Friday, May 29th, 2026" [ref=e181]:
+                - button "Friday, May 29th, 2026" [ref=e182]: "29"
+              - gridcell "Saturday, May 30th, 2026" [ref=e183]:
+                - button "Saturday, May 30th, 2026" [ref=e184]: "30"
+            - row "Sunday, May 31st, 2026" [ref=e185]:
+              - gridcell "Sunday, May 31st, 2026" [ref=e186]:
+                - button "Sunday, May 31st, 2026" [ref=e187]: "31"

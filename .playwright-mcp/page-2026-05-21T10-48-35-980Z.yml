@@ -1,0 +1,103 @@
+- generic [ref=e2]:
+  - generic [ref=e9]:
+    - link "Back" [ref=e10] [cursor=pointer]:
+      - /url: /discover
+      - img
+      - text: Back
+    - generic [ref=e13]:
+      - generic [ref=e15]:
+        - heading "Webhook Test Pizza" [level=1] [ref=e16]
+        - generic [ref=e17]:
+          - generic [ref=e18]: Pizza
+          - generic [ref=e19]:
+            - generic [ref=e20]: $
+            - generic [ref=e21]: $
+            - generic [ref=e22]: $
+          - generic [ref=e23]: Vegetarian
+          - generic [ref=e24]: Vegan
+          - generic [ref=e25]:
+            - img [ref=e26]
+            - text: Toronto
+          - link "+14165551234" [ref=e29] [cursor=pointer]:
+            - /url: tel:+14165551234
+            - img [ref=e30]
+            - text: "+14165551234"
+      - generic [ref=e33]:
+        - button "Go to Details" [ref=e124]:
+          - img [ref=e126]
+          - generic [ref=e128]: Details
+        - button "Go to Menu" [ref=e184]:
+          - img [ref=e186]
+          - generic [ref=e188]: Menu
+        - generic [ref=e42]:
+          - generic [ref=e43]: "3"
+          - generic [ref=e44]: Payment
+      - generic [ref=e189]:
+        - generic [ref=e190]:
+          - heading "Review & Pay" [level=2] [ref=e191]
+          - button "Edit details" [ref=e192]:
+            - img [ref=e193]
+            - text: Edit details
+        - generic [ref=e195]:
+          - paragraph [ref=e196]: Order Summary
+          - generic [ref=e198]:
+            - img [ref=e200]
+            - generic [ref=e203]: 1× Margherita Pizza
+            - generic [ref=e204]: CA$18.99
+            - button [ref=e205]:
+              - img [ref=e206]
+          - generic [ref=e209]:
+            - generic [ref=e210]:
+              - generic [ref=e211]: Subtotal
+              - generic [ref=e212]: CA$18.99
+            - generic [ref=e213]:
+              - generic [ref=e214]: Tax (13%)
+              - generic [ref=e215]: CA$2.47
+            - generic [ref=e216]:
+              - generic [ref=e217]: Platform fee (5.5%)
+              - generic [ref=e218]: CA$1.18
+            - generic [ref=e219]:
+              - generic [ref=e220]: Processing fee
+              - generic [ref=e221]: CA$0.99
+            - generic [ref=e222]:
+              - generic [ref=e223]: Total due now
+              - generic [ref=e224]: CA$23.63
+        - generic [ref=e225]:
+          - paragraph [ref=e226]: Reservation
+          - generic [ref=e227]:
+            - generic [ref=e228]:
+              - paragraph [ref=e229]: Name
+              - paragraph [ref=e230]: Mark Habbi
+            - generic [ref=e231]:
+              - paragraph [ref=e232]: Date & Time
+              - paragraph [ref=e233]: 2026-05-22 · 12pm
+            - generic [ref=e234]:
+              - paragraph [ref=e235]: Party size
+              - paragraph [ref=e236]: 2 guests
+            - generic [ref=e237]:
+              - paragraph [ref=e238]: Dietary notes
+              - paragraph [ref=e239]: Tree Nuts
+        - generic [ref=e240]:
+          - generic [ref=e241]:
+            - generic [ref=e242]:
+              - img [ref=e243]
+              - paragraph [ref=e248]: Split tender
+            - paragraph [ref=e249]: One card per person paying. The total is split evenly across the group — enter card details for each person.
+            - generic [ref=e250]:
+              - button "Single payment" [ref=e251]
+              - button "Split tender" [ref=e252]
+          - generic [ref=e253]:
+            - img [ref=e254]
+            - paragraph [ref=e256]: Payment
+            - img [ref=e257]
+            - generic [ref=e260]: Secured
+          - generic [ref=e261]:
+            - img [ref=e262]
+            - text: Loading payment options…
+        - button "Place Order" [ref=e264]:
+          - img
+          - text: Place Order
+        - paragraph [ref=e265]: By placing your order you agree to our terms. Selected tip is included in today's checkout.
+  - button "Start listening" [ref=e5] [cursor=pointer]:
+    - img [ref=e6]
+  - region "Notifications alt+T"
