@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { AcceptStaffInviteSchema } from "../_shared/validation/staff-invites.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -65,10 +67,12 @@ Deno.serve(async (req: Request) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
 
-    const body = await req.json().catch(() => ({}));
-    const action = String(body.action ?? "accept");
-    const token = String(body.token ?? "").trim();
-    if (!token) return json({ error: "Invite token is required" }, 400);
+    const parsed = await parseJsonBody(req, AcceptStaffInviteSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const action = parsed.data.action ?? "accept";
+    const token = parsed.data.token;
 
     const { data: invite, error: inviteError } = await adminClient
       .from("staff_invitations")
@@ -118,11 +122,23 @@ Deno.serve(async (req: Request) => {
     } = await adminClient.auth.getUser(bearerToken);
     if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
 
-    if (staffInvite.email && user.email && staffInvite.email.toLowerCase() !== user.email.toLowerCase()) {
-      return json({ error: "Sign in with the email address this invite was sent to" }, 403);
-    }
-    if (staffInvite.phone && user.phone && staffInvite.phone !== user.phone) {
-      return json({ error: "Sign in with the phone number this invite was sent to" }, 403);
+    // Require a POSITIVE match on at least one of (email, phone) — not just
+    // "don't mismatch". The old logic skipped the check whenever either side
+    // was null, so a phone-only signer could accept an email-only invite
+    // (and vice versa) without owning either contact. Security audit
+    // finding 2026-05-20.
+    const emailMatch = Boolean(
+      staffInvite.email && user.email &&
+      staffInvite.email.toLowerCase() === user.email.toLowerCase(),
+    );
+    const phoneMatch = Boolean(
+      staffInvite.phone && user.phone && staffInvite.phone === user.phone,
+    );
+    if (!emailMatch && !phoneMatch) {
+      return json(
+        { error: "Sign in with the email address or phone number this invite was sent to" },
+        403,
+      );
     }
 
     const metadataName = user.user_metadata?.full_name;

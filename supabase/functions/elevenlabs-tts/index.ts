@@ -2,8 +2,9 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { buildCorsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ElevenLabsTtsSchema } from "../_shared/validation/chat.ts";
 
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1";
 const DEFAULT_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "EXAVITQu4vr4xnSDxMaL";
@@ -26,17 +27,18 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth — require valid JWT so this endpoint isn't open to the world
+    // Auth — cryptographically verify the JWT via supabase-js auth.getUser().
     const authHeader = req.headers.get("Authorization") ?? "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    const payload = decodeJwtPayload(token);
-    if (!payload?.sub) return jsonRes({ error: "Unauthorized" }, 401, req);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) return jsonRes({ error: "auth_required" }, 401, req);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "invalid_token" }, 401, req);
 
     // Lightweight user check + capture profile.id for the rate-limit bucket.
     const { data: profile, error: profileErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id")
-      .eq("auth_user_id", payload.sub as string)
+      .eq("auth_user_id", user.id)
       .single();
     if (profileErr || !profile) return jsonRes({ error: "Unauthorized" }, 401, req);
 
@@ -60,12 +62,15 @@ Deno.serve(async (req) => {
       throw e;
     }
 
-    const body = await req.json() as { text?: string; voice_id?: string };
-    const rawText = (body.text ?? "").trim();
+    const parsed = await parseJsonBody(req, ElevenLabsTtsSchema, {
+      jsonRes: (b, s, r) => jsonRes(b, s, r ?? req),
+    });
+    if ("response" in parsed) return parsed.response;
+    const rawText = parsed.data.text.trim();
     if (!rawText) return jsonRes({ error: "text is required" }, 400, req);
 
     const text = applyPronunciation(rawText);
-    const voiceId = body.voice_id ?? DEFAULT_VOICE_ID;
+    const voiceId = parsed.data.voice_id ?? DEFAULT_VOICE_ID;
 
     // Call ElevenLabs with one automatic retry on transient failures. Without
     // this, any 5xx / network blip drops us to Web Speech for that single turn,

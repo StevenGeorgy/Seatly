@@ -7,6 +7,8 @@ import {
   localDateForDateTime,
 } from "../_shared/closures.ts";
 import { notifyOwnerNewReservation } from "../_shared/owner-notifications.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CenaivaChatSchema } from "../_shared/validation/chat.ts";
 
 // Stripe is conditionally loaded — only if STRIPE_SECRET_KEY is configured.
 // Without it, payment tools run in test mode (mock responses, DB-only).
@@ -82,24 +84,6 @@ async function releaseReservationTables(reservation_id: string): Promise<void> {
   await supabaseAdmin.rpc("release_reservation_tables", {
     p_reservation_id: reservation_id,
   });
-}
-
-// ── JWT payload decoder ──
-// verify_jwt is set to false in config so the raw Authorization header reaches
-// this function. We decode the payload ourselves to extract the sub claim.
-// auth.getUser() is not used — it fails on ES256-signed tokens in some
-// supabase-js Deno versions. The user_profiles lookup acts as a second gate.
-function decodeJwtPayload(token: string): Record<string, any> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
 }
 
 // ── Timezone helpers ──
@@ -1369,17 +1353,17 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    // Auth: decode JWT payload without signature verification.
-    // verify_jwt: false — raw Authorization header passes through the gateway.
-    // auth.getUser() is not used; it fails on ES256-signed tokens.
+    // Auth: cryptographically verify the JWT via supabase-js auth.getUser().
+    // verify_jwt is false in config so the raw header passes through; we
+    // verify ourselves here against the project JWT secret.
     const authHeader =
       req.headers.get("authorization") || req.headers.get("Authorization") || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (!token) return jsonRes({ error: "Missing authorization token" }, 401);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) return jsonRes({ error: "auth_required" }, 401);
 
-    const jwtPayload = decodeJwtPayload(token);
-    const authUserId = jwtPayload?.sub as string | undefined;
-    if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "invalid_token" }, 401);
+    const authUserId = user.id;
 
     // Look up user profile
     const { data: profile } = await supabaseAdmin
@@ -1392,7 +1376,10 @@ Deno.serve(async (req: Request) => {
     const apiKey = Deno.env.get("OPENAI_API_KEY");
     if (!apiKey) return jsonRes({ error: "OPENAI_API_KEY not configured" }, 500);
 
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, CenaivaChatSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
     const {
       message,
       conversation_id,
@@ -1401,9 +1388,7 @@ Deno.serve(async (req: Request) => {
       mode = "customer",
       user_lat,
       user_lng,
-    } = body;
-    if (!message || typeof message !== "string")
-      return jsonRes({ error: "message is required" }, 400);
+    } = parsed.data;
 
     // Reverse-geocode user coordinates to city (Nominatim, no API key required)
     let userCity: string | null = null;

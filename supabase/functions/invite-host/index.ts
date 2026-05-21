@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { InviteHostSchema } from "../_shared/validation/staff-invites.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -118,10 +120,14 @@ Deno.serve(async (req: Request) => {
     } = await adminClient.auth.getUser(bearerToken);
     if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
 
-    const body = await req.json().catch(() => ({}));
-    const action = String(body.action ?? "create");
-    const restaurantId = String(body.restaurant_id ?? body.restaurantId ?? "").trim();
-    const inviteId = String(body.invite_id ?? body.inviteId ?? "").trim();
+    const parsed = await parseJsonBody(req, InviteHostSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const body = parsed.data;
+    const action = body.action ?? "create";
+    const restaurantId = (body.restaurant_id ?? body.restaurantId ?? "").trim();
+    const inviteId = (body.invite_id ?? body.inviteId ?? "").trim();
 
     const { data: profile, error: profileError } = await adminClient
       .from("user_profiles")

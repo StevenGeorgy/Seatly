@@ -20,6 +20,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { GetDepositPaymentContextSchema } from "../_shared/validation/public.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -61,12 +63,11 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const paymentId =
-      typeof payload.payment_id === "string" && payload.payment_id.trim()
-        ? payload.payment_id.trim()
-        : null;
-    if (!paymentId) return jsonRes({ error: "payment_id is required" }, 400);
+    const parsed = await parseJsonBody(req, GetDepositPaymentContextSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const paymentId = parsed.data.payment_id;
 
     const { data: paymentRaw, error: paymentErr } = await supabaseAdmin
       .from("reservation_deposit_payments")

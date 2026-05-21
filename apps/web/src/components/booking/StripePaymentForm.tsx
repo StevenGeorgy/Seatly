@@ -51,6 +51,14 @@ type StripePaymentFormProps = {
    */
   holdId?: string | null;
   /**
+   * Optional list of reservation_deposit_payments row IDs. Passed to
+   * create-public-payment-intent, stamped on the PI's
+   * `metadata.deposit_payment_ids` (comma-joined). confirm-deposit-paid
+   * asserts the row's id is in this list before flipping to 'charged' —
+   * Vuln 2 full hardening, 2026-05-20.
+   */
+  depositPaymentIds?: string[] | null;
+  /**
    * Fired when the card has been successfully charged. The parent is then
    * responsible for creating the reservation server-side.
    */
@@ -152,6 +160,7 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
       restaurantId={props.restaurantId}
       amountCents={props.amountCents}
       holdId={props.holdId ?? null}
+      depositPaymentIds={props.depositPaymentIds ?? null}
       onPaid={props.onPaid}
       onError={props.onError}
       payButtonLabel={props.payButtonLabel ?? "Pay & confirm"}
@@ -168,6 +177,7 @@ function PaymentSurface({
   restaurantId,
   amountCents,
   holdId,
+  depositPaymentIds,
   onPaid,
   onError,
   payButtonLabel,
@@ -180,6 +190,7 @@ function PaymentSurface({
   restaurantId: string;
   amountCents: number;
   holdId: string | null;
+  depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -221,6 +232,7 @@ function PaymentSurface({
         restaurantId={restaurantId}
         amountCents={amountCents}
         holdId={holdId}
+        depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
         onError={onError}
         payButtonLabel={payButtonLabel}
@@ -267,6 +279,7 @@ function PaymentSurface({
         restaurantId={restaurantId}
         amountCents={amountCents}
         holdId={holdId}
+        depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
         onError={onError}
         payButtonLabel={payButtonLabel}
@@ -291,6 +304,7 @@ function SavedCardPath({
   restaurantId,
   amountCents,
   holdId,
+  depositPaymentIds,
   onPaid,
   onError,
   payButtonLabel,
@@ -305,6 +319,7 @@ function SavedCardPath({
   restaurantId: string;
   amountCents: number;
   holdId: string | null;
+  depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -345,6 +360,7 @@ function SavedCardPath({
               amount_cents: amountCents,
               saved_card_id: selectedId,
               hold_id: holdId,
+              deposit_payment_ids: depositPaymentIds ?? undefined,
             }),
           },
         );
@@ -402,7 +418,7 @@ function SavedCardPath({
         setSubmitting(false);
       }
     },
-    [submitting, restaurantId, amountCents, selectedId, onPaid, onError, stripePromise],
+    [submitting, restaurantId, amountCents, selectedId, depositPaymentIds, holdId, onPaid, onError, stripePromise],
   );
 
   return (
@@ -487,6 +503,7 @@ function OneTimeCardForm({
   restaurantId,
   amountCents,
   holdId,
+  depositPaymentIds,
   onPaid,
   onError,
   payButtonLabel,
@@ -501,6 +518,7 @@ function OneTimeCardForm({
   restaurantId: string;
   amountCents: number;
   holdId: string | null;
+  depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
   payButtonLabel: string;
@@ -559,6 +577,7 @@ function OneTimeCardForm({
               amount_cents: amountCents,
               hold_id: holdId,
               save_card: isLoggedIn && saveCard,
+              deposit_payment_ids: depositPaymentIds ?? undefined,
             }),
           },
         );
@@ -606,7 +625,7 @@ function OneTimeCardForm({
         setSubmitting(false);
       }
     },
-    [stripe, elements, restaurantId, amountCents, onPaid, onError, isLoggedIn, saveCard],
+    [stripe, elements, restaurantId, amountCents, holdId, depositPaymentIds, onPaid, onError, isLoggedIn, saveCard],
   );
 
   return (

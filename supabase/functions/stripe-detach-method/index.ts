@@ -20,6 +20,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { StripeDetachMethodSchema } from "../_shared/validation/payment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,12 +56,11 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
     if (userError || !user) return jsonRes({ error: "Invalid or expired session" }, 401);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const paymentMethodId =
-      typeof payload.payment_method_id === "string" && payload.payment_method_id.trim()
-        ? payload.payment_method_id.trim()
-        : null;
-    if (!paymentMethodId) return jsonRes({ error: "payment_method_id is required" }, 400);
+    const parsed = await parseJsonBody(req, StripeDetachMethodSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const paymentMethodId = parsed.data.payment_method_id;
 
     try {
       await enforceRateLimit(

@@ -1,11 +1,21 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { GetOrderPublicSchema } from "../_shared/validation/public.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
+
+function jsonRes(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
 // Returns the order + linked reservation + items by order_id, bypassing RLS.
 // Used by the customer's prepay→checkout deep-link from Cenaiva: the customer
@@ -17,9 +27,15 @@ Deno.serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
-    const orderId =
-      url.searchParams.get("order_id") ||
-      (await req.json().catch(() => ({}))).order_id;
+    let orderId: string | null | undefined = url.searchParams.get("order_id");
+
+    if (!orderId && req.method === "POST") {
+      const parsed = await parseJsonBody(req, GetOrderPublicSchema, {
+        jsonRes: (b, s) => jsonRes(b, s),
+      });
+      if ("response" in parsed) return parsed.response;
+      orderId = parsed.data.order_id ?? null;
+    }
 
     if (!orderId) {
       return new Response(

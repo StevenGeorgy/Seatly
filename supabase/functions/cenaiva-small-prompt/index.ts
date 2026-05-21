@@ -17,6 +17,8 @@ import {
 } from "../_shared/openai.ts";
 import { checkAuth } from "../_shared/auth.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CenaivaSmallPromptSchema } from "../_shared/validation/chat.ts";
 
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -220,7 +222,7 @@ Deno.serve(async (req) => {
     return jsonRes({ error: "Method not allowed" }, 405);
   }
 
-  const auth = checkAuth(req);
+  const auth = await checkAuth(req);
   if (!auth.ok) {
     return jsonRes({ error: "Unauthorized", code: auth.reason }, 401);
   }
@@ -243,7 +245,11 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const body = await req.json() as Body;
+    const parsed = await parseJsonBody(req, CenaivaSmallPromptSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const body = parsed.data as Body;
     const transcript = stringOrNull(body.transcript);
     if (!transcript) return jsonRes({ error: "transcript is required" }, 400);
 

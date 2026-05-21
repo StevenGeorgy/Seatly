@@ -28,6 +28,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { buildCorsHeaders } from "../_shared/cors.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ConfirmHoldPaidSchema } from "../_shared/validation/reservation-hold.ts";
 
 type Payload = {
   hold_id?: unknown;
@@ -82,21 +84,12 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const holdId =
-      typeof payload.hold_id === "string" && payload.hold_id.trim()
-        ? payload.hold_id.trim()
-        : null;
-    const paymentIntentId =
-      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.trim()
-        ? payload.payment_intent_id.trim()
-        : null;
-
-    if (!holdId) return jsonRes(req, { error: "hold_id is required" }, 400);
-    if (!paymentIntentId) return jsonRes(req, { error: "payment_intent_id is required" }, 400);
-    if (!paymentIntentId.startsWith("pi_")) {
-      return jsonRes(req, { error: "Invalid payment_intent_id format" }, 400);
-    }
+    const parsed = await parseJsonBody(req, ConfirmHoldPaidSchema, {
+      jsonRes: (b, s) => jsonRes(req, b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const holdId = parsed.data.hold_id;
+    const paymentIntentId = parsed.data.payment_intent_id;
 
     // Step 0: load the hold to know the expected charge amount. This
     // mirrors confirm-deposit-paid — we will NOT trust the PI ID alone.
@@ -123,6 +116,18 @@ Deno.serve(async (req: Request) => {
         { error: "payment_not_succeeded", pi_status: pi.status },
         402,
       );
+    }
+
+    // ── Security check: PI must have been created for THIS hold.
+    // create-public-payment-intent stamps `hold_id` on the PI metadata
+    // in the hold-aware branch (line 541), so a real PI for this hold
+    // will have it. Without this check, an attacker who knows a holdId
+    // could submit any unrelated succeeded PI of sufficient value and
+    // convert the hold into a confirmed reservation (claiming the
+    // table + receiving the confirmation_code) without paying the
+    // restaurant. Audit finding 2026-05-20 (Vuln 4).
+    if (pi.metadata?.hold_id !== holdId) {
+      return jsonRes(req, { error: "pi_mismatch" }, 400);
     }
 
     // PI may bundle deposit + pre-order (totalNow = food + deposit), so we

@@ -23,6 +23,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { MergeDinerAccountsSchema } from "../_shared/validation/account.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,29 +32,11 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-type Payload = {
-  canonical_auth_user_id?: unknown;
-  archived_auth_user_id?: unknown;
-};
-
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
 }
 
 const adminClient = createClient(
@@ -79,31 +63,29 @@ Deno.serve(async (req: Request) => {
     }
 
     const authHeader = req.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (!token) return jsonRes({ error: "Authentication required" }, 401);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+    if (!bearerToken) return jsonRes({ error: "Authentication required" }, 401);
 
-    const jwtPayload = decodeJwtPayload(token);
-    const callerAuthUserId = jwtPayload?.sub as string | undefined;
-    if (!callerAuthUserId) return jsonRes({ error: "Unauthorized" }, 401);
+    // Cryptographically verify the JWT — auth.getUser checks the
+    // signature against Supabase's signing key. This is the trust
+    // anchor for the entire merge: callerAuthUserId determines which
+    // of the two accounts is allowed to be merged. NEVER read sub
+    // from an unverified JWT payload here.
+    const { data: { user }, error: authError } = await adminClient.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "Unauthorized" }, 401);
+    const callerAuthUserId = user.id;
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const canonicalAuthUserId =
-      typeof payload.canonical_auth_user_id === "string"
-        ? payload.canonical_auth_user_id.trim()
-        : null;
-    const archivedAuthUserId =
-      typeof payload.archived_auth_user_id === "string"
-        ? payload.archived_auth_user_id.trim()
-        : null;
+    const parsed = await parseJsonBody(req, MergeDinerAccountsSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const canonicalAuthUserId = parsed.data.canonical_auth_user_id;
+    const archivedAuthUserId = parsed.data.archived_auth_user_id;
 
-    if (!canonicalAuthUserId || !archivedAuthUserId) {
-      return jsonRes({ error: "Both auth user ids are required" }, 400);
-    }
-    if (canonicalAuthUserId === archivedAuthUserId) {
-      return jsonRes({ error: "Canonical and archived accounts must differ" }, 400);
-    }
-
-    // Caller must be signed in as one of the two accounts.
+    // SECURITY-CRITICAL: caller must be signed in as one of the two accounts.
+    // The JWT was cryptographically verified above (auth.getUser) — never
+    // trust the request body alone for which account-id can initiate a
+    // merge. DO NOT relax this check.
     if (
       callerAuthUserId !== canonicalAuthUserId &&
       callerAuthUserId !== archivedAuthUserId

@@ -2,7 +2,6 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { buildCorsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 // Deepgram's /v1/auth/grant endpoint mints short-lived tokens (30s TTL) that
@@ -24,20 +23,24 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    const payload = decodeJwtPayload(token);
-    if (!payload?.sub) {
-      console.warn("[deepgram-live-token] JWT decode failed or missing sub");
-      return jsonRes({ error: "Unauthorized", reason: "jwt_decode" }, 401, req);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) {
+      console.warn("[deepgram-live-token] missing bearer token");
+      return jsonRes({ error: "auth_required" }, 401, req);
+    }
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) {
+      console.warn("[deepgram-live-token] invalid token:", authError?.message);
+      return jsonRes({ error: "invalid_token" }, 401, req);
     }
 
     const { data: profile, error: profileErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id")
-      .eq("auth_user_id", payload.sub as string)
+      .eq("auth_user_id", user.id)
       .single();
     if (profileErr || !profile) {
-      console.warn("[deepgram-live-token] profile lookup failed for sub:", payload.sub, profileErr?.message);
+      console.warn("[deepgram-live-token] profile lookup failed for sub:", user.id, profileErr?.message);
       return jsonRes({ error: "Unauthorized", reason: "profile_lookup" }, 401, req);
     }
 

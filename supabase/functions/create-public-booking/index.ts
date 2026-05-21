@@ -518,7 +518,13 @@ Deno.serve(async (req: Request) => {
       // ready to go. Without p_status='confirmed', the RPC default is
       // 'pending' and the diner sees an ambiguous "not yet confirmed"
       // state on /bookings.
-      p_status: "confirmed",
+      //
+      // Split-tender exception (2026-05-20): when N payers are sharing the
+      // deposit, the reservation must stay 'pending_payment' until all N
+      // deposit rows are charged. The settle trigger on
+      // reservation_deposit_payments flips it to 'confirmed' once the last
+      // row settles.
+      p_status: payload.split_tender_payers ? "pending_payment" : "confirmed",
     });
 
     if (bookingError) {
@@ -600,6 +606,41 @@ Deno.serve(async (req: Request) => {
           .from("reservations")
           .update({ deposit_amount_cents: depositCents, deposit_status: "pending" })
           .eq("id", reservationId);
+      }
+    }
+
+    // Split-tender deposit rows (2026-05-20). When the diner picked
+    // "Split tender", we create N reservation_deposit_payments rows here —
+    // each `pending` until SplitTenderPaymentForm charges them via the
+    // standard create-public-payment-intent + confirm-deposit-paid path
+    // (with the strict deposit_payment_ids metadata check). The settle
+    // trigger flips the reservation to 'confirmed' once every row is
+    // 'charged'. Even share split: ceil(deposit / N) so rounding leans
+    // toward Cenaiva rather than under-collecting.
+    let splitTenderDepositRowIds: string[] = [];
+    if (payload.split_tender_payers && depositAmountCents > 0) {
+      const n = payload.split_tender_payers;
+      const baseShare = Math.floor(depositAmountCents / n);
+      const remainder = depositAmountCents - baseShare * n;
+      const shares = Array.from({ length: n }, (_, i) =>
+        i === 0 ? baseShare + remainder : baseShare,
+      );
+      const { data: insertedRows, error: insertErr } = await supabase
+        .from("reservation_deposit_payments")
+        .insert(
+          shares.map((amount_cents) => ({
+            reservation_id: reservationId,
+            amount_cents,
+            status: "pending",
+          })),
+        )
+        .select("id");
+      if (insertErr) {
+        console.error("[split-tender] deposit row insert failed", insertErr);
+      } else if (Array.isArray(insertedRows)) {
+        splitTenderDepositRowIds = insertedRows
+          .map((r) => (r as { id?: unknown }).id)
+          .filter((id): id is string => typeof id === "string");
       }
     }
 
@@ -777,6 +818,7 @@ Deno.serve(async (req: Request) => {
       confirmation_delivery_channel: confirmationChannel,
       deposit_amount_cents: depositAmountCents,
       deposit_required: depositAmountCents > 0,
+      split_tender_deposit_row_ids: splitTenderDepositRowIds,
     });
   } catch (err) {
     return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);

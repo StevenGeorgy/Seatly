@@ -19,34 +19,207 @@ This guide is current as of **2026-05-20**.
 
 ---
 
+## 0. One day in the life — the whole system in one page
+
+Read this first. The rest of the doc dives into each piece in
+detail; this section stitches them together so you have the full
+picture before zooming in.
+
+### A restaurant owner signs up
+
+1. Owner lands on `cenaiva.com/setup?new=1`. Walks the 8-step wizard
+   (`apps/web/src/pages/auth/SetupPage.tsx` orchestrates,
+   `apps/web/src/components/onboarding/Step{1-8}*.tsx` are the
+   steps).
+2. Step 1 hits `signup-restaurant-owner` edge fn which creates the
+   `restaurants` row + a default "Dinner" shift + a Main Floor
+   section + the owner's `user_restaurant_roles` row. The URL
+   becomes `/setup?restaurant_id=<new-id>` so refreshes resume.
+3. Steps 2–7 collect hours, tables, booking rules, menu, photos +
+   theme colors, deposit policy. Each step writes directly to
+   `restaurants` / `shifts` / `tables` / `menu_items` /
+   `restaurant_sections`.
+4. Step 8 mounts two things:
+   - **Stripe Connect Embedded** for KYC + bank-account setup
+     (`<ConnectAccountOnboarding>`). Owner enters business details,
+     beneficial owner info, and Canadian bank routing (transit #,
+     institution #, account #). When the `account.updated` webhook
+     fires, `stripe_charges_enabled` flips to true and the card
+     turns green: **"You're verified and ready to accept payments."**
+   - **Subscription card capture** (`<SubscriptionCard>`) — saves the
+     owner's card via `save-subscription-payment-method` →
+     `payment_method_attached_at` is set. **No charge yet. No trial
+     clock yet.** Apple Pay + Google Pay are enabled here (auto
+     mode); Link is off.
+5. Owner clicks **Publish my restaurant** → confirmation modal shows
+   the $199.99 CAD/mo trial-start disclosure → `publish-restaurant`
+   edge fn atomically creates the Stripe Subscription
+   (`trial_period_days: 90`) AND flips `is_published=true` AND
+   sends the `restaurant_live` email. If a referral code was used,
+   `apply-referral-credit` mints a $199.99 coupon for both
+   restaurants.
+6. The `restaurants_publish_gate` DB trigger guards the flip — even
+   if the client UI is bypassed, the row can't go public unless
+   all four gates pass: `is_active=true`, `stripe_charges_enabled=true`,
+   active subscription OR `payment_method_attached_at IS NOT NULL`,
+   and `cover_photo_url IS NOT NULL`.
+
+### A diner books and pays
+
+1. Diner finds the restaurant on Discover or a direct slug URL →
+   loads `RestaurantPublicPage`. Theme colors from the restaurant's
+   `settings_json.theme` re-skin the page via `applyRestaurantTheme()`.
+2. Diner picks date/time/party → if party size triggers a deposit
+   tier, `compute_deposit_for_party` RPC returns the amount.
+3. Diner fills name/email/phone, optionally adds pre-order items
+   from the menu, then clicks Pay.
+4. Frontend computes the cart total via `apps/web/src/lib/stripe-fee.ts`
+   `computeDinerCharge(baseCents)`:
+   - **`base < $12`:** Stripe's ~2.9%+30¢ fee is grossed up onto the
+     diner. Cart shows "Processing fee" line item.
+   - **`base ≥ $12`:** Cenaiva absorbs the Stripe fee. No
+     "Processing fee" line shown.
+5. `create-public-payment-intent` creates a PI with:
+   - `amount = dinerTotalCents` (the grossed-up or absorbed total)
+   - `application_fee_amount = 5.5% of base` (never grossed up)
+   - `transfer_data.destination = restaurant.stripe_account_id`
+   - `payment_method_types: ["card"]` (wallets currently off on
+     diner-side; flip this for mobile when wallets are ready)
+6. Stripe Elements `PaymentElement` collects card → `stripe.confirmPayment`
+   → success → either the `payment_intent.succeeded` webhook OR
+   the client-side `confirm-deposit-paid` edge fn flips
+   `reservation_deposit_payments.status='charged'` and the settle
+   trigger flips the reservation to `'confirmed'`.
+7. Confirmation SMS + email go to the diner (via Twilio + Resend).
+8. **Same booking, AI-initiated:** if Hey Cenaiva voice or
+   cenaiva-chat AI made the booking, the bot hands off the diner
+   to `/{slug}?order_id=<id>&step=checkout` for the diner to pay
+   in the same Stripe Elements form. The web payment infrastructure
+   is identical; only the booking trigger differs.
+9. **Owner gets an email** (`notifyOwnerNewReservation`) — gated by
+   their per-owner `notification_preferences_json.new_reservation_email`
+   toggle on `user_profiles`. Recipient is the owner's
+   `user_profiles.email` (not the shared `restaurants.email` inbox).
+
+### Behind the scenes, every confirmed booking
+
+10. DB trigger seeds a `restaurant_booking_fees` row (`status='pending'`,
+    `amount_cents=100` = $1 CAD).
+11. Hourly `pg_cron` runs `bill-booking-fees` edge fn → each pending
+    row becomes a `stripe.invoiceItems.create` on the restaurant's
+    subscription customer → rolls into next month's invoice → row
+    flips to `'billed'`.
+
+### The diner cancels
+
+12. `/bookings` → cancel button (only shown for future reservations).
+    `cancel-reservation` edge fn:
+    - Retrieves `application_fee_amount` from each related PI via
+      Stripe API.
+    - Refunds `(dinerTotalCents − applicationFee)` → restaurant
+      returns 94.5%, Cenaiva keeps the 5.5% commission as
+      cancellation cost.
+    - Fires `notifyOwnerCancellation` to the owner.
+    - Releases the table back into availability.
+
+### Restaurant's monthly Stripe invoice fires
+
+13. Stripe sends the invoice to the owner's card on file. It includes
+    the $199.99 subscription line + every `bill-booking-fees`
+    invoice item that accumulated since the last invoice.
+14. `invoice.payment_succeeded` webhook fires →
+    `handleInvoicePaymentSucceeded` inserts two `expenses` rows for
+    the owner's books (subscription + booking-fees aggregate) and
+    sends a `payment_received` email with a link to the Stripe-hosted
+    invoice PDF.
+15. If the card fails, `customer.subscription.updated` with
+    status='unpaid' fires → `handleSubscriptionUpsert` unpublishes
+    the restaurant + sends a `payment_failed` email. When the owner
+    updates their card and a retry succeeds, the same webhook path
+    re-publishes the restaurant.
+
+### Owner deletes the restaurant
+
+16. `delete-restaurant` soft-deletes (sets `deleted_at`,
+    `scheduled_purge_at = NOW() + 30 days`, `is_published=false`),
+    and tells Stripe to `cancel_at_period_end=true` on the active
+    subscription. Bookings/payments/orders untouched.
+17. Owner has 30 days to `recover-restaurant`. After that, daily
+    `purge-deleted-restaurants` cron anonymizes the PII (name →
+    "Deleted Restaurant", email/phone nulled, payment_method_attached_at
+    cleared) but **keeps the row** so payment / booking-fee FKs
+    remain intact for CRA 7-year retention.
+
+That's the entire system. The rest of this doc explains each piece
+in detail.
+
+---
+
 ## 1. Money model — who charges whom, who keeps what
 
-Cenaiva uses Stripe Connect with **Custom** connected accounts (one per
-restaurant). Every diner charge is a **destination charge**:
+Cenaiva uses Stripe Connect with **Express** connected accounts (one per
+restaurant — set in `supabase/functions/create-stripe-account/index.ts:143-156`,
+country=CA, mcc=5812 Eating Places, card_payments + transfers
+capabilities). Every diner charge is a **destination charge**:
 `transfer_data.destination = restaurant.stripe_account_id`. Result: the
 money lands in the restaurant's Stripe balance the instant Stripe approves
 the charge, minus a 5.5% platform application fee that stays with Cenaiva.
 
 | Charge type | Who pays | Who receives | Platform fee | Stripe fee paid by |
 |---|---|---|---|---|
-| Pre-ordered food + tax | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
-| Booking deposit | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
-| Post-meal pay-the-bill (Phase 9) | Diner | Restaurant | 5.5% (app fee) | Diner (grossed up) |
+| Pre-ordered food + tax | Diner | Restaurant | 5.5% (app fee) | **Diner if base < $12, else Cenaiva** |
+| Booking deposit | Diner | Restaurant | 5.5% (app fee) | **Diner if base < $12, else Cenaiva** |
+| Post-meal pay-the-bill | Diner | Restaurant | 5.5% (app fee) | **Diner if base < $12, else Cenaiva** |
 | Monthly subscription ($199.99 CAD) | Restaurant | Cenaiva platform | n/a | Cenaiva |
 | Per-reservation fee ($1) | Restaurant | Cenaiva platform | n/a (billed monthly) | Cenaiva |
 
-**Stripe processing fees** (~2.9% + 30¢) are **passed through to the
-diner** via gross-up. As of **2026-05-19** the public-payment-intent +
-charge-order paths run the base amount (deposit/pre-order/order total)
-through `computeDinerCharge(baseCents)` in
-`supabase/functions/_shared/stripe-fee.ts` (and the client mirror at
-`apps/web/src/lib/stripe-fee.ts`). Formula:
-`dinerTotalCents = ceil((base + 30) / 0.971)`. The diner sees a
-"Processing fee" line item on the cart; the PI is charged for the
-grossed-up amount; `application_fee_amount` is still **5.5% of the
-base** (not the grossed-up total — we don't take commission on the
-pass-through). End result: Restaurant nets 94.5% of base; Cenaiva
-keeps 5.5% of base; Stripe takes its 2.9%+30¢ off the gross.
+### The $12 gross-up threshold
+
+`supabase/functions/_shared/stripe-fee.ts` `computeDinerCharge(baseCents)`
+inspects `baseCents` against `ABSORB_FEE_THRESHOLD_CENTS = 1200`
+($12 CAD):
+
+- **`baseCents < 1200`** (small charge): Stripe's ~2.9%+30¢ fee
+  ate too much of a small total, so we **gross it up** onto the
+  diner. Formula: `dinerTotalCents = ceil((base + 30) / 0.971)`. A
+  $1 deposit becomes $1.37 to the diner; the restaurant still gets
+  $1 (minus app fee), Cenaiva still keeps 5.5%, Stripe takes its
+  $0.34 from the diner's $1.37. Returns `{ dinerPaysFee: true }`.
+
+- **`baseCents >= 1200`** (normal charge): **Cenaiva absorbs** the
+  Stripe fee out of its 5.5% commission. `dinerTotalCents === baseCents`,
+  no "Processing fee" line shown on the cart. Returns
+  `{ dinerPaysFee: false, processingFeeCents: 0 }`.
+
+The client mirror at `apps/web/src/lib/stripe-fee.ts` runs the same
+math so the cart UI displays the same total before the PI is created.
+The cart only shows "Processing fee" when `dinerPaysFee === true`
+(see `RestaurantPublicPage.tsx:1733-1734`).
+
+### Application fee — always on base
+
+Regardless of gross-up state, `application_fee_amount = round(base × 0.055)`
+(minimum 1¢). We never take commission on the pass-through Stripe fee.
+End result:
+
+| Scenario | Diner pays | Restaurant nets | Cenaiva nets | Stripe takes |
+|---|---|---|---|---|
+| Small charge ($1 base, grossed up) | $1.37 | $0.945 | $0.055 | ~$0.34 |
+| Normal charge ($100 base, absorbed) | $100 | $94.50 | ~$2.30 (after Stripe fee out of its $5.50) | ~$3.20 |
+
+Above $11.54 break-even, Cenaiva profits even when absorbing the fee.
+
+### Stripe minimum charge
+
+Stripe rejects card charges below **$0.50 CAD** at the API level.
+`create-public-payment-intent/index.ts:399-400` enforces this
+client-side too: any request with `amount_cents < 50` returns 400
+`amount_cents must be a number >= 50`. After gross-up, even a $0.10
+deposit becomes ~$0.40 + Stripe's minimum — so a real-world deposit
+should always clear $0.50.
+
+If the diner has a saved card on a `setup_future_usage` PI, the
+minimum still applies — there's no way around it.
 
 **Cancellation policy** (2026-05-16, see §6): `cancel-reservation` issues
 a **partial refund** of `(total − application_fee_amount)`. The diner gets
@@ -54,17 +227,30 @@ back only the restaurant's 94.5% slice; Cenaiva keeps the 5.5% as a
 cancellation cost. Stripe's processing fee on the original charge is never
 returned by Stripe — Cenaiva paid it and never recovers it.
 
-**Net per cancelled $100 base transaction (post-gross-up):**
-- Diner paid: $103.40 ($100 base + ~$3.40 grossed-up Stripe fee)
-- Stripe took: ~$3.30 (processing fee on the $103.40)
-- Cenaiva kept: $5.50 (5.5% of base = full commission since fee passed through)
+**Net per cancelled $100 base transaction (absorbed-fee path, the
+common case for any deposit ≥ $12):**
+- Diner paid: $100 (no gross-up — Cenaiva absorbed the Stripe fee)
+- Stripe took: ~$3.20 (processing fee on the $100)
+- Cenaiva net on the book: $5.50 commission − $3.20 Stripe fee = **+$2.30**
 - Restaurant netted on book: $94.50 (base × 94.5%)
-- On cancel: restaurant returns $94.50; diner gets back $94.50; diner loses $5.50 commission + $3.40 Stripe fee
-- Stripe's $3.30 processing fee is non-recoverable
+- On cancel: restaurant returns $94.50; diner gets back $94.50; diner
+  loses the $5.50 commission as cancellation cost
+- Stripe's $3.20 processing fee is non-recoverable (Cenaiva eats it)
 
-**Break-even** for Cenaiva: any non-zero transaction is now profitable
-(Cenaiva keeps the full 5.5% commission since Stripe fees are passed
-through to the diner). Pre-2026-05-19 break-even was $11.54.
+**Net per cancelled $1 base transaction (grossed-up path, small
+charges only):**
+- Diner paid: ~$1.37 ($1 base + ~$0.37 grossed-up Stripe fee)
+- Stripe took: ~$0.34 (processing fee on the $1.37)
+- Cenaiva net: $0.055 commission (5.5% of $1 base) + ~$0.03 spread = **~+$0.09**
+- Restaurant netted on book: ~$0.945
+- On cancel: restaurant returns $0.945; diner gets back $0.945; diner
+  loses $0.055 commission + ~$0.37 Stripe fee
+
+**Break-even** for Cenaiva on the **absorbed-fee path** is **$11.54
+base** — any transaction at or above that threshold is profitable
+even though we eat Stripe's fee. Below $12, the gross-up kicks in
+and every transaction is profitable regardless of size (Cenaiva keeps
+the full 5.5% since the diner covered Stripe's cut).
 
 **Currency:** CAD for all diner-facing charges. Restaurants are
 Canadian-only at launch.
@@ -136,6 +322,60 @@ platform-level key.
 **Do not** call Stripe Connect Account Sessions, Account Onboarding, or
 anything platform-side from the diner mobile app. Those are owner-side
 flows handled in the restaurant onboarding wizard (web, see §11).
+
+---
+
+## 3a. Apple Pay / Google Pay / Link — current state
+
+**Web (the canonical implementation mobile mirrors):**
+
+- **Diner-side checkout (RestaurantPublicPage, deposit pages):**
+  `create-public-payment-intent/index.ts:534-540` creates the PI with
+  `payment_method_types: ["card"]` — **wallets are explicitly
+  disabled.** Diners on web see only the card form. This was an
+  intentional choice to keep the diner UX uniform; flipping it on
+  requires removing the `payment_method_types` whitelist and setting
+  `automatic_payment_methods: { enabled: true }` on the PI instead.
+- **Owner-side subscription card** (`SubscriptionCard.tsx:201`):
+  `wallets: { applePay: "auto", googlePay: "auto", link: "never" }`.
+  Apple Pay + Google Pay **are** enabled for owners saving their
+  subscription card. Link (Stripe's saved-card-across-merchants
+  feature) is explicitly off so owners don't accidentally end up with
+  cards on Stripe's Link network instead of our platform Customer.
+
+**Mobile diner app — what to configure (when wallets are enabled):**
+
+1. **Server-side first.** When `create-public-payment-intent` is
+   updated to accept a `payment_method_types` override (or removes
+   the whitelist), mobile can opt in. Until then, mobile is also
+   card-only by virtue of the PI's allowed methods.
+2. **Apple Pay:**
+   - Create an Apple Merchant ID in Apple Developer Portal
+     (`merchant.com.cenaiva.diner` or similar).
+   - Add the Merchant ID + Apple Pay capability to the iOS app's
+     `.entitlements`.
+   - At Stripe SDK init: `StripeAPI.defaultPublishableKey = "pk_…"`
+     + `PaymentSheet.Configuration.applePay = .init(merchantId:
+     "merchant.com.cenaiva.diner", merchantCountryCode: "CA")`.
+   - **Test on a real iOS device or TestFlight** — Apple Pay does
+     not work in the iOS Simulator.
+3. **Google Pay:**
+   - At Stripe SDK init on Android: `PaymentSheet.GooglePayConfiguration(
+     environment = TEST | PRODUCTION, countryCode = "CA",
+     currencyCode = "CAD", merchantName = "Cenaiva")`.
+   - Production requires a Google Pay merchant ID + brand allowlist
+     via the Google Pay & Wallet Console.
+4. **Link:** Stripe's own saved-card network. For Cenaiva diners,
+   leave it `"never"` — same reasoning as owner side.
+5. **React Native:**
+   `@stripe/stripe-react-native`'s `usePaymentSheet` hook accepts the
+   same config object shape; pass `applePay` and `googlePay` keys
+   on the PaymentSheet init.
+
+**The web doesn't have an Apple Merchant ID configured** because
+diner-side wallets are off. When mobile turns them on, that's a
+**production prerequisite** owner-side ops needs to handle on the
+Cenaiva platform Apple Developer account before the mobile rollout.
 
 ---
 
@@ -900,6 +1140,62 @@ Permanent diner account deletion. See §7 for the full flow.
 
 ---
 
+## 9a. Voice / Hey Cenaiva booking-to-payment handoff
+
+**Voice is out of scope for the diner mobile app** (per
+`DINER_MOBILE_GUIDE.md`) — this section documents the data flow so
+mobile devs understand how AI-assisted bookings hit the same payment
+infrastructure on the web side. Mobile should treat any reservation
+written via the voice path identically to a manually-entered one.
+
+### How voice bookings reach the payment layer
+
+`cenaiva-orchestrate/index.ts` (voice path) and `cenaiva-chat/index.ts`
+(text-chat path) both end up at one of:
+
+1. **`completeBooking()` in `_shared/booking.ts`** (used by
+   `cenaiva-orchestrate`): runs the `book_reservation` RPC + diner
+   confirmation SMS + owner notification. Returns the new
+   `reservation_id` + `order_id` if a pre-order was included.
+2. **Direct `book_reservation` RPC call** (used by `cenaiva-chat`):
+   inserts the reservation row with `p_status='confirmed'` and an
+   optional pre-order order row.
+
+### Voice handoff when payment is required
+
+The voice/AI flows don't collect card data themselves — they hand off
+to `RestaurantPublicPage` via URL params for the diner to complete
+payment in a normal Stripe Elements form:
+
+| Scenario | Voice redirects to | RestaurantPublicPage handles |
+|---|---|---|
+| Pre-order with payment | `/{slug}?order_id=<id>&step=checkout` | Mounts `StripePaymentForm` at the checkout step; reads the order total + items from the DB row |
+| Booking deposit required | `/{slug}?step=checkout&date=…&time=…&party=…` | Re-mounts the booking widget pre-filled; deposit banner shown above the Pay button |
+| Successful no-payment booking | `/{slug}?step=menu` | Lands on the menu so the diner can optionally add a pre-order |
+
+`RestaurantPublicPage.tsx:1142` reads `searchParams.get("order_id")` to
+detect a voice pre-pay handoff (`cameFromCenaivaPrepay`); the page
+then auto-advances the wizard state to the checkout step instead of
+making the diner re-navigate.
+
+### Voice booking → owner notification
+
+Both `completeBooking` and the cenaiva-chat direct path call
+`notifyOwnerNewReservation()` from `_shared/owner-notifications.ts`
+(fire-and-forget) after the reservation row commits. Per-owner
+toggles in `user_profiles.notification_preferences_json` gate the
+send — so a voice-initiated booking and a web-form booking are
+indistinguishable from the owner's email inbox.
+
+### Voice booking → cancellation
+
+Voice doesn't have a "cancel" command yet (per CLAUDE.md pending
+follow-ups). Cancellations always go through the web
+`cancel-reservation` flow, which fires `notifyOwnerCancellation()`
+the same way regardless of how the booking was originally created.
+
+---
+
 ## 10. Multi-payer deposit split (Phase 7)
 
 Diner can invite friends to chip in their share of the deposit at
@@ -999,17 +1295,38 @@ boundary (savvy actor can't bypass via direct supabase-js writes).
 Step 8 mounts two Stripe components side-by-side:
 
 **Part A — Stripe Connect Embedded Onboarding (KYC + bank account):**
-- Edge fn `create-stripe-account` creates a Connect Custom account
-  (country=CA, business_type=company, mcc=5812 Eating Places,
-  card_payments + transfers capabilities, daily payout schedule).
-  Idempotent — re-running just retrieves the current state.
-- Edge fn `create-account-session` mints a short-lived Account Session
-  for the embedded onboarding component.
+- Edge fn `create-stripe-account` (`supabase/functions/create-stripe-account/index.ts:143-156`)
+  creates a Connect **Express** account (country=CA, mcc=5812 Eating
+  Places, capabilities `{ card_payments, transfers }`).
+  Idempotent — re-running just retrieves the current state. If the
+  account was deauthorized externally (owner unlinked from Stripe
+  dashboard), the function clears the columns and lets the owner
+  re-onboard.
+- Edge fn `create-account-session` (`supabase/functions/create-account-session/index.ts:110-115`)
+  calls `stripe.accountSessions.create({ account, components: {
+  account_onboarding: { enabled: true } } })` and returns the
+  `client_secret` for the embedded component.
 - Web component `<ConnectAccountOnboarding />` from `@stripe/react-connect-js`
   renders Stripe's hosted KYC flow inline (business details, beneficial
   owners, banking, identity verification).
-- On the `onExit` callback, the page polls the restaurant row for ~30s
-  waiting for `stripe_charges_enabled` to flip true via webhook.
+- On the `onExit` callback, `handleKycExit` (`Step8PaymentSetup.tsx:386-407`)
+  polls the restaurant row every 2 seconds for up to 15 attempts (~30s)
+  waiting for `stripe_charges_enabled` or `stripe_details_submitted`
+  to flip true via the `account.updated` webhook.
+
+**Part A — The "Verified ✓" success state:**
+
+When the polling sees `stripe_charges_enabled === true`, the bank
+payout card flips from the embedded onboarding form to a green
+success state with the banner **"You're verified and ready to accept
+payments."** This is the screenshot the owner sees when KYC clears.
+
+The UI ties to `kycVerified = summary?.stripe_charges_enabled === true`
+(`Step8PaymentSetup.tsx:423`). The same flag also gates the
+"Publish my restaurant" button (combined with `hasPaymentMethodOnFile
+|| subscriptionActive` and `cover_photo_url`). Until KYC verifies,
+the publish button stays disabled and the page shows the embedded
+onboarding flow.
 
 **Part A.1 — Bank-account / payout setup screen (within the Embedded flow):**
 
@@ -1070,20 +1387,26 @@ the DB trigger re-verifies all four gates before allowing the write.
 
 ### 11d. stripe-webhook event mapping
 
-The platform's webhook handler maps Stripe events to DB updates:
+The platform's webhook handler (`supabase/functions/stripe-webhook/index.ts`)
+maps Stripe events to DB updates:
 
-| Event | DB effect |
-|---|---|
-| `account.updated` | Mirrors `stripe_charges_enabled`, `stripe_payouts_enabled`, `stripe_details_submitted` onto `restaurants` |
-| `account.application.deauthorized` | Clears `stripe_account_id` + KYC flags (restaurant disconnected from Cenaiva platform) |
-| `customer.subscription.created/updated` | Mirrors `subscription_status`, `trial_ends_at` |
-| `customer.subscription.deleted` | Status=canceled, flips `is_published=false` (graceful unpublish) |
-| `customer.subscription.trial_will_end` | Logged only (notification to owner is owner-side concern) |
-| `payment_intent.*` | Logged only — deposit flow updates DB synchronously via `confirm-deposit-paid`, not via webhook |
-| `invoice.payment_failed` | Logged only |
+| Event | Handler | DB effect |
+|---|---|---|
+| `account.updated` | `handleAccountUpdated` (line 102–113) | Mirrors `stripe_charges_enabled`, `stripe_payouts_enabled`, `stripe_details_submitted` onto `restaurants`. This is the event that flips the "Verified ✓" banner on Step 8. |
+| `account.application.deauthorized` | `handleAccountDeauthorized` (line 115–127) | `stripe_account_id=NULL` + all three KYC flags=false. Restaurant is disconnected and effectively non-functional until they re-onboard. |
+| `customer.subscription.created/updated` | `handleSubscriptionUpsert` (line 349–454) | Mirrors `subscription_status`, `trial_ends_at`, `subscription_cancel_at_period_end`, `subscription_paused_at`. **Drives `is_published`:** on `unpaid`/`canceled` → unpublish + `paused_reason='payment_failed'` + `payment_failed` email. On recovery to `trialing`/`active` while previously failed → republish + `payment_recovered` email. Skips entirely if `deleted_at IS NOT NULL` (deletion state protected). |
+| `customer.subscription.deleted` | `handleSubscriptionDeleted` (line 571–587) | `subscription_status='canceled'`, `is_published=false`, `paused_reason='subscription_cancelled'`. Skipped if `paused_reason='pending_deletion'` (already handled by `delete-restaurant`). |
+| `customer.subscription.trial_will_end` | Logged only | Owner notification fires from a separate `notify-trial-ending` cron 7 days pre-expiry. |
+| `invoice.payment_succeeded` | `handleInvoicePaymentSucceeded` (line 179–347) | Inserts 2 `expenses` rows (subscription + booking-fees aggregate) for the owner's bookkeeping. Fires `payment_received` notification with `hostedInvoiceUrl`. |
+| `payment_intent.succeeded` | `handlePaymentIntentSucceeded` (line 456–555) | **Hold path:** calls `convert_reservation_hold_to_reservation` RPC + post-conversion side effects (orders/items, promotions). **Reservation path:** updates `reservation_deposit_payments` (status='charged'), `orders` (status='paid'), `reservations` (status='confirmed' via settle trigger). |
+| `payment_intent.payment_failed` | `handlePaymentIntentFailed` (line 557–569) | `reservation_deposit_payments.status='failed'`. |
+| `invoice.payment_failed` | Logged only | The subscription's status change to `unpaid` is what actually drives unpublish, via the `customer.subscription.updated` event that follows. |
 
-In-memory dedupe of recent event IDs (prevents reprocessing on retries).
-Signature verification via `constructEventAsync`.
+**De-dup:** in-memory `seenEventIds` Set (line 43–54), 500-entry cap.
+Stripe retries the same event with the same ID; we ignore duplicates
+within the process lifetime. Signature verification via
+`constructEventAsync`. The same de-dup pattern handles webhook
+replays from Stripe's dashboard "resend" feature.
 
 ### 11e. Drafts as a product surface
 
@@ -1120,6 +1443,44 @@ UTC, deleting unpublished drafts older than 30 days.
   On `unpaid`/`canceled` → unpublish + `paused_reason='payment_failed'`
   + `payment_failed` email. On recovery → republish +
   `payment_recovered` email. Skips if `deleted_at IS NOT NULL`.
+
+### 11g. Dev environment HTTPS (Vite basic-ssl)
+
+Chrome refuses to enable Stripe Elements' "saved card autofill" on
+non-HTTPS pages. Dev on `http://localhost` shows the banner
+*"Automatic payment methods filling is disabled because this form
+does not use a secure connection"* inside every Stripe iframe — the
+form still works, but the saved-card autofill is dead and the warning
+clutters Step 8 of the wizard.
+
+**Fix** (shipped 2026-05-20, see `apps/web/vite.config.ts`):
+
+```ts
+import basicSsl from "@vitejs/plugin-basic-ssl";
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), basicSsl()],
+  server: { https: true, /* … */ },
+});
+```
+
+This makes Vite serve dev on `https://localhost:5174` with a
+self-signed cert. The first time Chrome hits the page it shows the
+familiar `NET::ERR_CERT_AUTHORITY_INVALID` interstitial ("Your
+connection is not private"). The owner clicks **Advanced → Proceed
+to localhost (unsafe)** once and Chrome remembers the bypass for the
+rest of the session.
+
+After the bypass, the Stripe iframe sees an HTTPS parent and the
+autofill warning disappears. This is a dev-only quirk — **production
+runs on a real cert (AWS ACM / Cloudflare / Vercel auto-provisions
+one)** and the warning never appears for owners or diners on
+`https://cenaiva.com/*`.
+
+If `@vitejs/plugin-basic-ssl` is uninstalled or `server.https` is
+turned off in `vite.config.ts`, dev reverts to HTTP and the Stripe
+warning comes back. Don't disable it for "easier dev" — owners
+walking through Step 8 will see the warning and ask questions.
 
 ---
 

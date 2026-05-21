@@ -1,5 +1,7 @@
 import { corsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { GeocodeRestaurantSchema } from "../_shared/validation/restaurant-ops.ts";
 
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const USER_AGENT = "Seatly/1.0 (seatly.app)";
@@ -32,7 +34,15 @@ Deno.serve(async (req) => {
   try {
     // Single-restaurant mode: POST { restaurant_id }
     if (req.method === "POST") {
-      const body = await req.json() as { restaurant_id?: string };
+      const parsed = await parseJsonBody(req, GeocodeRestaurantSchema, {
+        jsonRes: (b, s) =>
+          new Response(JSON.stringify(b), {
+            status: s,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }),
+      });
+      if ("response" in parsed) return parsed.response;
+      const body = parsed.data;
 
       if (body.restaurant_id) {
         const { data: r, error } = await supabaseAdmin

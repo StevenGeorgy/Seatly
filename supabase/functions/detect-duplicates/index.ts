@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { DetectDuplicatesSchema } from "../_shared/validation/restaurant-ops.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,21 +9,24 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
+function jsonRes(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const restaurantId = body.restaurant_id;
-    const phone = body.phone?.trim?.() || null;
-    const email = body.email?.trim?.() || null;
-
-    if (!restaurantId || (!phone && !email)) {
-      return new Response(
-        JSON.stringify({ error: "restaurant_id and (phone or email) required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    const parsed = await parseJsonBody(req, DetectDuplicatesSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id;
+    const phone = parsed.data.phone?.trim() || null;
+    const email = parsed.data.email?.trim() || null;
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,

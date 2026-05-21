@@ -1,6 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { StripeSetupIntentSchema } from "../_shared/validation/payment.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -14,19 +17,6 @@ function jsonRes(body: unknown, status = 200) {
   });
 }
 
-function decodeJwtPayload(token: string): Record<string, any> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
-}
-
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -37,19 +27,18 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (!token) return jsonRes({ error: "Missing authorization token" }, 401);
+    const authHeader = req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) return jsonRes({ error: "auth_required" }, 401);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "invalid_token" }, 401);
+    const authUserId = user.id;
 
-    const jwtPayload = decodeJwtPayload(token);
-    const authUserId = jwtPayload?.sub as string | undefined;
-    if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
-
-    const body = (await req.json().catch(() => ({}))) as { restaurant_id?: unknown };
-    const restaurantId =
-      typeof body.restaurant_id === "string" && body.restaurant_id.trim()
-        ? body.restaurant_id.trim()
-        : null;
+    const parsed = await parseJsonBody(req, StripeSetupIntentSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id ?? null;
 
     const { data: profile } = await supabaseAdmin
       .from("user_profiles")

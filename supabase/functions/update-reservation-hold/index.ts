@@ -29,7 +29,8 @@ import {
   rateLimitIdentifier,
   RateLimitError,
 } from "../_shared/rate-limit.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { UpdateReservationHoldSchema } from "../_shared/validation/reservation-hold.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -120,7 +121,11 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "POST required" }, 405);
 
   try {
-    const payload = (await req.json().catch(() => ({}))) as Payload;
+    const parsedBody = await parseJsonBody(req, UpdateReservationHoldSchema, {
+      jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+    });
+    if ("response" in parsedBody) return parsedBody.response;
+    const payload = parsedBody.data as Payload;
 
     const holdId = asUuid(payload.hold_id);
     if (!holdId) return jsonResponse({ error: "hold_id is required" }, 400);
@@ -152,17 +157,20 @@ Deno.serve(async (req: Request) => {
     }
 
     // Resolve logged-in diner (same pattern as create-reservation-hold).
+    // Anon-callable: missing/invalid tokens are treated as anonymous
+    // (guest path — name/email/phone supplied in the body). Valid tokens
+    // are verified via supabaseAdmin.auth.getUser so the linked
+    // user_profile_id can't be spoofed by a forged JWT.
     let userProfileId: string | null = null;
     const authorization = req.headers.get("authorization");
     const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
     if (token) {
-      const decoded = decodeJwtPayload(token);
-      const authUserId = typeof decoded?.sub === "string" ? decoded.sub : null;
-      if (authUserId) {
+      const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+      if (!authError && user) {
         const { data: profile } = await supabaseAdmin
           .from("user_profiles")
           .select("id")
-          .eq("auth_user_id", authUserId)
+          .eq("auth_user_id", user.id)
           .maybeSingle();
         userProfileId = profile?.id ?? null;
       }

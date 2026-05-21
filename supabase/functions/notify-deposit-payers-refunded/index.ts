@@ -22,16 +22,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { NotifyDepositPayersRefundedSchema } from "../_shared/validation/restaurant-ops.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  reservation_id?: unknown;
-  refunded_payer_ids?: unknown;
 };
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -88,18 +85,15 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const reservationId =
-      typeof payload.reservation_id === "string" && payload.reservation_id.trim()
-        ? payload.reservation_id.trim()
+    const parsed = await parseJsonBody(req, NotifyDepositPayersRefundedSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const reservationId = parsed.data.reservation_id;
+    const refundedPayerIds: string[] | null =
+      parsed.data.refunded_payer_ids && parsed.data.refunded_payer_ids.length > 0
+        ? parsed.data.refunded_payer_ids
         : null;
-    if (!reservationId) return jsonRes({ error: "reservation_id is required" }, 400);
-
-    const refundedPayerIds: string[] | null = Array.isArray(payload.refunded_payer_ids)
-      ? payload.refunded_payer_ids
-          .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-          .map((v) => v.trim())
-      : null;
 
     // Load reservation + restaurant for the email body.
     const { data: reservationRaw, error: rErr } = await supabaseAdmin

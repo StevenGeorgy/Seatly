@@ -10,6 +10,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ConfirmDepositStubSchema } from "../_shared/validation/reservation-hold.ts";
+
 class RateLimitError extends Error {
   constructor(message: string) { super(message); this.name = "RateLimitError"; }
 }
@@ -70,23 +73,12 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  let payload: Payload;
-  try {
-    payload = (await req.json()) as Payload;
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
-  }
-
-  const paymentId =
-    typeof payload.payment_id === "string" && payload.payment_id.trim()
-      ? payload.payment_id.trim()
-      : null;
-  if (!paymentId) {
-    return jsonResponse({ error: "payment_id is required" }, 400);
-  }
-
-  const outcome =
-    payload.outcome === "failed" ? "failed" : "charged";
+  const parsed = await parseJsonBody(req, ConfirmDepositStubSchema, {
+    jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+  });
+  if ("response" in parsed) return parsed.response;
+  const paymentId = parsed.data.payment_id;
+  const outcome = parsed.data.outcome === "failed" ? "failed" : "charged";
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",

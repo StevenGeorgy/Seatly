@@ -17,6 +17,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CreateBillingPortalSessionSchema } from "../_shared/validation/subscription.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -25,12 +27,6 @@ const corsHeaders = {
 };
 
 type Flow = "default" | "payment_method_update" | "subscription_cancel";
-
-type Payload = {
-  restaurant_id?: unknown;
-  return_url?: unknown;
-  flow?: unknown;
-};
 
 function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -88,22 +84,19 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
     if (userError || !user) return jsonRes({ error: "Invalid or expired session" }, 401);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const restaurantId =
-      typeof payload.restaurant_id === "string" && payload.restaurant_id.trim()
-        ? payload.restaurant_id.trim()
-        : null;
-    if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
+    const parsed = await parseJsonBody(req, CreateBillingPortalSessionSchema, {
+      jsonRes,
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id;
 
     const flow: Flow =
-      payload.flow === "payment_method_update" || payload.flow === "subscription_cancel"
-        ? payload.flow
+      parsed.data.flow === "payment_method_update" ||
+      parsed.data.flow === "subscription_cancel"
+        ? parsed.data.flow
         : "default";
 
-    const rawReturnUrl =
-      typeof payload.return_url === "string" && payload.return_url.trim()
-        ? payload.return_url.trim()
-        : null;
+    const rawReturnUrl = parsed.data.return_url ?? null;
     const returnUrl = rawReturnUrl && isAllowedReturnUrl(rawReturnUrl)
       ? rawReturnUrl
       : "https://cenaiva.com/dashboard/settings";

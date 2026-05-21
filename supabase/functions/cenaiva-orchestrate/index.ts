@@ -3,8 +3,9 @@ import type OpenAI from "npm:openai@4";
 import { buildCorsHeaders, corsHeaders } from "../_shared/cors.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 import { jsonRes } from "../_shared/json-response.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CenaivaOrchestrateSchema } from "../_shared/validation/chat.ts";
 import { getAvailability, type AvailabilityResult } from "../_shared/availability.ts";
 import { completeBooking, patchPostBooking } from "../_shared/booking.ts";
 import {
@@ -11687,10 +11688,15 @@ Deno.serve(async (req) => {
     // the error frame and converts it back to the same error states the
     // legacy JSON path used (not_authenticated, http_401, etc.).
     const authHeader = req.headers.get("Authorization") ?? "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    const payload = decodeJwtPayload(token);
-    if (!payload?.sub) {
-      send({ type: "error", message: "Unauthorized", status: 401 });
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) {
+      send({ type: "error", message: "auth_required", status: 401 });
+      latency.done({ path: "unauthorized" });
+      return;
+    }
+    const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !authUser) {
+      send({ type: "error", message: "invalid_token", status: 401 });
       latency.done({ path: "unauthorized" });
       return;
     }
@@ -11699,7 +11705,7 @@ Deno.serve(async (req) => {
       supabaseAdmin
         .from("user_profiles")
         .select("id, full_name, email, dietary_restrictions")
-        .eq("auth_user_id", payload.sub as string)
+        .eq("auth_user_id", authUser.id)
         .single()
     );
     if (!userProfile) {
@@ -11744,8 +11750,34 @@ Deno.serve(async (req) => {
       throw e;
     }
 
-    // Parse body
-    const body = await req.json() as {
+    // Parse body. SSE response was already started above, so validation
+    // failures surface as in-band `error` frames (not HTTP 400) to keep a
+    // single text/event-stream content type. Schema caps free-text fields
+    // (transcript / alternatives) to block prompt-injection payloads.
+    let rawBodyJson: unknown;
+    try {
+      rawBodyJson = await req.json();
+    } catch {
+      send({ type: "error", message: "invalid_json", status: 400 });
+      latency.done({ path: "invalid_json" });
+      return;
+    }
+    const schemaResult = CenaivaOrchestrateSchema.safeParse(rawBodyJson);
+    if (!schemaResult.success) {
+      send({
+        type: "error",
+        message: "validation_failed",
+        status: 400,
+        issues: schemaResult.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message,
+        })),
+      });
+      latency.done({ path: "validation_failed" });
+      return;
+    }
+    const body = schemaResult.data as {
       transcript?: string;
       transcript_alternatives?: string[];
       screen?: string;

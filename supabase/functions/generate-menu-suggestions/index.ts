@@ -1,6 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import OpenAI from "npm:openai@4";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { GenerateMenuSuggestionsSchema } from "../_shared/validation/chat.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -20,19 +22,6 @@ const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
-
-function decodeJwtPayload(token: string): Record<string, any> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
-}
 
 const VALID_TYPES = new Set(["menu_item", "menu_item_update", "promotion", "event"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -171,12 +160,12 @@ Deno.serve(async (req: Request) => {
 
   try {
     const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (!token) return jsonRes({ error: "Missing authorization token" }, 401);
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) return jsonRes({ error: "auth_required" }, 401);
 
-    const jwtPayload = decodeJwtPayload(token);
-    const authUserId = jwtPayload?.sub as string | undefined;
-    if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "invalid_token" }, 401);
+    const authUserId = user.id;
 
     const { data: profile } = await supabaseAdmin
       .from("user_profiles")
@@ -188,9 +177,12 @@ Deno.serve(async (req: Request) => {
     const apiKey = Deno.env.get("OPENAI_API_KEY");
     if (!apiKey) return jsonRes({ error: "OPENAI_API_KEY not configured" }, 500);
 
-    const body = await req.json();
-    const { restaurant_id, language = "en" } = body;
-    if (!restaurant_id) return jsonRes({ error: "restaurant_id is required" }, 400);
+    const parsed = await parseJsonBody(req, GenerateMenuSuggestionsSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurant_id = parsed.data.restaurant_id;
+    const language = parsed.data.language ?? "en";
 
     const { data: roleRow } = await supabaseAdmin
       .from("user_restaurant_roles")

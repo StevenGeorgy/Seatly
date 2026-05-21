@@ -9,7 +9,7 @@ import {
   AccountLinkPrompt,
   type DuplicateAccountInfo,
 } from "@/components/customer/AccountLinkPrompt";
-import { resolvePostLoginPath } from "@/lib/auth/post-login-redirect";
+import { isSafeRedirectPath, resolvePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 
@@ -152,7 +152,12 @@ export default function AuthCallbackPage() {
     // Bounce to the post-login destination. The session may have been
     // killed by the auth.users delete if the diner was signed into the
     // duplicate; force a hard reload to re-establish.
-    window.location.href = from ?? "/discover";
+    //
+    // `from` comes from the URL search param — validate it so an
+    // attacker can't pass `?from=https://evil.com` and redirect a
+    // freshly-merged victim to a phishing page while authenticated.
+    const safeTarget = from && isSafeRedirectPath(from) ? from : "/discover";
+    window.location.href = safeTarget;
   };
 
   if (failed) {

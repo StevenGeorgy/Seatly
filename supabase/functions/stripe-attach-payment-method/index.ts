@@ -20,6 +20,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { StripeAttachPaymentMethodSchema } from "../_shared/validation/payment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,19 +38,6 @@ function jsonRes(body: unknown, status = 200): Response {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
 }
 
 const supabaseAdmin = createClient(
@@ -74,23 +63,18 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const authHeader = req.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (!token) return jsonRes({ error: "Authentication required" }, 401);
+    const authHeader = req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!bearerToken) return jsonRes({ error: "auth_required" }, 401);
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+    if (authError || !user) return jsonRes({ error: "invalid_token" }, 401);
+    const authUserId = user.id;
 
-    const jwtPayload = decodeJwtPayload(token);
-    const authUserId = jwtPayload?.sub as string | undefined;
-    if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
-
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const paymentIntentId =
-      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.trim()
-        ? payload.payment_intent_id.trim()
-        : null;
-    if (!paymentIntentId) return jsonRes({ error: "payment_intent_id is required" }, 400);
-    if (!paymentIntentId.startsWith("pi_")) {
-      return jsonRes({ error: "Invalid payment_intent_id format" }, 400);
-    }
+    const parsed = await parseJsonBody(req, StripeAttachPaymentMethodSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const paymentIntentId = parsed.data.payment_intent_id;
 
     const { data: profileRaw, error: profileErr } = await supabaseAdmin
       .from("user_profiles")

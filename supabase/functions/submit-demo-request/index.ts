@@ -2,6 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { SubmitDemoRequestSchema } from "../_shared/validation/public.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -60,12 +62,11 @@ Deno.serve(async (req) => {
     throw error;
   }
 
-  let payload: DemoRequestPayload;
-  try {
-    payload = (await req.json()) as DemoRequestPayload;
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
-  }
+  const parsed = await parseJsonBody(req, SubmitDemoRequestSchema, {
+    jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+  });
+  if ("response" in parsed) return parsed.response;
+  const payload: DemoRequestPayload = parsed.data;
 
   const name = asTrimmedString(payload.name, 200);
   const email = asTrimmedString(payload.email, 320);

@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { AcceptHostInviteSchema } from "../_shared/validation/staff-invites.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,9 +37,11 @@ Deno.serve(async (req: Request) => {
     } = await adminClient.auth.getUser(bearerToken);
     if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
 
-    const body = await req.json().catch(() => ({}));
-    const token = String(body.token ?? "").trim();
-    if (!token) return json({ error: "Invite token is required" }, 400);
+    const parsed = await parseJsonBody(req, AcceptHostInviteSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const token = parsed.data.token;
 
     const { data: invite, error: inviteError } = await adminClient
       .from("staff_invitations")

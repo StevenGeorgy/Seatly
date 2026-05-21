@@ -17,15 +17,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ValidateReferralCodeSchema } from "../_shared/validation/public.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  code?: unknown;
 };
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -60,8 +58,11 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const rawCode = typeof payload.code === "string" ? payload.code.trim() : "";
+    const parsed = await parseJsonBody(req, ValidateReferralCodeSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const rawCode = (parsed.data.code ?? "").trim();
     if (!rawCode) return jsonRes({ valid: false });
 
     const normalized = rawCode.toUpperCase();

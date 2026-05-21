@@ -9,17 +9,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ListStripeInvoicesSchema } from "../_shared/validation/observability.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  restaurant_id?: unknown;
-  limit?: unknown;
-  starting_after?: unknown;
 };
 
 type InvoiceOut = {
@@ -77,21 +73,13 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
     if (userError || !user) return jsonRes({ error: "Invalid or expired session" }, 401);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const restaurantId =
-      typeof payload.restaurant_id === "string" && payload.restaurant_id.trim()
-        ? payload.restaurant_id.trim()
-        : null;
-    if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
-
-    const requestedLimit =
-      typeof payload.limit === "number" && Number.isFinite(payload.limit)
-        ? Math.max(1, Math.min(50, Math.floor(payload.limit)))
-        : 12;
-    const startingAfter =
-      typeof payload.starting_after === "string" && payload.starting_after.trim()
-        ? payload.starting_after.trim()
-        : undefined;
+    const parsed = await parseJsonBody(req, ListStripeInvoicesSchema, { jsonRes });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id;
+    const requestedLimit = parsed.data.limit ?? 12;
+    const startingAfter = parsed.data.starting_after
+      ? parsed.data.starting_after.trim()
+      : undefined;
 
     try {
       await enforceRateLimit(

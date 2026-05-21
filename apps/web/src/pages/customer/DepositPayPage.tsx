@@ -274,6 +274,7 @@ export default function DepositPayPage() {
                 <StripePaymentForm
                   restaurantId={context.restaurant.id}
                   amountCents={context.payment.amount_cents}
+                  depositPaymentIds={paymentId ? [paymentId] : null}
                   onPaid={handlePaid}
                   payButtonLabel={`Pay ${context.restaurant.currency} $${(computeDinerCharge(context.payment.amount_cents).dinerTotalCents / 100).toFixed(2)}`}
                 />

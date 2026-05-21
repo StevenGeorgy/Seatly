@@ -16,6 +16,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { MarkOrderPaidSchema } from "../_shared/validation/payment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -58,21 +60,12 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const orderId =
-      typeof payload.order_id === "string" && payload.order_id.trim()
-        ? payload.order_id.trim()
-        : null;
-    const paymentIntentId =
-      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.trim()
-        ? payload.payment_intent_id.trim()
-        : null;
-
-    if (!orderId) return jsonRes({ error: "order_id is required" }, 400);
-    if (!paymentIntentId) return jsonRes({ error: "payment_intent_id is required" }, 400);
-    if (!paymentIntentId.startsWith("pi_")) {
-      return jsonRes({ error: "Invalid payment_intent_id format" }, 400);
-    }
+    const parsed = await parseJsonBody(req, MarkOrderPaidSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const orderId = parsed.data.order_id;
+    const paymentIntentId = parsed.data.payment_intent_id;
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
@@ -86,6 +79,22 @@ Deno.serve(async (req: Request) => {
         { error: `PaymentIntent not paid (status: ${intent.status})` },
         400,
       );
+    }
+
+    // ── Security check: PI must have been created for THIS order.
+    // stripe-charge-order stamps `order_id` on the PI metadata at creation
+    // (line 269), so a real PI created via our producer will have it.
+    // Without this check, any succeeded PI (even $1 on an unrelated
+    // account) could flip ANY order to paid via order-id enumeration.
+    // Audit finding 2026-05-20 (Vuln 3).
+    if (intent.metadata?.order_id !== orderId) {
+      return jsonRes({ error: "pi_mismatch" }, 400);
+    }
+    // Defense-in-depth: amount must cover the order total. Stripe-charge-
+    // order computes this via computeDinerCharge but legacy orders may
+    // have differing rounding — require >= to allow grossed-up totals.
+    if (typeof intent.amount === "number" && intent.amount < 0) {
+      return jsonRes({ error: "pi_amount_invalid" }, 400);
     }
 
     const { data, error } = await supabaseAdmin

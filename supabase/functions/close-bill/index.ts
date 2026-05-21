@@ -1,20 +1,33 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CloseBillSchema } from "../_shared/validation/reservation-hold.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
+function jsonRes(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const orderId = body.order_id;
-    const tipAmount = body.tip_amount ?? 0;
-    const paymentMethod = body.payment_method || "card";
+    const parsed = await parseJsonBody(req, CloseBillSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const orderId = parsed.data.order_id;
+    const tipAmount = parsed.data.tip_amount ?? 0;
+    const paymentMethod = parsed.data.payment_method || "card";
 
     if (!orderId) {
       return new Response(

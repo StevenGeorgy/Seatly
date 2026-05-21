@@ -1,5 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ApproveStaffActionSchema } from "../_shared/validation/staff-invites.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,15 +38,14 @@ Deno.serve(async (req: Request) => {
     } = await adminClient.auth.getUser(bearerToken);
     if (actorError || !actorUser) return json({ error: "Invalid or expired session" }, 401);
 
-    const body = await req.json().catch(() => ({}));
-    const restaurantId = String(body.restaurant_id ?? "").trim();
-    const action = String(body.action ?? "").trim();
-    const managerEmail = String(body.manager_email ?? "").trim().toLowerCase();
-    const managerPassword = String(body.manager_password ?? "");
-
-    if (!restaurantId || !action || !managerEmail || !managerPassword) {
-      return json({ error: "Restaurant, action, manager email, and password are required." }, 400);
-    }
+    const parsed = await parseJsonBody(req, ApproveStaffActionSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id;
+    const action = parsed.data.action;
+    const managerEmail = parsed.data.manager_email;
+    const managerPassword = parsed.data.manager_password;
 
     const managerClient = createClient(supabaseUrl, anonKey, {
       auth: { autoRefreshToken: false, persistSession: false },

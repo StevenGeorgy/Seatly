@@ -26,16 +26,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { UpdateSubscriptionPaymentMethodSchema } from "../_shared/validation/subscription.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  restaurant_id?: unknown;
-  payment_method_id?: unknown;
 };
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -80,17 +77,12 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
     if (userError || !user) return jsonRes({ error: "Invalid or expired session" }, 401);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const restaurantId =
-      typeof payload.restaurant_id === "string" && payload.restaurant_id.trim()
-        ? payload.restaurant_id.trim()
-        : null;
-    const paymentMethodId =
-      typeof payload.payment_method_id === "string" && payload.payment_method_id.trim()
-        ? payload.payment_method_id.trim()
-        : null;
-    if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
-    if (!paymentMethodId) return jsonRes({ error: "payment_method_id is required" }, 400);
+    const parsed = await parseJsonBody(req, UpdateSubscriptionPaymentMethodSchema, {
+      jsonRes,
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id;
+    const paymentMethodId = parsed.data.payment_method_id;
 
     try {
       await enforceRateLimit(

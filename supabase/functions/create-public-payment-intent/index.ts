@@ -57,6 +57,13 @@ type Payload = {
   restaurant_id?: unknown;
   amount_cents?: unknown;
   saved_card_id?: unknown;
+  // Deposit-link metadata (Vuln 2 hardening 2026-05-20). When the client
+  // creates a PI for one or more `reservation_deposit_payments` rows, it
+  // passes their UUIDs here. We stamp the comma-joined list on the PI's
+  // metadata at create time. `confirm-deposit-paid` then asserts the
+  // payment_id it's about to settle is in this list — closing PI-substitution
+  // attacks across deposits within the same restaurant.
+  deposit_payment_ids?: unknown;
   // Reservation-hold linkage (CENAIVA_HOLDS_ENABLED). When present, the
   // PI is created/retrieved against this hold; on success the hold row gets
   // stripe_payment_intent_id stamped so the partial-unique-index serializes
@@ -77,19 +84,6 @@ interface ReservationHoldRow {
   stripe_payment_intent_id: string | null;
   status: string | null;
   expires_at: string | null;
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-    const decoded = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
 }
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -161,14 +155,14 @@ async function chargeSavedCardWithHold(opts: {
   currency: string;
   metadata: Record<string, string>;
 }): Promise<{ body: Record<string, unknown>; status: number }> {
-  const authHeader = opts.req.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-  if (!token) {
-    return { body: { error: "Authentication required for saved-card payment" }, status: 401 };
+  const authHeader = opts.req.headers.get("Authorization") ?? opts.req.headers.get("authorization") ?? "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!bearerToken) {
+    return { body: { error: "auth_required" }, status: 401 };
   }
-  const jwtPayload = decodeJwtPayload(token);
-  const authUserId = jwtPayload?.sub as string | undefined;
-  if (!authUserId) return { body: { error: "Unauthorized" }, status: 401 };
+  const { data: { user }, error: authError } = await opts.supabaseAdmin.auth.getUser(bearerToken);
+  if (authError || !user) return { body: { error: "invalid_token" }, status: 401 };
+  const authUserId = user.id;
 
   const { data: profileRaw, error: profileErr } = await opts.supabaseAdmin
     .from("user_profiles")
@@ -336,6 +330,16 @@ Deno.serve(async (req: Request) => {
         ? payload.hold_id.trim()
         : null;
     const saveCard = payload.save_card === true;
+    // Parse + validate deposit_payment_ids — array of UUIDs (max 16 to bound
+    // the metadata size; Stripe caps each metadata value at 500 chars and
+    // 16 UUIDs comma-joined fits comfortably).
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const depositPaymentIds: string[] = Array.isArray(payload.deposit_payment_ids)
+      ? (payload.deposit_payment_ids as unknown[])
+          .filter((v): v is string => typeof v === "string" && UUID_RE.test(v.trim()))
+          .map((v) => v.trim())
+          .slice(0, 16)
+      : [];
 
     // ── Resolve save-card customer (2026-05-20 fix) ─────────────────────
     // If the diner is logged in AND ticked "save this card", we need to
@@ -348,13 +352,13 @@ Deno.serve(async (req: Request) => {
     // one-time and no save happens.
     let saveCardCustomerId: string | null = null;
     if (saveCard) {
-      const authHeader = req.headers.get("authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ")
+      const authHeader = req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+      const bearerToken = authHeader.startsWith("Bearer ")
         ? authHeader.slice(7)
-        : authHeader;
-      if (token) {
-        const jwtPayload = decodeJwtPayload(token);
-        const authUserId = jwtPayload?.sub as string | undefined;
+        : null;
+      if (bearerToken) {
+        const { data: { user: saveCardUser } } = await supabaseAdmin.auth.getUser(bearerToken);
+        const authUserId = saveCardUser?.id;
         if (authUserId) {
           const { data: profileRaw } = await supabaseAdmin
             .from("user_profiles")
@@ -396,8 +400,12 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
-    if (amountCents === null || amountCents < 50) {
-      return jsonRes({ error: "amount_cents must be a number >= 50" }, 400);
+    // Lower bound: Stripe minimum charge ($0.50). Upper bound (Vuln C3,
+    // 2026-05-20): $100k CAD. Stripe rejects > $999,999.99 with
+    // amount_too_large but explicit cap prevents accidental gross-up
+    // overflow on misuse.
+    if (amountCents === null || amountCents < 50 || amountCents > 10_000_000) {
+      return jsonRes({ error: "amount_cents must be between 50 and 10,000,000" }, 400);
     }
 
     const { data: restaurant, error: restErr } = await supabaseAdmin
@@ -433,6 +441,28 @@ Deno.serve(async (req: Request) => {
       restaurant_id: restaurantId,
       platform: "cenaiva",
     };
+    // Stamp deposit_payment_ids onto every branch via the shared metadata
+    // object (3 paths spread `...metadata`). confirm-deposit-paid asserts
+    // intent.metadata.deposit_payment_ids includes the payment_id it's
+    // settling. See Vuln 2 hardening, 2026-05-20.
+    if (depositPaymentIds.length > 0) {
+      metadata.deposit_payment_ids = depositPaymentIds.join(",");
+      // Also stamp reservation_id so stripe-webhook can resolve the
+      // reservation if confirm-deposit-paid never runs (tab closed
+      // mid-flow). Webhook handler keys off pi.metadata.reservation_id
+      // at stripe-webhook/index.ts:525. Look it up from the FIRST row
+      // (all rows in a split share the same reservation_id).
+      const { data: depositLookup } = await supabaseAdmin
+        .from("reservation_deposit_payments")
+        .select("reservation_id")
+        .eq("id", depositPaymentIds[0])
+        .maybeSingle();
+      const linkedReservationId = (depositLookup as { reservation_id: string | null } | null)
+        ?.reservation_id;
+      if (linkedReservationId) {
+        metadata.reservation_id = linkedReservationId;
+      }
+    }
 
     // ── Hold-aware branch (CENAIVA_HOLDS_ENABLED) ──
     // When a hold_id is passed, we look up the hold, validate it, and either
@@ -654,13 +684,12 @@ Deno.serve(async (req: Request) => {
     // charging it. Otherwise anyone could provide any saved_card_id +
     // amount and drain saved cards.
     if (savedCardId) {
-      const authHeader = req.headers.get("authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-      if (!token) return jsonRes({ error: "Authentication required for saved-card payment" }, 401);
-
-      const jwtPayload = decodeJwtPayload(token);
-      const authUserId = jwtPayload?.sub as string | undefined;
-      if (!authUserId) return jsonRes({ error: "Unauthorized" }, 401);
+      const authHeader = req.headers.get("Authorization") ?? req.headers.get("authorization") ?? "";
+      const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+      if (!bearerToken) return jsonRes({ error: "auth_required" }, 401);
+      const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
+      if (authError || !user) return jsonRes({ error: "invalid_token" }, 401);
+      const authUserId = user.id;
 
       const { data: profileRaw, error: profileErr } = await supabaseAdmin
         .from("user_profiles")

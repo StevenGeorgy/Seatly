@@ -29,15 +29,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { DeleteAccountSchema } from "../_shared/validation/account.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  email_confirmation?: unknown;
 };
 
 type ReservationRow = {
@@ -97,11 +95,11 @@ Deno.serve(async (req: Request) => {
     if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
     if (!user.email) return json({ error: "Account has no email on file." }, 400);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const confirm =
-      typeof payload.email_confirmation === "string"
-        ? payload.email_confirmation.trim().toLowerCase()
-        : "";
+    const parsed = await parseJsonBody(req, DeleteAccountSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const confirm = parsed.data.email_confirmation.trim().toLowerCase();
     if (!confirm || confirm !== user.email.toLowerCase()) {
       return json({ error: "Email confirmation does not match." }, 400);
     }

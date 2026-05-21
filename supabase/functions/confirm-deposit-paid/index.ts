@@ -22,6 +22,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { ConfirmDepositPaidSchema } from "../_shared/validation/payment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -72,18 +74,12 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const paymentId =
-      typeof payload.payment_id === "string" && payload.payment_id.trim()
-        ? payload.payment_id.trim()
-        : null;
-    const paymentIntentId =
-      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.trim()
-        ? payload.payment_intent_id.trim()
-        : null;
-
-    if (!paymentId) return jsonRes({ error: "payment_id is required" }, 400);
-    if (!paymentIntentId) return jsonRes({ error: "payment_intent_id is required" }, 400);
+    const parsed = await parseJsonBody(req, ConfirmDepositPaidSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const paymentId = parsed.data.payment_id;
+    const paymentIntentId = parsed.data.payment_intent_id;
     if (!paymentIntentId.startsWith("pi_")) {
       return jsonRes({ error: "Invalid payment_intent_id format" }, 400);
     }
@@ -132,6 +128,56 @@ Deno.serve(async (req: Request) => {
         },
         400,
       );
+    }
+
+    // ── Security check: PI must have been created for THIS restaurant.
+    // Without this, an attacker who knows a deposit's `payment_id` could
+    // submit any unrelated succeeded PI of sufficient amount (e.g. their
+    // own charge on another platform) and have us flip the deposit to
+    // 'charged'. Verifying restaurant_id (stamped on PI creation) +
+    // transfer_data.destination (the Connect routing target) closes the
+    // attack: only PIs that were legitimately created via
+    // create-public-payment-intent for the same restaurant pass.
+    // Audit finding 2026-05-20 (Vuln 2).
+    const { data: linkedReservation } = await supabaseAdmin
+      .from("reservations")
+      .select("restaurant_id, restaurants:restaurants(stripe_account_id)")
+      .eq("id", depositRow.reservation_id)
+      .maybeSingle();
+    const linkedRow = linkedReservation as
+      | { restaurant_id: string | null; restaurants: { stripe_account_id: string | null } | null }
+      | null;
+    const expectedRestaurantId = linkedRow?.restaurant_id ?? null;
+    const expectedDestination = linkedRow?.restaurants?.stripe_account_id ?? null;
+    const piRestaurantId = typeof intent.metadata?.restaurant_id === "string"
+      ? intent.metadata.restaurant_id
+      : null;
+    if (!expectedRestaurantId || piRestaurantId !== expectedRestaurantId) {
+      return jsonRes({ error: "pi_restaurant_mismatch" }, 400);
+    }
+    // Destination check only fires when the restaurant has Stripe-Connect-
+    // routed payments configured. Pre-Connect bookings (legacy) or platform-
+    // direct charges won't have a destination — skip the check in that case
+    // rather than reject. The restaurant_id check above is the primary gate.
+    const piDestination = (intent as { transfer_data?: { destination?: string | null } | null })
+      ?.transfer_data?.destination ?? null;
+    if (expectedDestination && piDestination && piDestination !== expectedDestination) {
+      return jsonRes({ error: "pi_destination_mismatch" }, 400);
+    }
+
+    // Tightest check (Vuln 2 full hardening, 2026-05-20): PI's metadata
+    // must list THIS deposit row. The producer (create-public-payment-intent)
+    // stamps `metadata.deposit_payment_ids` at create time as a comma-joined
+    // UUID list. Without this check, even with the restaurant_id +
+    // destination guards above, an attacker could swap PIs between deposits
+    // within the same restaurant (e.g. claim a friend's $5 PI to settle
+    // their own $100 deposit). Strict from day 1 — no legacy fallback.
+    const stampedRaw = typeof intent.metadata?.deposit_payment_ids === "string"
+      ? intent.metadata.deposit_payment_ids
+      : "";
+    const stamped = stampedRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!stamped.includes(paymentId)) {
+      return jsonRes({ error: "pi_payment_id_mismatch" }, 400);
     }
 
     const { data, error } = await supabaseAdmin

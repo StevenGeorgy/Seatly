@@ -15,7 +15,8 @@ import {
   rateLimitIdentifier,
   RateLimitError,
 } from "../_shared/rate-limit.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CancelReservationHoldSchema } from "../_shared/validation/reservation-hold.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -56,22 +57,27 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "POST required" }, 405);
 
   try {
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const holdId = asUuid(payload.hold_id);
-    if (!holdId) return jsonResponse({ error: "hold_id is required" }, 400);
+    const parsed = await parseJsonBody(req, CancelReservationHoldSchema, {
+      jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const holdId = parsed.data.hold_id;
 
-    // Resolve auth purely for rate-limit bucketing.
+    // Resolve auth purely for rate-limit bucketing. Anon-callable: a
+    // missing or invalid token just leaves userProfileId null (per-IP
+    // bucket). Valid tokens get a per-user bucket. We cryptographically
+    // verify the token via supabaseAdmin.auth.getUser — never trust the
+    // unverified JWT payload, which an attacker can forge.
     let userProfileId: string | null = null;
     const authorization = req.headers.get("authorization");
     const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
     if (token) {
-      const decoded = decodeJwtPayload(token);
-      const authUserId = typeof decoded?.sub === "string" ? decoded.sub : null;
-      if (authUserId) {
+      const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+      if (!authError && user) {
         const { data: profile } = await supabaseAdmin
           .from("user_profiles")
           .select("id")
-          .eq("auth_user_id", authUserId)
+          .eq("auth_user_id", user.id)
           .maybeSingle();
         userProfileId = profile?.id ?? null;
       }

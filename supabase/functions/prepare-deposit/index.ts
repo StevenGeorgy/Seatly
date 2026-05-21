@@ -66,7 +66,7 @@ Deno.serve(async (req: Request) => {
   });
   if ("response" in parsed) return parsed.response;
 
-  const { reservation_id: reservationId, payers } = parsed.data;
+  const { reservation_id: reservationId, payers, payment_intent_id: paymentIntentId } = parsed.data;
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
@@ -142,6 +142,39 @@ Deno.serve(async (req: Request) => {
       { error: insertError?.message ?? "Failed to create deposit rows" },
       500,
     );
+  }
+
+  // Vuln 2 hardening (2026-05-20): when the caller pre-created a PI (inline
+  // split-pay flow on RestaurantPublicPage charges before rows exist), stamp
+  // the just-inserted row IDs onto the PI's `metadata.deposit_payment_ids`
+  // so `confirm-deposit-paid` can verify the link. Best-effort — failure to
+  // stamp doesn't block the deposit rows from existing; the confirm call
+  // would just fall back to legacy mode (which is the old, less-strict
+  // restaurant_id check).
+  if (paymentIntentId) {
+    try {
+      const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+      if (stripeKey) {
+        const { default: Stripe } = await import("npm:stripe@17");
+        const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+        const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
+        const prior = typeof existing.metadata?.deposit_payment_ids === "string"
+          ? existing.metadata.deposit_payment_ids.split(",").map((s) => s.trim()).filter(Boolean)
+          : [];
+        const merged = Array.from(new Set([...prior, ...insertedRows.map((r) => r.id)]));
+        await stripe.paymentIntents.update(paymentIntentId, {
+          metadata: {
+            ...(existing.metadata ?? {}),
+            deposit_payment_ids: merged.join(","),
+          },
+        });
+      }
+    } catch (stampErr) {
+      console.warn(
+        `[prepare-deposit] could not stamp deposit_payment_ids on ${paymentIntentId}:`,
+        stampErr,
+      );
+    }
   }
 
   return jsonResponse({

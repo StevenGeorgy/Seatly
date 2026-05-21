@@ -20,17 +20,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { DispatchDepositInvitesSchema } from "../_shared/validation/restaurant-ops.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-type Payload = {
-  reservation_id?: unknown;
-  app_origin?: unknown;
-  organizer_email?: unknown;
 };
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -63,21 +59,14 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const reservationId =
-      typeof payload.reservation_id === "string" && payload.reservation_id.trim()
-        ? payload.reservation_id.trim()
-        : null;
-    const appOrigin =
-      typeof payload.app_origin === "string" && payload.app_origin.trim()
-        ? payload.app_origin.trim()
-        : "https://cenaiva.com";
-    const organizerEmail =
-      typeof payload.organizer_email === "string" && payload.organizer_email.trim()
-        ? payload.organizer_email.trim().toLowerCase()
-        : null;
-
-    if (!reservationId) return jsonRes({ error: "reservation_id is required" }, 400);
+    const parsed = await parseJsonBody(req, DispatchDepositInvitesSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const reservationId = parsed.data.reservation_id;
+    const appOrigin = parsed.data.app_origin ?? "https://cenaiva.com";
+    // EmailLower in the schema already lowercases + trims.
+    const organizerEmail = parsed.data.organizer_email ?? null;
 
     // Resolve reservation + restaurant for the email body.
     const { data: reservationRaw } = await supabaseAdmin

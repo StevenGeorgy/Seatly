@@ -12,6 +12,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { RefundPaymentIntentSchema } from "../_shared/validation/payment.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,22 +56,15 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const paymentIntentId =
-      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.trim()
-        ? payload.payment_intent_id.trim()
-        : null;
+    const parsed = await parseJsonBody(req, RefundPaymentIntentSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const paymentIntentId = parsed.data.payment_intent_id;
     const reason =
-      typeof payload.reason === "string" && payload.reason.trim()
-        ? payload.reason.trim()
+      parsed.data.reason && parsed.data.reason.trim()
+        ? parsed.data.reason.trim()
         : "slot_taken";
-
-    if (!paymentIntentId) {
-      return jsonRes({ error: "payment_intent_id is required" }, 400);
-    }
-    if (!paymentIntentId.startsWith("pi_")) {
-      return jsonRes({ error: "Invalid payment_intent_id format" }, 400);
-    }
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);

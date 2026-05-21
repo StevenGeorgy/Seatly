@@ -29,7 +29,8 @@ import {
   rateLimitIdentifier,
   RateLimitError,
 } from "../_shared/rate-limit.ts";
-import { decodeJwtPayload } from "../_shared/jwt.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { CreateReservationHoldSchema } from "../_shared/validation/reservation-hold.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -101,18 +102,21 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "POST required" }, 405);
 
   try {
-    const payload = (await req.json().catch(() => ({}))) as Payload;
+    const parsed = await parseJsonBody(req, CreateReservationHoldSchema, {
+      jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
+    });
+    if ("response" in parsed) return parsed.response;
 
-    const restaurantId = asUuid(payload.restaurant_id);
-    const shiftId = asUuid(payload.shift_id);
-    const dateTime = asText(payload.date_time);
-    const partySizeRaw = asNumber(payload.party_size, 0);
+    const restaurantId = parsed.data.restaurant_id;
+    const shiftId = parsed.data.shift_id;
+    const dateTime = parsed.data.date_time;
+    const partySizeRaw = parsed.data.party_size;
     const partySize = Math.max(1, Math.floor(partySizeRaw));
-    const source = asText(payload.source) ?? "web";
-    const idempotencyKey = asText(payload.idempotency_key);
-    const eventId = asUuid(payload.event_id);
-    const promotionId = asUuid(payload.promotion_id);
-    const appliedPromoCode = asText(payload.applied_promo_code);
+    const source = parsed.data.source ?? "web";
+    const idempotencyKey = parsed.data.idempotency_key ?? null;
+    const eventId = parsed.data.event_id ?? null;
+    const promotionId = parsed.data.promotion_id ?? null;
+    const appliedPromoCode = parsed.data.applied_promo_code ?? null;
 
     if (!restaurantId || !shiftId || !dateTime || partySizeRaw < 1) {
       return jsonResponse(
@@ -125,21 +129,22 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "date_time must be a valid ISO timestamp." }, 400);
     }
 
-    // Resolve logged-in diner. We can't call supabase.auth.getUser() here
-    // because verify_jwt is off and not every JWT is HS256 — decode the
-    // payload directly to read auth.sub, then look up the user_profiles
-    // row that the on_auth_user_created trigger guaranteed exists.
+    // Resolve logged-in diner. Anon-callable: a missing or invalid
+    // token leaves the hold anonymous (identity attached later via
+    // update-reservation-hold). When a token IS presented we
+    // cryptographically verify it via supabaseAdmin.auth.getUser —
+    // never trust the unverified JWT payload (an attacker could forge
+    // arbitrary `sub` claims and attach holds to other diners).
     let userProfileId: string | null = null;
     const authorization = req.headers.get("authorization");
     const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
     if (token) {
-      const decoded = decodeJwtPayload(token);
-      const authUserId = typeof decoded?.sub === "string" ? decoded.sub : null;
-      if (authUserId) {
+      const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+      if (!authError && user) {
         const { data: profile } = await supabaseAdmin
           .from("user_profiles")
           .select("id")
-          .eq("auth_user_id", authUserId)
+          .eq("auth_user_id", user.id)
           .maybeSingle();
         userProfileId = profile?.id ?? null;
       }

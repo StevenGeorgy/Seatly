@@ -27,6 +27,8 @@ import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { FindReservationSchema } from "../_shared/validation/public.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -230,7 +232,11 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonRes({ error: "POST only" }, 405);
 
   try {
-    const payload = (await req.json().catch(() => ({}))) as Payload;
+    const parsed = await parseJsonBody(req, FindReservationSchema, {
+      jsonRes: (b, s) => jsonRes(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const payload = parsed.data as Payload;
     const lookupType = asText(payload.lookup_type);
 
     if (lookupType === "code") {

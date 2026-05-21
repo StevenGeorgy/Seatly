@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { RestaurantOnboardingSchema } from "../_shared/validation/restaurant.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { SignupRestaurantOwnerSchema } from "../_shared/validation/restaurant.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -42,46 +43,27 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const restaurantName = (body.restaurant_name ?? body.restaurantName ?? "").toString().trim();
+    // Phase C input-validation rollout (2026-05-20): single-pass body
+    // validation through parseJsonBody. Caps + shape are enforced before any
+    // DB call. The schema accepts both snake_case and camelCase for
+    // restaurant_name + full_name; we resolve below. Unknown keys pass
+    // through (.passthrough()) so the operational toggle fields the
+    // handler reads directly off `body` are not silently dropped.
+    const parsed = await parseJsonBody(req, SignupRestaurantOwnerSchema, {
+      jsonRes: (b, s) =>
+        new Response(JSON.stringify(b), {
+          status: s,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }),
+    });
+    if ("response" in parsed) return parsed.response;
+    const body = parsed.data;
+    const restaurantName =
+      (body.restaurant_name ?? body.restaurantName ?? "").toString().trim();
 
     if (!restaurantName) {
       return new Response(
         JSON.stringify({ error: "Restaurant name is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    // Phase 5 (input validation rollout, 2026-05-18): validate restaurant
-    // fields against length/format caps before any DB write. Strips unknown
-    // keys silently (auth fields like email/password/full_name pass through
-    // because they're handled below, not by this validator).
-    const restaurantValidation = RestaurantOnboardingSchema.safeParse({
-      restaurant_name: restaurantName,
-      description: typeof body.description === "string" ? body.description : undefined,
-      address: typeof body.address === "string" ? body.address : undefined,
-      city: typeof body.city === "string" ? body.city : undefined,
-      province: typeof body.province === "string" ? body.province : undefined,
-      postal_code: typeof body.postal_code === "string" ? body.postal_code : undefined,
-      country: typeof body.country === "string" ? body.country : undefined,
-      phone: typeof body.phone === "string" ? body.phone : undefined,
-      cuisine_type: typeof body.cuisine_type === "string" ? body.cuisine_type : undefined,
-      business_type: typeof body.business_type === "string" ? body.business_type : undefined,
-      dietary_tags: Array.isArray(body.dietary_tags) ? body.dietary_tags : undefined,
-      lat: typeof body.lat === "number" ? body.lat : undefined,
-      lng: typeof body.lng === "number" ? body.lng : undefined,
-      force_new: typeof body.force_new === "boolean" ? body.force_new : undefined,
-      restaurant_id: typeof body.restaurant_id === "string" ? body.restaurant_id : undefined,
-    });
-    if (!restaurantValidation.success) {
-      return new Response(
-        JSON.stringify({
-          error: "Validation failed",
-          issues: restaurantValidation.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message,
-          })),
-        }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
@@ -136,9 +118,24 @@ Deno.serve(async (req: Request) => {
       if (authError || !authUser.user) {
         const msg = (authError?.message ?? "").toLowerCase();
         if (msg.includes("already") || msg.includes("registered") || msg.includes("exists")) {
+          // Email enumeration mitigation (Vuln 9, audit 2026-05-20):
+          // returning a distinct "already exists" message turned this
+          // endpoint into an oracle for "is this email registered with
+          // Cenaiva". Return a uniform 200 here so the caller can't tell
+          // whether the email was new or known. The legitimate first-time
+          // signer who got this response will never receive a verification
+          // email — they figure it out and recover via the login flow.
+          // Log internally so ops can still trace double-signups.
+          console.log(
+            `[signup-restaurant-owner] suppressed-duplicate-email signup for ${email}`,
+          );
           return new Response(
-            JSON.stringify({ error: "An account with this email already exists" }),
-            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            JSON.stringify({
+              ok: true,
+              requires_email_verification: true,
+              message: "Check your email to complete setup. If you already have an account, sign in with the existing credentials.",
+            }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
         }
         return new Response(

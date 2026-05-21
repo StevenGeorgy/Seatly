@@ -19,6 +19,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { UpdateBillingDetailsSchema } from "../_shared/validation/observability.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -38,14 +40,6 @@ interface AddressPayload {
 interface TaxIdPayload {
   type: string;
   value: string;
-}
-
-interface Payload {
-  restaurant_id?: unknown;
-  legal_name?: unknown;
-  billing_email?: unknown;
-  address?: unknown;
-  tax_id?: unknown;
 }
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -120,12 +114,10 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
     if (userError || !user) return jsonRes({ error: "Invalid or expired session" }, 401);
 
-    const payload = (await req.json().catch(() => ({}))) as Payload;
-    const restaurantId =
-      typeof payload.restaurant_id === "string" && payload.restaurant_id.trim()
-        ? payload.restaurant_id.trim()
-        : null;
-    if (!restaurantId) return jsonRes({ error: "restaurant_id is required" }, 400);
+    const parsed = await parseJsonBody(req, UpdateBillingDetailsSchema, { jsonRes });
+    if ("response" in parsed) return parsed.response;
+    const payload = parsed.data;
+    const restaurantId = payload.restaurant_id;
 
     try {
       await enforceRateLimit(

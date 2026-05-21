@@ -166,26 +166,44 @@ Deno.serve(async (req: Request) => {
       if (profileError) return json({ error: profileError.message }, 400);
       if (!profile) return json({ error: "User profile not found" }, 403);
 
-      const { data: ownedGuest, error: guestError } = await adminClient
-        .from("guests")
-        .select("id, full_name, email, phone")
-        .eq("id", reservation.guest_id)
-        .eq("user_profile_id", profile.id)
-        .maybeSingle<GuestRow>();
-      if (guestError) return json({ error: guestError.message }, 400);
-      if (!ownedGuest) return json({ error: "You can only modify your own reservations" }, 403);
-      guest = ownedGuest;
+      // Two ownership paths for logged-in users:
+      //   (a) reservation.user_profile_id matches the caller's profile.id —
+      //       happens when the diner booked while signed in. guest_id may
+      //       be null (no separate guests row was created).
+      //   (b) reservation has a guest_id AND that guest row is linked to
+      //       this user's profile_id — legacy path for guest-checkout
+      //       reservations that were later claimed by sign-in.
+      const ownsByProfile = reservation.user_profile_id != null &&
+        reservation.user_profile_id === profile.id;
+      if (reservation.guest_id) {
+        const { data: ownedGuest, error: guestError } = await adminClient
+          .from("guests")
+          .select("id, full_name, email, phone")
+          .eq("id", reservation.guest_id)
+          .eq("user_profile_id", profile.id)
+          .maybeSingle<GuestRow>();
+        if (guestError) return json({ error: guestError.message }, 400);
+        if (!ownedGuest && !ownsByProfile) {
+          return json({ error: "You can only modify your own reservations" }, 403);
+        }
+        guest = ownedGuest;
+      } else if (!ownsByProfile) {
+        // No guest row AND user_profile mismatch — not yours.
+        return json({ error: "You can only modify your own reservations" }, 403);
+      }
     } else if (providedCode) {
       const expectedCode = (reservation.confirmation_code ?? "").trim();
       if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
         return json({ error: "Invalid confirmation code" }, 401);
       }
-      const { data: linkedGuest } = await adminClient
-        .from("guests")
-        .select("id, full_name, email, phone")
-        .eq("id", reservation.guest_id)
-        .maybeSingle<GuestRow>();
-      guest = linkedGuest;
+      if (reservation.guest_id) {
+        const { data: linkedGuest } = await adminClient
+          .from("guests")
+          .select("id, full_name, email, phone")
+          .eq("id", reservation.guest_id)
+          .maybeSingle<GuestRow>();
+        guest = linkedGuest;
+      }
     } else {
       return json({ error: "Authentication required" }, 401);
     }

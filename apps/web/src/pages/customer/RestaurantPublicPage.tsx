@@ -52,6 +52,7 @@ import { AvailabilityPanel } from "@/components/booking/AvailabilityPanel";
 import { HoldExpiredDialog } from "@/components/booking/HoldExpiredDialog";
 import { HoldTimerBanner } from "@/components/booking/HoldTimerBanner";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
+import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
 import { useReservationHold } from "@/hooks/useReservationHold";
 import { toUserFacingError } from "@/lib/errors";
 import { useAllActiveEvents } from "@/hooks/useEvents";
@@ -143,12 +144,6 @@ type PreviewSlotRevalidationState = {
   };
 };
 
-type SplitCardRow = {
-  number: string;
-  expiry: string;
-  cvc: string;
-};
-
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
 const SEATING_PREFERENCES = [
   "",
@@ -171,12 +166,6 @@ const CUISINE_GRADIENT: Record<string, string> = {
 };
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-/** Demo checkout: enough digits for a test PAN, expiry, and CVC. */
-function isCardFilled(num: string, exp: string, cvc: string): boolean {
-  const digits = num.replace(/\D/g, "");
-  return digits.length >= 15 && exp.trim().length >= 4 && cvc.replace(/\D/g, "").length >= 3;
 }
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
@@ -1464,17 +1453,13 @@ export default function RestaurantPublicPage() {
   }, []);
 
   const [paymentSplitMode, setPaymentSplitMode] = useState<"single" | "split">("single");
-  // Phase 7 of diner auth overhaul (2026-05-15): split the deposit
-  // with friends. Independent of `paymentSplitMode` above (which is
-  // split-tender = N cards at checkout). Here, only the deposit is
-  // shared. The diner pays preorder + their share inline; each entry
-  // in `splitDepositPayers` (a friend who'll pay via emailed link)
-  // gets a `reservation_deposit_payments` row at booking + an
-  // emailed magic link to /deposit/<id>. Reservation stays
-  // pending_payment until everyone pays.
-  type DepositPayerDraft = { name: string; email: string };
-  const [splitDepositOn, setSplitDepositOn] = useState(false);
-  const [splitDepositPayers, setSplitDepositPayers] = useState<DepositPayerDraft[]>([]);
+  // Split-deposit-with-friends (the magic-link variant) was consolidated
+  // into Split tender on 2026-05-20. All split-pay flows now use the
+  // multi-card-on-one-device path via SplitTenderPaymentForm. The
+  // magic-link infrastructure (prepare-deposit / dispatch-deposit-invites
+  // / DepositPayPage) is still in place for owner-initiated deposit
+  // invites in the dashboard, just no longer triggered from this page.
+
   // True between the Stripe form submit and the post-payment reservation
   // creation. Disables Place Order to prevent double-submits.
   const [paymentProcessing, setPaymentProcessing] = useState(false);
@@ -1490,23 +1475,8 @@ export default function RestaurantPublicPage() {
   }, [splitPartyCountInput]);
   const splitPartyCount =
     splitPartyCountParse.kind === "ok" ? splitPartyCountParse.value : NaN;
-  const [splitCardRows, setSplitCardRows] = useState<SplitCardRow[]>(() =>
-    Array.from({ length: 2 }, () => ({ number: "", expiry: "", cvc: "" })),
-  );
-
-  useEffect(() => {
-    if (paymentSplitMode !== "split") return;
-    if (!Number.isFinite(splitPartyCount) || splitPartyCount < 2 || splitPartyCount > 10) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- keep split card rows in sync with selected split count
-    setSplitCardRows((prev) => {
-      if (prev.length === splitPartyCount) return prev;
-      const next = prev.slice(0, splitPartyCount);
-      while (next.length < splitPartyCount) {
-        next.push({ number: "", expiry: "", cvc: "" });
-      }
-      return next;
-    });
-  }, [paymentSplitMode, splitPartyCount]);
+  // Split-tender card collection is handled inside SplitTenderPaymentForm —
+  // no per-row card state in the parent.
   const [tipOption, setTipOption] = useState<"15" | "18" | "20" | "custom" | "after">("18");
   const [placing, setPlacing] = useState(false);
   const placingRef = useRef(false);
@@ -1714,15 +1684,14 @@ export default function RestaurantPublicPage() {
     return (applicable.amount_per_person_cents * partySize) / 100;
   }, [restaurant?.deposit_tiers, dineIn.party_size]);
   const total              = discountedSubtotal + tax;
-  // Phase 7: when the diner toggles "split deposit with friends," they
-  // only pay their share inline. Each friend in splitDepositPayers
-  // gets emailed a magic link for their own share.
-  const depositPayerCount = splitDepositOn ? 1 + splitDepositPayers.length : 1;
-  const dinerDepositShareDollars =
-    previewDepositDollars > 0 && depositPayerCount > 0
-      ? previewDepositDollars / depositPayerCount
-      : previewDepositDollars;
-  const totalNow = total + dinerDepositShareDollars;
+  // Split-tender (paymentSplitMode === "split"): SplitTenderPaymentForm
+  // charges N separate cards, so the inline checkout doesn't render a
+  // single charge total — the deposit is collected per-slot via the
+  // form. For single payment, the diner pays preorder + full deposit
+  // inline.
+  const totalNow = paymentSplitMode === "split"
+    ? total // preorder only — deposit is collected per-card by SplitTenderPaymentForm
+    : total + previewDepositDollars;
   // Stripe processing fee pass-through: diner pays our 2.9% + 30¢ on top so
   // the restaurant nets the full base. Display-only; server is the source of
   // truth on the actual amount charged.
@@ -1744,9 +1713,10 @@ export default function RestaurantPublicPage() {
     if (paymentSplitMode !== "split") return true;
     if (!Number.isFinite(splitPartyCount) || splitPartyCount < 2 || splitPartyCount > 10) return false;
     if (!Number.isFinite(splitEachShare) || splitEachShare <= 0) return false;
-    if (splitCardRows.length !== splitPartyCount) return false;
-    return splitCardRows.every((row) => isCardFilled(row.number, row.expiry, row.cvc));
-  }, [paymentSplitMode, splitPartyCount, splitEachShare, splitCardRows]);
+    // Per-slot validation is owned by SplitTenderPaymentForm; the parent
+    // gate just checks the count + share are sane.
+    return true;
+  }, [paymentSplitMode, splitPartyCount, splitEachShare]);
 
   function addToCart(item: MenuItem, qty = 1) {
     setCart((prev) => {
@@ -1920,6 +1890,90 @@ export default function RestaurantPublicPage() {
     } finally {
       setPaymentProcessing(false);
     }
+  }
+
+  /**
+   * Split-tender booking: creates the reservation in pending_payment status
+   * + N reservation_deposit_payments rows in one server call (via
+   * create-public-booking with `split_tender_payers: N`). Returns the IDs
+   * so SplitTenderPaymentForm can drive N separate PI charges. The
+   * reservation flips to 'confirmed' via the settle trigger once every
+   * row's confirm-deposit-paid call lands.
+   */
+  async function createSplitTenderReservation(
+    payerCount: number,
+  ): Promise<{ reservation_id: string; deposit_row_ids: string[] }> {
+    if (!restaurant) throw new Error("Restaurant not loaded");
+    const selectedSlot = selectedBookingSlot;
+    if (!selectedSlot) throw new Error("Please choose an available time.");
+    const partySize = typeof dineIn.party_size === "number" ? dineIn.party_size : 1;
+    const cartItems = cart.map((item) => ({
+      menu_item_id: item.id,
+      name: item.name,
+      quantity: item.qty,
+      unit_price: roundMoney(item.price),
+    }));
+    const contactName = dineIn.name;
+    const contactEmail = dineIn.email;
+    const contactPhoneRaw = (dineIn.phone ?? "").trim();
+    const contactPhone = normalizeE164Phone(contactPhoneRaw) ?? contactPhoneRaw;
+    const activeHoldId = hold.state.status === "active" ? hold.state.holdId : null;
+    const client = getSupabaseBrowserClient();
+    const { data: sessionData } = await client.auth.getSession();
+    const token = sessionData.session?.access_token ?? null;
+    const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/create-public-booking`, {
+      method: "POST",
+      headers: {
+        apikey: getSupabaseAnonKey(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        restaurant_id: restaurant.id,
+        shift_id: selectedSlot.shift_id,
+        date_time: selectedSlot.date_time,
+        party_size: partySize,
+        guest_name: contactName,
+        guest_email: contactEmail,
+        guest_phone: contactPhone,
+        allergies: dineIn.allergies || null,
+        seating_preference: dineIn.seating_preference || null,
+        occasion: dineIn.occasion || null,
+        cart_items: cartItems,
+        subtotal: roundMoney(discountedSubtotal),
+        tax_amount: roundMoney(tax),
+        tip_amount: roundMoney(tipAmount),
+        total_amount: roundMoney(totalNow),
+        discount_amount: discount > 0 ? roundMoney(discount) : null,
+        discount_reason: activePromo?.title ?? null,
+        promotion_id: activePromo?.id ?? searchParams.get("promotion_id") ?? null,
+        payment_method: "split",
+        event_id: searchParams.get("event_id") ?? null,
+        applied_promo_code: searchParams.get("promo_code") ?? null,
+        hold_id: activeHoldId,
+        split_tender_payers: payerCount,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as PublicBookingResponse & {
+      split_tender_deposit_row_ids?: string[];
+    };
+    if (!res.ok || body.error || !body.reservation_id) {
+      throw new Error(body.error ?? "Couldn't start split-tender checkout");
+    }
+    const rowIds = Array.isArray(body.split_tender_deposit_row_ids)
+      ? body.split_tender_deposit_row_ids
+      : [];
+    if (rowIds.length !== payerCount) {
+      throw new Error(
+        `Expected ${payerCount} deposit rows but got ${rowIds.length}. Try again or contact support.`,
+      );
+    }
+    setConfirmationCode(body.confirmation_code ?? "");
+    setConfirmationDelivery({
+      status: body.confirmation_delivery ?? "skipped",
+      channel: body.confirmation_delivery_channel ?? null,
+    });
+    return { reservation_id: body.reservation_id, deposit_row_ids: rowIds };
   }
 
   async function handlePlaceOrder() {
@@ -2250,40 +2304,12 @@ export default function RestaurantPublicPage() {
     // there's no deposit by definition (totalNow === 0).
     if (paymentIntentId && depositReservationLocal && depositCentsLocal > 0) {
       try {
-        // Phase 7: build the payers array. Diner is always payer #1
-        // (always at index 0 of the response — important because we
-        // confirm-deposit-paid that row with the PI id below). If the
-        // diner enabled split-deposit, friends are appended.
-        const friends = splitDepositOn
-          ? splitDepositPayers.filter(
-              (p) => p.email.trim() && p.name.trim(),
-            )
-          : [];
-        const totalPayers = 1 + friends.length;
-        const dinerShareCents = Math.round(depositCentsLocal / totalPayers);
-        const remainderCents = depositCentsLocal - dinerShareCents * totalPayers;
-        // Friends pay an exactly-even share; any rounding remainder gets
-        // added onto the diner's share so the sum equals the canonical
-        // deposit amount.
-        const friendShareCents = friends.length > 0
-          ? Math.floor(depositCentsLocal / totalPayers)
-          : 0;
-        const dinerFinalShareCents = depositCentsLocal - friendShareCents * friends.length;
-        void remainderCents; // reserved for future precision tracking
-
-        const payersBody = [
-          {
-            email: dineIn.email ?? "",
-            full_name: dineIn.name ?? "",
-            amount_cents: dinerFinalShareCents,
-          },
-          ...friends.map((p) => ({
-            email: p.email.trim(),
-            full_name: p.name.trim(),
-            amount_cents: friendShareCents,
-          })),
-        ];
-
+        // Single-pay deposit: one payer (the diner), one row, one PI.
+        // Split-tender deposits are NOT handled here — they're created
+        // at booking time by create-public-booking
+        // (split_tender_payers field) and charged per-slot by
+        // SplitTenderPaymentForm, which calls confirm-deposit-paid
+        // itself for each row.
         const prepRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/prepare-deposit`,
           {
@@ -2291,7 +2317,17 @@ export default function RestaurantPublicPage() {
             headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
             body: JSON.stringify({
               reservation_id: depositReservationLocal,
-              payers: payersBody,
+              payers: [
+                {
+                  email: dineIn.email ?? "",
+                  full_name: dineIn.name ?? "",
+                  amount_cents: depositCentsLocal,
+                },
+              ],
+              // Stamp metadata.deposit_payment_ids on the PI server-side
+              // (Vuln 2 hardening) so confirm-deposit-paid's strict
+              // metadata check passes below.
+              payment_intent_id: paymentIntentId,
             }),
           },
         );
@@ -2302,9 +2338,6 @@ export default function RestaurantPublicPage() {
         if (!prepRes.ok || !prepBody.payments?.[0]?.id) {
           throw new Error(prepBody.error ?? "Couldn't prepare deposit");
         }
-        // Mark the diner's row (index 0) as 'charged' now that Stripe
-        // confirmed the PaymentIntent. Friends' rows stay 'pending'
-        // until they each pay via the emailed magic link.
         const confirmRes = await fetch(
           `${getSupabaseProjectUrl()}/functions/v1/confirm-deposit-paid`,
           {
@@ -2319,25 +2352,6 @@ export default function RestaurantPublicPage() {
         if (!confirmRes.ok) {
           const confirmBody = (await confirmRes.json().catch(() => ({}))) as { error?: string };
           throw new Error(confirmBody.error ?? `confirm-deposit-paid ${confirmRes.status}`);
-        }
-        // If the diner invited friends to split, dispatch email
-        // invites for each pending payer. Fire-and-forget — never
-        // block the booking confirmation on the email dispatch.
-        if (friends.length > 0) {
-          void fetch(
-            `${getSupabaseProjectUrl()}/functions/v1/dispatch-deposit-invites`,
-            {
-              method: "POST",
-              headers: { apikey: getSupabaseAnonKey(), "Content-Type": "application/json" },
-              body: JSON.stringify({
-                reservation_id: depositReservationLocal,
-                app_origin: window.location.origin,
-                organizer_email: (dineIn.email ?? "").trim().toLowerCase(),
-              }),
-            },
-          ).catch((err) => {
-            console.warn("[checkout] dispatch-deposit-invites failed", err);
-          });
         }
       } catch (err) {
         // Don't fail the whole flow — the user paid and got a reservation.
@@ -3228,135 +3242,32 @@ export default function RestaurantPublicPage() {
                   <Lock className="ml-auto size-3 text-text-muted" />
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
-                {previewDepositDollars > 0 && paymentSplitMode === "single" ? (
-                  <div className="mb-4 rounded-2xl border border-border bg-bg-elevated/40 p-4">
-                    <label className="flex items-start gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={splitDepositOn}
-                        onChange={(e) => {
-                          setSplitDepositOn(e.target.checked);
-                          if (e.target.checked && splitDepositPayers.length === 0) {
-                            // Default to 1 friend; cap at party_size - 1
-                            // (the diner takes one slot themselves).
-                            const partySize = Number(dineIn.party_size) || 2;
-                            const initial = Math.min(1, Math.max(0, partySize - 1));
-                            setSplitDepositPayers(
-                              Array.from({ length: initial }, () => ({ name: "", email: "" })),
-                            );
-                          }
-                        }}
-                        className="mt-1 size-4 accent-gold"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-white">
-                          Split deposit with friends
-                        </p>
-                        <p className="mt-0.5 text-xs text-text-muted">
-                          Each friend gets an email with a link to pay their share.
-                          The reservation isn't confirmed until everyone has paid.
-                        </p>
-                      </div>
-                    </label>
-
-                    {splitDepositOn ? (
-                      <div className="mt-4 space-y-3">
-                        <div className="flex items-center justify-between rounded-xl bg-bg-base/60 px-3 py-2">
-                          <span className="text-xs text-text-muted">
-                            Total deposit
-                          </span>
-                          <span className="text-sm text-white">
-                            {formatCurrency(previewDepositDollars, currency)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between rounded-xl bg-bg-base/60 px-3 py-2">
-                          <span className="text-xs text-text-muted">
-                            Each person pays
-                          </span>
-                          <span className="text-sm font-semibold text-gold">
-                            {formatCurrency(
-                              previewDepositDollars / (1 + splitDepositPayers.length),
-                              currency,
-                            )}{" "}
-                            × {1 + splitDepositPayers.length}
-                          </span>
-                        </div>
-
-                        <div className="space-y-2.5">
-                          {splitDepositPayers.map((payer, idx) => (
-                            <div
-                              key={idx}
-                              className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 rounded-xl border border-border/60 bg-bg-surface/40 p-3"
-                            >
-                              <Input
-                                placeholder="Friend's name"
-                                value={payer.name}
-                                onChange={(e) => {
-                                  const next = [...splitDepositPayers];
-                                  next[idx] = { ...next[idx], name: e.target.value };
-                                  setSplitDepositPayers(next);
-                                }}
-                                className="h-10"
-                              />
-                              <Input
-                                type="email"
-                                placeholder="friend@example.com"
-                                value={payer.email}
-                                onChange={(e) => {
-                                  const next = [...splitDepositPayers];
-                                  next[idx] = { ...next[idx], email: e.target.value };
-                                  setSplitDepositPayers(next);
-                                }}
-                                className="h-10"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const next = splitDepositPayers.filter(
-                                    (_, i) => i !== idx,
-                                  );
-                                  setSplitDepositPayers(next);
-                                  if (next.length === 0) setSplitDepositOn(false);
-                                }}
-                                className="text-xs font-medium text-text-secondary hover:text-danger"
-                                aria-label="Remove this payer"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-
-                        {splitDepositPayers.length < (Number(dineIn.party_size) || 2) - 1 ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSplitDepositPayers((prev) => [
-                                ...prev,
-                                { name: "", email: "" },
-                              ])
-                            }
-                            className="w-full rounded-xl border border-dashed border-border bg-bg-surface/30 py-2 text-sm font-medium text-text-secondary hover:border-gold/40 hover:text-white"
-                          >
-                            + Add another friend
-                          </button>
-                        ) : (
-                          <p className="text-center text-xs text-text-muted">
-                            Up to {(Number(dineIn.party_size) || 2) - 1} friends can be invited
-                            (party of {Number(dineIn.party_size) || 2}).
-                          </p>
-                        )}
-
-                        <p className="text-xs text-text-muted">
-                          You'll pay your share now. Your friends will get emails right
-                          after you book.
-                        </p>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {Math.round(totalNow * 100) > 0 && restaurant?.id ? (
+                {paymentSplitMode === "split" && previewDepositDollars > 0 && restaurant?.id ? (
+                  <SplitTenderPaymentForm
+                    restaurantId={restaurant.id}
+                    shareCents={Math.round(previewDepositDollars * 100 / Math.max(2, splitPartyCount))}
+                    payerCount={Math.max(2, Math.min(10, splitPartyCount))}
+                    holdId={hold.state.status === "active" ? hold.state.holdId : null}
+                    formId="diner-pay-form"
+                    onPreCheckout={async () => {
+                      // Pre-create reservation in pending_payment status +
+                      // N deposit rows. SplitTenderPaymentForm then charges
+                      // each row's PI in sequence. Reservation flips to
+                      // 'confirmed' via the settle trigger when the last
+                      // row settles.
+                      const result = await createSplitTenderReservation(splitPartyCount);
+                      return {
+                        reservation_id: result.reservation_id,
+                        deposit_row_ids: result.deposit_row_ids,
+                      };
+                    }}
+                    onAllPaid={async () => {
+                      setStep("confirmed");
+                      toast.success("All payments received — your reservation is confirmed.", { duration: 6000 });
+                    }}
+                    onError={(msg) => setOrderError(msg)}
+                  />
+                ) : Math.round(totalNow * 100) > 0 && restaurant?.id ? (
                   <StripePaymentForm
                     restaurantId={restaurant.id}
                     amountCents={Math.round(totalNow * 100)}

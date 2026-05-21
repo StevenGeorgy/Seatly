@@ -64,6 +64,12 @@ export const BookingInputSchema = z.object({
   event_id: Uuid.nullish(),
   promotion_id: Uuid.nullish(),
   hold_id: Uuid.nullish(),
+  // Split-tender mode (2026-05-20). When set, the fn creates the
+  // reservation in `pending_payment` status AND inserts N rows in
+  // `reservation_deposit_payments` (each share of the deposit), then
+  // returns the row IDs. The diner UI then charges N PIs sequentially
+  // via SplitTenderPaymentForm. Range 2-10 matches the UI cap.
+  split_tender_payers: z.number().int().min(2).max(10).nullish(),
 });
 
 export type BookingInput = z.infer<typeof BookingInputSchema>;

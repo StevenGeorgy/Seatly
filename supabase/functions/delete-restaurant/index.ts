@@ -23,6 +23,8 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { parseJsonBody } from "../_shared/validation/parse.ts";
+import { DeleteRestaurantSchema } from "../_shared/validation/restaurant-ops.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,21 +32,11 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-type RequestBody = {
-  restaurant_id?: unknown;
-  restaurantId?: unknown;
-  confirmationName?: unknown;
-};
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
-}
-
-function cleanString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 Deno.serve(async (req: Request) => {
@@ -68,11 +60,12 @@ Deno.serve(async (req: Request) => {
     } = await adminClient.auth.getUser(bearerToken);
     if (userError || !user) return json({ error: "Invalid or expired session" }, 401);
 
-    const body = (await req.json().catch(() => ({}))) as RequestBody;
-    const restaurantId = cleanString(body.restaurant_id ?? body.restaurantId);
-    const confirmationName = cleanString(body.confirmationName);
-    if (!restaurantId) return json({ error: "restaurant_id is required" }, 400);
-    if (!confirmationName) return json({ error: "confirmationName is required" }, 400);
+    const parsed = await parseJsonBody(req, DeleteRestaurantSchema, {
+      jsonRes: (b, s) => json(b, s),
+    });
+    if ("response" in parsed) return parsed.response;
+    const restaurantId = parsed.data.restaurant_id ?? parsed.data.restaurantId!;
+    const confirmationName = parsed.data.confirmationName;
 
     const { data: profile, error: profileError } = await adminClient
       .from("user_profiles")
@@ -97,10 +90,12 @@ Deno.serve(async (req: Request) => {
       deleted_at: string | null;
     };
 
-    if ((row.name ?? "").trim() !== confirmationName) {
-      return json({ error: "Restaurant name confirmation does not match" }, 400);
-    }
-
+    // Phase C4 (2026-05-20): ownership check BEFORE the name-confirmation
+    // check. Without this ordering an authenticated diner could iterate
+    // restaurant_id values and learn which name went with each (the name-
+    // mismatch error reveals existence). UUIDs are unguessable so the
+    // realistic attack surface is small, but defense-in-depth: the trust
+    // boundary should be "you own this restaurant" before "what's its name".
     const { data: ownerRows, error: roleError } = await adminClient
       .from("user_restaurant_roles")
       .select("id")
@@ -109,6 +104,10 @@ Deno.serve(async (req: Request) => {
       .eq("role", "owner");
     if (roleError || !ownerRows || ownerRows.length === 0) {
       return json({ error: "Only restaurant owners can delete a restaurant" }, 403);
+    }
+
+    if ((row.name ?? "").trim() !== confirmationName) {
+      return json({ error: "Restaurant name confirmation does not match" }, 400);
     }
 
     if (row.deleted_at) {
