@@ -15,9 +15,19 @@ const LoyaltyPage = lazy(() => import("@/pages/marketing/LoyaltyPage"));
 const RestaurantsPage = lazy(() => import("@/pages/marketing/RestaurantsPage"));
 const BookDemoPage = lazy(() => import("@/pages/marketing/BookDemoPage"));
 const AboutPage = lazy(() => import("@/pages/marketing/AboutPage"));
+const TermsPage = lazy(() => import("@/pages/legal/TermsPage"));
+const PrivacyPage = lazy(() => import("@/pages/legal/PrivacyPage"));
+const RefundPolicyPage = lazy(() => import("@/pages/legal/RefundPolicyPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
 const ConnectedAccountsPage = lazy(() => import("@/pages/customer/ConnectedAccountsPage"));
+const PrivacySettingsPage = lazy(() => import("@/pages/account/PrivacySettingsPage"));
+const NotificationsPreferencesPage = lazy(
+  () => import("@/pages/account/NotificationsPreferencesPage"),
+);
+const MyDataPage = lazy(() => import("@/pages/account/MyDataPage"));
+const MyProfileDataPage = lazy(() => import("@/pages/account/MyProfileDataPage"));
+const SignInHistoryPage = lazy(() => import("@/pages/account/SignInHistoryPage"));
 const DepositPayPage = lazy(() => import("@/pages/customer/DepositPayPage"));
 const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
@@ -63,6 +73,9 @@ export function AppRoutes() {
         <Route path="/restaurants" element={<RestaurantsPage />} />
         <Route path="/book-a-demo" element={<BookDemoPage />} />
         <Route path="/about" element={<AboutPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/refund-policy" element={<RefundPolicyPage />} />
 
         <Route
           path="/login"
@@ -149,6 +162,46 @@ export function AppRoutes() {
           element={
             <RequireAuth>
               <ConnectedAccountsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/privacy"
+          element={
+            <RequireAuth>
+              <PrivacySettingsPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/notifications-preferences"
+          element={
+            <RequireAuth>
+              <NotificationsPreferencesPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/my-data"
+          element={
+            <RequireAuth>
+              <MyDataPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/my-profile-data"
+          element={
+            <RequireAuth>
+              <MyProfileDataPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/sign-in-history"
+          element={
+            <RequireAuth>
+              <SignInHistoryPage />
             </RequireAuth>
           }
         />

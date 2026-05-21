@@ -13,25 +13,13 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import { formatBrand } from "@/lib/billing/cardBrand";
 
 interface CardInfo {
   brand: string | null;
   last4: string | null;
   exp_month: number | null;
   exp_year: number | null;
-}
-
-function formatBrand(brand: string | null): string {
-  if (!brand) return "Card";
-  const lower = brand.toLowerCase();
-  if (lower === "visa") return "Visa";
-  if (lower === "mastercard") return "Mastercard";
-  if (lower === "amex" || lower === "american_express" || lower === "american express") return "Amex";
-  if (lower === "discover") return "Discover";
-  if (lower === "unionpay") return "UnionPay";
-  if (lower === "jcb") return "JCB";
-  if (lower === "diners") return "Diners";
-  return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
 
 async function fetchCard(restaurantId: string): Promise<CardInfo | null> {

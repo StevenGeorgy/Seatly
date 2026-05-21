@@ -13,6 +13,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { buildCorsHeaders } from "../_shared/cors.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -69,8 +70,7 @@ Deno.serve(async (req: Request) => {
       return jsonRes(req, { ok: true, processed: 0, detached: 0, errors: [] });
     }
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     let processed = 0;
     let detached = 0;

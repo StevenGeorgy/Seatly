@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Bell, BellOff, Clock, MapPin } from "lucide-react";
+import { ArrowLeft, Bell, BellOff, Clock, MapPin, Settings2 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 
 import { CustomerNav } from "@/components/customer/CustomerNav";
@@ -53,6 +53,25 @@ export default function NotificationsPage() {
         <p className="mt-2 text-sm text-text-secondary">
           Recent activity and the alerts you've set up.
         </p>
+
+        <Link
+          to="/account/notifications-preferences"
+          className="mt-6 flex items-center justify-between gap-4 rounded-2xl border border-border bg-bg-surface px-5 py-4 transition-colors hover:border-gold/40"
+        >
+          <div className="flex items-center gap-3">
+            <Settings2 className="size-5 text-gold" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">Preferences</p>
+              <p className="text-xs text-text-secondary">
+                Choose which emails, texts, and per-restaurant marketing you
+                receive.
+              </p>
+            </div>
+          </div>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+            Manage
+          </span>
+        </Link>
 
         <Tabs value={tab} onValueChange={(v) => setTab(v as "inbox" | "alerts")} className="mt-8">
           <TabsList className="mb-6">

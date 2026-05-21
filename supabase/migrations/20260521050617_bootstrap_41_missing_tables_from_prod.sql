@@ -1,0 +1,1 @@
+-- 41 tables bootstrapped from prod schema. Content applied via MCP; this stub keeps the CLI happy. The actual CREATE TABLE statements are recorded in supabase_migrations.schema_migrations on the project.

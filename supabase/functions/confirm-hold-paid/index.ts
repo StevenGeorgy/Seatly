@@ -30,6 +30,7 @@ import { buildCorsHeaders } from "../_shared/cors.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ConfirmHoldPaidSchema } from "../_shared/validation/reservation-hold.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 type Payload = {
   hold_id?: unknown;
@@ -106,8 +107,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes(req, { error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
     if (pi.status !== "succeeded") {

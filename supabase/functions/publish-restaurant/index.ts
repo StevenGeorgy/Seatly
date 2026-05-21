@@ -25,6 +25,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { PublishRestaurantSchema } from "../_shared/validation/restaurant-ops.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
+import { getOwnerRestaurantRole } from "../_shared/auth-restaurants.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -45,26 +47,6 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-async function ownerOfRestaurant(
-  authUserId: string,
-  restaurantId: string,
-): Promise<{ ok: boolean; userProfileId: string | null }> {
-  const { data: profile } = await supabaseAdmin
-    .from("user_profiles")
-    .select("id")
-    .eq("auth_user_id", authUserId)
-    .maybeSingle();
-  if (!profile) return { ok: false, userProfileId: null };
-  const userProfileId = (profile as { id: string }).id;
-  const { data: role } = await supabaseAdmin
-    .from("user_restaurant_roles")
-    .select("role")
-    .eq("user_id", userProfileId)
-    .eq("restaurant_id", restaurantId)
-    .eq("role", "owner")
-    .maybeSingle();
-  return { ok: Boolean(role), userProfileId };
-}
 
 function firstHopIp(req: Request): string | null {
   const xff = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for");
@@ -139,7 +121,7 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const { ok: isOwner, userProfileId } = await ownerOfRestaurant(user.id, restaurantId);
+    const { ok: isOwner, userProfileId } = await getOwnerRestaurantRole(supabaseAdmin, user.id, restaurantId);
     if (!isOwner) return jsonRes({ error: "Not authorized for this restaurant" }, 403);
 
     const { data: restaurant, error: restErr } = await supabaseAdmin
@@ -201,8 +183,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     let subscriptionId: string | null = null;
     let subscriptionStatus: string = row.subscription_status ?? "trialing";

@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CuisineSelect } from "@/components/restaurant/CuisineSelect";
+import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAddressAutocompleteInput";
 import { useUser } from "@/hooks/useUser";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -281,12 +282,26 @@ export function Step1Basics({
           <Label htmlFor="address">
             Street address <span className="text-danger">*</span>
           </Label>
-          <Input
-            id="address"
-            maxLength={300}
-            autoComplete="off"
-            {...form.register("address")}
-            placeholder="142 King St W"
+          <Controller
+            control={form.control}
+            name="address"
+            render={({ field }) => (
+              <GoogleAddressAutocompleteInput
+                value={field.value ?? ""}
+                onChange={(v) => field.onChange(v)}
+                placeholder="142 King St W"
+                onAddressSelected={(parts) => {
+                  // Auto-fill the rest of the address block from the Google
+                  // Place. Owners can still edit any field manually.
+                  if (parts.address) field.onChange(parts.address);
+                  if (parts.city) form.setValue("city", parts.city, { shouldValidate: true });
+                  if (parts.province) form.setValue("province", parts.province, { shouldValidate: true });
+                  if (parts.country) form.setValue("country", parts.country, { shouldValidate: true });
+                  if (typeof parts.lat === "number") setLat(parts.lat);
+                  if (typeof parts.lng === "number") setLng(parts.lng);
+                }}
+              />
+            )}
           />
           {errors.address ? <p className="text-xs text-danger">{errors.address.message}</p> : null}
         </div>

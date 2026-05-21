@@ -27,6 +27,7 @@ import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { isPhoneOptedOut } from "../_shared/sms.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { FindReservationSchema } from "../_shared/validation/public.ts";
 
@@ -188,17 +189,23 @@ async function resendConfirmation(row: ReservationRow): Promise<void> {
   const twilioClient = twilioSid && twilioToken ? twilio(twilioSid, twilioToken) : null;
   const smsToPhone = normalizeNorthAmericanPhone(row.guest_phone);
   if (smsToPhone && twilioClient && twilioFromPhone) {
-    try {
-      await twilioClient.messages.create({
-        body,
-        from: twilioFromPhone,
-        to: smsToPhone,
-      });
-    } catch (err) {
-      console.warn(
-        "[find-reservation] sms resend failed:",
-        err instanceof Error ? err.message : err,
+    if (await isPhoneOptedOut(supabaseAdmin, smsToPhone)) {
+      console.log(
+        `[find-reservation] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
       );
+    } else {
+      try {
+        await twilioClient.messages.create({
+          body,
+          from: twilioFromPhone,
+          to: smsToPhone,
+        });
+      } catch (err) {
+        console.warn(
+          "[find-reservation] sms resend failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 

@@ -5,7 +5,8 @@
 // portal). Reads the existing restaurant row to compute current state.
 
 import { useState } from "react";
-import { Loader2, Pause, Play, RotateCcw, XCircle } from "lucide-react";
+import { AlertCircle, Loader2, Pause, Play, RotateCcw, XCircle } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import type { StaffRestaurantRow } from "@/hooks/useStaffRestaurants";
+import { ACTIVE_SUBSCRIPTION_STATUSES } from "@/lib/billing/subscriptionStatus";
 
 interface SubscriptionLifecycleControlsProps {
   restaurant: StaffRestaurantRow;
@@ -29,7 +31,8 @@ type LifecycleState =
   | "active"
   | "cancel_pending"
   | "paused"
-  | "ended";
+  | "ended"
+  | "incomplete";
 
 function computeLifecycleState(r: StaffRestaurantRow): LifecycleState {
   if (
@@ -40,9 +43,23 @@ function computeLifecycleState(r: StaffRestaurantRow): LifecycleState {
   }
   if (r.subscription_paused_at) return "paused";
   if (r.subscription_cancel_at_period_end) return "cancel_pending";
+  // `incomplete` means Stripe created the subscription but the first
+  // payment / SetupIntent never confirmed (3DS abandoned, card declined
+  // on attach, etc). Owner needs to retry the card setup before the
+  // sub will activate. Previously this fell through into ACTIVE because
+  // ACTIVE_SUBSCRIPTION_STATUSES doesn't include it but the code
+  // returned "active" only when the status WAS in that set — actually
+  // it fell through to "no_subscription", which hid the controls entirely.
+  // Either way, the owner had no recovery path. We now surface a CTA.
+  if (
+    r.subscription_status === "incomplete" ||
+    r.subscription_status === "incomplete_expired"
+  ) {
+    return "incomplete";
+  }
   if (
     r.subscription_status &&
-    ["trialing", "active", "past_due"].includes(r.subscription_status)
+    ACTIVE_SUBSCRIPTION_STATUSES.has(r.subscription_status)
   ) {
     return "active";
   }
@@ -118,6 +135,19 @@ export function SubscriptionLifecycleControls({
   }
 
   if (state === "no_subscription") return null;
+
+  if (state === "incomplete") {
+    return (
+      <div className="inline-flex items-center gap-2">
+        <Button asChild className="gap-1.5 bg-warning text-white hover:bg-warning/90">
+          <Link to="/dashboard/settings#change-card">
+            <AlertCircle className="size-3.5" />
+            Setup incomplete — finish your trial
+          </Link>
+        </Button>
+      </div>
+    );
+  }
 
   if (state === "ended") {
     return (

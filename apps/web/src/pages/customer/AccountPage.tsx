@@ -745,6 +745,51 @@ export default function AccountPage() {
           </span>
         </Link>
 
+        <Link
+          to="/account/privacy"
+          className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">Privacy</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Control analytics tracking and marketing communications.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
+
+        <Link
+          to="/account/my-data"
+          className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">My data</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Download your data, see what restaurants see, or request a correction.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
+
+        <Link
+          to="/account/sign-in-history"
+          className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">Sign-in history</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Review recent sign-ins and sign out of every device.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
+
         <div className="mt-5 rounded-2xl border border-destructive/30 bg-destructive/[0.04] p-5">
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" />

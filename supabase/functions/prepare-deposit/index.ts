@@ -16,6 +16,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { PrepareDepositInputSchema } from "../_shared/validation/deposit.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 class RateLimitError extends Error {
   constructor(message: string) { super(message); this.name = "RateLimitError"; }
@@ -155,8 +156,7 @@ Deno.serve(async (req: Request) => {
     try {
       const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
       if (stripeKey) {
-        const { default: Stripe } = await import("npm:stripe@17");
-        const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+        const stripe = await getStripeClient(stripeKey);
         const existing = await stripe.paymentIntents.retrieve(paymentIntentId);
         const prior = typeof existing.metadata?.deposit_payment_ids === "string"
           ? existing.metadata.deposit_payment_ids.split(",").map((s) => s.trim()).filter(Boolean)

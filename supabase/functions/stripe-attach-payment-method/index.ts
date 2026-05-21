@@ -22,6 +22,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { StripeAttachPaymentMethodSchema } from "../_shared/validation/payment.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -74,7 +75,8 @@ Deno.serve(async (req: Request) => {
       jsonRes: (b, s) => jsonRes(b, s),
     });
     if ("response" in parsed) return parsed.response;
-    const paymentIntentId = parsed.data.payment_intent_id;
+    const paymentIntentId = parsed.data.payment_intent_id ?? null;
+    const setupIntentId = parsed.data.setup_intent_id ?? null;
 
     const { data: profileRaw, error: profileErr } = await supabaseAdmin
       .from("user_profiles")
@@ -93,24 +95,44 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
-    // Re-fetch the PI to get the payment_method id Stripe-side. The PI
-    // was created with no customer attached (one-time card), so the PM
-    // is detached after charge. We need to attach it to the diner's
-    // platform Customer to make it reusable.
-    const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (intent.status !== "succeeded" && intent.status !== "processing") {
-      return jsonRes(
-        { error: `PaymentIntent not paid (status: ${intent.status})` },
-        400,
-      );
+    // Resolve the PaymentMethod id from whichever intent type was passed.
+    // PI path: legacy booking checkout — diner just paid + ticked "save card".
+    //   The PI was created with no customer attached (one-time card), so the
+    //   PM is detached after charge and we re-attach to the diner's customer.
+    // SI path: explicit /account flow — diner opened "Add card" via SetupIntent
+    //   on their own customer. The PM is already attached on Stripe's side; we
+    //   just mirror into saved_cards.
+    let pmId: string | null = null;
+    if (paymentIntentId) {
+      const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      if (intent.status !== "succeeded" && intent.status !== "processing") {
+        return jsonRes(
+          { error: `PaymentIntent not paid (status: ${intent.status})` },
+          400,
+        );
+      }
+      pmId = typeof intent.payment_method === "string"
+        ? intent.payment_method
+        : intent.payment_method?.id ?? null;
+      if (!pmId) return jsonRes({ error: "PaymentIntent has no payment method" }, 400);
+    } else if (setupIntentId) {
+      const intent = await stripe.setupIntents.retrieve(setupIntentId);
+      if (intent.status !== "succeeded") {
+        return jsonRes(
+          { error: `SetupIntent not confirmed (status: ${intent.status})` },
+          400,
+        );
+      }
+      pmId = typeof intent.payment_method === "string"
+        ? intent.payment_method
+        : (intent.payment_method as { id?: string } | null)?.id ?? null;
+      if (!pmId) return jsonRes({ error: "SetupIntent has no payment method" }, 400);
+    } else {
+      // Schema refine should have caught this; defensive.
+      return jsonRes({ error: "Missing payment_intent_id or setup_intent_id" }, 400);
     }
-    const pmId = typeof intent.payment_method === "string"
-      ? intent.payment_method
-      : intent.payment_method?.id ?? null;
-    if (!pmId) return jsonRes({ error: "PaymentIntent has no payment method" }, 400);
 
     // Ensure the diner has a Stripe Customer. Same pattern as
     // stripe-setup-intent. Lazy-create so we don't burn a Customer row

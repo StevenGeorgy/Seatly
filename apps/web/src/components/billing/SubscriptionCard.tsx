@@ -24,59 +24,19 @@ import {
 import type { Stripe as StripeJs } from "@stripe/stripe-js";
 
 import { Button } from "@/components/ui/button";
-import {
-  getSupabaseAnonKey,
-  getSupabaseBrowserClient,
-  getSupabaseProjectUrl,
-  isSupabaseConfigured,
-} from "@/lib/supabase/client";
-import {
-  toUserFacingEdgeError,
-  toUserFacingError,
-} from "@/lib/errors";
+import { toUserFacingError } from "@/lib/errors";
+import { invokeEdgeFunction as sharedInvokeEdgeFunction } from "@/lib/supabase/edge-fn";
+import { recoverFromSetupIntentUnexpectedState } from "@/lib/stripe/setupIntentRecovery";
 
 import { SAVE_CARD_DISCLOSURE } from "./disclosures";
 
-async function invokeEdgeFunction<TResult>(
+function invokeEdgeFunction<TResult>(
   path: string,
   body: Record<string, unknown>,
-): Promise<{ ok: true; data: TResult } | { ok: false; error: string }> {
-  if (!isSupabaseConfigured()) {
-    return { ok: false, error: "Supabase is not configured." };
-  }
-  const client = getSupabaseBrowserClient();
-  const { data: sessionData } = await client.auth.getSession();
-  const token = sessionData.session?.access_token;
-  if (!token) return { ok: false, error: "You need to be signed in." };
-
-  const res = await fetch(`${getSupabaseProjectUrl()}/functions/v1/${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      apikey: getSupabaseAnonKey(),
-    },
-    body: JSON.stringify(body),
+) {
+  return sharedInvokeEdgeFunction<TResult>(path, body, {
+    caller: "billing.SubscriptionCard",
   });
-  let parsed: unknown = null;
-  try {
-    parsed = await res.json();
-  } catch {
-    parsed = null;
-  }
-  if (!res.ok) {
-    const friendly = toUserFacingEdgeError(
-      res,
-      parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null,
-    );
-    console.error(
-      `[billing.SubscriptionCard.invokeEdgeFunction:${path}]`,
-      friendly.code,
-      friendly.technical,
-    );
-    return { ok: false, error: friendly.message };
-  }
-  return { ok: true, data: parsed as TResult };
 }
 
 function SubscriptionCardInner({
@@ -123,17 +83,10 @@ function SubscriptionCardInner({
         // the user clicked Submit again without refreshing), Stripe
         // returns setup_intent_unexpected_state. Reuse the prior
         // SetupIntent's PaymentMethod and skip straight to the save.
-        const recoveredSetupIntent =
-          confirmError &&
-          (confirmError as { code?: string }).code === "setup_intent_unexpected_state"
-            ? (confirmError as {
-                setup_intent?: { status?: string; payment_method?: string };
-              }).setup_intent
-            : null;
-        if (
-          confirmError &&
-          !(recoveredSetupIntent && recoveredSetupIntent.status === "succeeded")
-        ) {
+        const recovered = confirmError
+          ? recoverFromSetupIntentUnexpectedState(confirmError)
+          : { recovered: false as const, reason: "no_error" };
+        if (confirmError && !recovered.recovered) {
           const friendly = toUserFacingError(
             confirmError,
             "Couldn't confirm your card.",
@@ -149,8 +102,8 @@ function SubscriptionCardInner({
         const paymentMethodId =
           typeof setupIntent?.payment_method === "string"
             ? setupIntent.payment_method
-            : typeof recoveredSetupIntent?.payment_method === "string"
-              ? recoveredSetupIntent.payment_method
+            : recovered.recovered
+              ? recovered.paymentMethodId
               : null;
         if (!paymentMethodId) {
           setError("Stripe didn't return a payment method. Try again.");

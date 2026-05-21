@@ -3,6 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { StripeSetupIntentSchema } from "../_shared/validation/payment.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -55,8 +56,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Live mode ──
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     // Branch A — restaurant subscription onboarding. Target the restaurant's
     // customer so the resulting PaymentMethod can be used by create-subscription
@@ -94,7 +94,13 @@ Deno.serve(async (req: Request) => {
 
       const setupIntent = await stripe.setupIntents.create({
         customer: customerId,
-        payment_method_types: ["card"],
+        // Recurring card on file: keep this strictly card-only. Wallets
+      // (Apple Pay, Google Pay) are re-authenticated each use so they
+      // don't make sense as a "saved card"; alt methods like Pix /
+      // SEPA / Klarna are one-time payments and can't back a monthly
+      // subscription. Dynamic payment methods stay enabled for the
+      // diner one-time charge flow (see create-public-payment-intent).
+      payment_method_types: ["card"],
         usage: "off_session",
       });
 
@@ -118,6 +124,12 @@ Deno.serve(async (req: Request) => {
 
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
+      // Recurring card on file: keep this strictly card-only. Wallets
+      // (Apple Pay, Google Pay) are re-authenticated each use so they
+      // don't make sense as a "saved card"; alt methods like Pix /
+      // SEPA / Klarna are one-time payments and can't back a monthly
+      // subscription. Dynamic payment methods stay enabled for the
+      // diner one-time charge flow (see create-public-payment-intent).
       payment_method_types: ["card"],
       usage: "off_session",
     });

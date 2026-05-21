@@ -6,6 +6,10 @@ import { BoundedText, NonEmptyText, Uuid } from "./base.ts";
 // restart/recover/create-stripe-account/create-account-session.
 export const RestaurantIdOnlySchema = z.object({
   restaurant_id: Uuid,
+  // create-account-session: optional "mode" switches between onboarding
+  // (wizard Step 8) and management (dashboard re-verification) components.
+  // Other edge fns sharing this schema ignore the field.
+  mode: z.enum(["onboarding", "management"]).optional(),
 });
 
 export type RestaurantIdOnlyInput = z.infer<typeof RestaurantIdOnlySchema>;

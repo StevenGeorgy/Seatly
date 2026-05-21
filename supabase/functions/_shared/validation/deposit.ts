@@ -29,3 +29,16 @@ export const PrepareDepositInputSchema = z.object({
 });
 
 export type PrepareDepositInput = z.infer<typeof PrepareDepositInputSchema>;
+
+// refund-deposit-on-arrival: owner-initiated (Seated / Mark-as-arrived
+// undo-no-show) OR cron-initiated (auto-complete-stale-reservations
+// sweep). `source` is informational; the auth path is decided by which
+// header is present (x-cron-secret vs Bearer JWT).
+export const RefundDepositOnArrivalSchema = z.object({
+  reservation_id: Uuid,
+  source: z.enum(["owner", "auto"]).optional(),
+});
+
+export type RefundDepositOnArrivalInput = z.infer<
+  typeof RefundDepositOnArrivalSchema
+>;

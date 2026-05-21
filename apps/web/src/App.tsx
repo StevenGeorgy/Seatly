@@ -9,6 +9,8 @@ import { AssistantProvider, useAssistant } from "@/components/cenaiva/AssistantP
 import { VoiceOrb } from "@/components/cenaiva/VoiceOrb";
 import { AppErrorBoundary } from "@/components/error/AppErrorBoundary";
 import { DevSupabaseBanner } from "@/components/layout/DevSupabaseBanner";
+import { CookieConsentBanner } from "@/components/legal/CookieConsentBanner";
+import { NewDeviceAlertBanner } from "@/components/account/NewDeviceAlertBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppRoutes } from "@/routes/AppRoutes";
 import { useUser } from "@/hooks/useUser";
@@ -107,6 +109,8 @@ export default function App() {
                   <AppRoutes />
                   <AuthedCenaivaUI />
                   <AuthedReservationReviewPrompt />
+                  <CookieConsentBanner />
+                  <NewDeviceAlertBanner />
                   <Toaster
                     richColors
                     position="top-center"

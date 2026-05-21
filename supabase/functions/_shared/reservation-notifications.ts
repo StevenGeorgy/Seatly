@@ -2,6 +2,8 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
+import { isPhoneOptedOut } from "./sms.ts";
+
 export type ReservationNotificationChannel = "email" | "sms" | null;
 export type ReservationNotificationStatus = "sent" | "skipped" | "failed";
 
@@ -72,18 +74,25 @@ export async function sendReservationNotification({
 
   const smsToPhone = normalizeNorthAmericanPhone(phone);
   if (smsToPhone && twilioClient && twilioFromPhone) {
-    try {
-      await twilioClient.messages.create({
-        body,
-        from: twilioFromPhone,
-        to: smsToPhone,
-      });
-      channel = "sms";
-      status = "sent";
-    } catch (err) {
-      console.error(`${type} SMS failed`, err);
-      channel = "sms";
-      status = "failed";
+    if (await isPhoneOptedOut(supabase, smsToPhone)) {
+      console.log(
+        `[reservation-notifications:${type}] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
+      );
+      // fall through to email
+    } else {
+      try {
+        await twilioClient.messages.create({
+          body,
+          from: twilioFromPhone,
+          to: smsToPhone,
+        });
+        channel = "sms";
+        status = "sent";
+      } catch (err) {
+        console.error(`${type} SMS failed`, err);
+        channel = "sms";
+        status = "failed";
+      }
     }
   }
 

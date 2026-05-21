@@ -7,6 +7,7 @@ import { BillingStatusPill } from "@/components/billing/BillingStatusPill";
 import { PaymentFailedBanner } from "@/components/dashboard/PaymentFailedBanner";
 import { PaymentFailedModal } from "@/components/dashboard/PaymentFailedModal";
 import { RestoreRestaurantBanner } from "@/components/dashboard/RestoreRestaurantBanner";
+import { TestModeIndicator } from "@/components/dashboard/TestModeIndicator";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { prefetchFloorPlanData } from "@/lib/floor-plan-data-cache";
 import { cn } from "@/lib/utils";
@@ -128,6 +129,7 @@ function DashboardShell() {
       )}
     >
       {lifecycleModal}
+      <TestModeIndicator />
       <DashboardSidebar />
       <div
         className={cn(

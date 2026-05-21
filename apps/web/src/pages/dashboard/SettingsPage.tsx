@@ -6,12 +6,14 @@ import { format, parse, isValid, startOfDay } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import {
   AlertCircle,
+  AlertTriangle,
   Bell,
   CalendarDays,
   CreditCard,
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Settings as SettingsIcon,
   Upload,
   X,
@@ -441,15 +443,16 @@ function Card({ children }: { children: ReactNode }) {
 
 // Cenaiva plan is a single tier: $199.99 CAD/month with a 90-day free trial.
 // In addition, $1 per confirmed reservation (billed via Stripe invoice items
-// on the restaurant's subscription) and 5.5% application fee on pre-orders +
-// deposits route to Cenaiva via Stripe Connect. Diners pay Stripe processing
-// fees on top of deposits/orders so restaurants receive the full 94.5%.
+// on the restaurant's subscription). Diners pay our 5.5% platform fee plus
+// Stripe processing on top of every deposit and pre-order at checkout, so
+// the restaurant's Connect account receives 100% of the deposit/order base —
+// nothing is deducted from what the diner promised to pay.
 const PLAN_PRICE_CENTS = 19999;
 const PLAN_CURRENCY = "CAD";
 const PLAN_USAGE_FEES = [
   "$1 per confirmed reservation",
-  "5.5% application fee on pre-orders",
-  "5.5% application fee on deposits",
+  "5.5% diner-paid platform fee on pre-orders (you keep 100% of base)",
+  "5.5% diner-paid platform fee on deposits (you keep 100% of base)",
 ];
 
 type BillingSummary = {
@@ -579,7 +582,7 @@ const NOTIFICATION_GROUPS: Array<{
 // ─── Page ────────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const navigate = useNavigate();
   const { selectedRestaurant, refreshRestaurants, restaurants } = useRestaurantScope();
   const [restaurantInfoSection, setRestaurantInfoSection] = useState<RestaurantInfoSectionKey>("restaurant");
@@ -659,6 +662,10 @@ export default function SettingsPage() {
   const [billingLoading, setBillingLoading] = useState(false);
   const [invoices, setInvoices] = useState<StripeInvoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [invoicesStripeError, setInvoicesStripeError] = useState<string | null>(null);
+  // Bumped to force a re-fetch of the Stripe invoice list. Used by the
+  // "Could not reach Stripe right now — [Retry]" banner.
+  const [invoicesRefreshKey, setInvoicesRefreshKey] = useState(0);
   const [portalLoading, setPortalLoading] = useState<BillingPortalFlow | null>(null);
   // In-page "Change card" panel (replaces the Stripe billing-portal redirect
   // for payment-method updates). Falls back to the portal redirect if
@@ -666,6 +673,21 @@ export default function SettingsPage() {
   const [showChangeCard, setShowChangeCard] = useState(false);
   // Bumped after a successful card-swap so the CardOnFileBadge refetches.
   const [cardRefreshKey, setCardRefreshKey] = useState(0);
+
+  // Hash-anchor opener: when the user lands on /dashboard/settings#change-card
+  // (e.g. from the past-due "Update card →" link on the BillingStatusPill),
+  // auto-open the change-card panel and scroll it into view.
+  useEffect(() => {
+    if (hash !== "#change-card") return;
+    setSettingsSection("billing");
+    setShowChangeCard(true);
+    // Wait one frame so the panel mounts before scrolling.
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById("change-card");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [hash]);
 
   // Theme
   const existingTheme = selectedRestaurant?.settings_json?.theme;
@@ -886,12 +908,22 @@ export default function SettingsPage() {
           });
         }
         setInvoicesLoading(true);
+        setInvoicesStripeError(null);
         const result = await invokeBillingEdgeFunction<{
           invoices: StripeInvoice[];
           has_more: boolean;
+          stripe_error?: string;
         }>("list-stripe-invoices", { restaurant_id: restaurantId, limit: 12 });
         if (cancelled) return;
-        setInvoices(result.ok ? result.data.invoices : []);
+        if (result.ok) {
+          setInvoices(result.data.invoices);
+          setInvoicesStripeError(result.data.stripe_error ?? null);
+        } else {
+          setInvoices([]);
+          // Bubble the edge-fn error string up so the user sees something
+          // actionable ("Retry") rather than silent emptiness.
+          setInvoicesStripeError(result.error);
+        }
       } finally {
         if (!cancelled) {
           setBillingLoading(false);
@@ -902,7 +934,7 @@ export default function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedRestaurant?.id]);
+  }, [selectedRestaurant?.id, invoicesRefreshKey]);
 
   const openBillingPortal = async (flow: BillingPortalFlow): Promise<void> => {
     if (!selectedRestaurant?.id) return;
@@ -2467,7 +2499,7 @@ export default function SettingsPage() {
                   ) : null}
                 </div>
                 {showChangeCard && stripePromise && selectedRestaurant?.id ? (
-                  <div className="border-t border-border/50 px-6 py-5 sm:px-7">
+                  <div id="change-card" className="border-t border-border/50 px-6 py-5 sm:px-7">
                     <ChangeSubscriptionCard
                       restaurantId={selectedRestaurant.id}
                       stripePromiseRef={stripePromise}
@@ -2508,6 +2540,23 @@ export default function SettingsPage() {
                   )}
                 </div>
                 <div className="divide-y divide-border/50">
+                  {invoicesStripeError && !invoicesLoading ? (
+                    <div className="flex items-center justify-between gap-3 bg-warning/5 px-6 py-3 text-xs sm:px-7">
+                      <span className="flex items-center gap-2 text-warning">
+                        <AlertTriangle className="size-3.5 shrink-0" aria-hidden />
+                        Could not reach Stripe right now. Showing cached data.
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs"
+                        onClick={() => setInvoicesRefreshKey((k) => k + 1)}
+                      >
+                        <RefreshCw className="size-3" />
+                        Retry
+                      </Button>
+                    </div>
+                  ) : null}
                   {invoicesLoading && (
                     <div className="flex items-center gap-2 px-6 py-5 text-sm text-text-muted sm:px-7">
                       <Loader2 className="size-4 animate-spin" /> Loading invoices…

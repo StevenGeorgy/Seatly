@@ -61,16 +61,22 @@ export function BillingDetailsForm({
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Pre-fill billing fields from the restaurant record when the owner
+  // hasn't set a billing-specific value yet. Owners can still override —
+  // e.g. legal name "1234567 Ontario Inc." vs operating name "Qoop", or
+  // an accounting@... billing email separate from the owner login. Tax
+  // ID is the one field that's never duplicated.
   const initial = useMemo(
     () => ({
       legal_name: restaurant.billing_legal_name ?? restaurant.name ?? "",
       billing_email: restaurant.billing_email ?? restaurant.email ?? "",
-      address_line1: restaurant.billing_address_line1 ?? "",
+      address_line1: restaurant.billing_address_line1 ?? restaurant.address ?? "",
       address_line2: restaurant.billing_address_line2 ?? "",
       address_city: restaurant.billing_address_city ?? restaurant.city ?? "",
       address_province: restaurant.billing_address_province ?? restaurant.province ?? "ON",
       address_postal_code: restaurant.billing_address_postal_code ?? "",
-      address_country: restaurant.billing_address_country ?? "CA",
+      address_country: restaurant.billing_address_country
+        ?? (restaurant.country?.toLowerCase() === "canada" ? "CA" : "CA"),
       tax_id_type: restaurant.billing_tax_id_type ?? "",
       tax_id_value: restaurant.billing_tax_id_value ?? "",
     }),

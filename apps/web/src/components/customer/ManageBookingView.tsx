@@ -15,6 +15,7 @@ import {
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
+import { RefundRequestDialog } from "@/components/customer/RefundRequestDialog";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import {
   getSupabaseAnonKey,
@@ -37,6 +38,12 @@ type LookupRow = {
   special_request: string | null;
   restaurant_name: string | null;
   restaurant_timezone: string | null;
+  // Gap 2 fix (2026-05-21): present so the cancel dialog can show a
+  // stricter refund disclosure when an actual deposit was charged.
+  // Source: reservations.deposit_status ('none' | 'pending' | 'charged'
+  // | 'waived' | 'failed'). Treated as null when the lookup query
+  // didn't return it (older callers).
+  deposit_status: string | null;
 };
 
 type Props = {
@@ -99,6 +106,11 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
 
   const [mode, setMode] = useState<"view" | "modify" | "confirmCancel" | "done">("view");
   const [busy, setBusy] = useState(false);
+  // Gap 4 (2026-05-21): in-app refund request flow. Shown when the diner
+  // was actually charged (deposit_status=charged) AND the reservation is
+  // already completed — active reservations should use the standard
+  // cancel flow which auto-refunds.
+  const [refundDialogOpen, setRefundDialogOpen] = useState(false);
 
   // Modify form state — driven by the shared ModifyBookingFields component.
   const [modifyInitial, setModifyInitial] = useState<ModifyBookingValues | null>(null);
@@ -433,6 +445,33 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
             </div>
           )}
 
+          {reservation?.deposit_status === "charged" &&
+            reservation?.status === "completed" && (
+              <div className="mt-6 border-t border-border pt-4">
+                <p className="text-xs text-text-muted">
+                  Believe you were charged in error? Submit a refund request and
+                  our team will review within 5 business days.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => setRefundDialogOpen(true)}
+                  disabled={busy}
+                >
+                  Request a refund
+                </Button>
+              </div>
+            )}
+
+          {reservation && (
+            <RefundRequestDialog
+              open={refundDialogOpen}
+              onOpenChange={setRefundDialogOpen}
+              reservationId={reservation.id}
+            />
+          )}
+
           <Dialog
             open={mode === "confirmCancel"}
             onOpenChange={(open) => {
@@ -448,6 +487,32 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
                 Any deposit or pre-order you've paid will be refunded to the
                 card you used. This can't be undone.
               </p>
+              {reservation?.deposit_status === "charged" ? (
+                <p className="text-xs text-warning">
+                  If the deposit was charged, the refund is issued to your
+                  original card and will appear on your statement within 5
+                  business days. Contact{" "}
+                  <a
+                    href="mailto:support@cenaiva.com"
+                    className="text-warning underline-offset-2 hover:underline"
+                  >
+                    support@cenaiva.com
+                  </a>{" "}
+                  if anything looks wrong.
+                </p>
+              ) : (
+                <p className="text-xs text-text-muted">
+                  Refunds typically land on your card within 5–10 business
+                  days. Contact{" "}
+                  <a
+                    href="mailto:support@cenaiva.com"
+                    className="text-gold underline-offset-2 hover:underline"
+                  >
+                    support@cenaiva.com
+                  </a>{" "}
+                  if anything looks wrong.
+                </p>
+              )}
               <DialogFooter className="gap-2 sm:flex-row sm:justify-end">
                 <Button
                   type="button"

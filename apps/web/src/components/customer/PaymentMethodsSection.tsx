@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CreditCard, ExternalLink, Plus, Star, Trash2 } from "lucide-react";
-import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
+import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { isStripeConfigured, stripePromise } from "@/lib/stripe";
 import { getSupabaseAnonKey, getSupabaseBrowserClient, getSupabaseProjectUrl } from "@/lib/supabase/client";
 import { useUser } from "@/hooks/useUser";
 import { toUserFacingError } from "@/lib/errors";
+import { formatBrand } from "@/lib/billing/cardBrand";
+import { invokeEdgeFunction } from "@/lib/supabase/edge-fn";
 
 type SavedCard = {
   id: string;
@@ -19,19 +21,6 @@ type SavedCard = {
   stripe_payment_method_id?: string | null;
 };
 
-function formatBrand(brand: string | null): string {
-  if (!brand) return "Card";
-  const lower = brand.toLowerCase();
-  if (lower === "visa") return "Visa";
-  if (lower === "mastercard") return "Mastercard";
-  if (lower === "amex" || lower === "american_express" || lower === "american express") return "Amex";
-  if (lower === "discover") return "Discover";
-  if (lower === "unionpay") return "UnionPay";
-  if (lower === "jcb") return "JCB";
-  if (lower === "diners") return "Diners";
-  return brand.charAt(0).toUpperCase() + brand.slice(1);
-}
-
 type RestaurantSubscriptionCard = {
   restaurant_id: string;
   restaurant_name: string;
@@ -42,85 +31,62 @@ type RestaurantSubscriptionCard = {
   exp_year: number | null;
 };
 
-// ── Stripe CardElement form (live mode) ─────────────────────────────────────
-function StripeCardForm({ onSuccess }: { onSuccess: () => void }) {
+// ── Stripe PaymentElement-based SetupIntent form ────────────────────────────
+// Single code path for both test and live mode. In test mode the Stripe
+// publishable key starts with `pk_test_`, the server returns a test-mode
+// SetupIntent client_secret, and diners can enter Stripe test cards
+// (4242 4242 4242 4242 etc.). The mock-card form has been removed — we
+// no longer insert directly into `saved_cards`; the server attaches the
+// PM and inserts the row via `stripe-attach-payment-method`.
+function AddCardForm({ onSuccess }: { onSuccess: () => void }) {
   const stripe = useStripe();
   const elements = useElements();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!stripe || !elements) return;
     setSaving(true);
     setError(null);
-    const cardEl = elements.getElement(CardElement);
-    if (!cardEl) { setSaving(false); return; }
 
-    // confirmCardSetup needs a client_secret — it was already embedded in the
-    // Elements context when we initialized with the SetupIntent client_secret.
-    const result = await stripe.confirmCardSetup("", {
-      payment_method: { card: cardEl },
-    });
-
-    if (result.error) {
-      const friendly = toUserFacingError(result.error, "Card setup failed.");
+    const { error: submitError } = await elements.submit();
+    if (submitError) {
+      const friendly = toUserFacingError(submitError, "Please check your card details.");
       setError(friendly.message);
-      console.error("[PaymentMethodsSection.confirmCardSetup]", friendly.code, friendly.technical ?? result.error);
-    } else {
-      onSuccess();
-    }
-    setSaving(false);
-  };
-
-  return (
-    <div className="mt-3 flex flex-col gap-3">
-      <div className="rounded-lg border border-border bg-bg-surface px-3 py-2.5">
-        <CardElement
-          options={{
-            style: {
-              base: { fontSize: "14px", color: "#ffffff", "::placeholder": { color: "#6b7280" } },
-              invalid: { color: "#ef4444" },
-            },
-          }}
-        />
-      </div>
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      <Button size="sm" onClick={handleSubmit} disabled={saving || !stripe}>
-        {saving ? "Saving..." : "Save Card"}
-      </Button>
-    </div>
-  );
-}
-
-// ── Mock card form (test mode) ───────────────────────────────────────────────
-function MockCardForm({ profileId, onSuccess }: { profileId: string; onSuccess: () => void }) {
-  const client = getSupabaseBrowserClient();
-  const [brand, setBrand] = useState("Visa");
-  const [last4, setLast4] = useState("");
-  const [expMonth, setExpMonth] = useState("");
-  const [expYear, setExpYear] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    if (last4.length !== 4 || !/^\d{4}$/.test(last4)) {
-      setError("Enter the last 4 digits of your card.");
+      console.error("[PaymentMethodsSection.elements.submit]", friendly.code, friendly.technical ?? submitError);
+      setSaving(false);
       return;
     }
-    setSaving(true);
-    setError(null);
-    const { error: dbErr } = await client.from("saved_cards").insert({
-      user_profile_id: profileId,
-      brand,
-      last4,
-      exp_month: parseInt(expMonth) || null,
-      exp_year: parseInt(expYear) || null,
-      is_default: false,
+
+    const { setupIntent, error: confirmError } = await stripe.confirmSetup({
+      elements,
+      redirect: "if_required",
     });
-    if (dbErr) {
-      const friendly = toUserFacingError(dbErr, "Couldn't save the card. Try again.");
+    if (confirmError) {
+      const friendly = toUserFacingError(confirmError, "Card setup failed.");
       setError(friendly.message);
-      console.error("[PaymentMethodsSection.mockCardSave]", friendly.code, friendly.technical ?? dbErr);
+      console.error("[PaymentMethodsSection.confirmSetup]", friendly.code, friendly.technical ?? confirmError);
+      setSaving(false);
+      return;
+    }
+    if (!setupIntent?.id) {
+      setError("Stripe didn't return a SetupIntent. Try again.");
+      setSaving(false);
+      return;
+    }
+
+    // Mirror the attached PaymentMethod into our `saved_cards` table via the
+    // edge fn so the diner's saved-card picker shows it immediately. The
+    // webhook also fires `payment_method.attached`, but going through the
+    // edge fn means the row exists before the next fetch.
+    const attachRes = await invokeEdgeFunction<{ saved_card: { id: string } }>(
+      "stripe-attach-payment-method",
+      { setup_intent_id: setupIntent.id },
+      { caller: "PaymentMethodsSection" },
+    );
+    if (!attachRes.ok) {
+      setError(attachRes.error);
       setSaving(false);
       return;
     }
@@ -129,64 +95,19 @@ function MockCardForm({ profileId, onSuccess }: { profileId: string; onSuccess: 
   };
 
   return (
-    <div className="mt-3 flex flex-col gap-3">
-      <p className="text-xs text-amber-400">
-        Test mode — no real charge will occur. Enter any card details.
-      </p>
-      <div className="grid grid-cols-2 gap-2">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-text-muted">Brand</label>
-          <select
-            value={brand}
-            onChange={(e) => setBrand(e.target.value)}
-            className="rounded-md border border-border bg-bg-surface px-2 py-1.5 text-sm text-white"
-          >
-            {["Visa", "Mastercard", "Amex", "Discover"].map((b) => (
-              <option key={b} value={b}>{b}</option>
-            ))}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-text-muted">Last 4 digits</label>
-          <input
-            type="text"
-            maxLength={4}
-            placeholder="4242"
-            value={last4}
-            onChange={(e) => setLast4(e.target.value.replace(/\D/g, ""))}
-            className="rounded-md border border-border bg-bg-surface px-2 py-1.5 text-sm text-white placeholder:text-text-muted"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-text-muted">Exp. Month</label>
-          <input
-            type="number"
-            min={1}
-            max={12}
-            placeholder="12"
-            value={expMonth}
-            onChange={(e) => setExpMonth(e.target.value)}
-            className="rounded-md border border-border bg-bg-surface px-2 py-1.5 text-sm text-white placeholder:text-text-muted"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-text-muted">Exp. Year</label>
-          <input
-            type="number"
-            min={2025}
-            max={2040}
-            placeholder="2028"
-            value={expYear}
-            onChange={(e) => setExpYear(e.target.value)}
-            className="rounded-md border border-border bg-bg-surface px-2 py-1.5 text-sm text-white placeholder:text-text-muted"
-          />
-        </div>
-      </div>
+    <form onSubmit={(e) => void handleSubmit(e)} className="mt-3 flex flex-col gap-3">
+      <PaymentElement
+        options={{
+          layout: "tabs",
+          paymentMethodOrder: ["card", "apple_pay", "google_pay"],
+          wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+        }}
+      />
       {error && <p className="text-xs text-red-400">{error}</p>}
-      <Button size="sm" onClick={handleSave} disabled={saving}>
+      <Button type="submit" size="sm" disabled={saving || !stripe || !elements}>
         {saving ? "Saving..." : "Save Card"}
       </Button>
-    </div>
+    </form>
   );
 }
 
@@ -214,7 +135,8 @@ export function PaymentMethodsSection() {
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [stripeMode, setStripeMode] = useState<"test" | "live">("test");
+  const [addCardError, setAddCardError] = useState<string | null>(null);
+  const [addCardLoading, setAddCardLoading] = useState(false);
   // Cards backing restaurant subscriptions the user owns. Loaded in parallel
   // with saved diner cards so /account shows one unified list. These live on
   // a DIFFERENT Stripe customer than the diner saved_cards — managed from
@@ -324,26 +246,37 @@ export function PaymentMethodsSection() {
   useEffect(() => { void fetchCards(); }, [fetchCards]);
 
   const handleAddCard = async () => {
-    if (isStripeConfigured) {
-      const { data: { session } } = await client.auth.getSession();
-      if (!session) return;
-      const res = await fetch(
-        `${getSupabaseProjectUrl()}/functions/v1/stripe-setup-intent`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            apikey: getSupabaseAnonKey(),
-          },
-        },
-      );
-      const data = await res.json();
-      setStripeMode(data.mode || "test");
-      setClientSecret(data.client_secret);
-    } else {
-      setStripeMode("test");
-    }
     setShowAddForm(true);
+    setAddCardError(null);
+    setClientSecret(null);
+    if (!isStripeConfigured) {
+      setAddCardError(
+        "Card payments aren't available here yet — VITE_STRIPE_PUBLISHABLE_KEY is missing.",
+      );
+      return;
+    }
+    setAddCardLoading(true);
+    // SetupIntent on the diner's own Stripe customer (Branch B). Returns
+    // the same client_secret shape in test + live mode — Stripe Elements
+    // accepts test cards (4242 4242 4242 4242 etc.) when the publishable
+    // key is a pk_test_… key.
+    const res = await invokeEdgeFunction<{ client_secret: string | null; mode: string }>(
+      "stripe-setup-intent",
+      {},
+      { caller: "PaymentMethodsSection.handleAddCard" },
+    );
+    if (!res.ok) {
+      setAddCardError(res.error);
+      setAddCardLoading(false);
+      return;
+    }
+    if (!res.data.client_secret) {
+      setAddCardError("Stripe is not configured on the server.");
+      setAddCardLoading(false);
+      return;
+    }
+    setClientSecret(res.data.client_secret);
+    setAddCardLoading(false);
   };
 
   const handleRemove = async (card: SavedCard) => {
@@ -447,24 +380,52 @@ export function PaymentMethodsSection() {
           )}
         </div>
 
-      {/* Add card form */}
+      {/* Add card form — single Stripe Elements + SetupIntent path. In test
+          mode the Stripe publishable key starts with pk_test_, the server
+          returns a test SetupIntent, and Stripe accepts test cards like
+          4242 4242 4242 4242. No more direct-to-DB mock inserts. */}
       {showAddForm && (
         <div className="rounded-xl border border-border bg-bg-surface p-4">
           <p className="text-sm font-medium">Add a new card</p>
-          {stripeMode === "live" && clientSecret && stripePromise ? (
-            <Elements stripe={stripePromise} options={{ clientSecret }}>
-              <StripeCardForm onSuccess={handleCardSaved} />
+          {addCardError ? (
+            <p className="mt-3 text-xs text-red-400">{addCardError}</p>
+          ) : addCardLoading || !clientSecret ? (
+            <p className="mt-3 text-xs text-text-muted">Preparing secure checkout…</p>
+          ) : stripePromise ? (
+            <Elements
+              stripe={stripePromise}
+              options={{
+                clientSecret,
+                appearance: {
+                  theme: "night",
+                  variables: {
+                    colorPrimary: "#D4AF37",
+                    colorBackground: "#0A0A0A",
+                    colorText: "#FFFFFF",
+                    colorDanger: "#EF4444",
+                    fontFamily: "system-ui, -apple-system, sans-serif",
+                    borderRadius: "10px",
+                    spacingUnit: "4px",
+                  },
+                },
+              }}
+            >
+              <AddCardForm onSuccess={handleCardSaved} />
             </Elements>
           ) : (
-            profile?.id && (
-              <MockCardForm profileId={profile.id} onSuccess={handleCardSaved} />
-            )
+            <p className="mt-3 text-xs text-red-400">
+              Stripe failed to load. Refresh the page and try again.
+            </p>
           )}
           <Button
             variant="ghost"
             size="sm"
             className="mt-2"
-            onClick={() => { setShowAddForm(false); setClientSecret(null); }}
+            onClick={() => {
+              setShowAddForm(false);
+              setClientSecret(null);
+              setAddCardError(null);
+            }}
           >
             Cancel
           </Button>

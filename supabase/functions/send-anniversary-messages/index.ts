@@ -3,6 +3,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
+import { isPhoneOptedOut } from "../_shared/sms.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -44,14 +46,18 @@ async function sendAnniversaryMessage(
   }
 
   if (guest.sms_opt_in !== false && guest.phone && twilioClient && fromPhone) {
-    try {
-      await twilioClient.messages.create({
-        body: `Happy Anniversary ${firstName}! From ${restaurant.name}. Celebrate with us — book a table when you're ready!`,
-        from: fromPhone,
-        to: guest.phone,
-      });
-      sent.sms = true;
-    } catch (_) {}
+    if (await isPhoneOptedOut(supabaseAdmin, guest.phone)) {
+      console.log(`[send-anniversary-messages] phone opted out, skipping SMS to ${guest.phone.slice(-4)}`);
+    } else {
+      try {
+        await twilioClient.messages.create({
+          body: `Happy Anniversary ${firstName}! From ${restaurant.name}. Celebrate with us — book a table when you're ready!`,
+          from: fromPhone,
+          to: guest.phone,
+        });
+        sent.sms = true;
+      } catch (_) {}
+    }
   }
 
   return sent;

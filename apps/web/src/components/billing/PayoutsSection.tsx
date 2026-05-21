@@ -7,7 +7,9 @@
 // in my bank?" — the answer is Stripe's 2-7 day rolling payout schedule.
 
 import { useEffect, useState } from "react";
-import { Landmark, TrendingUp } from "lucide-react";
+import { AlertTriangle, Landmark, RefreshCw, TrendingUp } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 
 import {
   getSupabaseAnonKey,
@@ -15,6 +17,7 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import { StripeConnectVerifyPanel } from "@/components/billing/StripeConnectVerifyPanel";
 
 interface PayoutsSectionProps {
   restaurantId: string;
@@ -86,6 +89,8 @@ function statusLabel(s: string): { text: string; tone: "green" | "amber" | "mute
 export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps) {
   const [data, setData] = useState<PayoutsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bump this to force a re-fetch (e.g. after Stripe verification UI closes).
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +131,7 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
     return () => {
       cancelled = true;
     };
-  }, [restaurantId]);
+  }, [restaurantId, refreshKey]);
 
   if (loading) {
     return (
@@ -138,13 +143,29 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
 
   if (!data || !data.has_account) {
     return (
-      <div className={`rounded-xl border border-border bg-bg-surface/40 px-4 py-3 ${className ?? ""}`}>
-        <h4 className="flex items-center gap-2 text-sm font-medium text-text-primary">
-          <Landmark className="size-4 text-text-muted" /> Payouts
-        </h4>
-        <p className="mt-1 text-sm text-text-muted">
-          Finish your Stripe Connect onboarding to start receiving payouts to your bank.
-        </p>
+      <div className={`rounded-xl border border-border bg-bg-surface/40 ${className ?? ""}`}>
+        <div className="border-b border-border px-4 py-3">
+          <h4 className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <Landmark className="size-4 text-text-muted" /> Payouts
+          </h4>
+          <p className="mt-1 text-sm text-text-muted">
+            Connect Stripe to start receiving payouts to your bank. We use
+            Stripe's hosted onboarding — your identity + bank details never
+            touch Cenaiva.
+          </p>
+        </div>
+        <div className="p-4">
+          <StripeConnectVerifyPanel
+            restaurantId={restaurantId}
+            onboardingMode
+            onExit={() => {
+              // After the embedded onboarding closes, re-fetch payouts so
+              // the panel transitions from "no account" → "verifying" /
+              // "payouts enabled" without a manual reload.
+              setRefreshKey((k) => k + 1);
+            }}
+          />
+        </div>
       </div>
     );
   }
@@ -163,6 +184,24 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
         </p>
       </div>
 
+      {data.stripe_error ? (
+        <div className="flex items-center justify-between gap-3 border-b border-border bg-warning/5 px-4 py-2.5 text-xs">
+          <span className="flex items-center gap-2 text-warning">
+            <AlertTriangle className="size-3.5 shrink-0" aria-hidden />
+            Could not reach Stripe right now. Showing cached data.
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => setRefreshKey((k) => k + 1)}
+          >
+            <RefreshCw className="size-3" />
+            Retry
+          </Button>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-2 border-b border-border px-4 py-3 text-sm">
         <div>
           <div className="text-xs uppercase tracking-wide text-text-muted">Available now</div>
@@ -179,9 +218,29 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
       </div>
 
       {!data.payouts_enabled ? (
-        <div className="border-b border-border bg-warning/5 px-4 py-2 text-xs text-warning">
-          Payouts are paused until your Stripe Connect verification is complete.
-        </div>
+        <>
+          <div className="space-y-1 border-b border-border bg-warning/5 px-4 py-3 text-xs text-warning">
+            <p className="font-semibold">Payouts pending Stripe verification</p>
+            <p className="text-text-secondary">
+              You can take diner deposits right now — that's already working.
+              Payouts to your bank are paused while Stripe verifies your
+              account. If Stripe needs anything specific from you, it'll
+              appear as an actionable banner in the panel below; otherwise
+              this usually clears within 24 hours (occasionally up to 2-3
+              business days).
+            </p>
+          </div>
+          <div className="border-b border-border p-4">
+            <StripeConnectVerifyPanel
+              restaurantId={restaurantId}
+              onExit={() => {
+                // After Stripe closes the embedded onboarding, re-fetch the
+                // payouts payload so the banner updates without a manual reload.
+                setRefreshKey((k) => k + 1);
+              }}
+            />
+          </div>
+        </>
       ) : null}
 
       {payouts.length === 0 ? (

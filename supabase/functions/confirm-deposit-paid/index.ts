@@ -24,6 +24,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ConfirmDepositPaidSchema } from "../_shared/validation/payment.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -108,8 +109,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
     if (intent.status !== "succeeded" && intent.status !== "processing") {

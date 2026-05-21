@@ -4,6 +4,7 @@ import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { OrderTipSchema } from "../_shared/validation/charge.ts";
 import { computeDinerCharge } from "../_shared/stripe-fee.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -170,8 +171,7 @@ Deno.serve(async (req: Request) => {
     // `amount` is grossed up and `application_fee_amount` stays 5.5%
     // of base. Restaurant nets 94.5% of base; Cenaiva keeps 5.5% of
     // base; Stripe's fee is fully covered by the gross-up.
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     if (!profile.stripe_customer_id) {
       return jsonRes({ ok: false, error: "No saved card. Please add one in Account > Payment." }, 400);

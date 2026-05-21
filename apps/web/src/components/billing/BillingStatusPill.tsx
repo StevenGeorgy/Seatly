@@ -45,7 +45,7 @@ function computeState(
   pausedReason: string | null | undefined,
   cancelAtPeriodEnd: boolean | null | undefined,
   pausedAt: string | null | undefined,
-): { tone: Tone; copy: string } {
+): { tone: Tone; copy: string; showUpdateCard?: boolean } {
   // Hard payment-failed state → render NOTHING (PaymentFailedBanner shows
   // the full red banner instead).
   if (pausedReason === "payment_failed") {
@@ -92,12 +92,12 @@ function computeState(
     case "active":
       return { tone: "green", copy: "Billing active" };
     case "past_due":
-      return { tone: "amber", copy: "Last bill past due" };
+      return { tone: "amber", copy: "Last bill past due", showUpdateCard: true };
     case "unpaid":
-      return { tone: "amber", copy: "Bill unpaid" };
+      return { tone: "amber", copy: "Bill unpaid", showUpdateCard: true };
     case "incomplete":
     case "incomplete_expired":
-      return { tone: "amber", copy: "Setup incomplete" };
+      return { tone: "amber", copy: "Setup incomplete", showUpdateCard: true };
     case "paused":
       return { tone: "amber", copy: "Subscription paused" };
     default:
@@ -115,7 +115,7 @@ export function BillingStatusPill({
   pausedAt,
   className,
 }: BillingStatusPillProps) {
-  const { tone, copy } = computeState(
+  const { tone, copy, showUpdateCard } = computeState(
     subscriptionStatus,
     trialEndsAt,
     pausedReason,
@@ -132,14 +132,24 @@ export function BillingStatusPill({
     tone === "green" ? "bg-success" : "bg-warning";
 
   return (
-    <Link
-      to="/dashboard/settings"
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80 ${toneClasses} ${className ?? ""}`}
-      aria-label={`Billing status: ${copy}. Tap for details.`}
-    >
-      <span className={`size-1.5 rounded-full ${dotClasses}`} aria-hidden />
-      <span className="whitespace-nowrap">{copy}</span>
-      <ChevronRight className="size-3 opacity-60" aria-hidden />
-    </Link>
+    <div className={`inline-flex flex-col items-end gap-1 ${className ?? ""}`}>
+      <Link
+        to="/dashboard/settings"
+        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80 ${toneClasses}`}
+        aria-label={`Billing status: ${copy}. Tap for details.`}
+      >
+        <span className={`size-1.5 rounded-full ${dotClasses}`} aria-hidden />
+        <span className="whitespace-nowrap">{copy}</span>
+        <ChevronRight className="size-3 opacity-60" aria-hidden />
+      </Link>
+      {showUpdateCard ? (
+        <Link
+          to="/dashboard/settings#change-card"
+          className="text-xs font-medium text-warning underline-offset-2 hover:underline"
+        >
+          Update card →
+        </Link>
+      ) : null}
+    </div>
   );
 }

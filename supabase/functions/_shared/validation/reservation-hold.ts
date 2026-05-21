@@ -18,11 +18,16 @@ export const CreateReservationHoldSchema = z.object({
   // would reject timezone-less formats that `new Date` accepts.
   date_time: BoundedText(64),
   party_size: PositiveInt(30),
-  source: BoundedText(40).optional(),
-  idempotency_key: BoundedText(128).optional(),
-  event_id: Uuid.optional(),
-  promotion_id: Uuid.optional(),
-  applied_promo_code: BoundedText(64).optional(),
+  // .nullish() (not .optional()) — the client sends `null` for empty
+  // event_id / promotion_id / applied_promo_code on the diner-checkout
+  // path. Without nullish() the Zod schema 400s the pre-flight hold
+  // create, which is non-fatal (checkout proceeds without a hold) but
+  // pollutes the console and breaks the deferred-PI optimisation.
+  source: BoundedText(40).nullish(),
+  idempotency_key: BoundedText(128).nullish(),
+  event_id: Uuid.nullish(),
+  promotion_id: Uuid.nullish(),
+  applied_promo_code: BoundedText(64).nullish(),
 });
 export type CreateReservationHoldInput = z.infer<
   typeof CreateReservationHoldSchema

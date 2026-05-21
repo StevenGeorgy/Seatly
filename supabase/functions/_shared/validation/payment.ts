@@ -15,10 +15,27 @@ const PaymentMethodId = BoundedText(200).regex(
   "payment_method_id must start with pm_",
 );
 
-// stripe-attach-payment-method: { payment_intent_id }
-export const StripeAttachPaymentMethodSchema = z.object({
-  payment_intent_id: PaymentIntentId,
-});
+const SetupIntentId = BoundedText(200).regex(
+  /^seti_[A-Za-z0-9_]+$/,
+  "setup_intent_id must start with seti_",
+);
+
+// stripe-attach-payment-method: accepts either a payment_intent_id (legacy
+// booking-checkout path — diner just confirmed a PI and ticked "save card")
+// OR a setup_intent_id (new /account flow — diner explicitly saving a card
+// via SetupIntent without paying). Exactly one must be present.
+export const StripeAttachPaymentMethodSchema = z
+  .object({
+    payment_intent_id: PaymentIntentId.optional(),
+    setup_intent_id: SetupIntentId.optional(),
+  })
+  .refine(
+    (v) => Boolean(v.payment_intent_id) !== Boolean(v.setup_intent_id),
+    {
+      message:
+        "Pass exactly one of payment_intent_id or setup_intent_id (not both).",
+    },
+  );
 export type StripeAttachPaymentMethodInput = z.infer<
   typeof StripeAttachPaymentMethodSchema
 >;

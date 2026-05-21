@@ -14,6 +14,7 @@ import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_share
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { RefundPaymentIntentSchema } from "../_shared/validation/payment.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -69,8 +70,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     const outcome = await refundPaymentIntent(stripe, paymentIntentId, reason);
     if (!outcome.ok) {

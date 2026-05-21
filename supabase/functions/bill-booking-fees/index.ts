@@ -25,6 +25,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { buildCorsHeaders } from "../_shared/cors.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -95,8 +96,7 @@ Deno.serve(async (req: Request) => {
       (restaurantsRaw ?? []).map((r: any) => [r.id, { stripe_customer_id: r.stripe_customer_id, subscription_status: r.subscription_status }]),
     );
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     let billed = 0;
     let failed = 0;

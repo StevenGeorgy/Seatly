@@ -15,6 +15,9 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { RestaurantIdOnlySchema } from "../_shared/validation/subscription.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
+import { isOwnerOfRestaurant } from "../_shared/auth-restaurants.ts";
+import { RECOVERABLE_SUBSCRIPTION_STATUSES } from "../_shared/subscription-status.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,22 +38,6 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-async function ownerOfRestaurant(authUserId: string, restaurantId: string): Promise<boolean> {
-  const { data: profile } = await supabaseAdmin
-    .from("user_profiles")
-    .select("id")
-    .eq("auth_user_id", authUserId)
-    .maybeSingle();
-  if (!profile) return false;
-  const { data: role } = await supabaseAdmin
-    .from("user_restaurant_roles")
-    .select("role")
-    .eq("user_id", (profile as { id: string }).id)
-    .eq("restaurant_id", restaurantId)
-    .eq("role", "owner")
-    .maybeSingle();
-  return Boolean(role);
-}
 
 async function dispatchOwnerNotification(
   restaurantId: string,
@@ -115,7 +102,7 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const isOwner = await ownerOfRestaurant(user.id, restaurantId);
+    const isOwner = await isOwnerOfRestaurant(supabaseAdmin, user.id, restaurantId);
     if (!isOwner) return jsonRes({ error: "Not authorized for this restaurant" }, 403);
 
     const { data: rest } = await supabaseAdmin
@@ -136,8 +123,7 @@ Deno.serve(async (req: Request) => {
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe not configured on server" }, 500);
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     // Find the active sub on this customer.
     const subs = await stripe.subscriptions.list({
@@ -146,7 +132,7 @@ Deno.serve(async (req: Request) => {
       limit: 5,
     });
     const active = subs.data.find((s) =>
-      ["trialing", "active", "past_due", "incomplete"].includes(s.status ?? ""),
+      RECOVERABLE_SUBSCRIPTION_STATUSES.has(s.status ?? ""),
     );
     if (!active) {
       return jsonRes({

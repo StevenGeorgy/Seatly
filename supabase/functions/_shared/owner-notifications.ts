@@ -25,7 +25,8 @@ export type OwnerNotificationType =
   | "subscription_paused"
   | "subscription_resumed"
   | "new_reservation_owner"
-  | "cancellation_owner";
+  | "cancellation_owner"
+  | "payment_failed_diner";
 
 export interface SendOwnerNotificationOpts {
   supabase: SupabaseClient;
@@ -75,6 +76,11 @@ const DEFAULT_IDEMPOTENCY_WINDOWS: Record<OwnerNotificationType, number> = {
   // burst, so the window is tight.
   new_reservation_owner: 5,
   cancellation_owner: 5,
+  // Diner payment failure: tight idempotency keyed on reservation_id
+  // happens at the call site (template body includes the confirmation
+  // code). A short burst window swats Stripe webhook retries for the
+  // same PI.
+  payment_failed_diner: 60,
 };
 
 export async function getOwnerContact(
@@ -299,6 +305,27 @@ function buildTemplate(
           `${greet} ${actor}the reservation at ${restaurantName} for ${reservedAtLabel}. ` +
           `Any deposit or pre-order paid will be refunded to the diner's card. ` +
           `Manage your bookings: https://cenaiva.com/dashboard/reservations.`,
+      };
+    }
+    case "payment_failed_diner": {
+      const confirmationCode = typeof context.confirmationCode === "string"
+        ? (context.confirmationCode as string)
+        : "(no code)";
+      const amount = typeof context.amount === "string"
+        ? (context.amount as string)
+        : "$—";
+      const reason = typeof context.failureReason === "string" && context.failureReason
+        ? (context.failureReason as string)
+        : "Card declined";
+      const guestName = typeof context.guestName === "string" && context.guestName.trim()
+        ? (context.guestName as string).trim()
+        : "A diner";
+      return {
+        subject: `Heads up — a diner's payment failed at ${restaurantName}`,
+        body:
+          `${greet} ${guestName}'s payment for ${restaurantName} just failed. ` +
+          `Reservation: ${confirmationCode}, Amount: ${amount}, Reason: ${reason}. ` +
+          `The booking has been auto-cancelled. No action needed; just a heads-up so you can plan.`,
       };
     }
     case "payment_received": {
@@ -592,6 +619,57 @@ export async function notifyOwnerNewReservation(
     type: "new_reservation_owner",
     context,
     contactOverride: contact,
+  });
+}
+
+export interface NotifyOwnerDinerPaymentFailedOpts {
+  supabase: SupabaseClient;
+  restaurant_id: string;
+  reservation_id: string;
+  amount_cents: number;
+  failure_reason: string;
+  guest_name?: string;
+  guest_email?: string;
+}
+
+/**
+ * Notifies the restaurant owner that a diner's payment attempt failed
+ * (and the booking has been auto-cancelled). Fire-and-forget — callers
+ * should not await this when responding to a Stripe webhook.
+ *
+ * Mirrors the `notifyOwnerCancellation` shape but routes through the
+ * lifecycle-style template path rather than the per-owner preference
+ * toggle — payment failures are always worth surfacing to the owner.
+ */
+export async function notifyOwnerDinerPaymentFailed(
+  opts: NotifyOwnerDinerPaymentFailedOpts,
+): Promise<SendOwnerNotificationResult> {
+  let confirmationCode: string | null = null;
+  let guestName: string | null = opts.guest_name ?? null;
+  try {
+    const { data } = await opts.supabase
+      .from("reservations")
+      .select("confirmation_code, guest_full_name")
+      .eq("id", opts.reservation_id)
+      .maybeSingle();
+    confirmationCode = (data as any)?.confirmation_code ?? null;
+    if (!guestName) guestName = (data as any)?.guest_full_name ?? null;
+  } catch (_) {
+    // Best-effort enrichment; template falls back to placeholders.
+  }
+  const amount = `$${(opts.amount_cents / 100).toFixed(2)}`;
+  return sendOwnerNotification({
+    supabase: opts.supabase,
+    restaurant_id: opts.restaurant_id,
+    type: "payment_failed_diner",
+    context: {
+      reservationId: opts.reservation_id,
+      confirmationCode,
+      amount,
+      failureReason: opts.failure_reason,
+      guestName,
+      guestEmail: opts.guest_email ?? null,
+    },
   });
 }
 

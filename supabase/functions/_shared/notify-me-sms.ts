@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import twilio from "npm:twilio@5.0.0";
 
+import { isPhoneOptedOut } from "./sms.ts";
+
 // One row returned by `match_availability_alerts_for_restaurant` /
 // `match_availability_alerts_for_event`. Restaurant-variant rows have
 // `slot_time` set; event-variant rows have `event_id` + `event_name` set.
@@ -103,6 +105,23 @@ export async function sendNotifyMeSms(
 
       if (!to || !twilioClient || !twilioFromPhone) {
         // Either no phone on file, kill-switch on, or Twilio creds missing.
+        await supabase.from("communication_log").insert({
+          guest_id: null,
+          restaurant_id: row.restaurant_id,
+          channel: "sms",
+          type: "slot_opened",
+          subject: row.event_name ?? row.restaurant_name,
+          body,
+          status: "skipped",
+          sent_at: null,
+          campaign_id: row.alert_id,
+        });
+        skipped += 1;
+        return;
+      }
+
+      if (await isPhoneOptedOut(supabase, to)) {
+        console.log(`[notify-me-sms] phone opted out, skipping SMS to ${to.slice(-4)}`);
         await supabase.from("communication_log").insert({
           guest_id: null,
           restaurant_id: row.restaurant_id,

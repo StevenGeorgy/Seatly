@@ -3,6 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
+import { isPhoneOptedOut } from "../_shared/sms.ts";
 import {
   closureUnavailableMessage,
   findClosedSpecialDayForDate,
@@ -746,18 +747,25 @@ Deno.serve(async (req: Request) => {
 
     const smsToPhone = normalizeNorthAmericanPhone(guestPhone);
     if (smsToPhone && twilioClient && twilioFromPhone) {
-      try {
-        await twilioClient.messages.create({
-          body: confirmationBody,
-          from: twilioFromPhone,
-          to: smsToPhone,
-        });
-        confirmationChannel = "sms";
-        confirmationStatus = "sent";
-      } catch (err) {
-        console.error("Reservation confirmation SMS failed", err);
-        confirmationChannel = "sms";
-        confirmationStatus = "failed";
+      if (await isPhoneOptedOut(supabase, smsToPhone)) {
+        console.log(
+          `[create-public-booking] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
+        );
+        // fall through to email
+      } else {
+        try {
+          await twilioClient.messages.create({
+            body: confirmationBody,
+            from: twilioFromPhone,
+            to: smsToPhone,
+          });
+          confirmationChannel = "sms";
+          confirmationStatus = "sent";
+        } catch (err) {
+          console.error("Reservation confirmation SMS failed", err);
+          confirmationChannel = "sms";
+          confirmationStatus = "failed";
+        }
       }
     }
 

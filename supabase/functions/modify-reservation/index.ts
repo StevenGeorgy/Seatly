@@ -9,9 +9,11 @@ import {
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { computeBreakEvenRefund } from "../_shared/refund-math.ts";
 import { computeDinerCharge } from "../_shared/stripe-fee.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ModifyReservationSchema } from "../_shared/validation/booking.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -608,8 +610,7 @@ Deno.serve(async (req: Request) => {
         if (!stripeKey) {
           depositAdjustment = { kind: "failed", reason: "Stripe not configured" };
         } else {
-          const { default: Stripe } = await import("npm:stripe@17");
-          const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+          const stripe = await getStripeClient(stripeKey);
           const currency = (restaurant?.currency ?? "CAD").toLowerCase();
           // Diner pays the deposit delta + Stripe processing fee on top.
           // application_fee_amount is 5.5% of the BASE delta.
@@ -735,14 +736,22 @@ Deno.serve(async (req: Request) => {
       } else if (deltaCents < 0) {
         // Refund the difference. Pick the most-recent charged row that
         // can cover the refund. If no PI on the row, just adjust DB.
-        const refundCents = -deltaCents;
+        //
+        // Break-even policy (see _shared/refund-math.ts): the diner gets
+        // back the delta minus Cenaiva's 5.5%. Above break-even (delta
+        // ≥ ~$11.54), the Stripe fee on the delta is absorbed by the
+        // restaurant; below, the diner eats it.
+        const deltaToRefund = -deltaCents;
         const target = chargedRows.find((r) => (r.amount_cents ?? 0) > 0);
         if (!target) {
           depositAdjustment = { kind: "none" };
         } else {
           const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
           const applyDbAdjust = async () => {
-            const remaining = (target.amount_cents ?? 0) - refundCents;
+            // DB bookkeeping uses the FULL delta (the diner's
+            // responsibility for that slice is gone), not the
+            // Cenaiva-fee-adjusted refund amount.
+            const remaining = (target.amount_cents ?? 0) - deltaToRefund;
             if (remaining <= 0) {
               await adminClient
                 .from("reservation_deposit_payments")
@@ -757,21 +766,21 @@ Deno.serve(async (req: Request) => {
           };
 
           if (stripeKey && target.stripe_payment_intent_id) {
-            const { default: Stripe } = await import("npm:stripe@17");
-            const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+            const stripe = await getStripeClient(stripeKey);
             try {
-              const partialRefundCents = Math.min(refundCents, target.amount_cents ?? 0);
+              const cappedDelta = Math.min(deltaToRefund, target.amount_cents ?? 0);
+              const { refundCents } = computeBreakEvenRefund(cappedDelta);
               const outcome = await refundPaymentIntent(
                 stripe,
                 target.stripe_payment_intent_id,
                 "modify_deposit_delta_refund",
-                partialRefundCents,
+                refundCents,
               );
               if (outcome.ok) {
                 await applyDbAdjust();
                 depositAdjustment = {
                   kind: "refunded",
-                  amount_cents: partialRefundCents,
+                  amount_cents: refundCents,
                   payment_intent_id: target.stripe_payment_intent_id,
                 };
               } else {
@@ -787,11 +796,13 @@ Deno.serve(async (req: Request) => {
               depositAdjustment = { kind: "failed", reason: msg };
             }
           } else {
-            // Stub row (no PI) — adjust DB only.
+            // Stub row (no PI) — adjust DB only. No Stripe call, so no
+            // Cenaiva-fee deduction either (no real money moved at
+            // charge time).
             await applyDbAdjust();
             depositAdjustment = {
               kind: "refunded",
-              amount_cents: Math.min(refundCents, target.amount_cents ?? 0),
+              amount_cents: Math.min(deltaToRefund, target.amount_cents ?? 0),
               payment_intent_id: null,
             };
           }

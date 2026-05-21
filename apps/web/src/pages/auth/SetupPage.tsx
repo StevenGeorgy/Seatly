@@ -228,7 +228,15 @@ export default function SetupPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, profile } = useUser();
-  const [step, setStep] = useState(1);
+  // Deep-link support: ?step=8 lets banners (e.g. "Finish verification" on
+  // the dashboard) drop the owner straight into the Stripe Connect / payment
+  // step without walking all 8 wizard steps again. Clamped to valid range.
+  const initialStep = (() => {
+    const raw = Number(searchParams.get("step") ?? "1");
+    if (!Number.isFinite(raw) || raw < 1 || raw > WIZARD_TOTAL_STEPS) return 1;
+    return Math.floor(raw);
+  })();
+  const [step, setStep] = useState(initialStep);
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [busy, setBusy] = useState(false);

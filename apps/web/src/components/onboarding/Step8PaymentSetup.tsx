@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { stripePromise, isStripeConfigured } from "@/lib/stripe";
+import { CENAIVA_CONNECT_APPEARANCE } from "@/lib/stripe/connectAppearance";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -62,6 +63,7 @@ import {
 import { SubscriptionCard } from "@/components/billing/SubscriptionCard";
 import { ChangeSubscriptionCard } from "@/components/billing/ChangeSubscriptionCard";
 import { CardOnFileBadge } from "@/components/billing/CardOnFileBadge";
+import { StripeConnectVerifyPanel } from "@/components/billing/StripeConnectVerifyPanel";
 
 type Step8PaymentSetupProps = {
   restaurantId: string;
@@ -209,36 +211,7 @@ function StripeConnectEmbeddedKYC({
         const instance = loadConnectAndInitialize({
           publishableKey,
           fetchClientSecret,
-          appearance: {
-            overlays: "dialog",
-            variables: {
-              // Core palette — matches the wizard's gold-on-black aesthetic.
-              colorPrimary: "#D4AF37",
-              colorBackground: "#0A0A0A",
-              colorText: "#FFFFFF",
-              colorSecondaryText: "#B0B0B0",
-              colorDanger: "#EF4444",
-              // Buttons mirror the wizard's primary CTA (gold pill, dark text).
-              buttonPrimaryColorBackground: "#D4AF37",
-              buttonPrimaryColorText: "#0A0A0A",
-              buttonPrimaryColorBorder: "#D4AF37",
-              buttonSecondaryColorBackground: "#1A1A1A",
-              buttonSecondaryColorText: "#FFFFFF",
-              buttonSecondaryColorBorder: "#2A2A2A",
-              // Form controls (inputs, selects) match the wizard's elevated
-              // surface tokens so fields don't pop visually.
-              formAccentColor: "#D4AF37",
-              formHighlightColorBorder: "#D4AF37",
-              colorBorder: "#2A2A2A",
-              offsetBackgroundColor: "#121212",
-              actionPrimaryColorText: "#D4AF37",
-              // Typography + shape match the wizard's tokens.
-              fontFamily: "system-ui, -apple-system, sans-serif",
-              fontSizeBase: "14px",
-              borderRadius: "10px",
-              spacingUnit: "4px",
-            },
-          },
+          appearance: CENAIVA_CONNECT_APPEARANCE,
         });
         if (cancelled) return;
         setConnectInstance(instance);
@@ -394,13 +367,18 @@ export function Step8PaymentSetup({
       await refreshRestaurantRow();
       const { data } = await getSupabaseBrowserClient()
         .from("restaurants")
-        .select("stripe_charges_enabled, stripe_details_submitted")
+        .select("stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted")
         .eq("id", restaurantId)
         .maybeSingle();
-      const row = data as { stripe_charges_enabled: boolean | null; stripe_details_submitted: boolean | null } | null;
-      if (row?.stripe_charges_enabled || row?.stripe_details_submitted) {
-        break;
-      }
+      const row = data as {
+        stripe_charges_enabled: boolean | null;
+        stripe_payouts_enabled: boolean | null;
+        stripe_details_submitted: boolean | null;
+      } | null;
+      // Keep polling until payouts are enabled (the strictest gate) so the
+      // user sees the "Verified" badge update without a manual refresh.
+      if (row?.stripe_payouts_enabled) break;
+      if (row?.stripe_charges_enabled || row?.stripe_details_submitted) break;
       attempts += 1;
     }
     setPollingKyc(false);
@@ -421,6 +399,12 @@ export function Step8PaymentSetup({
 
   // ────── Derived state (new lifecycle: card-save ≠ trial-start) ─────
   const kycVerified = summary?.stripe_charges_enabled === true;
+  // Payouts capability is a separate Stripe gate — Stripe enables charges
+  // first, then verifies identity + documents before unlocking payouts.
+  // When charges are on but payouts aren't, the restaurant can take money
+  // but it sits in Stripe holding until verification completes.
+  const payoutsEnabled = summary?.stripe_payouts_enabled === true;
+  const payoutsPending = kycVerified && !payoutsEnabled;
   const hasPaymentMethodOnFile = Boolean(summary?.payment_method_attached_at);
   const subscriptionStatus = summary?.subscription_status ?? null;
   const subscriptionActive =
@@ -601,9 +585,32 @@ export function Step8PaymentSetup({
               </span>
             ) : null}
           </div>
-          {kycVerified ? (
+          {kycVerified && payoutsEnabled ? (
             <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              You're verified and ready to accept payments.
+              You're fully verified — payments will land in your bank
+              automatically (2–7 day rolling schedule).
+            </div>
+          ) : kycVerified && !payoutsEnabled ? (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+              You're ready to accept diner payments. Payouts to your bank
+              will unlock once Stripe finishes reviewing your verification —
+              see the panel below for status.
+            </div>
+          ) : null}
+          {payoutsPending ? (
+            <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
+              <p className="font-semibold text-warning">Payouts pending Stripe verification</p>
+              <p className="mt-1">
+                You can take deposits and pre-orders right now — that's
+                already working. Payouts to your bank are paused while
+                Stripe verifies your account.
+              </p>
+              <p className="mt-2 text-xs text-text-muted">
+                If Stripe needs anything specific from you, it'll show as
+                an actionable banner in the panel below. Otherwise this
+                usually clears within 24 hours (up to 2-3 business days
+                in some cases). In test mode it clears in seconds.
+              </p>
             </div>
           ) : summary?.stripe_details_submitted && !kycVerified ? (
             <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
@@ -613,10 +620,22 @@ export function Step8PaymentSetup({
                 come back to this page later.
               </p>
             </div>
-          ) : publishableKey ? (
+          ) : null}
+          {!kycVerified && publishableKey ? (
+            // First-time onboarding — diner hasn't submitted yet OR Stripe
+            // hasn't enabled charges. Use the standard account_onboarding flow.
             <StripeConnectEmbeddedKYC
               restaurantId={restaurantId}
               publishableKey={publishableKey}
+              onExit={() => void handleKycExit()}
+            />
+          ) : payoutsPending ? (
+            // Details submitted but payouts still gated on identity errors.
+            // Switch to management-mode (notification_banner + account_management)
+            // so the user can actually fix the flagged info — account_onboarding
+            // shows a useless "Information submitted" placeholder here.
+            <StripeConnectVerifyPanel
+              restaurantId={restaurantId}
               onExit={() => void handleKycExit()}
             />
           ) : null}

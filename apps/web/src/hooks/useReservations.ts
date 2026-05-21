@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import type { AvailabilitySlot } from "@/hooks/useAvailability";
@@ -12,6 +13,51 @@ import {
 } from "@/lib/supabase/client";
 import { matchesReservationSearch } from "@/lib/reservations/search";
 import { localDayBoundsUtcIso } from "@/lib/utils/time";
+
+type RefundOutcome = {
+  payment_id: string;
+  status: "refunded" | "already_refunded" | "failed" | "stub_refunded";
+  error?: string;
+};
+
+type RefundDepositResponse = {
+  ok?: boolean;
+  refunded_count?: number;
+  outcomes?: RefundOutcome[];
+  error?: string;
+};
+
+async function fireDepositRefundOnArrival(
+  reservationId: string,
+  accessToken: string | null,
+): Promise<{ refundedCount: number; hadFailure: boolean }> {
+  try {
+    const res = await fetch(
+      `${getSupabaseProjectUrl()}/functions/v1/refund-deposit-on-arrival`,
+      {
+        method: "POST",
+        headers: {
+          apikey: getSupabaseAnonKey(),
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reservation_id: reservationId, source: "owner" }),
+      },
+    );
+    const body = (await res.json().catch(() => ({}))) as RefundDepositResponse;
+    if (!res.ok || body.error || body.ok !== true) {
+      const friendly = toUserFacingEdgeError(res, body);
+      console.error("[useReservations.refundOnArrival]", friendly.code, friendly.technical ?? body, "RAW_BODY", JSON.stringify(body), "STATUS", res.status);
+      return { refundedCount: 0, hadFailure: true };
+    }
+    const refundedCount = typeof body.refunded_count === "number" ? body.refunded_count : 0;
+    const hadFailure = (body.outcomes ?? []).some((o) => o.status === "failed");
+    return { refundedCount, hadFailure };
+  } catch (err) {
+    console.error("[useReservations.refundOnArrival] network", err);
+    return { refundedCount: 0, hadFailure: true };
+  }
+}
 
 export type ReservationEventRef = {
   id: string;
@@ -54,6 +100,7 @@ export type ReservationRow = {
   no_show_risk_score: number | null;
   waiter_id: string | null;
   deposit_amount: number | null;
+  deposit_amount_cents?: number | null;
   deposit_status: string | null;
   is_guest_checkout: boolean;
   guest_email: string | null;
@@ -318,7 +365,39 @@ export function useReservations(filters?: ReservationFilters) {
       throw new Error(friendly.message);
     }
     void partySize;
+
+    // After seating succeeds, fire the deposit refund. Failures here do NOT
+    // unwind the seat action — surface a toast warning instead so the host
+    // sees something is off but the floor flow keeps moving.
+    const { data: sessionData } = await client.auth.getSession();
+    const token = sessionData.session?.access_token ?? null;
+    const { refundedCount, hadFailure } = await fireDepositRefundOnArrival(reservationId, token);
+    if (hadFailure) {
+      toast.warning("Seated, but the deposit refund couldn't be completed. Check the reservation.");
+    } else if (refundedCount > 0) {
+      toast.success("Seated. Deposit refunded.");
+    } else {
+      toast.success("Seated.");
+    }
+
     void fetchReservations();
+  };
+
+  const markArrivedFromNoShow = async (reservationId: string) => {
+    await updateStatus(reservationId, "completed");
+
+    if (!isSupabaseConfigured()) return;
+    const client = getSupabaseBrowserClient();
+    const { data: sessionData } = await client.auth.getSession();
+    const token = sessionData.session?.access_token ?? null;
+    const { refundedCount, hadFailure } = await fireDepositRefundOnArrival(reservationId, token);
+    if (hadFailure) {
+      toast.warning("Marked as arrived, but the deposit refund couldn't be completed.");
+    } else if (refundedCount > 0) {
+      toast.success("Marked as arrived. Deposit refunded.");
+    } else {
+      toast.success("Marked as arrived.");
+    }
   };
 
   const createReservation = async (payload: {
@@ -460,6 +539,7 @@ export function useReservations(filters?: ReservationFilters) {
     refetch: fetchReservations,
     updateStatus,
     seatReservation,
+    markArrivedFromNoShow,
     createReservation,
     requestManagerApproval,
   };

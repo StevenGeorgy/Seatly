@@ -25,6 +25,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { DeleteRestaurantSchema } from "../_shared/validation/restaurant-ops.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -136,8 +137,7 @@ Deno.serve(async (req: Request) => {
       const SALVAGEABLE = new Set(["trialing", "active", "past_due"]);
       if (SALVAGEABLE.has(row.subscription_status ?? "")) {
         try {
-          const { default: Stripe } = await import("npm:stripe@17");
-          const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+          const stripe = await getStripeClient(stripeKey);
           const subs = await stripe.subscriptions.list({
             customer: row.stripe_customer_id,
             status: "all",

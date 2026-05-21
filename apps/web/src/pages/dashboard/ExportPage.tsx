@@ -174,10 +174,11 @@ export default function ExportPage() {
         //
         // Date filter applies to `paid_at` for both, since the accountant
         // cares about when money landed, not when the row was created.
-        // Gross amount only — netting out Cenaiva's 5.5% commission and
-        // Stripe's 2.9%+30¢ would require per-row Stripe lookups; leave
-        // that reconciliation to the accountant alongside the Stripe
-        // payout reports.
+        // Under the Option B fee model (see STRIPE_UPDATES.md): both
+        // the 5.5% platform fee and Stripe processing are paid by the
+        // diner on top of the base. The amount_cents / total_amount
+        // values below ARE the restaurant's net — 100% of the deposit
+        // or order base — no commission or Stripe deduction needed.
         let oq = client
           .from("orders")
           .select("id, reservation_id, paid_at, billed_at, created_at, order_type, is_preorder, source, payment_method, status, subtotal, tax_amount, tip_amount, total_amount, discount_amount, confirmation_code, stripe_payment_intent_id")

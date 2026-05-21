@@ -337,12 +337,29 @@ function SplitTenderSurface({
           {topError}
         </div>
       ) : null}
-      <div className="text-xs text-text-muted">
-        Each person enters their own card below — we charge {" "}
-        <span className="font-medium text-text-primary">
-          ${(dinerCharge.dinerTotalCents / 100).toFixed(2)}
-        </span> {" "}
-        per share (includes processing fee).
+      <div className="space-y-1 text-xs text-text-muted">
+        <p>
+          Each person enters their own card below — we charge {" "}
+          <span className="font-medium text-text-primary">
+            ${(dinerCharge.dinerTotalCents / 100).toFixed(2)}
+          </span> {" "}
+          per share (deposit{" "}
+          <span className="text-text-primary">
+            ${(dinerCharge.baseCents / 100).toFixed(2)}
+          </span>{" "}
+          + 5.5% platform fee{" "}
+          <span className="text-text-primary">
+            ${(dinerCharge.cenaivaFeeCents / 100).toFixed(2)}
+          </span>{" "}
+          + processing fee{" "}
+          <span className="text-text-primary">
+            ${(dinerCharge.processingFeeCents / 100).toFixed(2)}
+          </span>).
+        </p>
+        <p>
+          Platform and processing fees are non-refundable. Each share's
+          deposit refunds on arrival.
+        </p>
       </div>
       <div className="flex flex-col gap-3">
         {Array.from({ length: payerCount }, (_, idx) => {

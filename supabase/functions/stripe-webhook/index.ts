@@ -17,6 +17,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,21 +38,47 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// In-memory de-dupe of recent event ids. Tiny defense against Stripe's
-// at-least-once delivery; a proper `processed_events` table can be added
-// later (CLAUDE.md follow-up).
-const seenEventIds = new Set<string>();
-const SEEN_CAP = 500;
-function rememberEvent(id: string): boolean {
-  if (seenEventIds.has(id)) return false;
-  if (seenEventIds.size > SEEN_CAP) {
-    // Drop the oldest by rebuilding (cheap at this scale).
-    const arr = Array.from(seenEventIds).slice(-Math.floor(SEEN_CAP / 2));
-    seenEventIds.clear();
-    arr.forEach((v) => seenEventIds.add(v));
+// Persistent dedup via `stripe_webhook_events` (PRIMARY KEY on event_id).
+// Stripe delivers at-least-once; if we ever process the same event twice
+// (e.g. retry storm, edge fn restart, parallel deliveries) the downstream
+// handlers can produce duplicate side effects (double-charging deposits,
+// stale subscription_status overwrites). The in-memory Set we used before
+// reset on every edge function cold start — useless for retry windows
+// that span minutes.
+//
+// INSERT ... ON CONFLICT DO NOTHING is atomic. If the row already existed,
+// `rowCount === 0` and we return false (skip). Otherwise we own the event.
+async function rememberEvent(
+  eventId: string,
+  eventType: string,
+  requestId: string | null,
+): Promise<boolean> {
+  try {
+    const { error, count } = await supabaseAdmin
+      .from("stripe_webhook_events")
+      .insert(
+        {
+          event_id: eventId,
+          event_type: eventType,
+          request_id: requestId,
+          source: "stripe",
+        },
+        { count: "exact" },
+      );
+    if (error) {
+      // PostgREST returns code 23505 on unique-violation; treat as "already
+      // processed" rather than letting it surface as a 500 below.
+      if ((error as { code?: string }).code === "23505") return false;
+      console.error("[stripe-webhook] dedup insert failed", error);
+      // Fail-open: process anyway. Better to double-process once than to
+      // drop an event entirely on a transient DB error.
+      return true;
+    }
+    return (count ?? 0) > 0;
+  } catch (err) {
+    console.error("[stripe-webhook] dedup insert threw", err);
+    return true; // Fail-open
   }
-  seenEventIds.add(id);
-  return true;
 }
 
 type AccountLike = {
@@ -566,6 +593,58 @@ async function handlePaymentIntentFailed(pi: PaymentIntentLike): Promise<void> {
     .eq("status", "pending");
   if (error) console.error("[stripe-webhook] payment_intent.failed update failed", error);
   console.log(`[stripe-webhook] payment_intent.failed for ${reservationId}: ${message}`);
+
+  // Owner heads-up notification (fire-and-forget). Pulled at the
+  // metadata layer so we don't burden the deposit-row update path
+  // with an extra await. Wrapped in a try/catch + .catch so a missing
+  // helper or transient failure never blocks the webhook response.
+  try {
+    const restaurantIdMeta = pi.metadata?.restaurant_id ?? null;
+    let restaurantId: string | null = typeof restaurantIdMeta === "string" ? restaurantIdMeta : null;
+    let guestName: string | null = null;
+    let guestEmail: string | null = null;
+    if (!restaurantId || !guestName) {
+      const { data: row } = await supabaseAdmin
+        .from("reservations")
+        .select("restaurant_id, guest_full_name, guest_email")
+        .eq("id", reservationId)
+        .maybeSingle();
+      restaurantId = restaurantId ?? (row as any)?.restaurant_id ?? null;
+      guestName = (row as any)?.guest_full_name ?? null;
+      guestEmail = (row as any)?.guest_email ?? null;
+    }
+    if (restaurantId) {
+      const mod = await import("../_shared/owner-notifications.ts").catch(() => null);
+      if (
+        mod &&
+        typeof (mod as { notifyOwnerDinerPaymentFailed?: unknown }).notifyOwnerDinerPaymentFailed === "function"
+      ) {
+        void (mod as {
+          notifyOwnerDinerPaymentFailed: (opts: Record<string, unknown>) => Promise<unknown>;
+        })
+          .notifyOwnerDinerPaymentFailed({
+            supabase: supabaseAdmin,
+            restaurant_id: restaurantId,
+            reservation_id: reservationId,
+            amount_cents: typeof pi.amount === "number" ? pi.amount : 0,
+            failure_reason: message,
+            guest_name: guestName ?? undefined,
+            guest_email: guestEmail ?? undefined,
+          })
+          .catch((e: unknown) => {
+            console.warn(
+              "[stripe-webhook] notifyOwnerDinerPaymentFailed rejected",
+              e instanceof Error ? e.message : String(e),
+            );
+          });
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[stripe-webhook] payment_failed owner notify threw",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 async function handleSubscriptionDeleted(sub: SubscriptionLike): Promise<void> {
@@ -621,8 +700,7 @@ Deno.serve(async (req: Request) => {
 
   const rawBody = await req.text();
 
-  const { default: Stripe } = await import("npm:stripe@17");
-  const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+  const stripe = await getStripeClient(stripeKey);
 
   let event: { id: string; type: string; data: { object: Record<string, unknown> } } | null = null;
   let lastErr: unknown = null;
@@ -643,7 +721,10 @@ Deno.serve(async (req: Request) => {
     return jsonRes({ error: `Webhook signature verification failed: ${msg}` }, 400);
   }
 
-  if (!rememberEvent(event.id)) {
+  const requestId = req.headers.get("stripe-signature")
+    ? (event.request as { id?: string } | null)?.id ?? null
+    : null;
+  if (!(await rememberEvent(event.id, event.type, requestId))) {
     console.log(`[stripe-webhook] duplicate event ${event.id} (${event.type}) — skipping`);
     return jsonRes({ received: true, duplicate: true });
   }

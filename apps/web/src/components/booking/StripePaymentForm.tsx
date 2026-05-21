@@ -245,18 +245,29 @@ function PaymentSurface({
 
   // One-time mode: mount Elements (only here — saving cycles on saved-card
   // mode where Elements isn't needed).
+  //
+  // Important: the `key` forces a fresh <Elements> instance whenever the
+  // diner toggles "Save this card". Without it, the Elements provider
+  // memoizes its options at first mount and a later toggle leaves
+  // `setupFutureUsage` stale relative to what the PI gets created with —
+  // Stripe then 400s on confirm: "setup_future_usage (null) does not
+  // match the value that was provided when the PaymentIntent was
+  // created (off_session)".
   return (
     <Elements
+      key={`elements-save-${saveCard ? "1" : "0"}`}
       stripe={stripePromise}
       options={{
         mode: "payment",
         amount: amountCents,
         currency: "cad",
-        // Card + wallets: deferred-PI mode auto-detects methods unless we
-        // explicitly limit. We allow card (which Stripe transparently
-        // includes Apple Pay / Google Pay tokenization for); Klarna /
-        // Affirm / Link are excluded.
-        paymentMethodTypes: ["card"],
+        // Card + wallets: the server PI now uses `automatic_payment_methods`
+        // with `allow_redirects: "never"`, which yields card + Link (and on
+        // mobile / Safari wallets). We do NOT pin `paymentMethodTypes` here
+        // — that creates an Elements/PI mismatch that 400s on confirm with
+        // "PaymentIntent does not have allowed_payment_method_types"
+        // (Bug discovered 2026-05-21 in final test wave). Letting Elements
+        // read methods from the PI keeps client + server in lockstep.
         // Save-card flag — must match the PI's setup_future_usage on
         // server. When the logged-in diner ticked "Save this card",
         // both Elements and the server PI need this so Stripe attaches
@@ -361,6 +372,10 @@ function SavedCardPath({
               saved_card_id: selectedId,
               hold_id: holdId,
               deposit_payment_ids: depositPaymentIds ?? undefined,
+              // Bug #110 fix: fresh UUID per booking attempt so distinct
+              // bookings by the same diner for the same amount get distinct
+              // PIs (was sharing T1's PI across all bookings).
+              idempotency_key: crypto.randomUUID(),
             }),
           },
         );
@@ -578,6 +593,10 @@ function OneTimeCardForm({
               hold_id: holdId,
               save_card: isLoggedIn && saveCard,
               deposit_payment_ids: depositPaymentIds ?? undefined,
+              // Bug #110 fix: fresh UUID per booking attempt so distinct
+              // bookings by the same diner for the same amount get distinct
+              // PIs (was sharing T1's PI across all bookings).
+              idempotency_key: crypto.randomUUID(),
             }),
           },
         );

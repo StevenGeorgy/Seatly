@@ -31,6 +31,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { DeleteAccountSchema } from "../_shared/validation/account.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -199,8 +200,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     let stripe: import("npm:stripe@17").Stripe | null = null;
     if (stripeKey) {
-      const { default: Stripe } = await import("npm:stripe@17");
-      stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+      stripe = await getStripeClient(stripeKey);
     }
 
     // 6. Detach saved cards.

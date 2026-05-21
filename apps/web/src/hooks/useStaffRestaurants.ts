@@ -40,6 +40,10 @@ export type StaffRestaurantRow = {
   logo_url: string | null;
   cover_photo_url: string | null;
   email: string | null;
+  // Restaurant street address (single text field — separate from billing_*
+  // which can override per CRA invoicing needs). Used to pre-fill the
+  // billing form so owners don't re-type the same address twice.
+  address?: string | null;
   city: string | null;
   province: string | null;
   country: string | null;
@@ -139,7 +143,7 @@ export function useStaffRestaurants(restaurantRoles: UserRestaurantRole[]) {
         const client = getSupabaseBrowserClient();
         const query = client
           .from("restaurants")
-          .select("id, name, slug, logo_url, cover_photo_url, email, city, province, country, lat, lng, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins, deposit_tiers, is_published, deleted_at, scheduled_purge_at, paused_reason, referral_code, subscription_status, trial_ends_at, payment_method_attached_at, subscription_cancel_at_period_end, subscription_paused_at, billing_legal_name, billing_email, billing_address_line1, billing_address_line2, billing_address_city, billing_address_province, billing_address_postal_code, billing_address_country, billing_tax_id_type, billing_tax_id_value")
+          .select("id, name, slug, logo_url, cover_photo_url, email, address, city, province, country, lat, lng, business_type, currency, timezone, hours_json, settings_json, has_bar, accepts_walkins, deposit_tiers, is_published, deleted_at, scheduled_purge_at, paused_reason, referral_code, subscription_status, trial_ends_at, payment_method_attached_at, subscription_cancel_at_period_end, subscription_paused_at, billing_legal_name, billing_email, billing_address_line1, billing_address_line2, billing_address_city, billing_address_province, billing_address_postal_code, billing_address_country, billing_tax_id_type, billing_tax_id_value")
           .in("id", ids);
         const { data, error: qErr } = await promiseWithTimeout(
           Promise.resolve(query) as Promise<{

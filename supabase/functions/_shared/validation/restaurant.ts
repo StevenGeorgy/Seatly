@@ -11,27 +11,31 @@ import {
 // owner accepts BOTH this restaurant-shaped data + auth fields (email,
 // password, full_name) for the legacy account-creation branch; those auth
 // fields are validated by SignupRestaurantOwnerSchema below.
+// Wizard payloads send `null` (not `undefined`) for empty optional fields —
+// .nullish() lets Zod accept both null and undefined. Tightening these to
+// `.optional()` would reject the wizard's natural payload shape. Handlers
+// already treat null and undefined identically (null-coalesce reads).
 export const RestaurantOnboardingSchema = z.object({
   restaurant_name: NonEmptyText(120),
-  description: BoundedText(2000).optional(),
-  address: BoundedText(300).optional(),
-  city: BoundedText(120).optional(),
-  province: BoundedText(80).optional(),
-  postal_code: BoundedText(20).optional(),
-  country: BoundedText(80).optional(),
+  description: BoundedText(2000).nullish(),
+  address: BoundedText(300).nullish(),
+  city: BoundedText(120).nullish(),
+  province: BoundedText(80).nullish(),
+  postal_code: BoundedText(20).nullish(),
+  country: BoundedText(80).nullish(),
   // Owner-side phone: relaxed format (just length-capped). Diner-side flows
   // run normalizeE164Phone first; the onboarding wizard currently accepts
   // raw user input. Tighten to E.164 in a later phase once the wizard
   // normalizes.
-  phone: BoundedText(20).optional(),
-  cuisine_type: BoundedText(80).optional(),
-  business_type: BoundedText(80).optional(),
-  price_range: z.enum(["$", "$$", "$$$", "$$$$"]).optional(),
-  dietary_tags: z.array(BoundedText(80)).max(30).optional(),
-  lat: z.number().finite().min(-90).max(90).optional(),
-  lng: z.number().finite().min(-180).max(180).optional(),
-  force_new: z.boolean().optional(),
-  restaurant_id: z.string().uuid().optional(),
+  phone: BoundedText(20).nullish(),
+  cuisine_type: BoundedText(80).nullish(),
+  business_type: BoundedText(80).nullish(),
+  price_range: z.enum(["$", "$$", "$$$", "$$$$"]).nullish(),
+  dietary_tags: z.array(BoundedText(80)).max(30).nullish(),
+  lat: z.number().finite().min(-90).max(90).nullish(),
+  lng: z.number().finite().min(-180).max(180).nullish(),
+  force_new: z.boolean().nullish(),
+  restaurant_id: z.string().uuid().nullish(),
 });
 
 // Full-payload schema for signup-restaurant-owner. Accepts the restaurant-
@@ -51,14 +55,13 @@ export const RestaurantOnboardingSchema = z.object({
 // password length.
 export const SignupRestaurantOwnerSchema = RestaurantOnboardingSchema.extend({
   // Accept both snake_case (canonical) + camelCase (legacy clients).
-  restaurantName: NonEmptyText(120).optional(),
-  full_name: BoundedText(200).optional(),
-  fullName: BoundedText(200).optional(),
-  email: EmailLower.optional(),
-  // Password: capped at 200 chars (Supabase Auth max). Min-length is
-  // enforced by Supabase itself — we just prevent absurd payloads.
-  password: BoundedText(200).optional(),
-  hours_json: z.record(z.string(), z.unknown()).optional(),
+  // .nullish() throughout because wizard sends null for empty fields.
+  restaurantName: NonEmptyText(120).nullish(),
+  full_name: BoundedText(200).nullish(),
+  fullName: BoundedText(200).nullish(),
+  email: EmailLower.nullish(),
+  password: BoundedText(200).nullish(),
+  hours_json: z.record(z.string(), z.unknown()).nullish(),
   tables: z
     .array(
       z.object({
@@ -68,16 +71,16 @@ export const SignupRestaurantOwnerSchema = RestaurantOnboardingSchema.extend({
       }).passthrough(),
     )
     .max(200)
-    .optional(),
-  timezone: BoundedText(80).optional(),
-  currency: BoundedText(8).optional(),
-  accepts_walkins: z.boolean().optional(),
-  no_show_fee: z.number().finite().nonnegative().max(10_000).optional(),
-  cancellation_hours: z.number().int().nonnegative().max(720).optional(),
-  requires_deposit: z.boolean().optional(),
-  deposit_amount: z.number().finite().nonnegative().max(10_000).optional(),
-  loyalty_enabled: z.boolean().optional(),
-  loyalty_points_per_dollar: z.number().finite().nonnegative().max(1000).optional(),
+    .nullish(),
+  timezone: BoundedText(80).nullish(),
+  currency: BoundedText(8).nullish(),
+  accepts_walkins: z.boolean().nullish(),
+  no_show_fee: z.number().finite().nonnegative().max(10_000).nullish(),
+  cancellation_hours: z.number().int().nonnegative().max(720).nullish(),
+  requires_deposit: z.boolean().nullish(),
+  deposit_amount: z.number().finite().nonnegative().max(10_000).nullish(),
+  loyalty_enabled: z.boolean().nullish(),
+  loyalty_points_per_dollar: z.number().finite().nonnegative().max(1000).nullish(),
 }).passthrough();
 
 export type SignupRestaurantOwnerInput = z.infer<

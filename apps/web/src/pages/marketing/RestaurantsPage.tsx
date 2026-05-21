@@ -68,7 +68,7 @@ const MODULES = [
   {
     icon: CreditCard,
     title: "Payments",
-    desc: "Stripe Connect Embedded onboarding. Native CAD. Diners cover Stripe processing fees on deposits and pre-orders, so you keep the full 94.5%.",
+    desc: "Stripe Connect Embedded onboarding. Native CAD. Diners pay our 5.5% platform fee + Stripe processing on top of every deposit and pre-order, so restaurants keep 100% of the base.",
   },
   {
     icon: BarChart3,
@@ -139,8 +139,8 @@ const VALUE_NOTES = [
     desc: "Self-serve onboarding takes about an hour.",
   },
   {
-    title: "You keep the full 94.5%",
-    desc: "Diners pay Stripe processing fees on top of deposits and pre-orders, so our 5.5% commission is all yours after fees.",
+    title: "You keep 100% of the base",
+    desc: "Diners pay our 5.5% platform fee + Stripe processing on top of every deposit and pre-order. The full base lands in your Stripe Connect account, nothing skimmed.",
   },
   {
     title: "Cancel any month",

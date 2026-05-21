@@ -3,6 +3,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
+import { isPhoneOptedOut } from "../_shared/sms.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -129,15 +131,20 @@ async function sendReminder(
 
   // SMS first
   if (smsOptIn && phone && twilioClient && fromPhone) {
-    try {
-      await twilioClient.messages.create({
-        body: smsBody(kind, firstName, restaurant.name, time, reservation.confirmation_code),
-        from: fromPhone,
-        to: phone,
-      });
-      return { sent: true, channel: "sms" };
-    } catch (_) {
+    if (await isPhoneOptedOut(supabaseAdmin, phone)) {
+      console.log(`[send-booking-reminder] phone opted out, skipping SMS to ${phone.slice(-4)}`);
       // fall through to email
+    } else {
+      try {
+        await twilioClient.messages.create({
+          body: smsBody(kind, firstName, restaurant.name, time, reservation.confirmation_code),
+          from: fromPhone,
+          to: phone,
+        });
+        return { sent: true, channel: "sms" };
+      } catch (_) {
+        // fall through to email
+      }
     }
   }
 

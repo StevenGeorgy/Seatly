@@ -7,9 +7,11 @@ import {
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
+import { computeBreakEvenRefund } from "../_shared/refund-math.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { CancelReservationSchema } from "../_shared/validation/booking.ts";
 import { notifyOwnerCancellation } from "../_shared/owner-notifications.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 type RefundOutcomeReport = {
   kind: "preorder" | "deposit";
@@ -402,33 +404,7 @@ Deno.serve(async (req: Request) => {
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (stripeKey) {
-      const { default: Stripe } = await import("npm:stripe@17");
-      const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
-
-      // Pricing-overhaul policy (2026-05-16): partial refund of
-      // (total - application_fee_amount). Cenaiva KEEPS its 5.5%
-      // commission on cancel; the diner forfeits it as a cancellation
-      // cost; the restaurant's 94.5% slice is reversed back to the
-      // diner. We retrieve `application_fee_amount` from the PI itself
-      // (rather than recomputing) so legacy 5% bookings refund
-      // correctly alongside current 5.5% bookings. On retrieve failure
-      // we fall back to a full refund (safe default — diner whole).
-      const resolveApplicationFee = async (
-        piId: string,
-      ): Promise<number> => {
-        try {
-          const pi = await stripe.paymentIntents.retrieve(piId);
-          return typeof pi.application_fee_amount === "number"
-            ? pi.application_fee_amount
-            : 0;
-        } catch (err) {
-          console.warn(
-            `[cancel-reservation] PI retrieve failed for ${piId}:`,
-            err instanceof Error ? err.message : err,
-          );
-          return 0;
-        }
-      };
+      const stripe = await getStripeClient(stripeKey);
 
       // Pre-order refunds. orders.total_amount is a numeric dollar value,
       // not cents — convert at report time.
@@ -447,13 +423,13 @@ Deno.serve(async (req: Request) => {
         const piId = row.stripe_payment_intent_id;
         const amountCents = Math.round(Number(row.total_amount ?? 0) * 100);
         if (!piId) continue;
-        const applicationFeeCents = await resolveApplicationFee(piId);
-        const refundCents = Math.max(amountCents - applicationFeeCents, 0);
+        // Break-even policy — see _shared/refund-math.ts.
+        const { refundCents } = computeBreakEvenRefund(amountCents);
         const outcome = await refundPaymentIntent(
           stripe,
           piId,
           "reservation_cancelled",
-          refundCents > 0 && refundCents < amountCents ? refundCents : undefined,
+          refundCents > 0 ? refundCents : undefined,
         );
         if (outcome.ok) {
           await adminClient
@@ -497,13 +473,13 @@ Deno.serve(async (req: Request) => {
         const piId = row.stripe_payment_intent_id;
         const amountCents = row.amount_cents ?? 0;
         if (!piId) continue;
-        const applicationFeeCents = await resolveApplicationFee(piId);
-        const refundCents = Math.max(amountCents - applicationFeeCents, 0);
+        // Break-even policy — see _shared/refund-math.ts.
+        const { refundCents } = computeBreakEvenRefund(amountCents);
         const outcome = await refundPaymentIntent(
           stripe,
           piId,
           "reservation_cancelled",
-          refundCents > 0 && refundCents < amountCents ? refundCents : undefined,
+          refundCents > 0 ? refundCents : undefined,
         );
         if (outcome.ok) {
           await adminClient

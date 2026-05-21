@@ -46,6 +46,7 @@ import { matchesReservationSearch } from "@/lib/reservations/search";
 import { useErrorToast } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { dateInTz, formatCompactTimeLabel, formatCompactTimeLabelInTz } from "@/lib/utils/time";
+import { formatCurrency } from "@/lib/utils/formatCurrency";
 
 type ViewMode = "day" | "week" | "list";
 type QuickFilter = "all" | ReservationDisplayStatus | "modified";
@@ -363,8 +364,93 @@ export default function ReservationsPage() {
     loading,
     createReservation,
     updateStatus,
+    seatReservation,
+    markArrivedFromNoShow,
     requestManagerApproval,
   } = useReservations(filters);
+  const [noShowTarget, setNoShowTarget] = useState<ReservationRow | null>(null);
+  const [markArrivedTarget, setMarkArrivedTarget] = useState<ReservationRow | null>(null);
+  const [seatingId, setSeatingId] = useState<string | null>(null);
+
+  const restaurantCurrency = selectedRestaurant?.currency ?? "CAD";
+  const resolveDepositDollars = (row: ReservationRow | null): number | null => {
+    if (!row) return null;
+    if (typeof row.deposit_amount === "number" && Number.isFinite(row.deposit_amount) && row.deposit_amount > 0) {
+      return row.deposit_amount;
+    }
+    if (typeof row.deposit_amount_cents === "number" && Number.isFinite(row.deposit_amount_cents) && row.deposit_amount_cents > 0) {
+      return row.deposit_amount_cents / 100;
+    }
+    return null;
+  };
+  const formatDepositAmount = (row: ReservationRow | null): string => {
+    const value = resolveDepositDollars(row);
+    if (value === null) return "the";
+    try {
+      return formatCurrency(value, restaurantCurrency);
+    } catch {
+      return `$${value.toFixed(2)}`;
+    }
+  };
+
+  const resolveTableIdForSeating = (row: ReservationRow): string | null => {
+    const primary = row.reservation_tables?.find(
+      (assignment) => assignment.is_primary && assignment.released_at === null && assignment.table_id,
+    );
+    if (primary?.table_id) return primary.table_id;
+    const anyActive = row.reservation_tables?.find(
+      (assignment) => assignment.released_at === null && assignment.table_id,
+    );
+    if (anyActive?.table_id) return anyActive.table_id;
+    return row.table_id ?? null;
+  };
+
+  const handleSeated = async (row: ReservationRow) => {
+    const tableId = resolveTableIdForSeating(row);
+    if (!tableId) {
+      toast.error("Assign a table to this reservation before marking seated.");
+      return;
+    }
+    setSeatingId(row.id);
+    try {
+      await seatReservation(row.id, tableId, row.party_size);
+    } catch (error) {
+      errorToast(error, {
+        fallback: "Couldn't seat that reservation. Try again.",
+        logTag: "[ReservationsPage.seat]",
+      });
+    } finally {
+      setSeatingId(null);
+    }
+  };
+
+  const handleConfirmNoShow = async () => {
+    if (!noShowTarget) return;
+    try {
+      await updateStatus(noShowTarget.id, "no_show");
+      toast.success("Marked no-show. Deposit kept.");
+      setNoShowTarget(null);
+    } catch (error) {
+      errorToast(error, {
+        fallback: "Couldn't mark as no-show. Try again.",
+        logTag: "[ReservationsPage.noShow]",
+      });
+    }
+  };
+
+  const handleConfirmMarkArrived = async () => {
+    if (!markArrivedTarget) return;
+    try {
+      await markArrivedFromNoShow(markArrivedTarget.id);
+      setMarkArrivedTarget(null);
+      setDetailsTarget(null);
+    } catch (error) {
+      errorToast(error, {
+        fallback: "Couldn't mark as arrived. Try again.",
+        logTag: "[ReservationsPage.markArrived]",
+      });
+    }
+  };
   const [managerEmail, setManagerEmail] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const scopedRoles = selectedRestaurantId ? rolesAtRestaurant(selectedRestaurantId) : [];
@@ -671,12 +757,25 @@ export default function ReservationsPage() {
           }
           setCancelTarget(rowData.source);
         }}
+        onSeated={(rowData) => {
+          if (!rowData.source) return;
+          void handleSeated(rowData.source);
+        }}
+        onNoShow={(rowData) => {
+          if (!rowData.source) return;
+          setNoShowTarget(rowData.source);
+        }}
+        seatingId={seatingId}
       />
 
       <ReservationDetailsDialog
         reservation={detailsTarget}
         onOpenChange={(open) => {
           if (!open) setDetailsTarget(null);
+        }}
+        onMarkArrived={(rowData) => {
+          if (!rowData.source) return;
+          setMarkArrivedTarget(rowData.source);
         }}
       />
 
@@ -760,6 +859,74 @@ export default function ReservationsPage() {
               }}
             >
               Cancel reservation
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={noShowTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setNoShowTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark as no-show?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-secondary">
+            <p>
+              The restaurant will keep the {formatDepositAmount(noShowTarget)} deposit.
+              This is reversible — you can undo this later if needed.
+            </p>
+            {noShowTarget ? (
+              <p className="rounded-lg border border-border bg-bg-surface p-3 text-text-primary">
+                {noShowTarget.guests?.full_name ?? noShowTarget.guest_full_name ?? "Guest"} · Party of{" "}
+                {noShowTarget.party_size}
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNoShowTarget(null)}>
+              Keep reservation
+            </Button>
+            <Button variant="destructive" onClick={() => void handleConfirmNoShow()}>
+              Mark as no-show
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={markArrivedTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setMarkArrivedTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Refund {formatDepositAmount(markArrivedTarget)} deposit and mark as completed?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-secondary">
+            <p>
+              This reverses the no-show. The reservation will be marked as completed and the deposit
+              will be refunded to the diner.
+            </p>
+            {markArrivedTarget ? (
+              <p className="rounded-lg border border-border bg-bg-surface p-3 text-text-primary">
+                {markArrivedTarget.guests?.full_name ?? markArrivedTarget.guest_full_name ?? "Guest"} · Party of{" "}
+                {markArrivedTarget.party_size}
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMarkArrivedTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleConfirmMarkArrived()}>
+              Mark as arrived
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -899,9 +1066,11 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
 function ReservationDetailsDialog({
   reservation,
   onOpenChange,
+  onMarkArrived,
 }: {
   reservation: ReservationBoardRow | null;
   onOpenChange: (open: boolean) => void;
+  onMarkArrived: (row: ReservationBoardRow) => void;
 }) {
   const { t } = useTranslation();
   const source = reservation?.source;
@@ -967,6 +1136,20 @@ function ReservationDetailsDialog({
             ) : null}
             <DetailItem label={t("dashboard.reservations.guest")} value={contact || reservation.phone} />
             <DetailItem label={t("dashboard.reservations.specialRequest")} value={reservation.notes} />
+            {reservation.source?.status === "no_show" ? (
+              <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <p className="text-xs text-warning">
+                  Marked as a no-show. If this was a mistake, refund the deposit and flip the
+                  reservation back to completed.
+                </p>
+                <Button
+                  className="mt-3 w-full"
+                  onClick={() => onMarkArrived(reservation)}
+                >
+                  Mark as arrived
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </DialogContent>
@@ -1124,6 +1307,9 @@ function ReservationsTable({
   groupByDate = false,
   onOpen,
   onCancel,
+  onSeated,
+  onNoShow,
+  seatingId,
 }: {
   rows: ReservationBoardRow[];
   loading: boolean;
@@ -1131,6 +1317,9 @@ function ReservationsTable({
   groupByDate?: boolean;
   onOpen: (row: ReservationBoardRow) => void;
   onCancel: (row: ReservationBoardRow) => void;
+  onSeated: (row: ReservationBoardRow) => void;
+  onNoShow: (row: ReservationBoardRow) => void;
+  seatingId: string | null;
 }) {
   const { t } = useTranslation();
   const groupedRows = useMemo(() => {
@@ -1258,8 +1447,26 @@ function ReservationsTable({
                         </div>
                       </td>
                       <td className="px-5 py-4 text-right">
-                        {reservation.status === "upcoming" || reservation.status === "current" ? (
-                          <div className="flex justify-end gap-2">
+                        {reservation.status === "upcoming" ||
+                        reservation.status === "current" ||
+                        reservation.status === "past" ? (
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              size="sm"
+                              className="h-8 px-3 text-xs"
+                              onClick={() => onSeated(reservation)}
+                              disabled={seatingId === reservation.id}
+                            >
+                              {seatingId === reservation.id ? "Seating..." : "Seated"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-8 px-3 text-xs"
+                              onClick={() => onNoShow(reservation)}
+                            >
+                              No-show
+                            </Button>
                             <Button
                               size="sm"
                               variant="outline"

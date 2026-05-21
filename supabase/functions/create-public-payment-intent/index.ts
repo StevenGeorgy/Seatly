@@ -46,6 +46,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { computeDinerCharge } from "../_shared/stripe-fee.ts";
+import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -75,6 +76,16 @@ type Payload = {
   // (stripe-attach-payment-method) then just records the saved_cards row.
   // Without this flag, the diner pays one-time and the PM is detached.
   save_card?: unknown;
+  // Client-generated idempotency key (Vuln 110 fix, 2026-05-21). The
+  // saved-card paths used to derive the Stripe idempotency key from
+  // `${profile.id}_${card}_${amount}` — which collided across separate
+  // bookings by the same diner for the same deposit amount. Stripe would
+  // return the first booking's PI for every subsequent booking, causing
+  // refunds to hit the wrong PI. The client now generates a fresh UUID
+  // per booking attempt and passes it here; legitimate retries of the
+  // same attempt reuse it. Cap length so a malicious client can't blow
+  // out Stripe's 255-char idempotency-key limit.
+  idempotency_key?: unknown;
 };
 
 interface ReservationHoldRow {
@@ -154,6 +165,7 @@ async function chargeSavedCardWithHold(opts: {
   applicationFeeCents: number;
   currency: string;
   metadata: Record<string, string>;
+  clientIdempotencyKey: string | null;
 }): Promise<{ body: Record<string, unknown>; status: number }> {
   const authHeader = opts.req.headers.get("Authorization") ?? opts.req.headers.get("authorization") ?? "";
   const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -212,7 +224,13 @@ async function chargeSavedCardWithHold(opts: {
     // Idempotency: same hold + same diner-paying amount → same PI within
     // Stripe's 24h window. Prevents double-charge on browser retry after
     // a 5xx, or on a fast double-tap of Place Order.
-    const idempKey = `saved_card_${opts.holdId ?? opts.profile.id}_${opts.dinerTotalCents}`;
+    // Idempotency: prefer the client-supplied attempt key (Bug #110 fix —
+    // every fresh booking gets a new UUID so Stripe doesn't return a prior
+    // booking's PI on subsequent attempts). Fall back to the legacy
+    // amount-derived key only when no client key is supplied (covers older
+    // mobile builds that don't yet send `idempotency_key`).
+    const idempKey = opts.clientIdempotencyKey
+      ?? `saved_card_${opts.holdId ?? opts.profile.id}_${opts.dinerTotalCents}`;
     paymentIntent = await opts.stripe.paymentIntents.create(params, {
       idempotencyKey: idempKey,
     });
@@ -330,6 +348,15 @@ Deno.serve(async (req: Request) => {
         ? payload.hold_id.trim()
         : null;
     const saveCard = payload.save_card === true;
+    // Client-supplied idempotency key (UUID per booking attempt). See
+    // Payload.idempotency_key comment for rationale. Cap to 240 chars
+    // to stay under Stripe's 255-char limit even with our prefix.
+    const clientIdempotencyKey =
+      typeof payload.idempotency_key === "string"
+        && payload.idempotency_key.trim().length > 0
+        && payload.idempotency_key.trim().length <= 240
+        ? payload.idempotency_key.trim()
+        : null;
     // Parse + validate deposit_payment_ids — array of UUIDs (max 16 to bound
     // the metadata size; Stripe caps each metadata value at 500 chars and
     // 16 UUIDs comma-joined fits comfortably).
@@ -378,10 +405,7 @@ Deno.serve(async (req: Request) => {
             if (!saveCardCustomerId) {
               const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
               if (stripeKey) {
-                const { default: Stripe } = await import("npm:stripe@17");
-                const stripe = new Stripe(stripeKey, {
-                  apiVersion: "2024-11-20.acacia",
-                });
+                const stripe = await getStripeClient(stripeKey);
                 const customer = await stripe.customers.create({
                   email: profile.email || undefined,
                   name: profile.full_name || undefined,
@@ -426,8 +450,7 @@ Deno.serve(async (req: Request) => {
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured on the server" }, 500);
 
-    const { default: Stripe } = await import("npm:stripe@17");
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-11-20.acacia" });
+    const stripe = await getStripeClient(stripeKey);
 
     const currency = (row.currency ?? "CAD").toLowerCase();
     const charge = computeDinerCharge(amountCents);
@@ -556,18 +579,21 @@ Deno.serve(async (req: Request) => {
           applicationFeeCents,
           currency,
           metadata,
+          clientIdempotencyKey,
         });
         return jsonRes(savedCardResult.body, savedCardResult.status);
       }
 
       // Create a fresh PI for this hold (Mode-A-style one-time card).
-      // payment_method_types=['card'] forces card-only on Stripe Elements.
-      // Excludes Klarna, Affirm, Link, and other auto-detected methods —
-      // diners must use a credit/debit card.
+      // automatic_payment_methods with allow_redirects: "never" enables card
+      // + same-page wallets (Apple Pay, Google Pay, Link, Interac) per
+      // diner's locale + restaurant's Stripe dashboard config, while
+      // excluding redirect-flow methods like Klarna/Affirm/Sofort that
+      // would break the in-page Stripe Elements UX.
       const holdStripeParams: Record<string, unknown> = {
         amount: dinerTotalCents,
         currency,
-        payment_method_types: ["card"],
+        automatic_payment_methods: { enabled: true, allow_redirects: "never" },
         metadata: {
           ...metadata,
           hold_id: hold.id,
@@ -736,7 +762,10 @@ Deno.serve(async (req: Request) => {
         // PI within Stripe's 24h window. Mode-B saved-card path
         // (no hold) needed a key — earlier audit (2026-05-20) flagged
         // this as a double-charge risk on browser retry.
-        const idempKey = `saved_card_b_${profile.id}_${savedCard.id ?? savedCard.stripe_payment_method_id}_${dinerTotalCents}`;
+        // Same Bug #110 fix as chargeSavedCardWithHold — prefer client UUID
+        // so distinct bookings by the same diner get distinct PIs.
+        const idempKey = clientIdempotencyKey
+          ?? `saved_card_b_${profile.id}_${savedCard.id ?? savedCard.stripe_payment_method_id}_${dinerTotalCents}`;
         paymentIntent = await stripe.paymentIntents.create(savedCardParams, {
           idempotencyKey: idempKey,
         });
@@ -791,13 +820,13 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Mode A: One-time card (deferred PI, default path) ──
-    // payment_method_types=['card'] forces card-only on Stripe Elements.
-    // Excludes Klarna, Affirm, Link, and other auto-detected methods —
-    // diners must use a credit/debit card.
+    // automatic_payment_methods enables card + same-page wallets (Apple Pay,
+    // Google Pay, Link, Interac). allow_redirects: "never" excludes BNPL /
+    // bank-redirect flows that would leave the in-page Stripe Elements UX.
     const stripeParams: Record<string, unknown> = {
       amount: dinerTotalCents,
       currency,
-      payment_method_types: ["card"],
+      automatic_payment_methods: { enabled: true, allow_redirects: "never" },
       metadata: {
         ...metadata,
         base_amount_cents: String(amountCents),

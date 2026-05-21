@@ -184,3 +184,24 @@ verify_jwt = false
 
 [functions.get-restaurant-payment-method]
 verify_jwt = false
+
+[functions.refund-deposit-on-arrival]
+verify_jwt = false
+
+[functions.auto-complete-stale-reservations]
+verify_jwt = false
+
+[functions.export-my-data]
+verify_jwt = false
+
+[functions.get-my-profile-tags]
+verify_jwt = false
+
+[functions.twilio-incoming-sms]
+verify_jwt = false
+
+[functions.request-refund]
+verify_jwt = false
+
+[functions.revoke-all-sessions]
+verify_jwt = false

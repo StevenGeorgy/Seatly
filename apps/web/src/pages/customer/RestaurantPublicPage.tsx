@@ -86,6 +86,7 @@ import {
 import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib/restaurant-dietary-tags";
 import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
 import { computeDinerCharge } from "@/lib/stripe-fee";
+import { getProvincialTax } from "@/lib/billing/canadianTax";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -1659,7 +1660,12 @@ export default function RestaurantPublicPage() {
 
   const cartTotal          = cart.reduce((s, i) => s + i.price * i.qty, 0);
   const cartCount          = cart.reduce((s, i) => s + i.qty, 0);
-  const taxRate            = restaurant?.tax_rate ?? 0.13;
+  // Province-aware tax: if the restaurant row has an explicit tax_rate
+  // override use it; otherwise look up the provincial rate. Falls back to
+  // ON 13% when province is null. See lib/billing/canadianTax.ts.
+  const provincialTax      = getProvincialTax(restaurant?.province);
+  const taxRate            = restaurant?.tax_rate ?? provincialTax.rate;
+  const taxLabel           = provincialTax.label;
   const activePromo        = activePromoId ? restaurantPromos.find((p) => p.id === activePromoId) ?? null : null;
   const { discount }       = activePromo ? computePromoDiscount(cart, activePromo) : { discount: 0 };
   const discountedSubtotal = Math.max(0, cartTotal - discount);
@@ -1699,6 +1705,7 @@ export default function RestaurantPublicPage() {
     () => computeDinerCharge(Math.round(totalNow * 100)),
     [totalNow],
   );
+  const cenaivaFeeDollars = dinerCharge.cenaivaFeeCents / 100;
   const processingFeeDollars = dinerCharge.processingFeeCents / 100;
   const dinerGrandTotalDollars = dinerCharge.dinerTotalCents / 100;
 
@@ -3108,7 +3115,7 @@ export default function RestaurantPublicPage() {
                     </div>
                   )}
                   <div className="flex justify-between text-sm">
-                    <span className="text-text-secondary">Tax ({(taxRate * 100).toFixed(0)}%)</span>
+                    <span className="text-text-secondary">Tax ({taxLabel})</span>
                     <span className="text-text-primary">{formatCurrency(tax, currency)}</span>
                   </div>
                   {previewDepositDollars > 0 && (
@@ -3117,6 +3124,12 @@ export default function RestaurantPublicPage() {
                         Deposit ({Number(dineIn.party_size) || 0} × {formatCurrency(previewDepositDollars / (Number(dineIn.party_size) || 1), currency)})
                       </span>
                       <span className="text-gold">{formatCurrency(previewDepositDollars, currency)}</span>
+                    </div>
+                  )}
+                  {cenaivaFeeDollars > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-text-secondary">Platform fee (5.5%)</span>
+                      <span className="text-text-primary">{formatCurrency(cenaivaFeeDollars, currency)}</span>
                     </div>
                   )}
                   {processingFeeDollars > 0 && (
@@ -3129,6 +3142,13 @@ export default function RestaurantPublicPage() {
                     <span className="text-text-primary">Total due now</span>
                     <span className="text-gold">{formatCurrency(dinerGrandTotalDollars, currency)}</span>
                   </div>
+                  {previewDepositDollars > 0 && (
+                    <p className="pt-2 text-xs text-text-muted leading-relaxed">
+                      Platform and processing fees are non-refundable.
+                      Your <strong>{formatCurrency(previewDepositDollars, currency)}</strong> deposit
+                      is fully refundable when the restaurant marks you seated.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -3326,7 +3346,15 @@ export default function RestaurantPublicPage() {
                 </Button>
               )}
               <p className="mt-2 text-center text-[11px] text-text-muted">
-                By placing your order you agree to our terms.{" "}
+                By booking, you agree to our{" "}
+                <Link to="/terms" className="text-gold underline-offset-2 hover:underline">
+                  Terms
+                </Link>{" "}
+                and{" "}
+                <Link to="/refund-policy" className="text-gold underline-offset-2 hover:underline">
+                  Refund Policy
+                </Link>
+                .{" "}
                 {tipOption === "after"
                   ? "Tip will be collected after your experience."
                   : "Selected tip is included in today's checkout."}

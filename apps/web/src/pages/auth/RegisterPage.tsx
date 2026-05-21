@@ -45,6 +45,8 @@ export default function RegisterPage() {
   const schema = useMemo(() => createRegisterSchema(t), [t]);
   type FormValues = z.infer<typeof schema>;
 
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+
   const {
     register,
     handleSubmit,
@@ -59,7 +61,27 @@ export default function RegisterPage() {
     },
   });
 
+  const recordAgeConsent = async (
+    client: ReturnType<typeof getSupabaseBrowserClient>,
+    authUserId: string,
+  ) => {
+    // The `age_consent_at` column lands in a follow-up migration. If it
+    // doesn't exist yet, swallow the error so signup isn't blocked.
+    try {
+      await client
+        .from("user_profiles")
+        .update({ age_consent_at: new Date().toISOString() })
+        .eq("auth_user_id", authUserId);
+    } catch {
+      // intentional no-op
+    }
+  };
+
   const onSubmit = async (values: FormValues) => {
+    if (!ageConfirmed) {
+      toast.error("Please confirm you meet the age requirement.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (!isSupabaseConfigured()) {
@@ -97,6 +119,7 @@ export default function RegisterPage() {
       }
 
       if (data.session) {
+        await recordAgeConsent(client, data.session.user.id);
         const ctx = await loadUserContext(client, data.session);
         if (!ctx.ok) {
           toast.error(
@@ -115,6 +138,10 @@ export default function RegisterPage() {
   };
 
   const signUpWithProvider = async (provider: "google" | "apple") => {
+    if (!ageConfirmed) {
+      toast.error("Please confirm you meet the age requirement.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (!isSupabaseConfigured()) {
@@ -143,11 +170,33 @@ export default function RegisterPage() {
 
   return (
     <AuthPageLayout titleKey="auth.register.title">
+      {/* Age / parental consent gate — required before any sign-up path. */}
+      <label className="flex items-start gap-2 text-sm text-text-secondary">
+        <input
+          type="checkbox"
+          checked={ageConfirmed}
+          onChange={(e) => setAgeConfirmed(e.target.checked)}
+          className="mt-0.5 size-4 cursor-pointer accent-gold"
+          aria-label="Age confirmation"
+        />
+        <span>
+          I confirm I am 18+ or have parental consent to make payments on
+          Cenaiva. Users under 13 may not register. See{" "}
+          <Link
+            to="/terms#eligibility"
+            className="text-gold underline-offset-2 hover:underline"
+          >
+            Terms §1
+          </Link>
+          .
+        </span>
+      </label>
+
       {/* Phase 2 (2026-05-15): providers first, email/password collapsed. */}
       <div className="space-y-3">
         <Button
           className="h-12 w-full bg-white text-base font-semibold text-black hover:bg-white/90"
-          disabled={submitting}
+          disabled={submitting || !ageConfirmed}
           type="button"
           onClick={() => void signUpWithProvider("apple")}
         >
@@ -156,7 +205,7 @@ export default function RegisterPage() {
         </Button>
         <Button
           className="h-12 w-full"
-          disabled={submitting}
+          disabled={submitting || !ageConfirmed}
           type="button"
           variant="outline"
           onClick={() => void signUpWithProvider("google")}
@@ -166,11 +215,21 @@ export default function RegisterPage() {
         <Button
           asChild
           className="h-12 w-full"
-          disabled={submitting}
+          disabled={submitting || !ageConfirmed}
           type="button"
           variant="outline"
         >
-          <Link to={phoneTarget}>Continue with phone number</Link>
+          <Link
+            to={phoneTarget}
+            onClick={(e) => {
+              if (!ageConfirmed) {
+                e.preventDefault();
+                toast.error("Please confirm you meet the age requirement.");
+              }
+            }}
+          >
+            Continue with phone number
+          </Link>
         </Button>
       </div>
 
@@ -259,7 +318,11 @@ export default function RegisterPage() {
             </p>
           ) : null}
         </div>
-        <Button className="w-full" disabled={submitting} type="submit">
+        <Button
+          className="w-full"
+          disabled={submitting || !ageConfirmed}
+          type="submit"
+        >
           {t("auth.register.submit")}
         </Button>
       </form>

@@ -242,6 +242,14 @@ export default function DepositPayPage() {
                           {ccy} ${(charge.baseCents / 100).toFixed(2)}
                         </span>
                       </div>
+                      {charge.cenaivaFeeCents > 0 && (
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-text-secondary">Platform fee (5.5%)</span>
+                          <span className="text-text-primary">
+                            {ccy} ${(charge.cenaivaFeeCents / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      )}
                       {charge.processingFeeCents > 0 && (
                         <div className="mt-2 flex items-center justify-between">
                           <span className="text-text-secondary">Processing fee</span>
@@ -258,6 +266,11 @@ export default function DepositPayPage() {
                           {ccy} ${(charge.dinerTotalCents / 100).toFixed(2)}
                         </span>
                       </div>
+                      <p className="mt-3 text-xs text-text-muted leading-relaxed">
+                        Platform and processing fees are non-refundable.
+                        Your <strong>{ccy} ${(charge.baseCents / 100).toFixed(2)}</strong> share
+                        is refundable on arrival or cancellation.
+                      </p>
                     </div>
                   );
                 })()}
