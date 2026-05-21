@@ -502,6 +502,112 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   helpers (`recommendationIntent`, `filterRestaurants`,
   `localBookingCollector`).
 
+## Security lessons (2026-05-20/21 hardening batch + split-tender)
+
+The 14-vuln security batch closed real exploits. The patterns below
+became hard rules — apply them to every change going forward. See
+`HABBI_STACK_SECURITY.md` for the portable version.
+
+### Auth / authorization
+- `_shared/auth.ts:checkAuth` is the canonical entry point. It calls
+  `supabase.auth.getUser(token)` which DOES verify ES256
+  signatures. Never re-introduce a hand-rolled `decodeJwtPayload`
+  shim. The previous one allowed forged sub claims.
+- Anon-callable edge fns that also accept a Bearer token must call
+  `auth.getUser` and fall through to anon mode on failure. Never
+  trust a body field claiming a user_profile_id — derive it from the
+  verified session.
+- `verify_jwt = false` in `config.toml` for any fn whose users send
+  ES256 tokens. The gateway rejects ES256 with
+  `UNSUPPORTED_TOKEN_ALGORITHM`. In-function `auth.getUser` is the
+  signature check, not the gateway.
+
+### Payment-intent metadata is the binding mechanism
+- `create-public-payment-intent` stamps `deposit_payment_ids`,
+  `restaurant_id`, and (when applicable) `reservation_id` /
+  `hold_id` / `order_id` on PI metadata at create time.
+- `confirm-deposit-paid` / `confirm-hold-paid` / `mark-order-paid`
+  asserts the matching ID is in the metadata. Strict — no legacy
+  fallback. Without this binding, an attacker could substitute any
+  succeeded PI for any deposit/hold/order.
+- `confirm-deposit-paid` also asserts `transfer_data.destination`
+  matches the restaurant's `stripe_account_id`.
+- Mobile + web both must pass `deposit_payment_ids: [rowId]` to
+  `create-public-payment-intent` for deposit-paying PIs. Without it,
+  the consumer rejects with `pi_payment_id_mismatch`.
+
+### Split-tender path (new in 2026-05-21)
+- `create-public-booking` accepts `split_tender_payers: number` (2-10).
+  When set, the reservation is created in `pending_payment` status
+  AND N `reservation_deposit_payments` rows are inserted atomically
+  in the same fn. Returns `split_tender_deposit_row_ids: string[]`
+  in the response.
+- The settle trigger (`settle_deposit_on_charge`) flips the
+  reservation to `'confirmed'` when the LAST row settles.
+- This is now a third valid path to insert into
+  `reservation_deposit_payments` (alongside `prepare-deposit` and
+  the magic-link dispatch). The hard rule "never insert outside
+  `prepare-deposit`" needs an exception: also valid via
+  `create-public-booking` with `split_tender_payers`.
+
+### Modify-reservation guest_id null bug (2026-05-21 fix)
+- Bug: `.eq("id", reservation.guest_id)` where `guest_id IS NULL`
+  → PostgREST sends literal `"null"` → Postgres rejects with
+  `invalid input syntax for type uuid: 'null'`.
+- Fix: ALWAYS guard `.eq("uuid_col", maybe_null_value)` with an
+  `if` check. Modify-reservation lines 178+199 now guard correctly.
+- The same pattern is correctly guarded in cancel-reservation.
+- When implementing new fns that filter by a possibly-null UUID,
+  guard the call site.
+
+### DB structural rules
+- Trust-boundary columns on `restaurants` (`stripe_charges_enabled`,
+  `is_published`, `subscription_status`, `payment_method_attached_at`,
+  `trial_ends_at`, etc.) are NOT in the authenticated UPDATE grant.
+  Owners write them only via edge fns (publish-restaurant,
+  save-subscription-payment-method, stripe-webhook). Direct
+  supabase-js writes from the client → 403 permission denied.
+- `cenaiva_cron_config` table: RLS enabled, all grants revoked
+  from PUBLIC/anon/authenticated. Only service_role can read the
+  `cron_secret`. Rotate after any incident.
+- `cenaiva_call_cron_function`: REVOKE EXECUTE FROM PUBLIC, anon,
+  authenticated. Whitelist `func_path` values inside the function
+  body so even service-role can't dispatch arbitrary cron names.
+- Audit / consent tables (`subscription_consent_log`,
+  `restaurant_notification_log`, `referral_credits`) use FK
+  `ON DELETE RESTRICT` to `restaurants(id)`. Customer audit logs
+  outlive the parent row (CRA 7-year retention).
+
+### Input validation
+- Every edge fn uses `parseJsonBody(req, ZodSchema)` from
+  `_shared/validation/parse.ts`. Never raw `req.json()`.
+- Schemas live in `_shared/validation/*.ts` grouped by domain
+  (`booking.ts`, `payment.ts`, `subscription.ts`, etc.).
+- Primitive types from `_shared/validation/base.ts`: `Uuid`,
+  `Email`, `EmailLower`, `E164Phone`, `BoundedText(N)`, `Money`,
+  `ConfirmationCode`.
+- Free-text fields capped at `BoundedText(200/500/2000/5000)`
+  depending on context. AI prompts cap at 5000.
+- Amount fields: `Money` defaults to `max(100_000)` (=$1000);
+  override for higher amounts (e.g. `Money.max(10_000_000)` on
+  `create-public-payment-intent.amount_cents`).
+
+### Frontend
+- `isSafeRedirectPath` in `apps/web/src/lib/auth/post-login-redirect.ts`
+  is the canonical guard for any `from` / `redirect` query param
+  before assigning to `window.location.href`. Used in
+  `AuthCallbackPage.handleMergeDone`.
+- `signup-restaurant-owner` returns uniform 200 response for the
+  email-already-exists case (no enumeration oracle).
+
+### Operational
+- After any cron-affecting deploy, redeploy ALL 14 cron-validating
+  fns to pick up the env var (run `supabase secrets list` to confirm
+  CRON_SECRET digest matches what you expect).
+- Order for any prod deploy that touches multiple layers: migrations
+  → edge functions → frontend. Frontend last because it depends on
+  the others.
+
 ## When in doubt
 
 Stop and ask. Don't infer architectural decisions from old patterns
