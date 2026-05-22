@@ -2183,6 +2183,13 @@ export default function RestaurantPublicPage() {
             });
         const body = await res.json().catch(() => ({})) as PublicBookingResponse;
         if (!res.ok || body.error || !body.reservation_id) {
+          // Log the full server response (including any Zod `issues` array)
+          // so the developer can see which field was rejected. The user-
+          // facing toast still shows only the friendly fallback.
+          console.error(
+            "[createReservationCore] booking rejected",
+            { status: res.status, body },
+          );
           // Surface a friendlier prompt for the diner double-book case so the
           // user knows the action they need to take next.
           if (body.unavailable_reason === "diner_double_book") {
@@ -2196,7 +2203,14 @@ export default function RestaurantPublicPage() {
           if (body.unavailable_reason === "slot_taken" || body.unavailable_reason === "over_cover_cap") {
             if (restaurant?.id) invalidateAvailabilityCache(restaurant.id);
           }
-          throw new Error(body.error ?? "Reservation failed");
+          // Attach the validation issues to the Error so the outer catch
+          // can include them in its console log (otherwise they get
+          // dropped on the floor by `new Error(string)`).
+          const bookingErr = new Error(body.error ?? "Reservation failed");
+          interface BookingErrorContext { responseStatus?: number; responseBody?: unknown }
+          (bookingErr as unknown as BookingErrorContext).responseStatus = res.status;
+          (bookingErr as unknown as BookingErrorContext).responseBody = body;
+          throw bookingErr;
         }
         setConfirmationCode(body.confirmation_code ?? "");
         setConfirmationDelivery({

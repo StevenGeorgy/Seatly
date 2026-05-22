@@ -1,6 +1,15 @@
 import { z } from "zod";
 
-export const Uuid = z.string().uuid();
+// Permissive UUID format check. Zod 4's `.uuid()` enforces UUID v4 (the
+// version nibble must be '4'), which rejects our seed restaurant IDs
+// (e.g. `a1000006-1111-1111-1111-000000000006`) and any externally-issued
+// non-v4 UUID. The DB doesn't care about the version byte — only the
+// 8-4-4-4-12 hex shape — so we mirror that here. Single source of truth
+// for every edge-function body schema.
+const UUID_ANY_VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const Uuid = z
+  .string()
+  .regex(UUID_ANY_VERSION, "Must be a UUID");
 
 export const NonEmptyText = (max: number) =>
   z.string().trim().min(1).max(max);

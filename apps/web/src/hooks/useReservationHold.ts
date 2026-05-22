@@ -295,6 +295,12 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       });
 
       if (!res.ok || body.ok === false || !body.hold_id || !body.expires_at) {
+        // Log the full server response so devs can see any Zod `issues`
+        // array. User-facing message is the friendly `body.error` only.
+        console.error("[useReservationHold.create] hold rejected", {
+          status: res.status,
+          body,
+        });
         const reason = mapErrorReason(res.status, body.reason ?? body.unavailable_reason);
         setState({
           status: "error",

@@ -5,6 +5,7 @@ import {
   Money,
   NonEmptyText,
   PositiveInt,
+  Uuid,
 } from "./base.ts";
 
 // Restaurant fields accepted across the onboarding surface. signup-restaurant-
@@ -35,7 +36,7 @@ export const RestaurantOnboardingSchema = z.object({
   lat: z.number().finite().min(-90).max(90).nullish(),
   lng: z.number().finite().min(-180).max(180).nullish(),
   force_new: z.boolean().nullish(),
-  restaurant_id: z.string().uuid().nullish(),
+  restaurant_id: Uuid.nullish(),
 });
 
 // Full-payload schema for signup-restaurant-owner. Accepts the restaurant-

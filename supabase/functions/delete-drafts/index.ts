@@ -24,6 +24,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { z } from "zod";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
+import { Uuid } from "../_shared/validation/base.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -45,7 +46,9 @@ const supabaseAdmin = createClient(
 );
 
 const BodySchema = z.object({
-  restaurant_ids: z.array(z.string().uuid()).min(1).max(50),
+  // Use the shared Uuid (permissive — accepts any UUID version, not just v4).
+  // Zod 4's z.string().uuid() rejects non-v4 like our seed restaurant ids.
+  restaurant_ids: z.array(Uuid).min(1).max(50),
 });
 
 Deno.serve(async (req: Request) => {
@@ -119,6 +122,28 @@ Deno.serve(async (req: Request) => {
       return jsonRes({ ok: true, deleted_count: 0, blocked_ids: restaurantIds });
     }
 
+    // Defensive: refuse to delete drafts that somehow have payments rows.
+    // Drafts can't be booked publicly (publish gate blocks it), so they
+    // should never have real Stripe charges. But if a row exists — even
+    // accidentally — DO NOT auto-delete it. Surface a clear error and
+    // let the user contact support. Real money rows must survive.
+    {
+      const { count: paymentCount, error: paymentCheckErr } = await supabaseAdmin
+        .from("payments")
+        .select("id", { count: "exact", head: true })
+        .in("restaurant_id", eligibleIds);
+      if (paymentCheckErr) {
+        console.error("[delete-drafts] payments check failed", paymentCheckErr);
+        return jsonRes({ error: "Couldn't verify draft state. Try again." }, 500);
+      }
+      if ((paymentCount ?? 0) > 0) {
+        return jsonRes({
+          error: "One or more drafts have payment records and can't be auto-deleted. Contact help@cenaiva.com so we can review.",
+          blocked_reason: "payments_present",
+        }, 409);
+      }
+    }
+
     // Pre-clean every blocking FK so the DELETE on restaurants can proceed.
     // CRITICAL: only drafts. Never-published restaurants have no audit
     // value (the partner agreement was never accepted, no live customer
@@ -174,6 +199,61 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // FK chain cleanup — handles indirect descendants whose FKs are
+    // RESTRICT / NO ACTION. The natural cascade from restaurants would
+    // otherwise hit:
+    //   - order_items.menu_item_id (RESTRICT) when menu_items cascade-deletes
+    //   - reservations.preorder_order_id (NO ACTION) when orders cascade-deletes
+    //
+    // We don't want to touch payments here — that's a separate rule (real
+    // money). The payments-present guard above already refused the request
+    // if any payments rows exist for these drafts.
+
+    // 1. Collect menu_item IDs scoped to the drafts, then delete the
+    //    order_items rows pointing at them. We must do this BEFORE
+    //    DELETE FROM restaurants because the cascade -> menu_items would
+    //    otherwise hit the RESTRICT FK.
+    const { data: menuItemRows, error: menuItemErr } = await supabaseAdmin
+      .from("menu_items")
+      .select("id")
+      .in("restaurant_id", eligibleIds);
+    if (menuItemErr) {
+      console.error("[delete-drafts] menu_items lookup failed", menuItemErr);
+      return jsonRes({ error: "Couldn't enumerate draft menu items." }, 500);
+    }
+    const menuItemIds = (menuItemRows ?? []).map((r) => (r as { id: string }).id);
+    if (menuItemIds.length > 0) {
+      const { error: orderItemsErr } = await supabaseAdmin
+        .from("order_items")
+        .delete()
+        .in("menu_item_id", menuItemIds);
+      if (orderItemsErr) {
+        console.error("[delete-drafts] order_items delete failed", orderItemsErr);
+        return jsonRes({ error: "Couldn't release order_items pointing at draft menu items." }, 500);
+      }
+    }
+
+    // 2. Null-out reservations.preorder_order_id so the orders cascade
+    //    won't be blocked by NO ACTION on the back-reference. The
+    //    reservations rows themselves will cascade-delete with the
+    //    restaurant in step 4.
+    const { error: preorderNullErr } = await supabaseAdmin
+      .from("reservations")
+      .update({ preorder_order_id: null })
+      .in("restaurant_id", eligibleIds)
+      .not("preorder_order_id", "is", null);
+    if (preorderNullErr) {
+      // Non-fatal — if the column doesn't exist on a non-prod schema,
+      // continue. Cascade will still fail noisily below if there's a
+      // real blocker.
+      const msg = preorderNullErr.message ?? "";
+      if (!/does not exist/i.test(msg)) {
+        console.error("[delete-drafts] preorder_order_id null failed", preorderNullErr);
+        return jsonRes({ error: "Couldn't unlink draft preorder references." }, 500);
+      }
+      console.warn("[delete-drafts] preorder_order_id null skipped:", msg);
+    }
+
     // Now delete the restaurants. Belt-and-suspenders: re-assert
     // is_published = false at delete time so a race in publish-restaurant
     // can't cause us to silently delete a freshly-published row.
@@ -185,7 +265,15 @@ Deno.serve(async (req: Request) => {
       .select("id");
     if (deleteErr) {
       console.error("[delete-drafts] restaurants delete failed", deleteErr);
-      return jsonRes({ error: "Couldn't delete drafts" }, 500);
+      // Surface the FK constraint name in a server-side log entry so we
+      // can keep extending the pre-clean list without a guessing game.
+      // The user still sees only the friendly fallback (client-side
+      // sanitizer ensures raw text doesn't leak).
+      return jsonRes({
+        error: "Couldn't delete drafts.",
+        technical_code: (deleteErr as { code?: string }).code ?? null,
+        technical_constraint: (deleteErr as { details?: string }).details ?? null,
+      }, 500);
     }
 
     const deletedCount = deletedRows?.length ?? 0;
