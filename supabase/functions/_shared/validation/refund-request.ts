@@ -11,9 +11,9 @@ const PaymentIntentId = BoundedText(120)
 
 export const RequestRefundSchema = z.object({
   reservation_id: Uuid,
-  payment_intent_id: PaymentIntentId.optional().nullable(),
+  payment_intent_id: PaymentIntentId.nullish(),
   reason_code: z.enum(["duplicate", "failed", "other"]),
-  reason_text: BoundedText(2000).optional().nullable(),
+  reason_text: BoundedText(2000).nullish(),
 });
 
 export type RequestRefundInput = z.infer<typeof RequestRefundSchema>;

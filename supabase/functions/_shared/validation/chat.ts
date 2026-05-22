@@ -52,7 +52,7 @@ export const CenaivaOrchestrateSchema = z.object({
   map_state: z.record(z.string(), z.unknown()).optional(),
   filters: z.record(z.string(), z.unknown()).optional(),
   visible_restaurant_ids: z.array(Uuid).max(200).optional(),
-  selected_restaurant_id: Uuid.nullable().optional(),
+  selected_restaurant_id: Uuid.nullish(),
   user_location: z
     .object({ lat: z.number().finite(), lng: z.number().finite() })
     .nullable()
@@ -60,8 +60,8 @@ export const CenaivaOrchestrateSchema = z.object({
   timezone: BoundedText(64).optional(),
   conversation_id: BoundedText(128).optional(),
   has_saved_card: z.boolean().optional(),
-  guest_id: Uuid.nullable().optional(),
-  reservation_id: Uuid.nullable().optional(),
+  guest_id: Uuid.nullish(),
+  reservation_id: Uuid.nullish(),
   // recommendation_mode / assistant_memory are validated/normalized
   // further downstream by dedicated parsers; accept any JSON-ish shape
   // here so we don't reject valid payloads at the gate.

@@ -12,9 +12,15 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 
 export type { FloorPlanRow, SectionRow, TableRow };
 
-/** Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows. */
+/**
+ * Postgres `uuid` columns reject mock ids like `t-8`; treat those as local-only rows.
+ * Permissive on UUID version — seed/test restaurants use non-v4 UUIDs
+ * (e.g. `a1000006-1111-1111-1111-000000000006`) but are still legitimate DB rows.
+ * The DB only validates the 8-4-4-4-12 hex shape, so we mirror that here.
+ * Matches the `Uuid` schema in `supabase/functions/_shared/validation/base.ts`.
+ */
 export function isDatabaseUuid(id: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
 /** Visual floor zone (Main Dining, Patio, …) — layout-only, draggable/resizable in edit mode. */
