@@ -189,6 +189,7 @@ function MarketingFooter() {
         { label: "Terms", to: "/terms" },
         { label: "Privacy", to: "/privacy" },
         { label: "Refund Policy", to: "/refund-policy" },
+        { label: "Support", to: "/support" },
         { label: "Security", to: "/terms#account-security" },
         { label: "Accessibility", to: "/about" },
       ],

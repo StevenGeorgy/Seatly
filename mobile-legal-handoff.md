@@ -17,6 +17,15 @@
 | Sub-processor list (partner-facing) | `/partners/sub-processors` | same data, partner-voice copy |
 | Partner Agreement version history | `/partners/agreement-history` | data in `partnerAgreementContent.ts` |
 | Sub-processor data array | (used by all three above) | `apps/web/src/lib/legal/subProcessors.ts` |
+| Support / Help page | `/support` | `apps/web/src/pages/support/SupportPage.tsx` |
+
+### App store submission URLs
+
+The `/support` page is the public Support URL for both store listings:
+
+- **App Store Connect** → App Information → **Support URL**: `https://cenaiva.com/support`
+- **Google Play Console** → App content → **Support email**: `help@cenaiva.com`, **Support website**: `https://cenaiva.com/support`
+- In-app Settings → "Help & Support" row should either `mailto:help@cenaiva.com` or open a webview to `/support`. Either works — same canonical address.
 
 **Effective date:** May 21, 2026 across all three.
 

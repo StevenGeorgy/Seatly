@@ -28,6 +28,7 @@ const PartnerSubProcessorsPage = lazy(
 const PartnerAgreementHistoryPage = lazy(
   () => import("@/pages/legal/PartnerAgreementHistoryPage"),
 );
+const SupportPage = lazy(() => import("@/pages/support/SupportPage"));
 const AccountPage = lazy(() => import("@/pages/customer/AccountPage"));
 const AccountVoicePage = lazy(() => import("@/pages/customer/AccountVoicePage"));
 const ConnectedAccountsPage = lazy(() => import("@/pages/customer/ConnectedAccountsPage"));
@@ -86,6 +87,7 @@ export function AppRoutes() {
         <Route path="/terms" element={<TermsPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/refund-policy" element={<RefundPolicyPage />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="/legal/sub-processors" element={<SubProcessorsPage />} />
         <Route
           path="/partners/agreement"

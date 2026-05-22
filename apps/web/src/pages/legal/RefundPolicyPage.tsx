@@ -175,10 +175,10 @@ export default function RefundPolicyPage() {
             <p className="mt-3 text-sm leading-relaxed text-text-secondary sm:text-base">
               If something looks wrong on your statement, contact{" "}
               <a
-                href="mailto:support@cenaiva.com"
+                href="mailto:help@cenaiva.com"
                 className="text-gold underline-offset-4 hover:underline"
               >
-                support@cenaiva.com
+                help@cenaiva.com
               </a>{" "}
               within 5 business days of the charge. We investigate per{" "}
               <Link
