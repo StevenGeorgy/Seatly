@@ -25,15 +25,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, CreditCard, Loader2, Rocket } from "lucide-react";
 import { toast } from "sonner";
 
-import {
-  loadConnectAndInitialize,
-  type StripeConnectInstance,
-} from "@stripe/connect-js";
-import {
-  ConnectAccountOnboarding,
-  ConnectComponentsProvider,
-} from "@stripe/react-connect-js";
-
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -46,7 +37,6 @@ import {
 } from "@/components/ui/dialog";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { stripePromise, isStripeConfigured } from "@/lib/stripe";
-import { CENAIVA_CONNECT_APPEARANCE } from "@/lib/stripe/connectAppearance";
 import {
   getSupabaseAnonKey,
   getSupabaseBrowserClient,
@@ -64,7 +54,6 @@ import {
 import { SubscriptionCard } from "@/components/billing/SubscriptionCard";
 import { ChangeSubscriptionCard } from "@/components/billing/ChangeSubscriptionCard";
 import { CardOnFileBadge } from "@/components/billing/CardOnFileBadge";
-import { StripeConnectVerifyPanel } from "@/components/billing/StripeConnectVerifyPanel";
 
 type Step8PaymentSetupProps = {
   restaurantId: string;
@@ -171,84 +160,97 @@ async function invokeEdgeFunction<TResult>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section A — Connect Embedded KYC
+// Section A — Stripe-hosted Account Link onboarding
 // ─────────────────────────────────────────────────────────────────────────────
+// Used in place of the Embedded iframe because Embedded Components failed to
+// authenticate on this platform's configuration. The hosted flow ships the
+// owner to connect.stripe.com to complete KYC, then redirects back to
+// /onboarding?step=8 — at which point the wizard polls Stripe to see if
+// charges_enabled has flipped.
 
-function StripeConnectEmbeddedKYC({
+function StripeHostedOnboardingButton({
   restaurantId,
-  publishableKey,
-  onExit,
+  onPollNeeded,
 }: {
   restaurantId: string;
-  publishableKey: string;
-  onExit: () => void;
+  onPollNeeded: () => void;
 }) {
-  const [connectInstance, setConnectInstance] = useState<StripeConnectInstance | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // If the URL contains ?stripe=return (Stripe redirected us back after
+  // onboarding), kick off the KYC poll. The handleKycExit handler refreshes
+  // the restaurant row and updates the UI.
   useEffect(() => {
-    let cancelled = false;
-    setError(null);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const stripeFlag = url.searchParams.get("stripe");
+    if (stripeFlag === "return" || stripeFlag === "refresh") {
+      // Clear the param so a refresh doesn't re-trigger the poll.
+      url.searchParams.delete("stripe");
+      url.searchParams.delete("restaurant_id");
+      window.history.replaceState({}, "", url.toString());
+      onPollNeeded();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const fetchClientSecret = async (): Promise<string> => {
-      const accountRes = await invokeEdgeFunction<{ account_id: string }>(
+  const handleStart = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Ensure the Connect account exists (idempotent).
+      const acctRes = await invokeEdgeFunction<{ account_id: string }>(
         "create-stripe-account",
         { restaurant_id: restaurantId },
       );
-      if (!accountRes.ok) throw new Error(accountRes.error);
-      const sessionRes = await invokeEdgeFunction<{ client_secret: string }>(
-        "create-account-session",
+      if (!acctRes.ok) throw new Error(acctRes.error);
+      // Mint a one-time hosted onboarding URL and redirect.
+      const linkRes = await invokeEdgeFunction<{ url: string }>(
+        "create-account-link",
         { restaurant_id: restaurantId },
       );
-      if (!sessionRes.ok) throw new Error(sessionRes.error);
-      if (!sessionRes.data?.client_secret) {
-        throw new Error("Stripe didn't return a client secret. Try again.");
+      if (!linkRes.ok) throw new Error(linkRes.error);
+      if (!linkRes.data?.url) {
+        throw new Error("Stripe didn't return an onboarding URL. Try again.");
       }
-      return sessionRes.data.client_secret;
-    };
-
-    void (async () => {
-      try {
-        const instance = loadConnectAndInitialize({
-          publishableKey,
-          fetchClientSecret,
-          appearance: CENAIVA_CONNECT_APPEARANCE,
-        });
-        if (cancelled) return;
-        setConnectInstance(instance);
-      } catch (err) {
-        if (cancelled) return;
-        const friendly = toUserFacingError(err, "Couldn't initialize Stripe.");
-        setError(friendly.message);
-        console.error("[Step8PaymentSetup.kyc.init]", friendly.code, friendly.technical ?? err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [publishableKey, restaurantId]);
-
-  if (error) {
-    return (
-      <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
-        <p className="font-semibold text-warning">Couldn't load Stripe.</p>
-        <p className="mt-1">{error}</p>
-      </div>
-    );
-  }
-  if (!connectInstance) {
-    return (
-      <div className="flex items-center gap-2 rounded-2xl border border-border bg-bg-surface p-6 text-sm text-text-muted">
-        <Loader2 className="size-4 animate-spin" /> Loading Stripe onboarding…
-      </div>
-    );
-  }
+      window.location.href = linkRes.data.url;
+    } catch (err) {
+      const friendly = toUserFacingError(err, "Couldn't start Stripe onboarding.");
+      setError(friendly.message);
+      console.error("[Step8PaymentSetup.hosted]", friendly.code, friendly.technical ?? err);
+      setLoading(false);
+    }
+  };
 
   return (
-    <ConnectComponentsProvider connectInstance={connectInstance}>
-      <ConnectAccountOnboarding onExit={onExit} />
-    </ConnectComponentsProvider>
+    <div className="rounded-2xl border border-border bg-bg-surface p-5">
+      <p className="text-sm text-text-secondary">
+        Stripe will collect your business and banking details on their secure
+        site. Once you're done, we'll bring you right back to finish publishing.
+      </p>
+      {error ? (
+        <p className="mt-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
+      <Button
+        type="button"
+        className="mt-4 gap-2"
+        disabled={loading}
+        onClick={() => void handleStart()}
+      >
+        {loading ? (
+          <>
+            <Loader2 className="size-4 animate-spin" /> Opening Stripe…
+          </>
+        ) : (
+          <>
+            <CreditCard className="size-4" /> Continue with Stripe
+          </>
+        )}
+      </Button>
+    </div>
   );
 }
 
@@ -639,22 +641,19 @@ export function Step8PaymentSetup({
               </p>
             </div>
           ) : null}
-          {!kycVerified && publishableKey ? (
-            // First-time onboarding — diner hasn't submitted yet OR Stripe
-            // hasn't enabled charges. Use the standard account_onboarding flow.
-            <StripeConnectEmbeddedKYC
+          {(!kycVerified || payoutsPending) && publishableKey ? (
+            // First-time onboarding AND re-verification path — both use
+            // Stripe-hosted Account Link. Embedded Connect Components failed
+            // to authenticate on this platform; the hosted flow handles both
+            // initial onboarding and "fix what's flagged" scenarios (Stripe's
+            // own page shows the user what's still required). The button
+            // calls create-stripe-account (idempotent), then
+            // create-account-link to mint a one-time URL, then redirects.
+            // Stripe sends them back to /onboarding?step=8&stripe=return when
+            // done, and the page polls for KYC state on mount.
+            <StripeHostedOnboardingButton
               restaurantId={restaurantId}
-              publishableKey={publishableKey}
-              onExit={() => void handleKycExit()}
-            />
-          ) : payoutsPending ? (
-            // Details submitted but payouts still gated on identity errors.
-            // Switch to management-mode (notification_banner + account_management)
-            // so the user can actually fix the flagged info — account_onboarding
-            // shows a useless "Information submitted" placeholder here.
-            <StripeConnectVerifyPanel
-              restaurantId={restaurantId}
-              onExit={() => void handleKycExit()}
+              onPollNeeded={() => void handleKycExit()}
             />
           ) : null}
         </section>

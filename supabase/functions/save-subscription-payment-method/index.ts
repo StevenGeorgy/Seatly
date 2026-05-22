@@ -100,7 +100,10 @@ Deno.serve(async (req: Request) => {
 
     const { data: restaurant, error: restErr } = await supabaseAdmin
       .from("restaurants")
-      .select("id, stripe_customer_id, payment_method_attached_at, referred_by_restaurant_id")
+      .select(
+        "id, stripe_customer_id, payment_method_attached_at, referred_by_restaurant_id, " +
+          "address, city, province, postal_code, country, hst_registration_number",
+      )
       .eq("id", restaurantId)
       .maybeSingle();
     if (restErr || !restaurant) return jsonRes({ error: "Restaurant not found" }, 404);
@@ -110,6 +113,12 @@ Deno.serve(async (req: Request) => {
       stripe_customer_id: string | null;
       payment_method_attached_at: string | null;
       referred_by_restaurant_id: string | null;
+      address: string | null;
+      city: string | null;
+      province: string | null;
+      postal_code: string | null;
+      country: string | null;
+      hst_registration_number: string | null;
     };
     const customerId = row.stripe_customer_id;
     if (!customerId) {
@@ -148,6 +157,44 @@ Deno.serve(async (req: Request) => {
         stripe_type: e.type,
         attempted_payment_method_id: paymentMethodId,
       }, 400);
+    }
+
+    // Push the restaurant's billing address onto the Stripe customer so
+    // Stripe Tax can compute the per-province GST/HST rate when the
+    // subscription invoices. Also push the HST registration number (if
+    // provided) as a tax_id so it shows up on the invoice PDF for the
+    // restaurant's own ITC records.
+    const hasFullAddress = !!(row.address && row.city && row.province && row.postal_code);
+    if (hasFullAddress) {
+      try {
+        await stripe.customers.update(customerId, {
+          address: {
+            line1: row.address as string,
+            city: row.city as string,
+            state: row.province as string,
+            postal_code: row.postal_code as string,
+            country: "CA",
+          },
+        });
+      } catch (err) {
+        console.warn(
+          "[save-subscription-payment-method] customer address update failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    if (row.hst_registration_number) {
+      try {
+        await stripe.customers.createTaxId(customerId, {
+          type: "ca_gst_hst",
+          value: row.hst_registration_number as string,
+        });
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code !== "tax_id_already_exists") {
+          console.warn("[save-subscription-payment-method] tax_id create failed", code, err);
+        }
+      }
     }
 
     try {

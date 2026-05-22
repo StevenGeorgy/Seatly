@@ -433,3 +433,39 @@ curl -s -X POST "${SUPABASE_URL}/functions/v1/create-reservation-hold" \
 ```
 
 Then call cancel-reservation-hold with that `hold_id` to clean up.
+
+## 11. HST/GST setup (LIVE mode operational steps for Mark)
+
+Cenaiva collects HST/GST on its OWN revenue: $199.99/mo subscription + $1/booking
+fee. Diner-facing deposits are restaurant revenue (restaurant remits their own
+HST). Architecture: Stripe Tax `automatic_tax` computes per-province rates from
+the customer address.
+
+**Mandatory Dashboard steps (do BEFORE the next restaurant publish attempt):**
+
+1. **Enable Stripe Tax for Canada:** Dashboard → Tax → Settings → enable
+   Canada. Accept the 0.5% Stripe Tax surcharge agreement.
+
+2. **Register Cenaiva's HST status:** Tax → Settings → add origin address
+   (Cenaiva's HQ) + registrations. If under the $30K CAD small-supplier
+   threshold, mark Canada as "Not registered" (Stripe still calculates). When
+   you cross threshold + register with CRA, update with your BN/RT number.
+
+3. **Tax codes on subscription Price + booking fee Product:**
+   - Open the subscription Product (`STRIPE_SUBSCRIPTION_PRICE_ID` points to
+     its Price)
+   - Set Tax behavior = **Exclusive** on the Price
+   - Set Tax code = `txcd_10103001` (SaaS / cloud computing services)
+   - Repeat for the booking fee Product
+   - If the existing Price has `tax_behavior: "unspecified"` (immutable),
+     clone the Price and swap the `STRIPE_SUBSCRIPTION_PRICE_ID` env var.
+
+4. **Verify webhook still subscribes to `invoice.finalized`** (already used
+   for billing; sanity check).
+
+**Verification recipe (test mode first):**
+- Onboard a test restaurant with Toronto postal code `M5V 3A8` (Ontario, 13% HST)
+- Publish → check the first subscription invoice (after trial) shows
+  Subtotal $199.99, HST $26.00, Total $225.99
+- Trigger `bill-booking-fees` cron manually → booking fee line on next
+  invoice shows $1.00 + $0.13 HST

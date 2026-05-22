@@ -120,12 +120,21 @@ Deno.serve(async (req: Request) => {
     // most new platforms don't have. Express works out of the box and is fully
     // compatible with the ConnectAccountOnboarding embedded component (the
     // owner stays inside Cenaiva for KYC).
+    //
+    // Capabilities: ONLY `transfers`. Cenaiva's model is destination-charges:
+    // diners pay Cenaiva's platform account, Stripe transfers the restaurant's
+    // 94.5% share. The restaurant never directly charges a card. Requesting
+    // `card_payments` here would create a capability mismatch with the
+    // platform's Onboarding options (Payments isn't enabled for Canada at the
+    // platform level) and causes the Embedded Connect iframe to fail with
+    // "There was an error during authentication." If pay-the-table is ever
+    // added later, enable Payments at platform level AND re-add card_payments
+    // here in lock-step.
     const account = await stripe.accounts.create({
       type: "express",
       country: "CA",
       email: row.email ?? undefined,
       capabilities: {
-        card_payments: { requested: true },
         transfers: { requested: true },
       },
       business_profile: {

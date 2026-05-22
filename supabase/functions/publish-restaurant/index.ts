@@ -141,7 +141,8 @@ Deno.serve(async (req: Request) => {
       .select(
         "id, name, stripe_customer_id, stripe_charges_enabled, cover_photo_url, " +
           "payment_method_attached_at, subscription_status, trial_ends_at, " +
-          "is_published, deleted_at, referred_by_restaurant_id, referral_code",
+          "is_published, deleted_at, referred_by_restaurant_id, referral_code, " +
+          "address, city, province, postal_code",
       )
       .eq("id", restaurantId)
       .maybeSingle();
@@ -160,6 +161,10 @@ Deno.serve(async (req: Request) => {
       deleted_at: string | null;
       referred_by_restaurant_id: string | null;
       referral_code: string | null;
+      address: string | null;
+      city: string | null;
+      province: string | null;
+      postal_code: string | null;
     };
 
     // Idempotent success — already published.
@@ -263,6 +268,20 @@ Deno.serve(async (req: Request) => {
         }, 500);
       }
 
+      // Stripe Tax automatic_tax requires the customer to have a billable
+      // address. Block publish if the restaurant hasn't entered one yet —
+      // friendlier than letting Stripe reject the subscription create.
+      const taxAddressComplete = !!(
+        row.address && row.city && row.province && row.postal_code
+      );
+      if (!taxAddressComplete) {
+        return jsonRes({
+          error:
+            "Add your full address (including postal code) under Billing details before publishing.",
+          code: "tax_address_incomplete",
+        }, 400);
+      }
+
       let subscription;
       try {
         subscription = await stripe.subscriptions.create({
@@ -271,9 +290,10 @@ Deno.serve(async (req: Request) => {
           trial_period_days: 90,
           payment_behavior: "default_incomplete",
           expand: ["latest_invoice.payment_intent"],
+          automatic_tax: { enabled: true },
           metadata: { restaurant_id: row.id },
         }, {
-          idempotencyKey: `publish_${restaurantId}_${ymd()}`,
+          idempotencyKey: `publish_${restaurantId}_${ymd()}_tax_v1`,
         });
       } catch (err) {
         const e = err as {

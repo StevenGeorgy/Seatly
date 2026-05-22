@@ -182,6 +182,9 @@ verify_jwt = false
 [functions.delete-drafts]
 verify_jwt = false
 
+[functions.create-account-link]
+verify_jwt = false
+
 [functions.recover-restaurant]
 verify_jwt = false
 

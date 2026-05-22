@@ -128,6 +128,7 @@ Deno.serve(async (req: Request) => {
           amount: fee.amount_cents,
           currency: fee.currency,
           description: "Cenaiva booking fee",
+          tax_behavior: "exclusive",
           metadata: {
             reservation_id: fee.reservation_id,
             restaurant_id: fee.restaurant_id,

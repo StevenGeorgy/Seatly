@@ -26,7 +26,9 @@ export type OwnerNotificationType =
   | "subscription_resumed"
   | "new_reservation_owner"
   | "cancellation_owner"
-  | "payment_failed_diner";
+  | "payment_failed_diner"
+  | "charge_dispute_created"
+  | "charge_dispute_closed";
 
 export interface SendOwnerNotificationOpts {
   supabase: SupabaseClient;
@@ -81,6 +83,12 @@ const DEFAULT_IDEMPOTENCY_WINDOWS: Record<OwnerNotificationType, number> = {
   // code). A short burst window swats Stripe webhook retries for the
   // same PI.
   payment_failed_diner: 60,
+  // Disputes: created window matches Stripe's standard evidence window
+  // (~7 days) so duplicate-create events from Stripe retries don't double-
+  // email. Closed disputes get a 30-day window — won/lost/warning_closed
+  // is a terminal state per dispute and we never want to re-notify.
+  charge_dispute_created: 7 * 86400,
+  charge_dispute_closed: 30 * 86400,
 };
 
 export async function getOwnerContact(
@@ -353,6 +361,108 @@ function buildTemplate(
             ? `View your receipt: ${hostedInvoiceUrl}\n\n`
             : "") +
           `Thanks for using Cenaiva.`,
+      };
+    }
+    case "charge_dispute_created": {
+      const amount = typeof context.amount === "string"
+        ? (context.amount as string)
+        : "—";
+      const reservationCode = typeof context.reservation_code === "string"
+        ? (context.reservation_code as string)
+        : null;
+      const reason = typeof context.reason === "string"
+        ? (context.reason as string)
+        : null;
+      const evidenceDueBy = typeof context.evidence_due_by === "string"
+        ? (context.evidence_due_by as string)
+        : null;
+      const paymentIntentId = typeof context.payment_intent_id === "string"
+        ? (context.payment_intent_id as string)
+        : null;
+      const lines: string[] = [
+        greet,
+        ``,
+        `A diner just disputed a $${amount} charge at ${restaurantName}.`,
+        `Stripe has temporarily withheld $${amount} plus a $15 dispute fee.`,
+      ];
+      if (reason) lines.push(`Reason given: ${reason}.`);
+      if (reservationCode) lines.push(`Reservation: ${reservationCode}.`);
+      lines.push(
+        evidenceDueBy
+          ? `You have until ${evidenceDueBy} to submit evidence. Without a response, the dispute is automatically lost.`
+          : `Stripe will contact you with an evidence deadline. Submit within the window or the dispute is automatically lost.`,
+      );
+      lines.push(``);
+      lines.push(`Submit evidence (receipts, communication, no-show records) from your Stripe dashboard:`);
+      lines.push(
+        paymentIntentId
+          ? `https://dashboard.stripe.com/payments/${paymentIntentId}`
+          : `https://dashboard.stripe.com/disputes`,
+      );
+      lines.push(``);
+      lines.push(`Need help? Reply to this email and we'll walk you through it.`);
+      lines.push(``);
+      lines.push(`— Cenaiva`);
+      return {
+        subject: `Action required — payment dispute at ${restaurantName}`,
+        body: lines.join("\n"),
+      };
+    }
+    case "charge_dispute_closed": {
+      const amount = typeof context.amount === "string"
+        ? (context.amount as string)
+        : "—";
+      const reservationCode = typeof context.reservation_code === "string"
+        ? (context.reservation_code as string)
+        : null;
+      const outcomeRaw = typeof context.outcome === "string" ? context.outcome : "warning_closed";
+      const outcome: "won" | "lost" | "warning_closed" =
+        outcomeRaw === "won" || outcomeRaw === "lost" ? outcomeRaw : "warning_closed";
+      const paymentIntentId = typeof context.payment_intent_id === "string"
+        ? (context.payment_intent_id as string)
+        : null;
+      const resTail = reservationCode ? ` (reservation ${reservationCode})` : "";
+      if (outcome === "won") {
+        return {
+          subject: `Dispute resolved in your favour — ${restaurantName}`,
+          body: [
+            greet,
+            ``,
+            `Good news — Stripe resolved the dispute in your favour for the $${amount} charge at ${restaurantName}${resTail}.`,
+            `The funds and the $15 dispute fee have been returned to your balance. No further action needed.`,
+            ``,
+            `— Cenaiva`,
+          ].join("\n"),
+        };
+      }
+      if (outcome === "lost") {
+        const lines: string[] = [
+          greet,
+          ``,
+          `The dispute on the $${amount} charge at ${restaurantName}${resTail} was resolved against you. Stripe has kept the disputed amount and the $15 dispute fee.`,
+          ``,
+          `To reduce future disputes, consider tightening your cancellation/no-show policy and keeping reservation communications in writing.`,
+        ];
+        if (paymentIntentId) {
+          lines.push(`Full breakdown: https://dashboard.stripe.com/payments/${paymentIntentId}`);
+        }
+        lines.push(``);
+        lines.push(`— Cenaiva`);
+        return {
+          subject: `Dispute lost — ${restaurantName}`,
+          body: lines.join("\n"),
+        };
+      }
+      // warning_closed
+      return {
+        subject: `Dispute warning closed — ${restaurantName}`,
+        body: [
+          greet,
+          ``,
+          `An inquiry/warning on the $${amount} charge at ${restaurantName}${resTail} was closed by the cardholder's bank with no chargeback. No funds were withheld. No action needed.`,
+          ``,
+          `— Cenaiva`,
+        ].join("\n"),
       };
     }
   }

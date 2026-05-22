@@ -259,6 +259,20 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   `bill-booking-fees` edge fn. The function holds the
   status='pending' guard that prevents double-billing across
   overlapping cron runs.
+- Never create a `stripe.subscriptions.create` or `stripe.invoiceItems.create`
+  call for Cenaiva's own revenue without `automatic_tax: { enabled: true }`
+  (on the subscription) and `tax_behavior: "exclusive"` (on the invoice
+  item). Stripe Tax computes Canadian HST/GST per province from the
+  customer address. Diner-facing PaymentIntents (deposits, pre-orders,
+  on-bill charges) are restaurant revenue and intentionally NOT in
+  scope — restaurant remits sales tax there. Before publish, the
+  restaurant address must include `postal_code`; `publish-restaurant`
+  enforces this with `tax_address_incomplete`.
+- Never call `stripe.refunds.create()` on a destination-charge PI
+  without `reverse_transfer: true`. The default pulls from Cenaiva's
+  platform balance and leaves the restaurant holding the original
+  transfer — Cenaiva eats the refund. The shared helper
+  `_shared/stripe-refund.ts` is the only sanctioned path.
 - Never UPDATE `orders` from the diner-facing client. RLS restricts
   UPDATE to staff; diner calls silently fail. Use `mark-order-paid`.
 - Never insert into `reservation_deposit_payments` outside
@@ -384,10 +398,13 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   multiple components share one socket. Used by RestaurantPreviewModal,
   RestaurantPublicPage, AvailabilityPanel. Don't use from Discover/
   Deals (one entry per card explodes the connection count).
-- **Cancellation refund:** `cancel-reservation` retrieves
-  `application_fee_amount` from Stripe per row, refunds `total −
-  applicationFee` via `refundPaymentIntent(stripe, pi, reason,
-  amountCents)`. Falls back to full refund on retrieve failure.
+- **Cancellation refund:** `cancel-reservation` refunds `base` (the
+  restaurant's slice) via `refundPaymentIntent(stripe, pi, reason,
+  amountCents)`. The shared helper sets `reverse_transfer: true` so
+  destination-charge refunds debit the connected restaurant (NOT
+  Cenaiva's platform balance) and keeps `refund_application_fee:
+  false` so the 5.5% commission stays with Cenaiva. Restaurant nets
+  $0, Cenaiva keeps fee, diner gets `base` back.
 - **Owner publish gate:** four conditions in lock-step — client-side
   check in `Step8PaymentSetup.tsx` AND server-side
   `restaurants_publish_gate` trigger (is_active + stripe_charges_enabled

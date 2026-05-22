@@ -23,6 +23,7 @@ export const RestaurantOnboardingSchema = z.object({
   city: BoundedText(120).nullish(),
   province: BoundedText(80).nullish(),
   postal_code: BoundedText(20).nullish(),
+  hst_registration_number: BoundedText(40).nullish(),
   country: BoundedText(80).nullish(),
   // Owner-side phone: relaxed format (just length-capped). Diner-side flows
   // run normalizeE164Phone first; the onboarding wizard currently accepts

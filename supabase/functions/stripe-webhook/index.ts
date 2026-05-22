@@ -126,6 +126,17 @@ type PaymentIntentLike = {
   last_payment_error?: { message?: string } | null;
 };
 
+type DisputeLike = {
+  id?: string;
+  charge?: string;
+  payment_intent?: string;
+  amount?: number;
+  currency?: string;
+  reason?: string;
+  status?: string;
+  evidence_details?: { due_by?: number | null } | null;
+};
+
 async function handleAccountUpdated(account: AccountLike): Promise<void> {
   if (!account.id) return;
   const { error } = await supabaseAdmin
@@ -158,7 +169,9 @@ async function dispatchOwnerNotification(
   type:
     | "payment_failed"
     | "payment_recovered"
-    | "payment_received",
+    | "payment_received"
+    | "charge_dispute_created"
+    | "charge_dispute_closed",
   context: Record<string, unknown>,
 ): Promise<void> {
   // Helper may not exist on first deploy — wrap in try/catch so webhook
@@ -647,6 +660,96 @@ async function handlePaymentIntentFailed(pi: PaymentIntentLike): Promise<void> {
   }
 }
 
+async function handleChargeDispute(eventType: string, dispute: DisputeLike): Promise<void> {
+  if (!dispute.id || !dispute.payment_intent) {
+    console.warn("[stripe-webhook] dispute missing id/payment_intent", {
+      eventType,
+      id: dispute.id,
+    });
+    return;
+  }
+  const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+  if (!stripeKey) {
+    console.error("[stripe-webhook] STRIPE_SECRET_KEY missing");
+    return;
+  }
+  const stripe = await getStripeClient(stripeKey);
+
+  let pi: { id: string; metadata?: Record<string, string> | null } | null = null;
+  try {
+    pi = (await stripe.paymentIntents.retrieve(dispute.payment_intent, {
+      expand: ["latest_charge"],
+    })) as { id: string; metadata?: Record<string, string> | null };
+  } catch (err) {
+    console.error("[stripe-webhook] failed to retrieve PI for dispute", err);
+    return;
+  }
+  if (!pi) return;
+
+  // Resolve restaurant_id via metadata → DB fallback
+  let restaurantId: string | null = pi.metadata?.restaurant_id ?? null;
+  let reservationId: string | null = pi.metadata?.reservation_id ?? null;
+  if (!restaurantId) {
+    const { data: depRow } = await supabaseAdmin
+      .from("reservation_deposit_payments")
+      .select("reservation_id, reservations(restaurant_id, confirmation_code, guest_full_name)")
+      .eq("stripe_payment_intent_id", pi.id)
+      .maybeSingle();
+    if (depRow) {
+      reservationId = (depRow as { reservation_id?: string | null }).reservation_id ?? reservationId;
+      restaurantId =
+        (depRow as { reservations?: { restaurant_id?: string | null } | null }).reservations
+          ?.restaurant_id ?? null;
+    }
+  }
+  if (!restaurantId) {
+    console.warn("[stripe-webhook] no restaurant_id resolvable for dispute", { piId: pi.id });
+    return;
+  }
+
+  // Look up reservation details for the confirmation code
+  let confirmationCode: string | null = null;
+  if (reservationId) {
+    const { data: r } = await supabaseAdmin
+      .from("reservations")
+      .select("confirmation_code")
+      .eq("id", reservationId)
+      .maybeSingle();
+    confirmationCode = (r as { confirmation_code?: string | null } | null)?.confirmation_code ?? null;
+  }
+
+  const amountDollars = ((dispute.amount ?? 0) / 100).toFixed(2);
+  let evidenceDueBy: string | null = null;
+  if (dispute.evidence_details?.due_by) {
+    const d = new Date(dispute.evidence_details.due_by * 1000);
+    evidenceDueBy = new Intl.DateTimeFormat("en-CA", {
+      dateStyle: "full",
+      timeStyle: "short",
+      timeZone: "America/Toronto",
+    }).format(d);
+  }
+
+  if (eventType === "charge.dispute.created") {
+    await dispatchOwnerNotification(restaurantId, "charge_dispute_created", {
+      amount: amountDollars,
+      reservation_code: confirmationCode,
+      reason: dispute.reason ?? null,
+      evidence_due_by: evidenceDueBy,
+      payment_intent_id: pi.id,
+    });
+  } else if (eventType === "charge.dispute.closed") {
+    const status = dispute.status ?? "warning_closed";
+    const outcome: "won" | "lost" | "warning_closed" =
+      status === "won" || status === "lost" ? status : "warning_closed";
+    await dispatchOwnerNotification(restaurantId, "charge_dispute_closed", {
+      amount: amountDollars,
+      reservation_code: confirmationCode,
+      outcome,
+      payment_intent_id: pi.id,
+    });
+  }
+}
+
 async function handleSubscriptionDeleted(sub: SubscriptionLike): Promise<void> {
   if (!sub.customer) return;
   // Skip restaurants in the soft-delete pipeline — they have their own
@@ -764,6 +867,13 @@ Deno.serve(async (req: Request) => {
         // We could send a "your bill is ready" notification here later. For
         // now just log it so we can see the events arriving.
         console.log(`[stripe-webhook] invoice.finalized (${event.id}) — logged, no DB write`);
+        break;
+      case "charge.dispute.created":
+      case "charge.dispute.closed":
+        await handleChargeDispute(event.type, event.data.object as DisputeLike);
+        break;
+      case "charge.dispute.updated":
+        console.log(`[stripe-webhook] charge.dispute.updated (${event.id}) — logged, no action`);
         break;
       default:
         console.log(`[stripe-webhook] unhandled event ${event.type} (${event.id})`);

@@ -46,13 +46,18 @@ const formSchema = z.object({
   city: z.string().trim().min(1, "Required").max(120, "City is too long"),
   province: z.string().trim().min(1, "Required").max(80, "Province is too long"),
   country: z.string().trim().min(1, "Required").max(80, "Country is too long"),
-  postalCode: z.string().max(20, "Postal code is too long"),
+  postalCode: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]\d[A-Za-z][ ]?\d[A-Za-z]\d$/, "Enter a Canadian postal code, e.g. M5V 3A8")
+    .max(7, "Postal code is too long"),
   businessType: z.string().trim().min(1, "Required").max(80, "Too long"),
   cuisineType: z.string().trim().min(1, "Required").max(80, "Too long"),
   phone: z.string().trim().min(1, "Required").max(20, "Phone is too long"),
   description: z.string().max(DESCRIPTION_MAX),
   acceptsWalkins: z.boolean(),
   dietaryTags: z.array(z.string().max(80)).max(30),
+  hstRegistrationNumber: z.string().trim().max(40, "Too long").optional().or(z.literal("")),
 });
 
 type Step1FormValues = z.infer<typeof formSchema>;
@@ -99,6 +104,7 @@ export function Step1Basics({
       description: initial?.description ?? "",
       acceptsWalkins: initial?.acceptsWalkins ?? true,
       dietaryTags: initial?.dietaryTags ?? [],
+      hstRegistrationNumber: "",
     },
   });
 
@@ -122,6 +128,7 @@ export function Step1Basics({
       description: initial.description ?? "",
       acceptsWalkins: initial.acceptsWalkins ?? true,
       dietaryTags: initial.dietaryTags ?? [],
+      hstRegistrationNumber: "",
     });
     setLat(initial.lat ?? null);
     setLng(initial.lng ?? null);
@@ -165,6 +172,8 @@ export function Step1Basics({
           city: values.city.trim(),
           province: values.province.trim(),
           country: values.country.trim() || "Canada",
+          postal_code: values.postalCode.trim().toUpperCase(),
+          hst_registration_number: values.hstRegistrationNumber?.trim() || null,
           lat,
           lng,
           cuisine_type: values.cuisineType,
@@ -297,6 +306,7 @@ export function Step1Basics({
                   if (parts.city) form.setValue("city", parts.city, { shouldValidate: true });
                   if (parts.province) form.setValue("province", parts.province, { shouldValidate: true });
                   if (parts.country) form.setValue("country", parts.country, { shouldValidate: true });
+                  if (parts.postalCode) form.setValue("postalCode", parts.postalCode, { shouldValidate: true });
                   if (typeof parts.lat === "number") setLat(parts.lat);
                   if (typeof parts.lng === "number") setLng(parts.lng);
                 }}
@@ -306,7 +316,7 @@ export function Step1Basics({
           {errors.address ? <p className="text-xs text-danger">{errors.address.message}</p> : null}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="city">
               City <span className="text-danger">*</span>
@@ -328,6 +338,31 @@ export function Step1Basics({
             <Input id="country" maxLength={80} {...form.register("country")} placeholder="Canada" />
             {errors.country ? <p className="text-xs text-danger">{errors.country.message}</p> : null}
           </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="postalCode">Postal code <span className="text-danger">*</span></Label>
+            <Input
+              id="postalCode"
+              maxLength={7}
+              {...form.register("postalCode")}
+              placeholder="M5V 3A8"
+              onBlur={(e) => form.setValue("postalCode", e.target.value.toUpperCase().trim(), { shouldValidate: true })}
+            />
+            {errors.postalCode ? <p className="text-xs text-danger">{errors.postalCode.message}</p> : null}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="hstRegistrationNumber">GST/HST Registration Number (optional)</Label>
+          <Input
+            id="hstRegistrationNumber"
+            {...form.register("hstRegistrationNumber")}
+            placeholder="123456789RT0001"
+            maxLength={40}
+          />
+          <p className="text-xs text-text-muted">
+            If you're HST-registered, enter your number so we include it on your Cenaiva invoices for your tax records.
+          </p>
+          {errors.hstRegistrationNumber ? <p className="text-xs text-danger">{errors.hstRegistrationNumber.message}</p> : null}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
