@@ -21,7 +21,7 @@ export default defineConfig({
   // cause of the reload-loop the user hit on 2026-05-11 while inspecting
   // newly-added restaurants in /dashboard).
   server: {
-    https: true,
+    https: {},
     watch: {
       ignored: [
         "**/scripts/test-results.json",

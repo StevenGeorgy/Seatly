@@ -56,6 +56,18 @@ export type GoogleMapsMarker = {
   addListener: (eventName: string, handler: () => void) => { remove: () => void };
 };
 
+export type GeocoderAddressComponent = {
+  long_name: string;
+  short_name: string;
+  types: string[];
+};
+
+export type GeocoderResult = {
+  address_components?: GeocoderAddressComponent[];
+  formatted_address?: string;
+  place_id?: string;
+};
+
 export type GoogleMapsNamespace = {
   Map: new (node: HTMLElement, options: Record<string, unknown>) => unknown;
   Marker: new (options: Record<string, unknown>) => GoogleMapsMarker;
@@ -65,6 +77,12 @@ export type GoogleMapsNamespace = {
   LatLngBounds: new () => {
     extend: (point: { lat: number; lng: number }) => void;
     isEmpty: () => boolean;
+  };
+  Geocoder: new () => {
+    geocode: (
+      request: { location: { lat: number; lng: number } },
+      callback: (results: GeocoderResult[] | null, status: string) => void,
+    ) => void;
   };
   places?: {
     Autocomplete: new (
