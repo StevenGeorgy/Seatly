@@ -24,8 +24,11 @@ type CodeLookupResponse = {
 export default function FindReservationPage() {
   const navigate = useNavigate();
 
-  // Left card — confirmation code.
+  // Left card — confirmation code. Email is now required alongside the code
+  // (security: closes the code-only enumeration attack — the email is on the
+  // same confirmation message that contained the code).
   const [code, setCode] = useState("");
+  const [codeEmail, setCodeEmail] = useState("");
   const [codeBusy, setCodeBusy] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
 
@@ -48,9 +51,14 @@ export default function FindReservationPage() {
   const handleCodeSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setCodeError(null);
-    const trimmed = code.trim();
-    if (!trimmed) {
+    const trimmedCode = code.trim();
+    const trimmedEmail = codeEmail.trim();
+    if (!trimmedCode) {
       setCodeError("Enter your confirmation code.");
+      return;
+    }
+    if (!trimmedEmail) {
+      setCodeError("Enter the email on the reservation.");
       return;
     }
     if (!isSupabaseConfigured()) {
@@ -59,7 +67,11 @@ export default function FindReservationPage() {
     }
     setCodeBusy(true);
     try {
-      const res = await callFindReservation({ lookup_type: "code", code: trimmed });
+      const res = await callFindReservation({
+        lookup_type: "code",
+        code: trimmedCode,
+        email: trimmedEmail,
+      });
       if (res.status === 429) {
         setCodeError("Too many attempts. Please wait a few minutes and try again.");
         return;
@@ -70,11 +82,15 @@ export default function FindReservationPage() {
         return;
       }
       if (body.found && body.slug && body.code) {
-        navigate(`/${body.slug}?confirmation=${encodeURIComponent(body.code)}`);
+        // Pass email forward to ManageBookingView so cancel/modify can
+        // re-prove identity on the next call.
+        navigate(
+          `/${body.slug}?confirmation=${encodeURIComponent(body.code)}&email=${encodeURIComponent(trimmedEmail)}`,
+        );
         return;
       }
       setCodeError(
-        "We couldn't find a reservation with that code. Double-check the email or SMS we sent, or use the email lookup on the right.",
+        "We couldn't find a reservation with that code and email. Double-check both, or use the email lookup on the right.",
       );
     } catch (err) {
       setCodeError(err instanceof Error ? err.message : "Lookup failed. Please try again.");
@@ -163,25 +179,45 @@ export default function FindReservationPage() {
               <span className="font-mono text-white">SEAT-A8B2</span>.
             </p>
 
-            <div className="mt-5 space-y-2">
-              <Label htmlFor="find-code" className="text-text-secondary">
-                Confirmation code
-              </Label>
-              <Input
-                id="find-code"
-                value={code}
-                maxLength={20}
-                onChange={(e) => {
-                  setCode(e.target.value.slice(0, 20).toUpperCase());
-                  if (codeError) setCodeError(null);
-                }}
-                placeholder="SEAT-A8B2"
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                disabled={codeBusy}
-                className="font-mono uppercase tracking-[0.18em]"
-              />
+            <div className="mt-5 space-y-3">
+              <div className="space-y-2">
+                <Label htmlFor="find-code" className="text-text-secondary">
+                  Confirmation code
+                </Label>
+                <Input
+                  id="find-code"
+                  value={code}
+                  maxLength={20}
+                  onChange={(e) => {
+                    setCode(e.target.value.slice(0, 20).toUpperCase());
+                    if (codeError) setCodeError(null);
+                  }}
+                  placeholder="SEAT-A8B2"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  disabled={codeBusy}
+                  className="font-mono uppercase tracking-[0.18em]"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="find-code-email" className="text-text-secondary">
+                  Email on the reservation
+                </Label>
+                <Input
+                  id="find-code-email"
+                  type="email"
+                  value={codeEmail}
+                  maxLength={254}
+                  onChange={(e) => {
+                    setCodeEmail(e.target.value.slice(0, 254));
+                    if (codeError) setCodeError(null);
+                  }}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  disabled={codeBusy}
+                />
+              </div>
               {codeError ? (
                 <p className="text-xs text-danger">{codeError}</p>
               ) : null}

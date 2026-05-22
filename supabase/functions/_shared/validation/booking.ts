@@ -88,6 +88,10 @@ export const ModifyReservationSchema = z
     specialRequest: BoundedText(500).optional(),
     confirmation_code: ConfirmationCode.optional(),
     confirmationCode: ConfirmationCode.optional(),
+    // Guest path second factor (since 2026-05-22). See CancelReservationSchema
+    // for the rationale — closes the code-only enumeration attack. Ignored
+    // for JWT-authed callers.
+    email: BoundedText(254).optional(),
   })
   .refine(
     (b) => b.reservation_id !== undefined || b.reservationId !== undefined,
@@ -109,6 +113,12 @@ export const CancelReservationSchema = z
     reservationId: Uuid.optional(),
     confirmation_code: ConfirmationCode.optional(),
     confirmationCode: ConfirmationCode.optional(),
+    // Guest path requires the email on the reservation as a second factor —
+    // prevents code-only enumeration attacks. Logged-in (JWT) callers ignore
+    // this field; owner-actor calls ignore it too. Accept loose BoundedText
+    // here so the handler can return a friendly "we couldn't verify" message
+    // rather than a Zod parse error.
+    email: BoundedText(254).optional(),
     actor: z.enum(["diner", "owner"]).optional(),
   })
   .refine(

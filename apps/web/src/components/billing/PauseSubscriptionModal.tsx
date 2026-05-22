@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toUserFacingError } from "@/lib/errors";
+
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -67,7 +69,9 @@ export function PauseSubscriptionModal({
       );
       const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!res.ok || body?.error) {
-        toast.error(body?.error ?? "Couldn't pause subscription.");
+        const friendly = toUserFacingError(body?.error, "Couldn't pause subscription.");
+        toast.error(friendly.message);
+        console.error("[PauseSubscriptionModal]", friendly.code, friendly.technical ?? body);
         return;
       }
       toast.success("Subscription paused. Resume any time.");

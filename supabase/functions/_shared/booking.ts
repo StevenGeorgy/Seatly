@@ -511,8 +511,11 @@ export async function completeBooking(
       : null;
     const tz = restaurantForNotify?.timezone || DEFAULT_TIMEZONE;
     const reservationDateLabel = formatReservationDate(new Date(date_time), tz);
+    // Email is required for guest cancel/modify (2026-05-22 security hardening).
+    // Include it in the URL so the diner can manage without re-entering it.
+    // Logged-in callers ignore the param.
     const manageLink = restaurantSlug && persistedConfirmationCode
-      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(persistedConfirmationCode)}`
+      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(persistedConfirmationCode)}${guestFields.email ? `&email=${encodeURIComponent(guestFields.email)}` : ""}`
       : null;
     const guestNameForBody = guestFields.full_name || "there";
     // Look up event/promotion details to enrich the confirmation message

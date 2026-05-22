@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toUserFacingError } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -67,7 +68,9 @@ export function CancelSubscriptionModal({
         | { ok?: boolean; period_end_iso?: string | null; error?: string }
         | null;
       if (!res.ok || body?.error) {
-        toast.error(body?.error ?? "Couldn't cancel subscription.");
+        const friendly = toUserFacingError(body?.error, "Couldn't cancel subscription.");
+        toast.error(friendly.message);
+        console.error("[CancelSubscriptionModal]", friendly.code, friendly.technical ?? body);
         return;
       }
       const periodEnd = body?.period_end_iso

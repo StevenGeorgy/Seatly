@@ -109,7 +109,18 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-async function lookupByCode(code: string): Promise<ReservationRow | null> {
+async function lookupByCodeAndEmail(
+  code: string,
+  email: string,
+): Promise<ReservationRow | null> {
+  // SECURITY: code-only lookup was vulnerable to enumeration — the ~1.6M
+  // SEAT-XXXX space could be probed via rate-limited brute force to discover
+  // reservation_ids that an attacker could then cancel. We now require the
+  // matching guest_email to be presented alongside the code. The email is
+  // already on the confirmation message that contained the code, so any
+  // legitimate diner has access to both.
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
   const { primary, alternate } = normalizeCode(code);
   const select =
     "id, restaurant_id, confirmation_code, reserved_at, party_size, guest_full_name, guest_email, guest_phone, special_request, status, restaurants!inner(name, slug, timezone, phone)";
@@ -118,6 +129,7 @@ async function lookupByCode(code: string): Promise<ReservationRow | null> {
       .from("reservations")
       .select(select)
       .ilike("confirmation_code", c)
+      .eq("guest_email", normalizedEmail)
       .gt("reserved_at", new Date().toISOString())
       .in("status", ["confirmed", "pending_payment"])
       .order("reserved_at", { ascending: true })
@@ -165,8 +177,12 @@ async function resendConfirmation(row: ReservationRow): Promise<void> {
   const guestName = row.guest_full_name?.trim() || "there";
   const guestLabel = row.party_size === 1 ? "guest" : "guests";
 
+  // Include email in the URL so the guest cancel/modify path can re-prove
+  // identity (2026-05-22 security hardening). Note: this is the re-sent
+  // confirmation, the diner provided email at /find-reservation already.
+  const guestEmailForLink = (row.guest_email ?? "").trim().toLowerCase();
   const manageLink = restaurantSlug && code
-    ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(code)}`
+    ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(code)}${guestEmailForLink ? `&email=${encodeURIComponent(guestEmailForLink)}` : ""}`
     : null;
   const restaurantPhoneLine = restaurantPhone
     ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.`
@@ -248,7 +264,10 @@ Deno.serve(async (req: Request) => {
 
     if (lookupType === "code") {
       const code = asText(payload.code);
-      if (!code) return jsonRes({ error: "code is required" }, 400);
+      const email = asText(payload.email);
+      if (!code || !email) {
+        return jsonRes({ error: "code and email are required" }, 400);
+      }
 
       try {
         await enforceRateLimit(
@@ -262,7 +281,9 @@ Deno.serve(async (req: Request) => {
         throw err;
       }
 
-      const match = await lookupByCode(code);
+      const match = await lookupByCodeAndEmail(code, email);
+      // Always return the same shape regardless of whether email matched —
+      // do not reveal whether the code exists when the email is wrong.
       if (!match) return jsonRes({ ok: true, found: false });
       const slug = match.restaurants?.slug?.trim() ?? null;
       const matchedCode = match.confirmation_code?.trim() ?? null;

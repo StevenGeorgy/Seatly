@@ -194,8 +194,17 @@ Deno.serve(async (req: Request) => {
         return json({ error: "You can only modify your own reservations" }, 403);
       }
     } else if (providedCode) {
+      // SECURITY (2026-05-22): code-only auth was vulnerable to enumeration.
+      // Now requires the matching guest_email as a second factor. Mirrors
+      // cancel-reservation. Both 401s deliberately use the same wording so
+      // we don't reveal which field failed.
       const expectedCode = (reservation.confirmation_code ?? "").trim();
       if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
+        return json({ error: "Invalid confirmation code" }, 401);
+      }
+      const providedEmail = (parsed.data.email ?? "").trim().toLowerCase();
+      const reservationEmail = (reservation.guest_email ?? "").trim().toLowerCase();
+      if (!providedEmail || !reservationEmail || providedEmail !== reservationEmail) {
         return json({ error: "Invalid confirmation code" }, 401);
       }
       if (reservation.guest_id) {
@@ -286,7 +295,14 @@ Deno.serve(async (req: Request) => {
         ? restaurant.settings_json.turnTimeMinutes
         : null;
     const turnMinutes = configuredTurnMinutes || selectedShift.turn_time_minutes || 90;
-    const maxCovers = selectedShift.max_covers || 100;
+    // CLAUDE.md hard rule: "Never re-introduce COALESCE(s.max_covers, 100)
+    // in any reservation RPC. NULL means 'no cap'; gate with IF v_max_covers
+    // IS NOT NULL". The RPC follows this; the edge fn previously did not and
+    // would reject valid bookings on uncapped shifts whose covers exceeded
+    // 100 even though the restaurant's policy is "no cap". Preserve NULL
+    // here and gate the cover-cap check on it below.
+    const maxCovers: number | null =
+      typeof selectedShift.max_covers === "number" ? selectedShift.max_covers : null;
     const slotEnd = new Date(reservedAt.getTime() + turnMinutes * 60_000);
     const dayStart = localToUTC(date, "00:00", timezone);
     const dayEnd = localToUTC(date, "23:59", timezone);
@@ -311,7 +327,7 @@ Deno.serve(async (req: Request) => {
       }
       return total;
     }, partySize);
-    if (totalCovers > maxCovers) {
+    if (maxCovers !== null && totalCovers > maxCovers) {
       return json({ error: "That time is no longer available for this party size" }, 409);
     }
 

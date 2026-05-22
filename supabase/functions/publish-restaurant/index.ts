@@ -6,11 +6,21 @@
 // Auth: caller must be the restaurant owner. We decode the JWT ourselves;
 // `verify_jwt = false` in supabase/config.toml.
 //
-// Payload: { restaurant_id, disclosure_text }
+// Payload: { restaurant_id, disclosure_text, partner_agreement_accepted,
+//            partner_agreement_version, partner_agreement_disclosure_text }
 //
-// The disclosure_text is the publish-confirmation modal copy the user saw
-// before clicking "Yes, publish". Logged to subscription_consent_log for
-// audit defensibility (CRA-compliant).
+// Two disclosure rows are written to subscription_consent_log on success:
+//   1. The publish-confirmation modal copy ("Your 90-day free trial starts
+//      now...") under consent_type='publish_trial_start'.
+//   2. The Partner Agreement / Privacy Policy acceptance under
+//      consent_type='partner_agreement', stamped with the agreement_version
+//      the owner accepted (e.g. '2.1'). Required — the wizard's checkbox
+//      passes partner_agreement_accepted: true; the Zod schema refuses
+//      anything else.
+//
+// Audit defensibility (CRA / PIPEDA / Bill 64 / Quebec Law 25): every publish
+// captures who, when, from what IP/UA, accepted exactly what disclosure text
+// for exactly which Partner Agreement version.
 //
 // Re-publish short-circuit: if the restaurant already has an active or
 // trialing subscription (grandfathered restaurants pre-2026-05-20 wizard),
@@ -108,6 +118,8 @@ Deno.serve(async (req: Request) => {
     if ("response" in parsed) return parsed.response;
     const restaurantId = parsed.data.restaurant_id;
     const disclosureText = parsed.data.disclosure_text;
+    const partnerAgreementVersion = parsed.data.partner_agreement_version;
+    const partnerAgreementDisclosure = parsed.data.partner_agreement_disclosure_text;
 
     try {
       await enforceRateLimit(
@@ -338,18 +350,36 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Consent audit log row.
+    // Consent audit log rows. Two rows are written:
+    //   1. consent_type = 'publish_trial_start' — confirms the owner saw and
+    //      accepted the trial-start disclosure modal copy.
+    //   2. consent_type = 'partner_agreement' — confirms the owner explicitly
+    //      accepted the Restaurant Partner Agreement v${partnerAgreementVersion}
+    //      and Privacy Policy via the checkbox above the publish button.
+    const reqIp = firstHopIp(req);
+    const reqUa = req.headers.get("user-agent");
     try {
       const { error: logErr } = await supabaseAdmin
         .from("subscription_consent_log")
-        .insert({
-          restaurant_id: restaurantId,
-          user_profile_id: userProfileId,
-          consent_type: "publish_trial_start",
-          disclosure_text: disclosureText,
-          ip_address: firstHopIp(req),
-          user_agent: req.headers.get("user-agent"),
-        });
+        .insert([
+          {
+            restaurant_id: restaurantId,
+            user_profile_id: userProfileId,
+            consent_type: "publish_trial_start",
+            disclosure_text: disclosureText,
+            ip_address: reqIp,
+            user_agent: reqUa,
+          },
+          {
+            restaurant_id: restaurantId,
+            user_profile_id: userProfileId,
+            consent_type: "partner_agreement",
+            disclosure_text: partnerAgreementDisclosure,
+            agreement_version: partnerAgreementVersion,
+            ip_address: reqIp,
+            user_agent: reqUa,
+          },
+        ]);
       if (logErr) {
         console.error("[publish-restaurant] consent log insert failed", logErr);
       }

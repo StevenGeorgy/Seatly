@@ -176,6 +176,12 @@ verify_jwt = false
 [functions.publish-restaurant]
 verify_jwt = false
 
+[functions.log-diner-consent]
+verify_jwt = false
+
+[functions.delete-drafts]
+verify_jwt = false
+
 [functions.recover-restaurant]
 verify_jwt = false
 

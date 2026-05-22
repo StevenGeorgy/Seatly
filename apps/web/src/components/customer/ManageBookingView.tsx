@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, CalendarDays, Clock, Loader2, Users } from "lucide-react";
+import { useUser } from "@/hooks/useUser";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +50,14 @@ type LookupRow = {
 type Props = {
   slug: string;
   code: string;
+  /**
+   * Email used to re-prove identity on guest cancel/modify calls. Forwarded
+   * from `/find-reservation` via the `?email=` URL param. Required for guest
+   * paths since 2026-05-22 (closes the code-only enumeration attack). When
+   * absent on the manage view, the cancel button will surface a "use the
+   * find-reservation flow" message instead of attempting an auth-less call.
+   */
+  email: string | null;
   backHref: string;
 };
 
@@ -99,10 +108,20 @@ function isoTimeInTz(iso: string, tz: string | null): string {
   return `${lookup("hour")}:${lookup("minute")}`;
 }
 
-export function ManageBookingView({ slug, code, backHref }: Props) {
+export function ManageBookingView({ slug, code, email, backHref }: Props) {
+  const navigate = useNavigate();
+  const { user } = useUser();
   const [reservation, setReservation] = useState<LookupRow | null>(null);
   const [lookupState, setLookupState] = useState<"loading" | "found" | "missing" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Guest path identity proof: a logged-out caller MUST present the email
+  // alongside the confirmation code. Old confirmation links (sent before
+  // 2026-05-22) only carry the code in the URL — for those we redirect to
+  // /find-reservation so the diner re-enters the email and we re-emit a
+  // URL that includes both. Logged-in callers bypass this entirely.
+  const isLoggedIn = Boolean(user);
+  const guestNeedsEmail = !isLoggedIn && !email;
 
   const [mode, setMode] = useState<"view" | "modify" | "confirmCancel" | "done">("view");
   const [busy, setBusy] = useState(false);
@@ -197,6 +216,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
         body: JSON.stringify({
           reservation_id: reservation.id,
           confirmation_code: code,
+          // Email forwarded from /find-reservation. Required by the edge
+          // fn's guest path (it ignores this field for JWT-authed callers).
+          ...(email ? { email } : {}),
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -273,6 +295,9 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
         body: JSON.stringify({
           reservation_id: reservation.id,
           confirmation_code: code,
+          // Same guest-path second factor as cancel-reservation. Ignored by
+          // the edge fn for JWT-authed callers.
+          ...(email ? { email } : {}),
           date: modifyValues.date,
           time: normalisedTime,
           party_size: modifyValues.partySize,
@@ -430,7 +455,26 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
             </div>
           )}
 
-          {!isFinal && mode === "view" && (
+          {!isFinal && mode === "view" && guestNeedsEmail && (
+            <div className="mt-6 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-warning">
+              <p className="font-semibold">Verify your email to manage this booking.</p>
+              <p className="mt-1 text-warning/90">
+                For your security, modifying or cancelling a reservation now
+                requires the email on the booking. Please use the
+                find-my-reservation page to re-enter it.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3"
+                onClick={() => navigate("/find-reservation")}
+              >
+                Go to find-my-reservation
+              </Button>
+            </div>
+          )}
+
+          {!isFinal && mode === "view" && !guestNeedsEmail && (
             <div className="mt-6 flex flex-wrap gap-2">
               <Button onClick={() => setMode("modify")} disabled={busy}>
                 Modify booking
@@ -493,10 +537,10 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
                   original card and will appear on your statement within 5
                   business days. Contact{" "}
                   <a
-                    href="mailto:support@cenaiva.com"
+                    href="mailto:help@cenaiva.com"
                     className="text-warning underline-offset-2 hover:underline"
                   >
-                    support@cenaiva.com
+                    help@cenaiva.com
                   </a>{" "}
                   if anything looks wrong.
                 </p>
@@ -505,10 +549,10 @@ export function ManageBookingView({ slug, code, backHref }: Props) {
                   Refunds typically land on your card within 5–10 business
                   days. Contact{" "}
                   <a
-                    href="mailto:support@cenaiva.com"
+                    href="mailto:help@cenaiva.com"
                     className="text-gold underline-offset-2 hover:underline"
                   >
-                    support@cenaiva.com
+                    help@cenaiva.com
                   </a>{" "}
                   if anything looks wrong.
                 </p>

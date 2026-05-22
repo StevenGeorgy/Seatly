@@ -16,7 +16,13 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useUser } from "@/hooks/useUser";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
+import { useErrorToast } from "@/lib/errors";
 import {
   computeDraftStep,
   WIZARD_TOTAL_STEPS,
@@ -68,6 +74,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 export default function DraftsPage() {
+  const { errorToast } = useErrorToast();
   const navigate = useNavigate();
   const { profile } = useUser();
   const [drafts, setDrafts] = useState<DraftRow[] | null>(null);
@@ -211,29 +218,63 @@ export default function DraftsPage() {
     if (!confirmIds || confirmIds.length === 0) return;
     setDeleting(true);
     try {
+      // Browser client direct `.delete()` was vulnerable to the
+      // subscription_consent_log_restaurant_id_fkey RESTRICT — drafts that
+      // had saved a card during onboarding (so card_save consent log rows
+      // existed) couldn't be deleted at all, surfacing the raw Postgres
+      // error to users. 2026-05-22: routed through delete-drafts edge fn
+      // which runs service-role and pre-cleans the consent log rows for
+      // drafts only (never touches published-restaurant audit rows).
       const client = getSupabaseBrowserClient();
-      // The is_published=false filter is a belt-and-suspenders guard against
-      // deleting a row that got published in another tab between list-load
-      // and delete-click.
-      const { error, data } = await client
-        .from("restaurants")
-        .delete()
-        .in("id", confirmIds)
-        .eq("is_published", false)
-        .select("id");
-      if (error) {
-        toast.error(`Couldn't delete: ${error.message}`);
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        toast.error("Sign in expired — please refresh and try again.");
         return;
       }
-      const deletedCount = data?.length ?? 0;
-      toast.success(
-        deletedCount === 1
-          ? "Draft deleted."
-          : `${deletedCount} drafts deleted.`,
+      const res = await fetch(
+        `${getSupabaseProjectUrl()}/functions/v1/delete-drafts`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            apikey: getSupabaseAnonKey(),
+          },
+          body: JSON.stringify({ restaurant_ids: confirmIds }),
+        },
       );
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        deleted_count?: number;
+        blocked_ids?: string[];
+      };
+      if (!res.ok || body.error || body.ok !== true) {
+        errorToast(body.error ?? new Error(`Request failed (${res.status})`), {
+          fallback: "Couldn't delete drafts. Try again.",
+          logTag: "[DraftsPage.delete]",
+        });
+        return;
+      }
+      const deletedCount = body.deleted_count ?? 0;
+      if (deletedCount === 0) {
+        toast.error("Couldn't delete any of the selected drafts.");
+      } else {
+        toast.success(
+          deletedCount === 1
+            ? "Draft deleted."
+            : `${deletedCount} drafts deleted.`,
+        );
+      }
       setSelectedIds(new Set());
       setConfirmIds(null);
       await fetchDrafts();
+    } catch (err) {
+      errorToast(err, {
+        fallback: "Couldn't delete drafts. Try again.",
+        logTag: "[DraftsPage.delete]",
+      });
     } finally {
       setDeleting(false);
     }

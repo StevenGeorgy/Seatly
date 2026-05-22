@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { toUserFacingError } from "@/lib/errors";
+
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import {
   getSupabaseAnonKey,
@@ -75,7 +77,9 @@ export function useMenuSuggestions() {
       );
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? "Could not generate suggestions.");
+        const friendly = toUserFacingError(data.error, "Could not generate suggestions.");
+        toast.error(friendly.message);
+        console.error("[useMenuSuggestions]", friendly.code, friendly.technical ?? data);
       } else if (Array.isArray(data.suggestions)) {
         setSuggestions(data.suggestions as SuggestionRow[]);
       }

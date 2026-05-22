@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { toast } from "sonner";
 
+import { captureError } from "@/lib/analytics/sentry";
 import { toUserFacingError } from "./friendlyError";
 import type { UserFacingError } from "./types";
 
@@ -39,6 +40,16 @@ export function useErrorToast() {
         console.error(tag, friendly.code, friendly.technical ?? error);
       }
 
+      // Auto-capture to Sentry so every user-visible error becomes an
+      // operational breadcrumb. The friendly text already went to the
+      // user; the raw error goes to ops. Safe no-op when Sentry isn't
+      // configured (initSentry early-returns).
+      try {
+        captureError(friendly.technical ?? error);
+      } catch {
+        // Don't let Sentry hiccups bubble.
+      }
+
       return friendly;
     },
     [],
@@ -65,6 +76,13 @@ export function showErrorToast(
   if (typeof console !== "undefined") {
     const tag = options?.logTag ?? "[error]";
     console.error(tag, friendly.code, friendly.technical ?? error);
+  }
+
+  // Same Sentry auto-capture as the hook variant.
+  try {
+    captureError(friendly.technical ?? error);
+  } catch {
+    // ignore
   }
 
   return friendly;

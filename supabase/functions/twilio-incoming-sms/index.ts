@@ -38,7 +38,7 @@ const corsHeaders = {
 
 const TWIML_HEADER = `<?xml version="1.0" encoding="UTF-8"?>`;
 
-const SUPPORT_EMAIL = Deno.env.get("CENAIVA_SUPPORT_EMAIL") ?? "support@cenaiva.com";
+const SUPPORT_EMAIL = Deno.env.get("CENAIVA_SUPPORT_EMAIL") ?? "help@cenaiva.com";
 
 const STOP_KEYWORDS = new Set([
   "STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT",

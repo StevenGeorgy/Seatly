@@ -189,7 +189,10 @@ export default function SignInHistoryPage(): JSX.Element {
         parsed = null;
       }
       if (!res.ok || !parsed?.ok) {
-        toast.error(parsed?.error ?? `Couldn't sign out everywhere (${res.status}).`);
+        errorToast(parsed?.error ?? new Error(`Request failed (${res.status})`), {
+          fallback: "Couldn't sign out everywhere. Try again.",
+          logTag: "[SignInHistoryPage.revokeAll]",
+        });
         setRevoking(false);
         return;
       }

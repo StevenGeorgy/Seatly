@@ -11,7 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { resolvePostLoginPath } from "@/lib/auth/post-login-redirect";
-import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import {
+  getSupabaseAnonKey,
+  getSupabaseBrowserClient,
+  getSupabaseProjectUrl,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import { loadUserContext } from "@/lib/supabase/load-user-context";
 import { createRegisterSchema } from "@/lib/validation/auth-schemas";
 
@@ -46,6 +51,18 @@ export default function RegisterPage() {
   type FormValues = z.infer<typeof schema>;
 
   const [ageConfirmed, setAgeConfirmed] = useState(false);
+  // Terms / Privacy acceptance. Required alongside the age confirmation —
+  // every signup path (email, phone, Apple, Google) is gated on both.
+  // On successful signup, the client fires log-diner-consent to write two
+  // verifiable consent rows to diner_consent_log.
+  const [legalAccepted, setLegalAccepted] = useState(false);
+  const consentsReady = ageConfirmed && legalAccepted;
+  const DINER_TERMS_VERSION = "2026-05-21";
+  const DINER_PRIVACY_VERSION = "1.1";
+  const DINER_TERMS_DISCLOSURE =
+    "I agree to the Cenaiva Terms of Service (effective 2026-05-10, last updated 2026-05-21).";
+  const DINER_PRIVACY_DISCLOSURE =
+    "I agree to the Cenaiva Privacy Policy (v1.1, effective 2026-05-21).";
 
   const {
     register,
@@ -77,9 +94,51 @@ export default function RegisterPage() {
     }
   };
 
+  // Fire-and-forget: write two verifiable consent rows (terms + privacy) to
+  // diner_consent_log immediately after signup. Signup is NOT blocked on log
+  // failure — best-effort write so we have an auditable trail (PIPEDA /
+  // Quebec Law 25 / CASL).
+  const recordLegalConsents = async (
+    accessToken: string,
+    source: string,
+  ): Promise<void> => {
+    try {
+      await fetch(`${getSupabaseProjectUrl()}/functions/v1/log-diner-consent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          apikey: getSupabaseAnonKey(),
+        },
+        body: JSON.stringify({
+          source,
+          consents: [
+            {
+              consent_type: "terms_of_service",
+              agreement_version: DINER_TERMS_VERSION,
+              disclosure_text: DINER_TERMS_DISCLOSURE,
+            },
+            {
+              consent_type: "privacy_policy",
+              agreement_version: DINER_PRIVACY_VERSION,
+              disclosure_text: DINER_PRIVACY_DISCLOSURE,
+            },
+          ],
+        }),
+      });
+    } catch (err) {
+      // Best-effort. Log to console only.
+      console.warn("[RegisterPage.recordLegalConsents] failed", err);
+    }
+  };
+
   const onSubmit = async (values: FormValues) => {
     if (!ageConfirmed) {
       toast.error("Please confirm you meet the age requirement.");
+      return;
+    }
+    if (!legalAccepted) {
+      toast.error("Please agree to the Terms and Privacy Policy.");
       return;
     }
     setSubmitting(true);
@@ -120,6 +179,7 @@ export default function RegisterPage() {
 
       if (data.session) {
         await recordAgeConsent(client, data.session.user.id);
+        void recordLegalConsents(data.session.access_token, "register_email");
         const ctx = await loadUserContext(client, data.session);
         if (!ctx.ok) {
           toast.error(
@@ -141,6 +201,26 @@ export default function RegisterPage() {
     if (!ageConfirmed) {
       toast.error("Please confirm you meet the age requirement.");
       return;
+    }
+    if (!legalAccepted) {
+      toast.error("Please agree to the Terms and Privacy Policy.");
+      return;
+    }
+    // Persist the consent intent across the OAuth round-trip so we can
+    // record both rows after the auth callback completes.
+    try {
+      sessionStorage.setItem(
+        "cenaiva.pending_legal_consents",
+        JSON.stringify({
+          source: `register_${provider}`,
+          terms_version: DINER_TERMS_VERSION,
+          privacy_version: DINER_PRIVACY_VERSION,
+          terms_disclosure: DINER_TERMS_DISCLOSURE,
+          privacy_disclosure: DINER_PRIVACY_DISCLOSURE,
+        }),
+      );
+    } catch {
+      // sessionStorage may be unavailable (private mode); accept the loss.
     }
     setSubmitting(true);
     try {
@@ -192,11 +272,45 @@ export default function RegisterPage() {
         </span>
       </label>
 
+      {/* Terms / Privacy acceptance gate — required before any sign-up path.
+          Signup writes a verifiable diner_consent_log row per acceptance
+          (PIPEDA / Quebec Law 25 / CASL). */}
+      <label className="flex items-start gap-2 text-sm text-text-secondary">
+        <input
+          type="checkbox"
+          checked={legalAccepted}
+          onChange={(e) => setLegalAccepted(e.target.checked)}
+          className="mt-0.5 size-4 cursor-pointer accent-gold"
+          aria-label="Terms and Privacy acceptance"
+        />
+        <span>
+          I agree to the Cenaiva{" "}
+          <Link
+            to="/terms"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gold underline-offset-2 hover:underline"
+          >
+            Terms of Service
+          </Link>{" "}
+          and{" "}
+          <Link
+            to="/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gold underline-offset-2 hover:underline"
+          >
+            Privacy Policy
+          </Link>
+          .
+        </span>
+      </label>
+
       {/* Phase 2 (2026-05-15): providers first, email/password collapsed. */}
       <div className="space-y-3">
         <Button
           className="h-12 w-full bg-white text-base font-semibold text-black hover:bg-white/90"
-          disabled={submitting || !ageConfirmed}
+          disabled={submitting || !consentsReady}
           type="button"
           onClick={() => void signUpWithProvider("apple")}
         >
@@ -205,7 +319,7 @@ export default function RegisterPage() {
         </Button>
         <Button
           className="h-12 w-full"
-          disabled={submitting || !ageConfirmed}
+          disabled={submitting || !consentsReady}
           type="button"
           variant="outline"
           onClick={() => void signUpWithProvider("google")}
@@ -215,7 +329,7 @@ export default function RegisterPage() {
         <Button
           asChild
           className="h-12 w-full"
-          disabled={submitting || !ageConfirmed}
+          disabled={submitting || !consentsReady}
           type="button"
           variant="outline"
         >
@@ -225,6 +339,9 @@ export default function RegisterPage() {
               if (!ageConfirmed) {
                 e.preventDefault();
                 toast.error("Please confirm you meet the age requirement.");
+              } else if (!legalAccepted) {
+                e.preventDefault();
+                toast.error("Please agree to the Terms and Privacy Policy.");
               }
             }}
           >
@@ -320,7 +437,7 @@ export default function RegisterPage() {
         </div>
         <Button
           className="w-full"
-          disabled={submitting || !ageConfirmed}
+          disabled={submitting || !consentsReady}
           type="submit"
         >
           {t("auth.register.submit")}

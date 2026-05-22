@@ -203,9 +203,21 @@ Deno.serve(async (req: Request) => {
         guest = linkedGuest;
       }
     } else if (providedCode) {
-      // Diner-initiated cancel (guest path with confirmation code).
+      // Diner-initiated cancel (guest path with confirmation code + email).
+      //
+      // SECURITY: code-only auth was vulnerable to enumeration of the
+      // ~1.6M SEAT-XXXX space. Now we require the matching guest_email
+      // alongside the code (mirrors find-reservation). The email is on
+      // the same confirmation message that contained the code, so any
+      // legitimate diner has access to both.
       const expectedCode = (reservation.confirmation_code ?? "").trim();
       if (!expectedCode || expectedCode.toLowerCase() !== providedCode.toLowerCase()) {
+        return json({ error: "Invalid confirmation code" }, 401);
+      }
+      const providedEmail = (parsed.data.email ?? "").trim().toLowerCase();
+      const reservationEmail = (reservation.guest_email ?? "").trim().toLowerCase();
+      if (!providedEmail || !reservationEmail || providedEmail !== reservationEmail) {
+        // Don't reveal which field failed — both 401s look identical.
         return json({ error: "Invalid confirmation code" }, 401);
       }
       if (reservation.guest_id) {
@@ -239,6 +251,20 @@ Deno.serve(async (req: Request) => {
 
     if (reservation.status === "cancelled") {
       return json({ ok: true, reservation_id: reservationId, status: "cancelled" });
+    }
+
+    // 2026-05-22 defensive gate: refuse to cancel reservations that have
+    // already been seated, completed, or marked no-show. The UI hides the
+    // cancel button for these statuses, but a direct-API call (owner or
+    // diner) could otherwise trigger a refund for a meal that already
+    // happened. The past-time check below also catches most of these, but
+    // a `seated` reservation whose reserved_at is still in the future
+    // (rare: a party hosted slightly early) is only caught by this check.
+    const finalStatuses = new Set(["seated", "completed", "no_show"]);
+    if (reservation.status && finalStatuses.has(reservation.status)) {
+      return json({
+        error: "This reservation has already started or completed and can no longer be cancelled.",
+      }, 400);
     }
 
     const reservedAt = new Date(reservation.reserved_at);

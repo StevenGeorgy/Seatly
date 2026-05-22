@@ -14,7 +14,7 @@
 //      delegate to refund-payment-intent edge fn (service-role
 //      bearer). On success, update row to status='auto_resolved'.
 //      On failure, leave row in 'pending' for human follow-up.
-//   7. Otherwise: email support@cenaiva.com via Resend so an operator
+//   7. Otherwise: email help@cenaiva.com via Resend so an operator
 //      can triage manually.
 //
 // Returns { ok: true, request_id, status }.
@@ -101,7 +101,7 @@ async function emailSupport(opts: {
     return;
   }
   const resend = new Resend(resendKey);
-  const supportTo = Deno.env.get("CENAIVA_SUPPORT_EMAIL") ?? "support@cenaiva.com";
+  const supportTo = Deno.env.get("CENAIVA_SUPPORT_EMAIL") ?? "help@cenaiva.com";
   const fromAddress = Deno.env.get("RESEND_FROM_EMAIL") ??
     "Cenaiva <noreply@cenaiva.com>";
 

@@ -35,6 +35,7 @@ import {
 } from "@stripe/react-connect-js";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -278,6 +279,10 @@ export function Step8PaymentSetup({
   // Trial-start confirmation modal — gates the actual publish call so
   // owners explicitly opt into the 90-day clock starting.
   const [confirmPublish, setConfirmPublish] = useState(false);
+  // Partner Agreement + Privacy Policy acceptance. Required before the
+  // owner can publish. Writes a verifiable consent row to
+  // subscription_consent_log via the publish-restaurant edge fn.
+  const [partnerAgreementAccepted, setPartnerAgreementAccepted] = useState(false);
   // Referral program is dormant — UI removed, backend accepts but ignores.
   // Keep this null so the save-subscription-payment-method call never sends
   // a code. Re-enable by re-mounting <ReferralCodeField> + restoring the
@@ -419,7 +424,15 @@ export function Step8PaymentSetup({
   const publishReady =
     kycVerified
     && (hasPaymentMethodOnFile || subscriptionActive)
-    && Boolean(summary?.cover_photo_url);
+    && Boolean(summary?.cover_photo_url)
+    && partnerAgreementAccepted;
+
+  // Restaurant Partner Agreement version the user is consenting to. Stamped
+  // into subscription_consent_log so each row records exactly which version
+  // was accepted at the moment of publish.
+  const PARTNER_AGREEMENT_VERSION = "2.1";
+  const PARTNER_AGREEMENT_DISCLOSURE =
+    `I have read and agree to the Cenaiva Restaurant Partner Agreement (v${PARTNER_AGREEMENT_VERSION}, effective 2026-05-21) and the Privacy Policy (v1.1).`;
 
   // Client-side preview of the trial end date for the confirm modal.
   // The server is authoritative — this is for display only.
@@ -444,9 +457,14 @@ export function Step8PaymentSetup({
       }>("publish-restaurant", {
         restaurant_id: restaurantId,
         disclosure_text: PUBLISH_CONFIRM_DISCLOSURE(previewTrialEnd),
+        partner_agreement_accepted: partnerAgreementAccepted,
+        partner_agreement_version: PARTNER_AGREEMENT_VERSION,
+        partner_agreement_disclosure_text: PARTNER_AGREEMENT_DISCLOSURE,
       });
       if (!res.ok) {
-        toast.error(`Couldn't publish: ${res.error}`);
+        const friendly = toUserFacingError(res.error, "Couldn't publish your restaurant. Try again.");
+        toast.error(friendly.message);
+        console.error("[Step8PaymentSetup.publish]", friendly.code, friendly.technical ?? res.error);
         return;
       }
       toast.success("Your restaurant is live!");
@@ -760,9 +778,40 @@ export function Step8PaymentSetup({
               hasPaymentMethodOnFile={hasPaymentMethodOnFile}
               subscriptionActive={subscriptionActive}
               hasCover={Boolean(summary?.cover_photo_url)}
+              partnerAgreementAccepted={partnerAgreementAccepted}
             />
           </div>
         ) : null}
+        <label className="flex items-start gap-3 rounded-2xl border border-border bg-bg-surface p-4 text-sm text-text-secondary">
+          <Checkbox
+            checked={partnerAgreementAccepted}
+            onCheckedChange={(next) => setPartnerAgreementAccepted(next === true)}
+            disabled={publishing}
+            className="mt-0.5"
+          />
+          <span>
+            I have read and agree to the{" "}
+            <a
+              href="/partners/agreement"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gold underline-offset-4 hover:underline"
+            >
+              Restaurant Partner Agreement (v{PARTNER_AGREEMENT_VERSION})
+            </a>{" "}
+            and{" "}
+            <a
+              href="/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gold underline-offset-4 hover:underline"
+            >
+              Privacy Policy
+            </a>
+            . By checking this box, you accept these documents as a binding contract between
+            your restaurant and Cenaiva.
+          </span>
+        </label>
         <div className="flex justify-end">
           <Button
             type="button"
@@ -824,11 +873,13 @@ function PublishHints({
   hasPaymentMethodOnFile,
   subscriptionActive,
   hasCover,
+  partnerAgreementAccepted,
 }: {
   kycVerified: boolean;
   hasPaymentMethodOnFile: boolean;
   subscriptionActive: boolean;
   hasCover: boolean;
+  partnerAgreementAccepted: boolean;
 }) {
   const missing = useMemo(() => {
     const out: string[] = [];
@@ -837,8 +888,11 @@ function PublishHints({
     if (!hasPaymentMethodOnFile && !subscriptionActive) {
       out.push("Save a card so your trial can start (Section B).");
     }
+    if (!partnerAgreementAccepted) {
+      out.push("Accept the Restaurant Partner Agreement and Privacy Policy.");
+    }
     return out;
-  }, [hasCover, kycVerified, hasPaymentMethodOnFile, subscriptionActive]);
+  }, [hasCover, kycVerified, hasPaymentMethodOnFile, subscriptionActive, partnerAgreementAccepted]);
   if (missing.length === 0) return null;
   return (
     <ul className="list-disc space-y-1 pl-5 text-sm text-warning">

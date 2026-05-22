@@ -1891,7 +1891,7 @@ export default function RestaurantPublicPage() {
       const refundOk = await refundPayment(paymentIntentId, "slot_taken");
       const fullMsg = refundOk
         ? `${friendly.message} Your card has been refunded.`
-        : `${friendly.message} Please contact support@cenaiva.ai to refund your card.`;
+        : `${friendly.message} Please contact help@cenaiva.com to refund your card.`;
       setOrderError(fullMsg);
       toast.error(fullMsg);
     } finally {
@@ -1923,7 +1923,16 @@ export default function RestaurantPublicPage() {
     const contactName = dineIn.name;
     const contactEmail = dineIn.email;
     const contactPhoneRaw = (dineIn.phone ?? "").trim();
-    const contactPhone = normalizeE164Phone(contactPhoneRaw) ?? contactPhoneRaw;
+    // 2026-05-22: strict E.164 — same rationale as the other createReservation
+    // path (line ~2040). Fail fast instead of letting the server reject.
+    const contactPhone = normalizeE164Phone(contactPhoneRaw);
+    if (!contactPhone) {
+      toast.error(
+        "Please enter a valid phone number with country code, e.g. +1 416 555 0123.",
+      );
+      setStep("details");
+      throw new Error("phone_validation_failed");
+    }
     const activeHoldId = hold.state.status === "active" ? hold.state.holdId : null;
     const client = getSupabaseBrowserClient();
     const { data: sessionData } = await client.auth.getSession();
@@ -2037,7 +2046,18 @@ export default function RestaurantPublicPage() {
     const contactName = dineIn.name;
     const contactEmail = dineIn.email;
     const contactPhoneRaw = (dineIn.phone ?? "").trim();
-    const contactPhone = normalizeE164Phone(contactPhoneRaw) ?? contactPhoneRaw;
+    // 2026-05-22: strict E.164 — the previous `?? contactPhoneRaw` fallback
+    // was the chronic cause of the "Couldn't place your reservation" toast.
+    // Server schema rejects non-E.164 strictly; we now fail fast with a
+    // clear message and bounce the user back to the Details step.
+    const contactPhone = normalizeE164Phone(contactPhoneRaw);
+    if (!contactPhone) {
+      toast.error(
+        "Please enter a valid phone number with country code, e.g. +1 416 555 0123.",
+      );
+      setStep("details");
+      throw new Error("phone_validation_failed");
+    }
     let createdReservationId: string | null = existingReservationId ?? null;
     let createdOrderId: string | null = existingOrderId ?? null;
 
@@ -2498,14 +2518,19 @@ export default function RestaurantPublicPage() {
   }
 
   // Manage-existing-booking mode: deep link from confirmation SMS/email
-  // (`/<slug>?confirmation=<code>`). Render the manage view instead of the booking flow.
+  // (`/<slug>?confirmation=<code>&email=<email>`). Render the manage view
+  // instead of the booking flow. Email is forwarded through from
+  // /find-reservation so the guest cancel path can re-prove identity
+  // server-side (closes the code-only enumeration attack).
   const manageCode = searchParams.get("confirmation")?.trim() || null;
+  const manageEmail = searchParams.get("email")?.trim() || null;
   if (manageCode && restaurantSlug) {
     return (
       <div className="min-h-screen bg-bg-base text-text-primary">
         <ManageBookingView
           slug={restaurantSlug}
           code={manageCode}
+          email={manageEmail}
           backHref={`/${restaurantSlug}`}
         />
       </div>
@@ -2773,10 +2798,23 @@ export default function RestaurantPublicPage() {
                   // of advancing.
                   if (hold.state.status === "active") {
                     void (async () => {
+                      // 2026-05-22: normalize phone to E.164 before sending
+                      // to the hold. Server validation is strict; sending
+                      // an un-normalized phone would 400 with a generic
+                      // toast. canProceedDetails() should already block
+                      // this path, but this is a belt-and-suspenders guard
+                      // for paste-after-validate cases.
+                      const normalizedPhone = normalizeE164Phone((dineIn.phone ?? "").trim());
+                      if (!normalizedPhone) {
+                        toast.error(
+                          "Please enter a valid phone number with country code, e.g. +1 416 555 0123.",
+                        );
+                        return;
+                      }
                       const result = await hold.updateDiner({
                         name: dineIn.name,
                         email: dineIn.email,
-                        phone: dineIn.phone,
+                        phone: normalizedPhone,
                         specialRequest: dineIn.allergies || null,
                         dietaryNotes: dineIn.allergies || null,
                         occasion: dineIn.occasion || null,
@@ -3443,6 +3481,18 @@ export default function RestaurantPublicPage() {
         conflictReason={null}
         grabbing={hold.state.status === "creating"}
         onGrabAgain={async () => {
+          // 2026-05-22: re-run details validation before re-grabbing.
+          // If the diner spent the original hold's lifetime editing the
+          // form into an invalid state (e.g. cleared their phone number),
+          // we'd otherwise create a fresh hold tied to bad data and
+          // submit it server-side. Force them back to the form first.
+          if (!canProceedDetails()) {
+            toast.error(
+              "Please complete the booking details before reserving the slot again.",
+            );
+            setStep("details");
+            return;
+          }
           await hold.grabAgain();
           // The hook reports failures via `state.status === "error"` —
           // surfacing the toast/banner is owned by the hook & dialog UI.

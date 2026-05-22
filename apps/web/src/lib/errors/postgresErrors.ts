@@ -65,8 +65,11 @@ const PG_MAP: Record<PgErrorCode, PgEntry> = {
   },
   "23503": {
     code: "missing_reference",
-    message: "Something this depends on is missing. Refresh and try again.",
-    retryable: true,
+    // Covers both directions of FK violation: (a) inserting a row whose
+    // parent doesn't exist, and (b) deleting a parent that has dependent
+    // child rows. The latter is the more common user-facing case.
+    message: "Couldn't complete this — something this record depends on is still in use. Refresh and try again, or contact help@cenaiva.com if it persists.",
+    retryable: false,
   },
   "23P01": {
     code: "diner_double_book",

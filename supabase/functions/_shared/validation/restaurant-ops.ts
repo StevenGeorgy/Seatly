@@ -4,10 +4,19 @@
 import { z } from "zod";
 import { BoundedText, EmailLower, NonEmptyText, Uuid } from "./base.ts";
 
-// publish-restaurant: { restaurant_id, disclosure_text }
+// publish-restaurant: { restaurant_id, disclosure_text,
+//   partner_agreement_accepted, partner_agreement_version,
+//   partner_agreement_disclosure_text }
+// The agreement fields are required for new publishes (the wizard requires
+// the checkbox); a separate consent_type='partner_agreement' row is written
+// to subscription_consent_log capturing exactly which version + disclosure
+// text the owner accepted.
 export const PublishRestaurantSchema = z.object({
   restaurant_id: Uuid,
   disclosure_text: NonEmptyText(2000),
+  partner_agreement_accepted: z.literal(true),
+  partner_agreement_version: NonEmptyText(40),
+  partner_agreement_disclosure_text: NonEmptyText(2000),
 });
 export type PublishRestaurantInput = z.infer<typeof PublishRestaurantSchema>;
 

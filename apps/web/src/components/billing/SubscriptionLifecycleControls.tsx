@@ -9,6 +9,7 @@ import { AlertCircle, Loader2, Pause, Play, RotateCcw, XCircle } from "lucide-re
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
+import { toUserFacingError } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
 import { CancelSubscriptionModal } from "@/components/billing/CancelSubscriptionModal";
 import { PauseSubscriptionModal } from "@/components/billing/PauseSubscriptionModal";
@@ -111,7 +112,9 @@ export function SubscriptionLifecycleControls({
         toast.success("Subscription resumed.");
         onStateChanged?.();
       } else {
-        toast.error(r.error ?? "Couldn't resume subscription.");
+        const friendly = toUserFacingError(r.error, "Couldn't resume subscription.");
+        toast.error(friendly.message);
+        console.error("[SubscriptionLifecycleControls.resume]", friendly.code, friendly.technical ?? r);
       }
     } finally {
       setSubmitting(null);
@@ -127,7 +130,9 @@ export function SubscriptionLifecycleControls({
         toast.success("Welcome back! Your restaurant is live again.");
         onStateChanged?.();
       } else {
-        toast.error(r.error ?? "Couldn't restart subscription.");
+        const friendly = toUserFacingError(r.error, "Couldn't restart subscription.");
+        toast.error(friendly.message);
+        console.error("[SubscriptionLifecycleControls.restart]", friendly.code, friendly.technical ?? r);
       }
     } finally {
       setSubmitting(null);

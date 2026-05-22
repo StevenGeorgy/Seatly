@@ -703,8 +703,10 @@ Deno.serve(async (req: Request) => {
 
     const reservationDateLabel = formatReservationDate(reservedAt);
     const confirmationSubject = `Your reservation at ${restaurantName}`;
+    // Include email in the URL so the guest cancel/modify path can re-prove
+    // identity without re-entering it (2026-05-22 security hardening).
     const manageLink = restaurantSlug && savedConfirmationCode
-      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(savedConfirmationCode)}`
+      ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(savedConfirmationCode)}${guestEmail ? `&email=${encodeURIComponent(guestEmail)}` : ""}`
       : null;
     // Enrich the SMS body with event/promo context so diners see what they
     // actually booked. Mirrors the same enrichment in _shared/booking.ts.

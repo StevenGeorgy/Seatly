@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 
+import { toUserFacingError } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -159,7 +160,9 @@ export function BillingDetailsForm({
       );
       const respBody = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok || respBody?.error) {
-        toast.error(respBody?.error ?? "Couldn't save billing details.");
+        const friendly = toUserFacingError(respBody?.error, "Couldn't save billing details.");
+        toast.error(friendly.message);
+        console.error("[BillingDetailsForm.save]", friendly.code, friendly.technical ?? respBody);
         return;
       }
       toast.success("Billing details saved.");

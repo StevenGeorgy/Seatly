@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X, Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { Button } from "@/components/ui/button";
@@ -154,6 +155,8 @@ export function MarketingShell({ children }: MarketingShellProps) {
 }
 
 function MarketingFooter() {
+  const { i18n } = useTranslation();
+  const currentLang = i18n.language?.startsWith("fr") ? "fr" : "en";
   const cols: Array<{ heading: string; links: Array<{ label: string; to: string }> }> = [
     {
       heading: "Diners",
@@ -229,6 +232,31 @@ function MarketingFooter() {
       </div>
       <div className="mx-auto mt-12 flex w-full flex-col items-start justify-between gap-2 border-t border-border/40 px-12 pt-6 text-xs text-text-muted sm:flex-row sm:items-center sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40">
         <span>© {new Date().getFullYear()} Cenaiva Inc. ca-central-1.</span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => i18n.changeLanguage("en")}
+            className={cn(
+              "transition-colors hover:text-white",
+              currentLang === "en" && "font-semibold text-white",
+            )}
+            aria-pressed={currentLang === "en"}
+          >
+            English
+          </button>
+          <span aria-hidden className="text-text-muted/50">|</span>
+          <button
+            type="button"
+            onClick={() => i18n.changeLanguage("fr")}
+            className={cn(
+              "transition-colors hover:text-white",
+              currentLang === "fr" && "font-semibold text-white",
+            )}
+            aria-pressed={currentLang === "fr"}
+          >
+            Français
+          </button>
+        </div>
       </div>
     </footer>
   );

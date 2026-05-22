@@ -99,13 +99,17 @@ function emailBody(
   time: string,
   code: string | null,
   slug: string | null,
+  email: string | null,
 ): string {
   const lead = kind === "24h"
     ? `Hi ${firstName},\n\nJust a quick reminder that we have a table reserved for you at ${restName} tomorrow at ${time}.`
     : `Hi ${firstName},\n\nYour reservation at ${restName} is in 2 hours, at ${time}. See you soon!`;
   const codeLine = code ? `\n\nConfirmation code: ${code}` : "";
+  // Include email in the URL so the guest cancel/modify path can re-prove
+  // identity (2026-05-22 security hardening).
+  const emailParam = email ? `&email=${encodeURIComponent(email.toLowerCase())}` : "";
   const link = slug
-    ? `\n\nManage your booking: https://cenaiva.com/${slug}${code ? `?confirmation=${code}` : ""}`
+    ? `\n\nManage your booking: https://cenaiva.com/${slug}${code ? `?confirmation=${code}${emailParam}` : ""}`
     : "";
   return `${lead}${codeLine}${link}\n\nThe ${restName} team`;
 }
@@ -162,6 +166,7 @@ async function sendReminder(
           time,
           reservation.confirmation_code,
           restaurant.slug,
+          email,
         ),
       });
       return { sent: true, channel: "email" };
