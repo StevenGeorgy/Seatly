@@ -170,3 +170,4 @@ apps/web/scripts/*.log
 
 # Claude Code local state
 .claude/
+.playwright-mcp/
