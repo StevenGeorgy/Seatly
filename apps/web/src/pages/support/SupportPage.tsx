@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { MarketingShell } from "@/components/marketing/MarketingShell";
 import { Button } from "@/components/ui/button";
 
-const SUPPORT_EMAIL = "help@cenaiva.com";
-const SUPPORT_LAST_UPDATED = "May 22, 2026";
+const SUPPORT_EMAIL = "support@cenaiva.com";
+const SUPPORT_LAST_UPDATED = "May 23, 2026";
 
 type FaqEntry = {
   question: string;
