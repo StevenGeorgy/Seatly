@@ -68,7 +68,7 @@ export const SUB_PROCESSORS: SubProcessor[] = [
     region: "United States",
   },
   {
-    name: "Vercel",
+    name: "Amazon Web Services",
     service: "Web infrastructure and hosting",
     region: "United States",
   },

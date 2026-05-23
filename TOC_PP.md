@@ -325,7 +325,7 @@
   
   18. Cross-Border Data Transfers
 
-  Some third-party providers used by Cenaiva process personal data outside of Canada, including in the United States. This includes OpenAI, ElevenLabs, Deepgram, Stripe, PostHog, Sentry, and Vercel. By using
+  Some third-party providers used by Cenaiva process personal data outside of Canada, including in the United States. This includes OpenAI, ElevenLabs, Deepgram, Stripe, PostHog, Sentry, and Amazon Web Services. By using
    the Services — and in particular the AI voice and chat features — you consent to the transfer of your data to these jurisdictions. Data transferred outside Canada may be subject to the laws of the
   receiving country, which may differ from Canadian privacy law. We require all third-party providers to maintain appropriate safeguards for your personal information.
   
@@ -361,7 +361,7 @@
   - Expo (EAS) — Mobile app delivery and push notifications
   - PostHog — Product analytics and usage insights
   - Sentry — Error monitoring and crash reporting
-  - Vercel — Web infrastructure and hosting
+  - Amazon Web Services — Web infrastructure and hosting
 
   We are not responsible for the performance, availability, or independent data practices of these providers. We encourage you to review their terms and privacy policies.
 
@@ -643,7 +643,7 @@
 
   With service providers we rely on to run the Services: Supabase (database, authentication, edge functions), Stripe and Stripe Canada (payment processing, saved cards via tokenization, deposit collection on
    behalf of restaurants), OpenAI (language and vision), ElevenLabs (text-to-speech), Deepgram (speech-to-text), Twilio (SMS and one-time passcodes), Resend (transactional email), Expo / EAS (mobile delivery
-   and push notifications), PostHog (product analytics), Sentry (error monitoring), Vercel (web hosting), Google (OAuth sign-in, Maps Platform, and on Android, push and on-device speech), and Apple (Sign in
+   and push notifications), PostHog (product analytics), Sentry (error monitoring), Amazon Web Services (web hosting), Google (OAuth sign-in, Maps Platform, and on Android, push and on-device speech), and Apple (Sign in
   with Apple and on iOS, push and on-device speech). Each provider is contractually limited to using your data to deliver its service to us.
 
   A current and dated list of our sub-processors is published at https://cenaiva.com/legal/sub-processors and also appears in Schedule A below. We will give at least 30 days' notice in the app or by email
@@ -660,7 +660,7 @@
   8. International data transfers
   
   Cenaiva is based in Canada. Several of our service providers process personal information outside Canada, including in the United States and the European Union. This includes OpenAI, ElevenLabs, Deepgram,
-  Stripe, Twilio, Resend, PostHog, Sentry, Vercel, Google, and Apple.
+  Stripe, Twilio, Resend, PostHog, Sentry, Amazon Web Services, Google, and Apple.
 
   Data transferred outside Canada may be subject to the laws of the receiving jurisdiction, which may differ from Canadian privacy law. We require each provider to maintain commercially reasonable
   safeguards, including contractual data protection terms, and we evaluate the privacy practices of new providers before adding them.
@@ -820,7 +820,7 @@
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
   │ Sentry                 │ Error monitoring and crash reporting                                                 │ United States                        │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
-  │ Vercel                 │ Web hosting and infrastructure                                                       │ United States, global edge           │
+  │ Amazon Web Services    │ Web hosting and infrastructure (AWS Amplify)                                         │ United States, global edge           │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
   │ Google LLC             │ Google OAuth sign-in, Google Maps Platform, on-device speech (Android), Android push │ United States                        │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
@@ -1465,7 +1465,7 @@
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
   │ Sentry                 │ Error monitoring and crash reporting                                                 │ United States                        │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
-  │ Vercel                 │ Web hosting and infrastructure                                                       │ United States, global edge           │
+  │ Amazon Web Services    │ Web hosting and infrastructure (AWS Amplify)                                         │ United States, global edge           │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
   │ Google LLC             │ Google OAuth sign-in, Google Maps Platform, on-device speech (Android), Android push │ United States                        │
   ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────┤
