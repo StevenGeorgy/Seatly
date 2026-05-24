@@ -7,6 +7,7 @@ import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/c
 
 import { TablesListEditor } from "./TablesListEditor";
 import { STARTER_TABLES, type WizardTable, type WizardTableShape } from "./wizardTypes";
+import { clearDraft, readDraft, useDraftAutosave } from "./draftPersistence";
 
 type Step3FloorPlanProps = {
   restaurantId: string;
@@ -33,8 +34,20 @@ function toShape(value: string | null): WizardTableShape {
 
 export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange }: Step3FloorPlanProps) {
   const { errorToast } = useErrorToast();
-  const [tables, setTables] = useState<WizardTable[]>(initial ?? STARTER_TABLES);
-  const [hydrated, setHydrated] = useState(initial !== null);
+  const draftKey = `step3.${restaurantId}`;
+  // Draft (most recent in-progress edit) wins over the parent's `initial`,
+  // which wins over STARTER_TABLES. If a draft was found we mark hydrated so
+  // the DB-row fetch below doesn't overwrite the owner's pending edits.
+  const [tables, setTables] = useState<WizardTable[]>(() => {
+    const draft = readDraft<WizardTable[]>(draftKey);
+    if (draft && draft.length > 0) return draft;
+    return initial ?? STARTER_TABLES;
+  });
+  const [hydrated, setHydrated] = useState(() => {
+    if (readDraft<WizardTable[]>(draftKey)) return true;
+    return initial !== null;
+  });
+  useDraftAutosave<WizardTable[]>(draftKey, tables);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -117,6 +130,7 @@ export function Step3FloorPlan({ restaurantId, initial, onComplete, onBusyChange
         return;
       }
 
+      clearDraft(draftKey);
       onComplete(tables);
     } finally {
       setSubmitting(false);

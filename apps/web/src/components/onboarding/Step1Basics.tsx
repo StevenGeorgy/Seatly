@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+
+import { clearDraft, readDraft, useDraftAutosave } from "./draftPersistence";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,6 +79,8 @@ type Step1BasicsProps = {
   targetRestaurantId?: string | null;
 };
 
+type Step1Draft = Step1FormValues & { lat: number | null; lng: number | null };
+
 export function Step1Basics({
   initial,
   onComplete,
@@ -86,27 +90,47 @@ export function Step1Basics({
   const { refreshUser } = useUser();
   const { errorToast } = useErrorToast();
   const [submitting, setSubmitting] = useState(false);
-  const [lat, setLat] = useState<number | null>(initial?.lat ?? null);
-  const [lng, setLng] = useState<number | null>(initial?.lng ?? null);
+
+  // Per-step draft key: scope by target draft so multi-restaurant owners
+  // don't see one draft bleed into another. Pre-Continue (no draft id yet)
+  // we use "new", which is what ?new=1 also points at.
+  const draftKey = `step1.${targetRestaurantId ?? "new"}`;
+
+  // Read any saved draft synchronously so the form mounts already populated.
+  // forceNew (?new=1 from "+ Add restaurant") explicitly bypasses drafts.
+  const draftSeed = useMemo<Step1Draft | null>(
+    () => (forceNew ? null : readDraft<Step1Draft>(draftKey)),
+    // Capture at mount only — don't react to draftKey changes mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const [lat, setLat] = useState<number | null>(draftSeed?.lat ?? initial?.lat ?? null);
+  const [lng, setLng] = useState<number | null>(draftSeed?.lng ?? initial?.lng ?? null);
 
   const form = useForm<Step1FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      restaurantName: initial?.restaurantName ?? "",
-      address: initial?.address ?? "",
-      city: initial?.city ?? "",
-      province: initial?.province ?? "",
-      country: initial?.country ?? "Canada",
-      postalCode: initial?.postalCode ?? "",
-      businessType: initial?.businessType ?? "Restaurant",
-      cuisineType: initial?.cuisineType ?? "",
-      phone: initial?.phone ?? "",
-      description: initial?.description ?? "",
-      acceptsWalkins: initial?.acceptsWalkins ?? true,
-      dietaryTags: initial?.dietaryTags ?? [],
-      hstRegistrationNumber: "",
+      restaurantName: draftSeed?.restaurantName ?? initial?.restaurantName ?? "",
+      address: draftSeed?.address ?? initial?.address ?? "",
+      city: draftSeed?.city ?? initial?.city ?? "",
+      province: draftSeed?.province ?? initial?.province ?? "",
+      country: draftSeed?.country ?? initial?.country ?? "Canada",
+      postalCode: draftSeed?.postalCode ?? initial?.postalCode ?? "",
+      businessType: draftSeed?.businessType ?? initial?.businessType ?? "Restaurant",
+      cuisineType: draftSeed?.cuisineType ?? initial?.cuisineType ?? "",
+      phone: draftSeed?.phone ?? initial?.phone ?? "",
+      description: draftSeed?.description ?? initial?.description ?? "",
+      acceptsWalkins: draftSeed?.acceptsWalkins ?? initial?.acceptsWalkins ?? true,
+      dietaryTags: draftSeed?.dietaryTags ?? initial?.dietaryTags ?? [],
+      hstRegistrationNumber: draftSeed?.hstRegistrationNumber ?? "",
     },
   });
+
+  // Auto-persist the form (and lat/lng) on every change. Debounced inside the
+  // hook so we don't pound sessionStorage on every keystroke.
+  const watchedAll = form.watch();
+  useDraftAutosave<Step1Draft>(draftKey, { ...watchedAll, lat, lng }, { enabled: !forceNew });
 
   // react-hook-form captures defaultValues only on first mount. When the
   // parent's resume effect populates `initial` *after* mount (the common
@@ -204,6 +228,10 @@ export function Step1Basics({
       }
 
       await refreshUser();
+
+      // Draft is now committed to the DB — wipe sessionStorage so a future
+      // re-entry of Step 1 reads from the canonical row, not stale typing.
+      clearDraft(draftKey);
 
       onComplete({
         restaurantId: (data as { restaurant_id: string }).restaurant_id,

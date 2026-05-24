@@ -44,6 +44,56 @@ const INITIAL_STATE: WizardState = {
   themeColor: null,
 };
 
+// SessionStorage snapshot — survives tab discards / reloads within the same
+// tab. Prevents the wizard from (a) losing cross-step state and (b) jumping
+// to a "furthest completed" step that doesn't match where the owner was
+// actually working. NOT a substitute for per-step input drafts: mid-step
+// edits that haven't hit Continue still live in step-component state and
+// will be lost if the tab unloads.
+const SNAPSHOT_KEY = "cenaiva.wizard.v1";
+const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+type WizardSnapshot = {
+  v: 1;
+  step: number;
+  state: WizardState;
+  ts: number;
+};
+
+function readSnapshot(): WizardSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as WizardSnapshot;
+    if (parsed.v !== 1) return null;
+    if (typeof parsed.step !== "number" || parsed.step < 1 || parsed.step > WIZARD_TOTAL_STEPS) return null;
+    if (typeof parsed.ts !== "number" || Date.now() - parsed.ts > SNAPSHOT_MAX_AGE_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeSnapshot(snap: Omit<WizardSnapshot, "v" | "ts">): void {
+  if (typeof window === "undefined") return;
+  try {
+    const payload: WizardSnapshot = { v: 1, ts: Date.now(), ...snap };
+    window.sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(payload));
+  } catch {
+    // sessionStorage can throw (private mode quota, disabled storage) — fail silently.
+  }
+}
+
+function clearSnapshot(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(SNAPSHOT_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
 type ResumeResult = {
   state: WizardState;
   startAtStep: number;
@@ -228,19 +278,6 @@ export default function SetupPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, profile } = useUser();
-  // Deep-link support: ?step=8 lets banners (e.g. "Finish verification" on
-  // the dashboard) drop the owner straight into the Stripe Connect / payment
-  // step without walking all 8 wizard steps again. Clamped to valid range.
-  const initialStep = (() => {
-    const raw = Number(searchParams.get("step") ?? "1");
-    if (!Number.isFinite(raw) || raw < 1 || raw > WIZARD_TOTAL_STEPS) return 1;
-    return Math.floor(raw);
-  })();
-  const [step, setStep] = useState(initialStep);
-  const [state, setState] = useState<WizardState>(INITIAL_STATE);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-
   // Query-param-driven entry modes:
   //   ?new=1            → skip resume entirely, fresh Step 1
   //   ?restaurant_id=X  → resume that specific draft (or redirect if not owned)
@@ -250,6 +287,42 @@ export default function SetupPage() {
   const targetRestaurantIdRef = useRef(searchParams.get("restaurant_id"));
   const forceNew = forceNewRef.current;
   const targetRestaurantId = targetRestaurantIdRef.current;
+
+  // Deep-link support: ?step=8 lets banners (e.g. "Finish verification" on
+  // the dashboard) drop the owner straight into the Stripe Connect / payment
+  // step without walking all 8 wizard steps again. Clamped to valid range.
+  // Returns null when absent so we can distinguish "user picked a step" from
+  // "fall back to default".
+  const stepFromUrl = useMemo<number | null>(() => {
+    const raw = Number(searchParams.get("step") ?? "");
+    if (!Number.isFinite(raw) || raw < 1 || raw > WIZARD_TOTAL_STEPS) return null;
+    return Math.floor(raw);
+    // searchParams intentionally captured at mount via initial render only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Hydrate from sessionStorage before the first render so the user lands on
+  // the same step they were on if the tab reloads. ?new=1 and an explicit
+  // ?restaurant_id that doesn't match the snapshot both invalidate it.
+  const initialSnapshotRef = useRef<WizardSnapshot | null>(null);
+  if (initialSnapshotRef.current === null) {
+    const snap = forceNew ? null : readSnapshot();
+    if (snap && targetRestaurantId && snap.state.restaurantId !== targetRestaurantId) {
+      initialSnapshotRef.current = null;
+    } else {
+      initialSnapshotRef.current = snap;
+    }
+  }
+  const initialSnapshot = initialSnapshotRef.current;
+
+  const [step, setStep] = useState<number>(
+    initialSnapshot?.step ?? stepFromUrl ?? 1,
+  );
+  const [state, setState] = useState<WizardState>(
+    initialSnapshot?.state ?? INITIAL_STATE,
+  );
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   // One resume attempt per mount. Reset on unmount so a remount (StrictMode
   // double-mount or route revisit) re-fetches.
@@ -279,7 +352,13 @@ export default function SetupPage() {
       if (cancelled) return;
       if (resume) {
         setState(resume.state);
-        setStep(resume.startAtStep);
+        // Only jump to the DB-derived "furthest completed" step when the user
+        // didn't already specify a step (via URL ?step or a restored snapshot).
+        // Otherwise we'd yank an owner who went BACK to an earlier step
+        // forward to a later one on every tab reload.
+        if (stepFromUrl === null && initialSnapshot === null) {
+          setStep(resume.startAtStep);
+        }
       } else if (targetRestaurantId) {
         // Caller asked for a specific draft but it's not owned / not unpublished.
         toast.error("That restaurant isn't available.");
@@ -337,8 +416,24 @@ export default function SetupPage() {
   }, []);
 
   const handlePublished = useCallback(() => {
+    clearSnapshot();
     navigate("/dashboard", { replace: true });
   }, [navigate]);
+
+  // Persist wizard progress to sessionStorage on every state/step change. The
+  // useState initializer above reads this back on mount so tab reloads keep
+  // the owner where they were. We only snapshot once a draft exists — before
+  // Step 1 lands there's nothing useful to keep.
+  useEffect(() => {
+    if (state.restaurantId === null) return;
+    writeSnapshot({ step, state });
+  }, [step, state]);
+
+  // ?new=1 means the owner asked for a fresh start — wipe any stale snapshot
+  // so a previously-discarded draft doesn't get restored over their new one.
+  useEffect(() => {
+    if (forceNew) clearSnapshot();
+  }, [forceNew]);
 
   const handleBack = useCallback(() => {
     setStep((s) => Math.max(1, s - 1));

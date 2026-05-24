@@ -15,6 +15,7 @@ import {
   type HoursJson,
   type OnboardingDay,
 } from "./wizardTypes";
+import { clearDraft, readDraft, useDraftAutosave } from "./draftPersistence";
 
 const DAY_LABEL: Record<OnboardingDay, string> = {
   monday: "Monday",
@@ -64,7 +65,11 @@ function TimePicker({
 
 export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: Step2HoursProps) {
   const { errorToast } = useErrorToast();
-  const [hours, setHours] = useState<HoursJson>(initial ?? emptyHoursJson());
+  const draftKey = `step2.${restaurantId}`;
+  const [hours, setHours] = useState<HoursJson>(
+    () => readDraft<HoursJson>(draftKey) ?? initial ?? emptyHoursJson(),
+  );
+  useDraftAutosave<HoursJson>(draftKey, hours);
   const [submitting, setSubmitting] = useState(false);
 
   const atLeastOneOpen = useMemo(
@@ -152,6 +157,7 @@ export function Step2Hours({ restaurantId, initial, onComplete, onBusyChange }: 
           console.error("[Step2Hours] failed to sync shift days_of_week", shiftError);
         }
       }
+      clearDraft(draftKey);
       onComplete(hours);
     } finally {
       setSubmitting(false);

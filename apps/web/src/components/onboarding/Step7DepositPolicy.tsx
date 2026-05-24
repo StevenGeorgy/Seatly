@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import type { RestaurantDepositTier } from "@/hooks/useStaffRestaurants";
 import { useErrorToast } from "@/lib/errors";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { clearDraft, readDraft, useDraftAutosave } from "./draftPersistence";
 
 type Step7DepositPolicyProps = {
   restaurantId: string;
@@ -45,12 +46,25 @@ function tiersToDraft(tiers: RestaurantDepositTier[] | null): DraftTier[] {
     }));
 }
 
+type Step7DraftPayload = { choice: DepositChoice; draft: DraftTier[] };
+
 export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: Step7DepositPolicyProps) {
   const { errorToast } = useErrorToast();
-  const [choice, setChoice] = useState<DepositChoice>("none");
-  const [draft, setDraft] = useState<DraftTier[]>([]);
-  const [hydrated, setHydrated] = useState(false);
+  const draftKey = `step7.${restaurantId}`;
+  const draftSeed = useMemo(
+    () => readDraft<Step7DraftPayload>(draftKey),
+    // Read once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [choice, setChoice] = useState<DepositChoice>(draftSeed?.choice ?? "none");
+  const [draft, setDraft] = useState<DraftTier[]>(draftSeed?.draft ?? []);
+  // If we hydrated from a draft, skip the DB read so it can't clobber the
+  // pending edits with whatever was last saved.
+  const [hydrated, setHydrated] = useState<boolean>(draftSeed !== null);
   const [submitting, setSubmitting] = useState(false);
+
+  useDraftAutosave<Step7DraftPayload>(draftKey, { choice, draft });
 
   useEffect(() => {
     if (hydrated) return;
@@ -168,6 +182,7 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
         return;
       }
       toast.success(parsed.length === 0 ? "No deposits set." : "Deposit policy saved.");
+      clearDraft(draftKey);
       onComplete();
     } finally {
       setSubmitting(false);
