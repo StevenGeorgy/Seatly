@@ -91,6 +91,45 @@ Deno.serve(async (req: Request) => {
 
     const stripe = await getStripeClient(stripeKey);
 
+    // Pick the redirect origin: prefer client-supplied (so localhost dev
+    // works) but allow-list to known origins to avoid open-redirect risk.
+    // Falls back to APP_ORIGIN env (prod default).
+    const ALLOWED_ORIGINS = new Set([
+      "https://cenaiva.com",
+      "https://www.cenaiva.com",
+      "https://localhost:5173",
+      "http://localhost:5173",
+      "https://localhost:5174",
+      "http://localhost:5174",
+    ]);
+    const requestedOrigin = (parsed.data as { app_origin?: unknown }).app_origin;
+    const originHeader = req.headers.get("origin");
+    const candidates: (string | undefined)[] = [
+      typeof requestedOrigin === "string" ? requestedOrigin : undefined,
+      originHeader ?? undefined,
+    ];
+    const chosenOrigin = candidates.find(
+      (c): c is string => !!c && ALLOWED_ORIGINS.has(c),
+    ) ?? APP_ORIGIN;
+
+    // Return path: caller supplies the page to land on after Stripe finishes.
+    // Wizard passes `/setup?step=8` (default); dashboard surfaces pass the
+    // current dashboard route. Allow-list to relative paths only — never
+    // accept absolute URLs (would leak Stripe traffic to other hosts).
+    const DEFAULT_RETURN_PATH = "/setup?step=8";
+    const requestedReturnPath = (parsed.data as { return_path?: unknown }).return_path;
+    const safeReturnPath = (() => {
+      if (typeof requestedReturnPath !== "string") return DEFAULT_RETURN_PATH;
+      // Must start with / and not be a protocol-relative URL or contain a host.
+      if (!requestedReturnPath.startsWith("/")) return DEFAULT_RETURN_PATH;
+      if (requestedReturnPath.startsWith("//")) return DEFAULT_RETURN_PATH;
+      return requestedReturnPath;
+    })();
+    // Stamp Stripe-return params so the destination page can poll fresh state.
+    const sep = safeReturnPath.includes("?") ? "&" : "?";
+    const returnUrlBase = `${chosenOrigin}${safeReturnPath}${sep}stripe=return&restaurant_id=${row.id}`;
+    const refreshUrlBase = `${chosenOrigin}${safeReturnPath}${sep}stripe=refresh&restaurant_id=${row.id}`;
+
     // Stripe-hosted onboarding link. `refresh_url` is hit if the link
     // expires before the user completes (e.g. browser tab left open
     // overnight). `return_url` is hit on successful completion AND when
@@ -98,8 +137,8 @@ Deno.serve(async (req: Request) => {
     // `accounts.retrieve` to determine whether KYC is actually done.
     const accountLink = await stripe.accountLinks.create({
       account: row.stripe_account_id,
-      refresh_url: `${APP_ORIGIN}/onboarding?step=8&stripe=refresh&restaurant_id=${row.id}`,
-      return_url: `${APP_ORIGIN}/onboarding?step=8&stripe=return&restaurant_id=${row.id}`,
+      refresh_url: refreshUrlBase,
+      return_url: returnUrlBase,
       type: "account_onboarding",
     });
 

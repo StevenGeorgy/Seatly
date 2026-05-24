@@ -120,17 +120,16 @@ Routine bug fixes do not need an update. Detailed ship notes go to
   `restaurant_id` + recovery path for SetupIntent already-succeeded
   state (when create-subscription fails downstream and user retries
   without refresh).
-  (B) **`create-subscription` is currently a DEBUG BUILD (v29).** Adds
-  explicit try/catch around `stripe.prices.retrieve` (early invalid-
-  Price detection), `customer.update`, and `subscriptions.create`,
-  returning detailed `stripe_code` / `stripe_type` / `stripe_param` /
-  `attempted_price_id` / `attempted_customer_id` in the JSON 500 body
-  instead of a bare error string. **Must revert to clean error
-  surface before prod** (or keep enhanced reporting if preferred — the
-  generic "Something went wrong" fallback was hiding actionable Stripe
-  errors from owners). Original file at
-  `supabase/functions/create-subscription/index.ts` reflects the debug
-  shape; clean version is the pre-2026-05-19 git history.
+  (B) **`create-subscription` resolved 2026-05-23.** Function is now
+  deprecation-gated to HTTP 410 by default (v76 deployed). Production
+  publish flow runs through `publish-restaurant` instead, which keeps
+  the enhanced Stripe error surface (`stripe_code` / `stripe_type` /
+  `stripe_param` / `attempted_price_id` / `attempted_customer_id`) —
+  these only reach the authenticated owner about their own restaurant,
+  and `Step8PaymentSetup.tsx` maps them through `toUserFacingError`
+  before any toast surface so users never see raw Stripe text. The
+  legacy create-subscription escape hatch is gated by
+  `ALLOW_LEGACY_CREATE_SUBSCRIPTION=true`; leave OFF in prod.
   (C) `Step7DepositPolicy.tsx` — removed the "Cancellation window"
   UI section (`cancellation_hours` field + state + validation + save).
   Consistent with 2026-05-15 policy that all cancels fully refund.

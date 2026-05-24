@@ -1690,14 +1690,12 @@ export default function RestaurantPublicPage() {
     return (applicable.amount_per_person_cents * partySize) / 100;
   }, [restaurant?.deposit_tiers, dineIn.party_size]);
   const total              = discountedSubtotal + tax;
-  // Split-tender (paymentSplitMode === "split"): SplitTenderPaymentForm
-  // charges N separate cards, so the inline checkout doesn't render a
-  // single charge total — the deposit is collected per-slot via the
-  // form. For single payment, the diner pays preorder + full deposit
-  // inline.
-  const totalNow = paymentSplitMode === "split"
-    ? total // preorder only — deposit is collected per-card by SplitTenderPaymentForm
-    : total + previewDepositDollars;
+  // 2026-05-23: split-tender now covers ALL payable amounts (preorder + tax
+  // + deposit) so each payer's share is the full per-person total. Each of
+  // the N cards is charged for `totalNow / N` via SplitTenderPaymentForm.
+  // Previously this excluded the deposit from totalNow in split mode, which
+  // caused pre-order-only split-tender to fall through to single-card form.
+  const totalNow = total + previewDepositDollars;
   // Stripe processing fee pass-through: diner pays our 2.9% + 30¢ on top so
   // the restaurant nets the full base. Display-only; server is the source of
   // truth on the actual amount charged.
@@ -1968,6 +1966,11 @@ export default function RestaurantPublicPage() {
         applied_promo_code: searchParams.get("promo_code") ?? null,
         hold_id: activeHoldId,
         split_tender_payers: payerCount,
+        // 2026-05-23: pass per-payer cents so the backend can size each
+        // deposit_payment row to cover the full share (preorder + tax +
+        // deposit / N), not just the deposit portion. Without this, pre-order
+        // split-tender would create rows of $0 each.
+        split_tender_share_cents: Math.round((totalNow * 100) / Math.max(2, payerCount)),
       }),
     });
     const body = (await res.json().catch(() => ({}))) as PublicBookingResponse & {
@@ -3314,10 +3317,10 @@ export default function RestaurantPublicPage() {
                   <Lock className="ml-auto size-3 text-text-muted" />
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
-                {paymentSplitMode === "split" && previewDepositDollars > 0 && restaurant?.id ? (
+                {paymentSplitMode === "split" && totalNow > 0 && restaurant?.id ? (
                   <SplitTenderPaymentForm
                     restaurantId={restaurant.id}
-                    shareCents={Math.round(previewDepositDollars * 100 / Math.max(2, splitPartyCount))}
+                    shareCents={Math.round((totalNow * 100) / Math.max(2, splitPartyCount))}
                     payerCount={Math.max(2, Math.min(10, splitPartyCount))}
                     holdId={hold.state.status === "active" ? hold.state.holdId : null}
                     formId="diner-pay-form"

@@ -70,6 +70,12 @@ export const BookingInputSchema = z.object({
   // returns the row IDs. The diner UI then charges N PIs sequentially
   // via SplitTenderPaymentForm. Range 2-10 matches the UI cap.
   split_tender_payers: z.number().int().min(2).max(10).nullish(),
+  // 2026-05-23: optional per-payer share amount in cents (deposit + preorder
+  // + tax). When provided, overrides the deposit-only split. Required for
+  // pre-order split-tender (where deposit is 0 but each card still needs
+  // to cover their share of the food). For deposit-only split (legacy
+  // behavior) omit this and the backend derives shares from deposit alone.
+  split_tender_share_cents: z.number().int().min(1).max(10_000_000).nullish(),
 });
 
 export type BookingInput = z.infer<typeof BookingInputSchema>;

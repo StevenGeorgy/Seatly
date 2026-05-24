@@ -407,7 +407,13 @@ function SplitTenderSurface({
                     mode: "payment",
                     amount: shareCents,
                     currency: "cad",
-                    paymentMethodTypes: ["card"],
+                    // Do NOT pin paymentMethodTypes — server uses
+                    // automatic_payment_methods so the PI lists `card` + `link`.
+                    // Pinning here causes a mismatch that 400s on confirm with
+                    // "Payment details were collected through Stripe Elements
+                    // using payment_method_types and cannot be confirmed". The
+                    // single-payment form (StripePaymentForm) hit + fixed this
+                    // bug 2026-05-21; SplitTender just inherited the same fix.
                     appearance: {
                       theme: "night",
                       variables: {

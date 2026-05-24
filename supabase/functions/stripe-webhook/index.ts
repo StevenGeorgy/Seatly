@@ -86,6 +86,12 @@ type AccountLike = {
   charges_enabled?: boolean;
   payouts_enabled?: boolean;
   details_submitted?: boolean;
+  requirements?: {
+    currently_due?: string[] | null;
+    past_due?: string[] | null;
+    pending_verification?: string[] | null;
+    disabled_reason?: string | null;
+  } | null;
 };
 
 type SubscriptionLike = {
@@ -139,12 +145,40 @@ type DisputeLike = {
 
 async function handleAccountUpdated(account: AccountLike): Promise<void> {
   if (!account.id) return;
+  // Derive requirements_due / requirements_processing per Stripe's recommended
+  // UI logic (https://docs.stripe.com/connect/handling-api-verification):
+  //   - currently_due / past_due items NOT in pending_verification → action needed
+  //   - pending_verification items + nothing actionable → Stripe is processing
+  // We compute these here (webhook is the source of truth, not polling) so the
+  // wizard / dashboard can read DB columns instead of calling Stripe live.
+  // That eliminates the "yellow flash" caused by Stripe's post-submit
+  // propagation lag where currently_due briefly stays populated after the
+  // owner has actually finished.
+  // Canonical Stripe rule (per https://docs.stripe.com/connect/handling-api-verification):
+  //   - currently_due / past_due items NOT in pending_verification → user action needed
+  //   - pending_verification non-empty AND nothing actionable → Stripe processing
+  // We deliberately ignore `disabled_reason` here. Its values (e.g. "requirements.past_due",
+  // "requirements.pending_verification", "rejected.fraud", "under_review") are informational
+  // and tricky to parse — `currently_due` + `pending_verification` are the source of truth.
+  const reqs = account.requirements ?? {};
+  const pendingSet = new Set(reqs.pending_verification ?? []);
+  const actionableCurrentlyDue = (reqs.currently_due ?? []).filter(
+    (f) => !pendingSet.has(f),
+  );
+  const actionablePastDue = (reqs.past_due ?? []).filter((f) => !pendingSet.has(f));
+  const requirementsDue =
+    actionableCurrentlyDue.length > 0 || actionablePastDue.length > 0;
+  const requirementsProcessing =
+    (reqs.pending_verification ?? []).length > 0 && !requirementsDue;
+
   const { error } = await supabaseAdmin
     .from("restaurants")
     .update({
       stripe_charges_enabled: Boolean(account.charges_enabled),
       stripe_payouts_enabled: Boolean(account.payouts_enabled),
       stripe_details_submitted: Boolean(account.details_submitted),
+      stripe_requirements_due: requirementsDue,
+      stripe_requirements_processing: requirementsProcessing,
     })
     .eq("stripe_account_id", account.id);
   if (error) console.error("[stripe-webhook] account.updated failed", error);

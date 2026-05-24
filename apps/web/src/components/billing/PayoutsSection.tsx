@@ -7,7 +7,7 @@
 // in my bank?" — the answer is Stripe's 2-7 day rolling payout schedule.
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, Landmark, RefreshCw, TrendingUp } from "lucide-react";
+import { AlertTriangle, CreditCard, Landmark, Loader2, RefreshCw, TrendingUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -17,7 +17,98 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import { StripeConnectVerifyPanel } from "@/components/billing/StripeConnectVerifyPanel";
+import { invokeEdgeFunction } from "@/lib/supabase/edge-fn";
+import { toUserFacingError } from "@/lib/errors";
+
+// Hosted Account Link button. Replaces the embedded Stripe Connect panel
+// previously rendered here. Clicking opens connect.stripe.com hosted
+// onboarding for the connected account; when Stripe is done the owner
+// lands back on THIS dashboard page (not the wizard) via the `return_path`
+// param sent to the create-account-link edge fn.
+function StripeHostedDashboardButton({
+  restaurantId,
+  onPollNeeded,
+  ctaLabel,
+}: {
+  restaurantId: string;
+  onPollNeeded: () => void;
+  ctaLabel: string;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // If Stripe redirected us back to this page (`?stripe=return` or
+  // `?stripe=refresh`), fire the poll callback so the panel re-fetches
+  // the payouts payload. Strip the query params so a manual refresh
+  // doesn't re-trigger.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const stripeFlag = url.searchParams.get("stripe");
+    if (stripeFlag === "return" || stripeFlag === "refresh") {
+      url.searchParams.delete("stripe");
+      url.searchParams.delete("restaurant_id");
+      window.history.replaceState({}, "", url.toString());
+      onPollNeeded();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleClick = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const acctRes = await invokeEdgeFunction<{ account_id: string }>(
+        "create-stripe-account",
+        { restaurant_id: restaurantId },
+      );
+      if (!acctRes.ok) throw new Error(acctRes.error);
+      const currentPath =
+        typeof window !== "undefined"
+          ? `${window.location.pathname}${window.location.search}`
+          : "/dashboard";
+      const linkRes = await invokeEdgeFunction<{ url: string }>(
+        "create-account-link",
+        {
+          restaurant_id: restaurantId,
+          app_origin: typeof window !== "undefined" ? window.location.origin : undefined,
+          return_path: currentPath,
+        },
+      );
+      if (!linkRes.ok) throw new Error(linkRes.error);
+      if (!linkRes.data?.url) {
+        throw new Error("Stripe didn't return an onboarding URL. Try again.");
+      }
+      window.location.href = linkRes.data.url;
+    } catch (err) {
+      const friendly = toUserFacingError(err, "Couldn't open Stripe.");
+      setError(friendly.message);
+      console.error("[PayoutsSection.hosted]", friendly.code, friendly.technical ?? err);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      {error ? (
+        <p className="mb-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
+      <Button type="button" className="gap-2" onClick={handleClick} disabled={loading}>
+        {loading ? (
+          <>
+            <Loader2 className="size-4 animate-spin" /> Opening Stripe…
+          </>
+        ) : (
+          <>
+            <CreditCard className="size-4" /> {ctaLabel}
+          </>
+        )}
+      </Button>
+    </div>
+  );
+}
 
 interface PayoutsSectionProps {
   restaurantId: string;
@@ -37,6 +128,17 @@ interface PayoutsResponse {
   ok: boolean;
   has_account: boolean;
   payouts_enabled: boolean;
+  // Added 2026-05-23: fields needed to distinguish "Stripe verifying"
+  // (no user action) from "action required" (button + banner).
+  // `requirements_due`: Stripe's `currently_due` or `past_due` arrays are
+  // non-empty (excluding items already in `pending_verification`), OR
+  // `disabled_reason` is set to something other than `pending_verification.*`.
+  // `requirements_processing`: items in `pending_verification` AND nothing
+  // actionable — Stripe is processing the owner's last submission.
+  charges_enabled?: boolean;
+  details_submitted?: boolean;
+  requirements_due?: boolean;
+  requirements_processing?: boolean;
   available_balance_cents: number;
   pending_balance_cents: number;
   payouts: PayoutRow[];
@@ -91,6 +193,7 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
   const [loading, setLoading] = useState(true);
   // Bump this to force a re-fetch (e.g. after Stripe verification UI closes).
   const [refreshKey, setRefreshKey] = useState(0);
+  const handleStripeReturnPoll = () => setRefreshKey((k) => k + 1);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,15 +258,10 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
           </p>
         </div>
         <div className="p-4">
-          <StripeConnectVerifyPanel
+          <StripeHostedDashboardButton
             restaurantId={restaurantId}
-            onboardingMode
-            onExit={() => {
-              // After the embedded onboarding closes, re-fetch payouts so
-              // the panel transitions from "no account" → "verifying" /
-              // "payouts enabled" without a manual reload.
-              setRefreshKey((k) => k + 1);
-            }}
+            ctaLabel="Continue with Stripe"
+            onPollNeeded={handleStripeReturnPoll}
           />
         </div>
       </div>
@@ -217,31 +315,55 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
         </div>
       </div>
 
-      {!data.payouts_enabled ? (
-        <>
-          <div className="space-y-1 border-b border-border bg-warning/5 px-4 py-3 text-xs text-warning">
-            <p className="font-semibold">Payouts pending Stripe verification</p>
+      {(() => {
+        // Three states, deterministic, trust whatever Stripe reports now:
+        //   verified       → payouts_enabled = render nothing here
+        //   actionRequired → requirements_due OR !details_submitted →
+        //                    yellow banner + "Update on Stripe" button
+        //   processing     → otherwise → blue banner, NO button
+        if (data.payouts_enabled) return null;
+
+        const requirementsDue = Boolean(data.requirements_due);
+        const detailsSubmitted = Boolean(data.details_submitted);
+        const needsAction = !detailsSubmitted || requirementsDue;
+
+        if (needsAction) {
+          return (
+            <>
+              <div className="space-y-1 border-b border-border bg-warning/5 px-4 py-3 text-xs text-warning">
+                <p className="font-semibold">
+                  {detailsSubmitted
+                    ? "Stripe needs something from you"
+                    : "Finish your Stripe setup"}
+                </p>
+                <p className="text-text-secondary">
+                  {detailsSubmitted
+                    ? "Payouts to your bank are paused until you finish a step on Stripe. Click below to open Stripe's hosted page, fix the outstanding item, and you'll land back here automatically."
+                    : "You haven't completed Stripe verification yet. Click below to finish — takes about 2 minutes."}
+                </p>
+              </div>
+              <div className="border-b border-border p-4">
+                <StripeHostedDashboardButton
+                  restaurantId={restaurantId}
+                  ctaLabel={detailsSubmitted ? "Update on Stripe" : "Continue with Stripe"}
+                  onPollNeeded={handleStripeReturnPoll}
+                />
+              </div>
+            </>
+          );
+        }
+
+        return (
+          <div className="space-y-1 border-b border-border bg-sky-500/5 px-4 py-3 text-xs text-sky-300">
+            <p className="font-semibold">Stripe is verifying your account</p>
             <p className="text-text-secondary">
-              You can take diner deposits right now — that's already working.
-              Payouts to your bank are paused while Stripe verifies your
-              account. If Stripe needs anything specific from you, it'll
-              appear as an actionable banner in the panel below; otherwise
-              this usually clears within 24 hours (occasionally up to 2-3
-              business days).
+              You've submitted everything Stripe needs — they're processing
+              it now. Payouts will unlock automatically when it clears. No
+              action needed from you.
             </p>
           </div>
-          <div className="border-b border-border p-4">
-            <StripeConnectVerifyPanel
-              restaurantId={restaurantId}
-              onExit={() => {
-                // After Stripe closes the embedded onboarding, re-fetch the
-                // payouts payload so the banner updates without a manual reload.
-                setRefreshKey((k) => k + 1);
-              }}
-            />
-          </div>
-        </>
-      ) : null}
+        );
+      })()}
 
       {payouts.length === 0 ? (
         <p className="px-4 py-3 text-sm text-text-muted">

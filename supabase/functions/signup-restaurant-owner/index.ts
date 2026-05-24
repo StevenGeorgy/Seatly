@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { SignupRestaurantOwnerSchema } from "../_shared/validation/restaurant.ts";
+import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -73,6 +74,23 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    try {
+      await enforceRateLimit(
+        adminClient,
+        "signup-restaurant-owner",
+        rateLimitIdentifier(req),
+        { limit: 10, windowSeconds: 3600 },
+      );
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        return new Response(
+          JSON.stringify({ error: e.message }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+      throw e;
+    }
 
     // ── Resolve the user ──────────────────────────────────────────────────────
     // Flow A: caller is already authenticated — use their JWT

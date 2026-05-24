@@ -10,6 +10,15 @@ export const RestaurantIdOnlySchema = z.object({
   // (wizard Step 8) and management (dashboard re-verification) components.
   // Other edge fns sharing this schema ignore the field.
   mode: z.enum(["onboarding", "management"]).optional(),
+  // create-account-link: optional origin so Stripe redirects to the right
+  // place during local dev (defaults to APP_ORIGIN env in prod). Allow-listed
+  // in the handler.
+  app_origin: BoundedText(200).optional(),
+  // create-account-link: optional path to return to after Stripe onboarding
+  // completes. Defaults to `/setup?step=8` (wizard). Dashboard surfaces pass
+  // their own page path (e.g. `/dashboard/billing`) so the owner lands back
+  // on the page they came from. Allow-listed to relative paths only.
+  return_path: BoundedText(500).optional(),
 });
 
 export type RestaurantIdOnlyInput = z.infer<typeof RestaurantIdOnlySchema>;

@@ -72,6 +72,12 @@ type SummaryRow = {
   stripe_charges_enabled: boolean | null;
   stripe_payouts_enabled: boolean | null;
   stripe_details_submitted: boolean | null;
+  // Source of truth: stripe-webhook `account.updated` handler. We read these
+  // from the DB (not from a live Stripe poll) so the wizard doesn't flash
+  // yellow during Stripe's post-submit propagation lag where currently_due
+  // briefly stays populated before clearing.
+  stripe_requirements_due: boolean | null;
+  stripe_requirements_processing: boolean | null;
   subscription_status: string | null;
   trial_ends_at: string | null;
   payment_method_attached_at: string | null;
@@ -85,7 +91,7 @@ type TierItem = { category_name: string | null; count: number };
 const SUBSCRIPTION_OK_STATUSES = new Set(["trialing", "active"]);
 
 const RESTAURANT_SELECT_COLUMNS =
-  "cover_photo_url, name, city, price_range, deposit_tiers, hours_json, stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted, subscription_status, trial_ends_at, payment_method_attached_at, is_published";
+  "cover_photo_url, name, city, price_range, deposit_tiers, hours_json, stripe_account_id, stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted, stripe_requirements_due, stripe_requirements_processing, subscription_status, trial_ends_at, payment_method_attached_at, is_published";
 
 function priceLabel(level: number | null): string {
   if (level === 1) return "$";
@@ -205,10 +211,16 @@ function StripeHostedOnboardingButton({
         { restaurant_id: restaurantId },
       );
       if (!acctRes.ok) throw new Error(acctRes.error);
-      // Mint a one-time hosted onboarding URL and redirect.
+      // Mint a one-time hosted onboarding URL and redirect. Pass the
+      // current page origin so Stripe redirects back to the right place
+      // during local dev (localhost) — server allow-lists known origins
+      // and falls back to APP_ORIGIN env if missing/unknown.
       const linkRes = await invokeEdgeFunction<{ url: string }>(
         "create-account-link",
-        { restaurant_id: restaurantId },
+        {
+          restaurant_id: restaurantId,
+          app_origin: typeof window !== "undefined" ? window.location.origin : undefined,
+        },
       );
       if (!linkRes.ok) throw new Error(linkRes.error);
       if (!linkRes.data?.url) {
@@ -363,33 +375,93 @@ export function Step8PaymentSetup({
 
   const totalSeats = tables.reduce((sum, t) => sum + (t.capacity ?? 0), 0);
 
+  // Fetch the live Stripe state via the edge fn (which now self-syncs the
+  // DB on every poll — see create-stripe-account/index.ts). Returns the
+  // freshest flags so callers can branch on the strictest gate (payouts).
+  const fetchStripeState = useCallback(async (): Promise<{
+    charges: boolean;
+    payouts: boolean;
+    details: boolean;
+    requirementsDue: boolean;
+    requirementsProcessing: boolean;
+  } | null> => {
+    try {
+      const res = await invokeEdgeFunction<{
+        charges_enabled: boolean;
+        payouts_enabled: boolean;
+        details_submitted: boolean;
+        // `requirements_due` and `requirements_processing` were added
+        // 2026-05-23 to the create-stripe-account response. Older deployments
+        // may not return them; treat undefined as false (preserves prior
+        // behavior until the new edge fn version is live).
+        requirements_due?: boolean;
+        requirements_processing?: boolean;
+      }>("create-stripe-account", { restaurant_id: restaurantId });
+      if (!res.ok || !res.data) return null;
+      // Pull the freshly-synced row from Supabase so derived UI state matches.
+      await refreshRestaurantRow();
+      const requirementsDue = Boolean(res.data.requirements_due);
+      const requirementsProcessing = Boolean(res.data.requirements_processing);
+      // We deliberately do NOT push requirementsDue into React state here.
+      // The wizard reads stripe_requirements_due from the DB summary row,
+      // which is updated by the `account.updated` webhook only — not by
+      // this polling path. That way Stripe's post-submit propagation lag
+      // never flashes "Action required" yellow at the user. Webhook is
+      // the source of truth; polling here just refreshes the summary row
+      // (via refreshRestaurantRow above) so payouts_enabled / charges_enabled
+      // updates are visible without waiting for the webhook.
+      return {
+        charges: Boolean(res.data.charges_enabled),
+        payouts: Boolean(res.data.payouts_enabled),
+        details: Boolean(res.data.details_submitted),
+        requirementsDue,
+        requirementsProcessing,
+      };
+    } catch {
+      return null;
+    }
+  }, [restaurantId, refreshRestaurantRow]);
+
   const handleKycExit = useCallback(async () => {
     setPollingKyc(true);
-    // Poll restaurants row up to ~30s waiting for the account.updated webhook
-    // to flip the charges/payouts/details flags.
+    // Poll Stripe directly (via the self-syncing edge fn) up to ~30s waiting
+    // for charges/payouts/details to settle. Break early when EITHER
+    // (a) `payouts_enabled` flips true (fully done, jump to green) or
+    // (b) Stripe is processing with no actionable items left (jump to blue).
     let attempts = 0;
     const maxAttempts = 15;
     while (attempts < maxAttempts) {
       await new Promise((r) => setTimeout(r, 2000));
-      await refreshRestaurantRow();
-      const { data } = await getSupabaseBrowserClient()
-        .from("restaurants")
-        .select("stripe_charges_enabled, stripe_payouts_enabled, stripe_details_submitted")
-        .eq("id", restaurantId)
-        .maybeSingle();
-      const row = data as {
-        stripe_charges_enabled: boolean | null;
-        stripe_payouts_enabled: boolean | null;
-        stripe_details_submitted: boolean | null;
-      } | null;
-      // Keep polling until payouts are enabled (the strictest gate) so the
-      // user sees the "Verified" badge update without a manual refresh.
-      if (row?.stripe_payouts_enabled) break;
-      if (row?.stripe_charges_enabled || row?.stripe_details_submitted) break;
+      const state = await fetchStripeState();
+      if (state?.payouts) break;
+      if (state && state.requirementsProcessing && !state.requirementsDue) break;
       attempts += 1;
     }
     setPollingKyc(false);
-  }, [restaurantId, refreshRestaurantRow]);
+  }, [fetchStripeState]);
+
+  // Background poll: while the owner is on Step 8 and Stripe state is not
+  // yet fully verified, re-fetch every 15s so payouts_enabled flips to
+  // "Verified" in real time when Stripe finishes its async bank check.
+  // No-op when fully verified (no work to do) or when the page isn't
+  // showing the Stripe section (stripeNotConfigured).
+  useEffect(() => {
+    if (!restaurantId) return;
+    const chargesEnabled = summary?.stripe_charges_enabled === true;
+    const payoutsEnabled = summary?.stripe_payouts_enabled === true;
+    if (chargesEnabled && payoutsEnabled) return; // fully done, stop polling
+    if (pollingKyc) return; // handleKycExit is already polling
+    const interval = setInterval(() => {
+      void fetchStripeState();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [
+    restaurantId,
+    summary?.stripe_charges_enabled,
+    summary?.stripe_payouts_enabled,
+    pollingKyc,
+    fetchStripeState,
+  ]);
 
   const handleCardChanged = useCallback(async () => {
     setShowChangeCard(false);
@@ -411,7 +483,6 @@ export function Step8PaymentSetup({
   // When charges are on but payouts aren't, the restaurant can take money
   // but it sits in Stripe holding until verification completes.
   const payoutsEnabled = summary?.stripe_payouts_enabled === true;
-  const payoutsPending = kycVerified && !payoutsEnabled;
   const hasPaymentMethodOnFile = Boolean(summary?.payment_method_attached_at);
   const subscriptionStatus = summary?.subscription_status ?? null;
   const subscriptionActive =
@@ -584,80 +655,93 @@ export function Step8PaymentSetup({
         )}
       </section>
 
-      {/* Section A — Stripe Connect Embedded KYC */}
-      {!stripeNotConfiguredOnFrontend ? (
-        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Set up payouts to your bank</h2>
-              <p className="text-sm text-text-muted">
-                Tell us where to send your money. We'll need your business details and a bank
-                account so deposits and pre-orders can land in your account automatically.
-              </p>
+      {/* Section A — Stripe Connect KYC. Three states only; trust whatever
+          Stripe reports right now:
+            - verified: payouts_enabled = green badge, no banner, no button
+            - actionRequired: requirements_due OR !details_submitted = yellow
+              badge, yellow banner, "Continue with Stripe" button
+            - processing: anything else (Stripe is verifying, no action
+              needed from owner) = blue badge, blue banner, NO button
+          No grace window, no in-between states. */}
+      {!stripeNotConfiguredOnFrontend ? (() => {
+        const detailsSubmitted = Boolean(summary?.stripe_details_submitted);
+        // Read requirements_due from the DB row, NOT from a live Stripe poll.
+        // The DB column is webhook-driven (only flips when Stripe actually
+        // moves the account state), so the wizard skips Stripe's post-submit
+        // propagation lag entirely — no more yellow flash before green.
+        const requirementsDue = summary?.stripe_requirements_due === true;
+        const needsAction = !detailsSubmitted || requirementsDue;
+        const stripeStatus: "verified" | "actionRequired" | "processing" =
+          payoutsEnabled
+            ? "verified"
+            : needsAction
+              ? "actionRequired"
+              : "processing";
+        return (
+          <section className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-surface p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Set up payouts to your bank</h2>
+                <p className="text-sm text-text-muted">
+                  Tell us where to send your money. We'll need your business details and a bank
+                  account so deposits and pre-orders can land in your account automatically.
+                </p>
+              </div>
+              {stripeStatus === "verified" ? (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300">
+                  <CheckCircle2 className="size-3.5" /> Verified
+                </span>
+              ) : stripeStatus === "actionRequired" ? (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/15 px-3 py-1 text-xs font-medium text-warning">
+                  <AlertTriangle className="size-3.5" /> Action required
+                </span>
+              ) : (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-sky-500/15 px-3 py-1 text-xs font-medium text-sky-300">
+                  <Loader2 className="size-3.5 animate-spin" /> Verifying with Stripe
+                </span>
+              )}
             </div>
-            {kycVerified ? (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300">
-                <CheckCircle2 className="size-3.5" /> Verified
-              </span>
-            ) : pollingKyc ? (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/15 px-3 py-1 text-xs font-medium text-warning">
-                <Loader2 className="size-3.5 animate-spin" /> Verifying…
-              </span>
+
+            {stripeStatus === "verified" ? (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+                You're fully verified — diner payments land in your bank automatically (2–7 day
+                rolling schedule).
+              </div>
+            ) : stripeStatus === "actionRequired" ? (
+              <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
+                <p className="font-semibold text-warning">
+                  {summary?.stripe_details_submitted
+                    ? "Stripe needs something from you"
+                    : "Next step: complete your Stripe payout setup"}
+                </p>
+                <p className="mt-1">
+                  {summary?.stripe_details_submitted
+                    ? "Stripe has flagged an open requirement on your account — usually an identity verification step. Until you finish it, payouts to your bank stay paused."
+                    : "Click Continue with Stripe below — Stripe will collect your business details and bank info on their secure site (takes ~2 minutes). When you're done, you'll come right back here."}
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-sm text-text-secondary">
+                <p className="font-semibold text-sky-300">Stripe is verifying your account</p>
+                <p className="mt-1">
+                  You've submitted everything Stripe needs — they're processing it now. The page
+                  updates automatically when it clears. No action needed from you.
+                </p>
+              </div>
+            )}
+
+            {/* Continue-with-Stripe button shows ONLY in actionRequired.
+                In `processing` Stripe is doing the work — no button. In
+                `verified` we're done. */}
+            {stripeStatus === "actionRequired" && publishableKey ? (
+              <StripeHostedOnboardingButton
+                restaurantId={restaurantId}
+                onPollNeeded={() => void handleKycExit()}
+              />
             ) : null}
-          </div>
-          {kycVerified && payoutsEnabled ? (
-            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              You're fully verified — payments will land in your bank
-              automatically (2–7 day rolling schedule).
-            </div>
-          ) : kycVerified && !payoutsEnabled ? (
-            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
-              You're ready to accept diner payments. Payouts to your bank
-              will unlock once Stripe finishes reviewing your verification —
-              see the panel below for status.
-            </div>
-          ) : null}
-          {payoutsPending ? (
-            <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
-              <p className="font-semibold text-warning">Payouts pending Stripe verification</p>
-              <p className="mt-1">
-                You can take deposits and pre-orders right now — that's
-                already working. Payouts to your bank are paused while
-                Stripe verifies your account.
-              </p>
-              <p className="mt-2 text-xs text-text-muted">
-                If Stripe needs anything specific from you, it'll show as
-                an actionable banner in the panel below. Otherwise this
-                usually clears within 24 hours (up to 2-3 business days
-                in some cases). In test mode it clears in seconds.
-              </p>
-            </div>
-          ) : summary?.stripe_details_submitted && !kycVerified ? (
-            <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-text-secondary">
-              <p className="font-semibold text-warning">Almost there.</p>
-              <p className="mt-1">
-                We're still verifying your details. This usually takes a few minutes — you can
-                come back to this page later.
-              </p>
-            </div>
-          ) : null}
-          {(!kycVerified || payoutsPending) && publishableKey ? (
-            // First-time onboarding AND re-verification path — both use
-            // Stripe-hosted Account Link. Embedded Connect Components failed
-            // to authenticate on this platform; the hosted flow handles both
-            // initial onboarding and "fix what's flagged" scenarios (Stripe's
-            // own page shows the user what's still required). The button
-            // calls create-stripe-account (idempotent), then
-            // create-account-link to mint a one-time URL, then redirects.
-            // Stripe sends them back to /onboarding?step=8&stripe=return when
-            // done, and the page polls for KYC state on mount.
-            <StripeHostedOnboardingButton
-              restaurantId={restaurantId}
-              onPollNeeded={() => void handleKycExit()}
-            />
-          ) : null}
-        </section>
-      ) : null}
+          </section>
+        );
+      })() : null}
 
       {/* Section B — Subscription card */}
       {!stripeNotConfiguredOnFrontend ? (

@@ -249,6 +249,17 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   const creatingInFlightRef = useRef<boolean>(false);
   const stateRef = useRef<HoldState>(state);
   const persistKeyRef = useRef<string | null>(null);
+  // Tracks the (partySize, dateTime, shiftId) inputs the most recent
+  // successful createHold ran with. The recreate-on-param-change effect
+  // below compares the current inputs to this ref to detect drift. Set
+  // INSIDE createHold (not from the effect) because the effect's deps don't
+  // include state.status, so it wouldn't fire on the idle→creating→active
+  // transition that follows the auto-create.
+  const lastSyncedInputsRef = useRef<{
+    partySize: number;
+    dateTime: string;
+    shiftId: string;
+  } | null>(null);
 
   stateRef.current = state;
 
@@ -343,6 +354,8 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
           serverSkewMs: next.serverSkewMs,
         });
       }
+
+      lastSyncedInputsRef.current = { partySize, dateTime, shiftId };
 
       return { holdId: next.holdId, expiresAt: next.expiresAt };
     } catch (err) {
@@ -506,6 +519,49 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (!restaurantId || !shiftId || !dateTime || !partySize || partySize <= 0) return;
     void createHold();
   }, [enabled, restaurantId, shiftId, dateTime, partySize, createHold]);
+
+  // -------------------------------------------------------------------------
+  // Recreate-on-param-change: when the diner changes party_size, dateTime,
+  // or shiftId while an active hold exists, the server-side row is stale
+  // (the API contract has no UPDATE path for those fields — table assignment
+  // must be recomputed from scratch). Cancel + recreate so the UI's party
+  // and slot match the hold that ultimately converts to a reservation.
+  // Debounced so rapid +/- clicks don't flood the server. The
+  // lastSyncedInputsRef gets seeded INSIDE createHold on success, not here,
+  // so this effect doesn't need state.status in its deps.
+  // -------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!restaurantId || !shiftId || !dateTime || !partySize || partySize <= 0) return;
+    const last = lastSyncedInputsRef.current;
+    if (!last) return; // No active hold yet — auto-create effect will handle it.
+    if (
+      last.partySize === partySize &&
+      last.dateTime === dateTime &&
+      last.shiftId === shiftId
+    ) {
+      return; // already in sync
+    }
+    // Param drift detected while a hold exists. Cancel + recreate.
+    // Idempotency key must be reset so the server mints a NEW hold for the
+    // new (party_size, date_time, shift_id) tuple — otherwise the edge fn
+    // returns the original hold by key and we end up with the same stale
+    // row that triggered this code path. Mirrors the `grabAgain` pattern.
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      if (cancelled) return;
+      await cancelHold();
+      if (cancelled) return;
+      idempotencyKeyRef.current = null;
+      await createHold();
+      // lastSyncedInputsRef gets updated INSIDE createHold on success.
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [enabled, restaurantId, shiftId, dateTime, partySize, cancelHold, createHold]);
 
   // -------------------------------------------------------------------------
   // Countdown timer

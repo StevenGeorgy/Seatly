@@ -107,14 +107,19 @@ Deno.serve(async (req: Request) => {
     if (!stripeKey) return jsonRes({ error: "Stripe not configured on server" }, 500);
     const stripe = await getStripeClient(stripeKey);
 
-    // Both calls go AGAINST the connected account.
+    // Three calls go AGAINST the connected account: payouts list, balance,
+    // and account.retrieve — the last one gives us details_submitted,
+    // charges_enabled, payouts_enabled AND the `requirements` object so we
+    // can tell whether the owner needs to act vs Stripe just verifying.
     const stripeAccount = row.stripe_account_id;
     let payoutsResp;
     let balanceResp;
+    let accountResp;
     try {
-      [payoutsResp, balanceResp] = await Promise.all([
+      [payoutsResp, balanceResp, accountResp] = await Promise.all([
         stripe.payouts.list({ limit: 10 }, { stripeAccount }),
         stripe.balance.retrieve({}, { stripeAccount }),
+        stripe.accounts.retrieve(stripeAccount),
       ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -125,6 +130,10 @@ Deno.serve(async (req: Request) => {
         ok: true,
         has_account: true,
         payouts_enabled: Boolean(row.stripe_payouts_enabled),
+        charges_enabled: false,
+        details_submitted: false,
+        requirements_due: false,
+        requirements_processing: false,
         available_balance_cents: 0,
         pending_balance_cents: 0,
         payouts: [],
@@ -157,10 +166,45 @@ Deno.serve(async (req: Request) => {
         : null,
     }));
 
+    // Derive whether the owner has anything to act on. `requirements.currently_due`
+    // and `past_due` are the user-actionable buckets; `eventually_due` is
+    // info Stripe might ask for later (don't surface yet). `disabled_reason`
+    // being non-null + not just `pending_verification.*` also means action
+    // is required.
+    //
+    // 2026-05-23 refinement: items in `pending_verification` are *already
+    // submitted* and being processed by Stripe — NOT user-actionable. We
+    // subtract them from `currently_due` / `past_due` so a brand-new submit
+    // that hasn't cleared yet doesn't flip the UI back to "Stripe needs
+    // something from you." When the only outstanding work is processing,
+    // we return `requirements_processing: true` so the UI can show a softer
+    // "Stripe is verifying your last submission" state.
+    type AccountRequirements = {
+      currently_due?: string[] | null;
+      past_due?: string[] | null;
+      pending_verification?: string[] | null;
+      disabled_reason?: string | null;
+    };
+    const reqs = (accountResp as { requirements?: AccountRequirements }).requirements ?? {};
+    const pendingVerification = reqs.pending_verification ?? [];
+    const pendingSet = new Set(pendingVerification);
+    const actionableCurrentlyDue = (reqs.currently_due ?? []).filter(
+      (f) => !pendingSet.has(f),
+    );
+    const actionablePastDue = (reqs.past_due ?? []).filter((f) => !pendingSet.has(f));
+    const requirementsDue =
+      actionableCurrentlyDue.length > 0 || actionablePastDue.length > 0;
+    const requirementsProcessing =
+      pendingVerification.length > 0 && !requirementsDue;
+
     return jsonRes({
       ok: true,
       has_account: true,
-      payouts_enabled: Boolean(row.stripe_payouts_enabled),
+      payouts_enabled: Boolean(accountResp.payouts_enabled),
+      charges_enabled: Boolean(accountResp.charges_enabled),
+      details_submitted: Boolean(accountResp.details_submitted),
+      requirements_due: requirementsDue,
+      requirements_processing: requirementsProcessing,
       available_balance_cents: availableSum,
       pending_balance_cents: pendingSum,
       payouts,

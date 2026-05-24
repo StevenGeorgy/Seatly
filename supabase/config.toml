@@ -71,6 +71,21 @@ verify_jwt = false
 [functions.prepare-deposit]
 verify_jwt = false
 
+[functions.create-reservation-hold]
+verify_jwt = false
+
+[functions.update-reservation-hold]
+verify_jwt = false
+
+[functions.heartbeat-reservation-hold]
+verify_jwt = false
+
+[functions.cancel-reservation-hold]
+verify_jwt = false
+
+[functions.bill-booking-fees]
+verify_jwt = false
+
 [functions.confirm-deposit-stub]
 verify_jwt = false
 

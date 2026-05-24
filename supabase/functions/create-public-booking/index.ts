@@ -469,13 +469,81 @@ Deno.serve(async (req: Request) => {
         })();
       }
 
+      // Deposit + split-tender on the hold-conversion path. Without this,
+      // the fast path silently bypasses deposit-collection and split-tender
+      // row insertion, leaving the booking with deposit_amount_cents=0 and
+      // no reservation_deposit_payments rows — the diner pays nothing, the
+      // settle trigger never flips to 'confirmed', and the restaurant is
+      // unaware their party-4 booking has no deposit owed.
+      let holdDepositCents = 0;
+      {
+        const { data: depositCents, error: depositError } = await supabase.rpc(
+          "compute_deposit_for_party",
+          { p_restaurant_id: restaurantId, p_party_size: partySize },
+        );
+        if (depositError) {
+          console.error("[create-public-booking.hold-convert] compute_deposit_for_party failed", depositError);
+        } else if (typeof depositCents === "number" && depositCents > 0) {
+          holdDepositCents = depositCents;
+          await supabase
+            .from("reservations")
+            .update({ deposit_amount_cents: depositCents, deposit_status: "pending" })
+            .eq("id", row.reservation_id);
+        }
+      }
+
+      let holdSplitTenderRowIds: string[] = [];
+      if (payload.split_tender_payers) {
+        const n = payload.split_tender_payers;
+        const shareCentsOverride =
+          typeof payload.split_tender_share_cents === "number"
+            ? payload.split_tender_share_cents
+            : null;
+        const totalCents = shareCentsOverride !== null
+          ? shareCentsOverride * n
+          : holdDepositCents;
+        if (totalCents > 0) {
+          const baseShare = Math.floor(totalCents / n);
+          const remainder = totalCents - baseShare * n;
+          const shares = Array.from({ length: n }, (_, i) =>
+            i === 0 ? baseShare + remainder : baseShare,
+          );
+          const { data: insertedRows, error: insertErr } = await supabase
+            .from("reservation_deposit_payments")
+            .insert(
+              shares.map((amount_cents) => ({
+                reservation_id: row.reservation_id,
+                amount_cents,
+                status: "pending",
+                payer_email: asText(payload.guest_email) ?? null,
+                payer_full_name: asText(payload.guest_name) ?? null,
+              })),
+            )
+            .select("id");
+          if (insertErr) {
+            console.error("[create-public-booking.hold-convert] split-tender insert failed", insertErr);
+          } else if (Array.isArray(insertedRows)) {
+            holdSplitTenderRowIds = insertedRows
+              .map((r) => (r as { id?: unknown }).id)
+              .filter((id): id is string => typeof id === "string");
+          }
+          // Flip reservation to 'pending_payment' so the diner-side settle
+          // trigger drives it to 'confirmed' once every share charges.
+          await supabase
+            .from("reservations")
+            .update({ status: "pending_payment" })
+            .eq("id", row.reservation_id);
+        }
+      }
+
       return jsonResponse({
         reservation_id: row.reservation_id,
         confirmation_code: row.confirmation_code,
         table_ids: row.table_ids,
         duration_minutes: row.duration_minutes,
-        deposit_required: false,
-        deposit_amount_cents: 0,
+        deposit_required: holdDepositCents > 0,
+        deposit_amount_cents: holdDepositCents,
+        split_tender_deposit_row_ids: holdSplitTenderRowIds,
       });
     }
 
@@ -610,38 +678,60 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Split-tender deposit rows (2026-05-20). When the diner picked
-    // "Split tender", we create N reservation_deposit_payments rows here —
-    // each `pending` until SplitTenderPaymentForm charges them via the
-    // standard create-public-payment-intent + confirm-deposit-paid path
-    // (with the strict deposit_payment_ids metadata check). The settle
-    // trigger flips the reservation to 'confirmed' once every row is
-    // 'charged'. Even share split: ceil(deposit / N) so rounding leans
-    // toward Cenaiva rather than under-collecting.
+    // Split-tender deposit rows (2026-05-20, extended 2026-05-23).
+    // When the diner picked "Split tender", we create N
+    // reservation_deposit_payments rows — each `pending` until
+    // SplitTenderPaymentForm charges them via the standard
+    // create-public-payment-intent + confirm-deposit-paid path (with strict
+    // deposit_payment_ids metadata check). The settle trigger flips the
+    // reservation to 'confirmed' (and any linked pre-order to 'paid') once
+    // every row is 'charged'.
+    //
+    // 2026-05-23: row totals can now derive from `split_tender_share_cents`
+    // (per-payer cents incl. preorder + tax + deposit). Falls back to legacy
+    // deposit-only split when only `depositAmountCents > 0`. This makes
+    // pre-order split-tender work even when the party doesn't trigger a
+    // deposit. We give the first payer the rounding remainder so the sum
+    // matches the diner's total exactly.
     let splitTenderDepositRowIds: string[] = [];
-    if (payload.split_tender_payers && depositAmountCents > 0) {
+    if (payload.split_tender_payers) {
       const n = payload.split_tender_payers;
-      const baseShare = Math.floor(depositAmountCents / n);
-      const remainder = depositAmountCents - baseShare * n;
-      const shares = Array.from({ length: n }, (_, i) =>
-        i === 0 ? baseShare + remainder : baseShare,
-      );
-      const { data: insertedRows, error: insertErr } = await supabase
-        .from("reservation_deposit_payments")
-        .insert(
-          shares.map((amount_cents) => ({
-            reservation_id: reservationId,
-            amount_cents,
-            status: "pending",
-          })),
-        )
-        .select("id");
-      if (insertErr) {
-        console.error("[split-tender] deposit row insert failed", insertErr);
-      } else if (Array.isArray(insertedRows)) {
-        splitTenderDepositRowIds = insertedRows
-          .map((r) => (r as { id?: unknown }).id)
-          .filter((id): id is string => typeof id === "string");
+      const shareCentsOverride =
+        typeof payload.split_tender_share_cents === "number"
+          ? payload.split_tender_share_cents
+          : null;
+      const totalCents = shareCentsOverride !== null
+        ? shareCentsOverride * n
+        : depositAmountCents;
+      if (totalCents > 0) {
+        const baseShare = Math.floor(totalCents / n);
+        const remainder = totalCents - baseShare * n;
+        const shares = Array.from({ length: n }, (_, i) =>
+          i === 0 ? baseShare + remainder : baseShare,
+        );
+        // payer_email/full_name required by the check constraint
+        // `reservation_deposit_payments_payer_required` — at minimum one
+        // payer identity field. We stamp the booking diner on the first
+        // row; co-payers will be filled in by their own card-entry flow.
+        const { data: insertedRows, error: insertErr } = await supabase
+          .from("reservation_deposit_payments")
+          .insert(
+            shares.map((amount_cents) => ({
+              reservation_id: reservationId,
+              amount_cents,
+              status: "pending",
+              payer_email: asText(payload.guest_email) ?? null,
+              payer_full_name: asText(payload.guest_name) ?? null,
+            })),
+          )
+          .select("id");
+        if (insertErr) {
+          console.error("[split-tender] deposit row insert failed", insertErr);
+        } else if (Array.isArray(insertedRows)) {
+          splitTenderDepositRowIds = insertedRows
+            .map((r) => (r as { id?: unknown }).id)
+            .filter((id): id is string => typeof id === "string");
+        }
       }
     }
 

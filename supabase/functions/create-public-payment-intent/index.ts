@@ -50,7 +50,7 @@ import { getStripeClient } from "../_shared/stripe-client.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-idempotency-key",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -507,12 +507,21 @@ Deno.serve(async (req: Request) => {
       const hold = holdRaw as ReservationHoldRow;
 
       // Status gate — only active/converting holds can accept payment.
-      if (hold.status !== "active" && hold.status !== "converting") {
+      // 'converted' is treated as benign skip: the hold was already
+      // converted (e.g. by create-public-booking's split-tender path which
+      // converts the hold + inserts N deposit_payment rows up-front).
+      // Fall through to the standard non-hold deposit_payment_ids path so
+      // a regular PI gets created bound to the deposit row via metadata.
+      if (hold.status === "converted") {
+        // Sentinel: skip the rest of the hold-binding logic by setting a
+        // flag that the closing block honors. JS doesn't have a clean
+        // "break out of a labeled if" so we use the pattern below.
+      } else if (hold.status !== "active" && hold.status !== "converting") {
         return jsonRes(
           { error: "hold_not_convertible", status: hold.status },
           409,
         );
-      }
+      } else if (true) {
       if (hold.expires_at && new Date(hold.expires_at).getTime() < Date.now()) {
         return jsonRes(
           { error: "hold_expired", unavailable_reason: "hold_expired" },
@@ -702,6 +711,7 @@ Deno.serve(async (req: Request) => {
         hold_id: hold.id,
         idempotent: false,
       });
+      } // end else if (hold.status active/converting)
     }
 
     // ── Mode B: Saved card (off-session confirm) ──

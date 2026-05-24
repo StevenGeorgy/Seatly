@@ -212,6 +212,51 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: "Shift not found for this restaurant." }, 404);
       }
       if (code === "P0006" || code === "23P01") {
+        // Self-conflict recovery: if this user already owns an active hold
+        // for the same slot, return 200 with that hold instead of 409. Makes
+        // the endpoint idempotent for the common case where the diner refreshes
+        // the booking page — server still has the original hold alive but the
+        // client lost its in-memory state. Without this, the UI hides the timer.
+        if (userProfileId) {
+          const { data: existing } = await supabaseAdmin
+            .from("reservation_holds")
+            .select(
+              "id, confirmation_code, table_ids, duration_minutes, expires_at, deposit_amount_cents",
+            )
+            .eq("user_profile_id", userProfileId)
+            .eq("restaurant_id", restaurantId)
+            .eq("reserved_at", reservedAt.toISOString())
+            .in("status", ["active", "converting"])
+            .gt("expires_at", new Date().toISOString())
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (existing) {
+            const recoveredBody: Record<string, unknown> = {
+              hold_id: (existing as { id: string }).id,
+              confirmation_code: (existing as { confirmation_code: string }).confirmation_code,
+              table_ids: Array.isArray((existing as { table_ids?: unknown }).table_ids)
+                ? (existing as { table_ids: string[] }).table_ids
+                : [],
+              duration_minutes: Number(
+                (existing as { duration_minutes?: number | string }).duration_minutes ?? 0,
+              ),
+              expires_at: (existing as { expires_at: string }).expires_at,
+              deposit_amount_cents: Number(
+                (existing as { deposit_amount_cents?: number | string }).deposit_amount_cents ?? 0,
+              ),
+              server_now: new Date().toISOString(),
+              recovered: true,
+            };
+            if (cacheKey) {
+              idempotencyCache.set(cacheKey, {
+                expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
+                body: recoveredBody,
+              });
+            }
+            return jsonResponse(recoveredBody);
+          }
+        }
         return jsonResponse(
           {
             error:

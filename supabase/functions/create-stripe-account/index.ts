@@ -86,15 +86,82 @@ Deno.serve(async (req: Request) => {
 
     const stripe = await getStripeClient(stripeKey);
 
-    // Idempotent path: account already exists — refresh state from Stripe.
+    // Idempotent path: account already exists — refresh state from Stripe
+    // AND mirror it back to the DB. This is the canonical sync path: any time
+    // the wizard polls (e.g. after Stripe-hosted KYC return), DB columns get
+    // brought into agreement with Stripe's truth. This makes the function
+    // self-healing — even if the stripe-webhook `account.updated` event is
+    // delayed, dropped, or fails signature verification, the next page load
+    // converges state. Production-critical: without this, payouts_enabled
+    // can stay stale forever and `restaurants_publish_gate` would block
+    // ops the user has already completed.
     if (row.stripe_account_id) {
       try {
         const account = await stripe.accounts.retrieve(row.stripe_account_id);
+        const chargesEnabled = Boolean(account.charges_enabled);
+        const payoutsEnabled = Boolean(account.payouts_enabled);
+        const detailsSubmitted = Boolean(account.details_submitted);
+        // Derive `requirements_due` — is Stripe waiting on the OWNER for
+        // something actionable (e.g. proof_of_liveness selfie not done)? We
+        // surface this so the Step 8 wizard can show "Action required" + a
+        // button instead of misleading "Banking verification in progress"
+        // copy when payouts are paused on a known-owner-actionable reason.
+        // `eventually_due` is info Stripe might ask for later — don't
+        // surface yet. `disabled_reason` starting with `pending_verification`
+        // means Stripe is processing on its end (not actionable).
+        type AccountRequirements = {
+          currently_due?: string[] | null;
+          past_due?: string[] | null;
+          pending_verification?: string[] | null;
+        };
+        const reqs = (account as { requirements?: AccountRequirements }).requirements ?? {};
+        // Source of truth: currently_due / past_due minus pending_verification.
+        // We ignore `disabled_reason` — its values like
+        // "requirements.pending_verification" are informational and tricky to
+        // parse correctly. currently_due + pending_verification arrays are
+        // unambiguous.
+        const pendingVerification = reqs.pending_verification ?? [];
+        const pendingSet = new Set(pendingVerification);
+        const actionableCurrentlyDue = (reqs.currently_due ?? []).filter(
+          (f) => !pendingSet.has(f),
+        );
+        const actionablePastDue = (reqs.past_due ?? []).filter((f) => !pendingSet.has(f));
+        const requirementsDue =
+          actionableCurrentlyDue.length > 0 || actionablePastDue.length > 0;
+        const requirementsProcessing =
+          pendingVerification.length > 0 && !requirementsDue;
+        // Mirror Stripe state into DB on every poll. Best-effort: we still
+        // return success even if the UPDATE errors (don't fail the user-
+        // visible flow on a DB hiccup; the next poll will retry).
+        //
+        // IMPORTANT: we deliberately do NOT sync `stripe_requirements_due` /
+        // `stripe_requirements_processing` here. Those flicker during
+        // Stripe's post-submit propagation lag (5-30s window where
+        // `currently_due` stays briefly populated before clearing). The
+        // `account.updated` webhook is the source of truth for those —
+        // it only fires when Stripe ACTUALLY moves the account state, so
+        // the DB columns stay stable and the wizard doesn't render a
+        // misleading "Action required" yellow flash right after submit.
+        // See Stripe docs on Handle verification updates.
+        const { error: syncErr } = await supabaseAdmin
+          .from("restaurants")
+          .update({
+            stripe_charges_enabled: chargesEnabled,
+            stripe_payouts_enabled: payoutsEnabled,
+            stripe_details_submitted: detailsSubmitted,
+            stripe_onboarding_complete: chargesEnabled && payoutsEnabled && detailsSubmitted,
+          })
+          .eq("id", row.id);
+        if (syncErr) {
+          console.warn("[create-stripe-account] DB sync failed", syncErr.message);
+        }
         return jsonRes({
           account_id: account.id,
-          charges_enabled: Boolean(account.charges_enabled),
-          payouts_enabled: Boolean(account.payouts_enabled),
-          details_submitted: Boolean(account.details_submitted),
+          charges_enabled: chargesEnabled,
+          payouts_enabled: payoutsEnabled,
+          details_submitted: detailsSubmitted,
+          requirements_due: requirementsDue,
+          requirements_processing: requirementsProcessing,
         });
       } catch (err) {
         // If Stripe says the account is gone (deauthorized externally),
@@ -108,6 +175,7 @@ Deno.serve(async (req: Request) => {
               stripe_charges_enabled: false,
               stripe_payouts_enabled: false,
               stripe_details_submitted: false,
+              stripe_onboarding_complete: false,
             })
             .eq("id", row.id);
         } else {

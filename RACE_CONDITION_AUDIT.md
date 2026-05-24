@@ -1,8 +1,20 @@
 # Race Condition + Double-Click Audit
 
-**Date:** 2026-05-19
-**Status:** Findings only — no fixes shipped yet
+**Date:** 2026-05-19 (findings); **2026-05-23 (all 3 fixes shipped)**
+**Status:** ✅ **CLOSED — all three race conditions mitigated in production.**
 **Scope:** Web app (`apps/web/src`) + edge functions (`supabase/functions/*`)
+
+## Resolution summary (2026-05-23)
+
+| # | Original gap | Resolution |
+|---|---|---|
+| 1 | `create-subscription` duplicate sub | Function 410-deprecation-gated (v76). Production path is `publish-restaurant`, which adds `idempotencyKey: publish_${restaurantId}_${ymd()}_tax_v1` |
+| 2 | `stripe-charge-order` no idempotency | Shipped: `idempotencyKey: charge_order_${order_id}_${baseCents}` + pre-check on `orders.stripe_payment_intent_id` (line 102) + `paid_at` guard (line 75) |
+| 3 | `modify-reservation` dup deposit rows | Shipped: `idempotencyKey: modify_${reservationId}_${profile.id}_${deltaCents}` + existing-row guard on `(reservation_id, stripe_payment_intent_id)` before insert (line 675) |
+
+All three fixes were deployed (not bundled — staggered per recommendation). Below sections retained for historical context.
+
+---
 
 ---
 
