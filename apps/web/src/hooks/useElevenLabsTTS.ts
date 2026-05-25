@@ -5,6 +5,7 @@ import {
   getSupabaseProjectUrl,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import { useUser } from "@/hooks/useUser";
 
 // ── Persistent TTS cache (IndexedDB) ─────────────────────────────────────────
 //
@@ -474,8 +475,12 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
       if (missing.length === 0) return;
       // 3) Throttle uncached fetches — ~250ms between each, so 18 items take
       //    ~4.5s spread out instead of slamming the rate limit in 1 second.
+      //    Abort the whole loop if a fetch returns null (no token / 401 /
+      //    network error): one failure means the rest will fail too, so
+      //    don't spam the network panel with 17 more doomed requests.
       for (const text of missing) {
-        await fetchTTSBlob(text, voiceId);
+        const blob = await fetchTTSBlob(text, voiceId);
+        if (!blob) return;
         await new Promise((r) => setTimeout(r, 250));
       }
     } finally {
@@ -483,11 +488,17 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
     }
   }, []);
 
-  // Re-warm the cache when the voiceId changes.
+  // Re-warm the cache when the voiceId changes. Gate on a settled auth
+  // state so we don't fire during the page-load race window where the
+  // supabase session is still hydrating from localStorage — those calls
+  // 401 on the server and flood the network panel with ~18 doomed
+  // requests right after every login.
+  const { user, loading: authLoading } = useUser();
   useEffect(() => {
     if (!options?.voiceId) return;
+    if (authLoading || !user) return;
     void primeCache();
-  }, [options?.voiceId, primeCache]);
+  }, [options?.voiceId, primeCache, authLoading, user]);
 
   return { speak, speakQueued, discardQueued, drainQueue, stop, isSpeaking, primeCache };
 }
