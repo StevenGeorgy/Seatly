@@ -248,9 +248,10 @@ export function CenaivaVoiceShell({ initialGreeting }: CenaivaVoiceShellProps) {
           dispatch({ type: "SET_VOICE_STATUS", status: "idle" });
           voice.primeTTS();
           void assistant?.startListening();
-        } catch {
+        } catch (err) {
           // User denied again — leave the error state; the inline
           // "Grant microphone access" button still offers a recovery path.
+          console.warn("[Cenaiva.mic] permission request failed", err);
         } finally {
           permissionRequestInFlightRef.current = false;
         }

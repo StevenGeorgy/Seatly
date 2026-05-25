@@ -863,7 +863,7 @@ function AssistantInner({ children }: { children: ReactNode }) {
   const voiceRef = useRef(voice);
   useEffect(() => {
     voiceRef.current = voice;
-  });
+  }, [voice]);
 
   const pathnameRef = useRef(pathname);
   useEffect(() => {
@@ -947,8 +947,9 @@ function AssistantInner({ children }: { children: ReactNode }) {
       dispatch({ type: "SET_LAST_SPOKEN_TEXT", text: finalMessage });
       try {
         await voiceRef.current.speak(finalMessage);
-      } catch {
+      } catch (err) {
         // Speech can fail (autoplay policy, no voices) — we still close.
+        console.warn("[Cenaiva.sayGoodbye] speak failed", err);
       }
       dispatch({ type: "CLOSE" });
       if (redirectAfter) {

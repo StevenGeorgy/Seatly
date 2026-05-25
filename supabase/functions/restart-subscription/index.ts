@@ -174,17 +174,24 @@ Deno.serve(async (req: Request) => {
 
     // Create the subscription. No trial — they used their free trial already.
     // Day-bucketed idempotency key prevents duplicate-sub on retry.
+    //
+    // `automatic_tax: { enabled: true }` is required: this is Cenaiva's own
+    // revenue (subscription fee), so we must charge Canadian HST/GST per
+    // province via Stripe Tax. Without it, restart flows undercharge the
+    // restaurant and create a CRA compliance gap. Matches the publish-
+    // restaurant flow's subscription-create call.
     const subscription = await stripe.subscriptions.create(
       {
         customer: row.stripe_customer_id,
         items: [{ price: priceId }],
         default_payment_method: defaultPm as string,
         payment_behavior: "default_incomplete",
+        automatic_tax: { enabled: true },
         expand: ["latest_invoice.payment_intent"],
         metadata: { restaurant_id: row.id, restarted: "true" },
       },
       {
-        idempotencyKey: `restart_${row.stripe_customer_id}_${new Date().toISOString().slice(0, 10)}`,
+        idempotencyKey: `restart_${row.stripe_customer_id}_${new Date().toISOString().slice(0, 10)}_tax_v1`,
       },
     );
 

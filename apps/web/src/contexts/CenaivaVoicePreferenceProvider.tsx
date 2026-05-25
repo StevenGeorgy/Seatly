@@ -108,7 +108,11 @@ export function CenaivaVoicePreferenceProvider({ children }: { children: ReactNo
       setIsLoading(false);
       setResolvedUserId(authUserId);
     }
-  }, [isAuthenticated, user?.id]);
+    // `isAuthenticated` is derived from `user?.id` so listing both creates
+    // double-triggers when supabase fires multiple session events on the
+    // same identity. user?.id alone is enough; the body's auth-check
+    // remains as a runtime guard.
+  }, [user?.id]);
 
   useEffect(() => {
     // Loading the initial preference on mount + user-id change. The setState

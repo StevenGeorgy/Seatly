@@ -113,6 +113,17 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
     return `${booking.restaurant_id}:${booking.date}:${booking.party_size}`;
   }, [booking.date, booking.party_size, booking.restaurant_id]);
 
+  // `availability` is a fresh object literal each render of useAvailability,
+  // so listing `availability.fetchSlots` as a dep would change identity
+  // every render — `runAvailabilityLookup` would lose memoization, the
+  // useEffect below would re-fire on every render, and the lookup would
+  // run on every keystroke. Route through a ref so the dep array can
+  // exclude it.
+  const availabilityRef = useRef(availability);
+  useEffect(() => {
+    availabilityRef.current = availability;
+  }, [availability]);
+
   const runAvailabilityLookup = useCallback(
     async (dispatchLoading: boolean) => {
       if (!booking.restaurant_id || !booking.date || !booking.party_size || !availabilityLookupKey) return;
@@ -121,7 +132,7 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       lastAvailabilityLookupKeyRef.current = availabilityLookupKey;
       setAvailabilityNotice(null);
 
-      const result = await availability.fetchSlots(
+      const result = await availabilityRef.current.fetchSlots(
         booking.restaurant_id,
         booking.date,
         booking.party_size,
@@ -143,7 +154,6 @@ export function BookingSheet({ onExit, fullScreen }: BookingSheetProps) {
       setAvailabilityNotice(friendly.message);
     },
     [
-      availability.fetchSlots,
       availabilityLookupKey,
       booking.date,
       booking.party_size,

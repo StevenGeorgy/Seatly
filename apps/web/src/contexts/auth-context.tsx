@@ -100,7 +100,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     const {
       data: { subscription },
-    } = client.auth.onAuthStateChange((_event, nextSession) => {
+    } = client.auth.onAuthStateChange((event, nextSession) => {
+      // TOKEN_REFRESHED fires roughly every ~50 minutes (auto-refresh
+      // tick) and on tab-focus when the token is near expiry. Going
+      // through applySession() flips `loading: true` while it re-loads
+      // the profile, which makes RequireAuth render <RouteFallback/>
+      // and visibly unmount the page tree. We just need to keep the
+      // session/user state references current — supabase-js auto-
+      // refresh has already validated the new token at this point. Skip
+      // the full applySession() to avoid the flicker.
+      if (event === "TOKEN_REFRESHED") {
+        setSession(nextSession);
+        setUser(nextSession?.user ?? null);
+        return;
+      }
       void applySession(nextSession);
     });
 

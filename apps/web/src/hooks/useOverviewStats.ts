@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { toUserFacingError } from "@/lib/errors";
@@ -107,6 +107,16 @@ export function useOverviewStats(range: OverviewStatsRange) {
     void fetchStats();
   }, [fetchStats]);
 
+  // Route fetchStats through a ref so the realtime channel effect below
+  // doesn't depend on it. Otherwise every change to range.from/range.to
+  // (date-filter UI) re-creates `fetchStats`, which re-runs the realtime
+  // effect → tears down + re-subscribes the channel for the same
+  // restaurant. The channel only cares about `selectedRestaurantId`.
+  const fetchStatsRef = useRef(fetchStats);
+  useEffect(() => {
+    fetchStatsRef.current = fetchStats;
+  }, [fetchStats]);
+
   useEffect(() => {
     if (!selectedRestaurantId || !isSupabaseConfigured()) return;
 
@@ -117,7 +127,7 @@ export function useOverviewStats(range: OverviewStatsRange) {
         "postgres_changes",
         { event: "*", schema: "public", table: "orders", filter: `restaurant_id=eq.${selectedRestaurantId}` },
         () => {
-          void fetchStats();
+          void fetchStatsRef.current();
         },
       )
       .subscribe();
@@ -125,7 +135,7 @@ export function useOverviewStats(range: OverviewStatsRange) {
     return () => {
       void client.removeChannel(channel);
     };
-  }, [selectedRestaurantId, fetchStats]);
+  }, [selectedRestaurantId]);
 
   return { stats, loading, error, refetch: fetchStats };
 }

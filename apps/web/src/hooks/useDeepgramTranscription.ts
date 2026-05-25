@@ -124,15 +124,13 @@ async function getBearerToken(): Promise<string | null> {
   const { data } = await client.auth.getSession();
   const session = data.session;
   if (!session?.access_token) return null;
-  // Proactive refresh: if the token expires within the next 60s, refresh
-  // now rather than firing a doomed-to-401 fetch that triggers the
-  // "Voice transcription unavailable" toast. Supabase-js auto-refresh
-  // ticks on a timer that can lag for idle/backgrounded tabs.
-  const expiresAtMs = (session.expires_at ?? 0) * 1000;
-  if (expiresAtMs > 0 && expiresAtMs - Date.now() < 60_000) {
-    const { data: refreshed } = await client.auth.refreshSession();
-    return refreshed.session?.access_token ?? session.access_token;
-  }
+  // NOTE: previously this path proactively called `refreshSession()` if
+  // the token was within 60s of expiry. We removed it because every
+  // refresh fires onAuthStateChange(TOKEN_REFRESHED), which makes the
+  // AuthProvider flip `loading: true` momentarily — and the RequireAuth
+  // gate unmounts the page during that flicker. Same regression we
+  // fixed in useElevenLabsTTS (commit 39b3db9). Supabase-js's auto-
+  // refresh ticker handles renewal on its own schedule.
   return session.access_token;
 }
 
@@ -160,18 +158,11 @@ async function fetchDeepgramTokenFresh(): Promise<string | null> {
     if (import.meta.env.DEV) console.warn("[Cenaiva STT] no bearer token — user not signed in");
     return null;
   }
-  let res = await doFetch(bearer);
-  // 401 retry: token may have expired between getBearerToken() and the
-  // edge function's JWT validation. Force a session refresh and retry
-  // once before declaring the token mint failed.
-  if (res.status === 401 && isSupabaseConfigured()) {
-    const client = getSupabaseBrowserClient();
-    const { data: refreshed } = await client.auth.refreshSession();
-    const fresh = refreshed.session?.access_token;
-    if (fresh) {
-      res = await doFetch(fresh);
-    }
-  }
+  const res = await doFetch(bearer);
+  // NOTE: previously this path called `refreshSession()` on 401 and
+  // retried. That cascaded into the AuthProvider flicker (see
+  // getBearerToken comment above). We now fall back gracefully on 401
+  // and let supabase-js's auto-refresh handle session renewal.
   if (!res.ok) {
     if (import.meta.env.DEV) {
       const body = await res.text().catch(() => "<no body>");

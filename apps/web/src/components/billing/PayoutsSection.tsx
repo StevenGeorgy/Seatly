@@ -18,6 +18,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import { invokeEdgeFunction } from "@/lib/supabase/edge-fn";
+import { isSafeStripeConnectUrl } from "@/lib/auth/post-login-redirect";
 import { toUserFacingError } from "@/lib/errors";
 
 // Hosted Account Link button. Replaces the embedded Stripe Connect panel
@@ -78,6 +79,13 @@ function StripeHostedDashboardButton({
       if (!linkRes.ok) throw new Error(linkRes.error);
       if (!linkRes.data?.url) {
         throw new Error("Stripe didn't return an onboarding URL. Try again.");
+      }
+      // Defense-in-depth: only navigate if the URL is actually a Stripe
+      // Connect host. Stripe-issued URLs always are; the check protects
+      // against a compromised edge fn or unexpected response sending
+      // the authenticated browser to an arbitrary destination.
+      if (!isSafeStripeConnectUrl(linkRes.data.url)) {
+        throw new Error("Got an unexpected onboarding URL from Stripe. Try again.");
       }
       window.location.href = linkRes.data.url;
     } catch (err) {

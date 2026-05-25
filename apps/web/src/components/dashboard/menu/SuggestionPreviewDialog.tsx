@@ -16,8 +16,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useMenuCategories, useMenuItems } from "@/hooks/useMenuItems";
 import type { SuggestionRow } from "@/hooks/useMenuSuggestions";
 import { useMenuSuggestions } from "@/hooks/useMenuSuggestions";
-import { type CreatePromotionPayload, usePromotions } from "@/hooks/usePromotions";
-import { useEvents } from "@/hooks/useEvents";
+import { type CreatePromotionPayload, type PromoType, usePromotions } from "@/hooks/usePromotions";
+import { type CreateEventPayload, useEvents } from "@/hooks/useEvents";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
@@ -474,9 +474,9 @@ function PromotionForm({
         <Button disabled={saving} onClick={() => onSave({
           title: title.trim(),
           description: desc.trim() || null,
-          promo_type: promoType as any,
+          promo_type: promoType as PromoType,
           discount_value: discountValue ? parseFloat(discountValue) : null,
-          discount_unit: discountUnit as any,
+          discount_unit: discountUnit as "percent" | "dollar",
           applies_to: "all",
           starts_at: startsAt || new Date().toISOString().slice(0, 10),
           ends_at: endsAt || null,
@@ -509,10 +509,12 @@ function EventForm({
   onDismiss,
   onCancel,
 }: {
+  // payload is the AI-suggested raw JSON from a `suggestions` row —
+  // contents come from the LLM so the shape is intentionally loose.
   payload: Record<string, any>;
   aiFields: string[];
   saving: boolean;
-  onSave: (data: Record<string, any>) => void;
+  onSave: (data: Partial<CreateEventPayload>) => void;
   onDismiss: () => void;
   onCancel: () => void;
 }) {
@@ -675,10 +677,10 @@ export function SuggestionPreviewDialog({ open, suggestion, onOpenChange }: Prop
     onOpenChange(false);
   };
 
-  const handleSaveEvent = async (data: Record<string, any>) => {
+  const handleSaveEvent = async (data: Partial<CreateEventPayload>) => {
     if (!suggestion) return;
     setSaving(true);
-    const err = await createEvent(data as any);
+    const err = await createEvent(data as CreateEventPayload);
     setSaving(false);
     if (err) {
       errorToast(err, {

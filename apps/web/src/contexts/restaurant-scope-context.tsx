@@ -77,7 +77,10 @@ export function RestaurantScopeProvider({ children }: RestaurantScopeProviderPro
     });
 
     setInitialized(true);
-  }, [loading, restaurantIds, primaryRestaurantRole?.restaurant_id, restaurants.length]);
+    // `restaurantIds` (joined sorted ID string above) already changes
+    // whenever the underlying array's contents change — tracking
+    // `restaurants.length` separately was redundant.
+  }, [loading, restaurantIds, primaryRestaurantRole?.restaurant_id]);
 
   const setSelectedRestaurantId = useCallback((id: string) => {
     localStorage.setItem(STORAGE_KEY, id);

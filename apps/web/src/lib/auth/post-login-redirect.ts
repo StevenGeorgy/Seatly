@@ -15,6 +15,25 @@ export function isSafeRedirectPath(path: string): boolean {
   return true;
 }
 
+/**
+ * Validate that a URL is a legitimate Stripe Connect onboarding URL
+ * before navigating to it. `create-account-link` returns a Stripe-issued
+ * URL but we should never blindly redirect the browser to whatever a
+ * server response says — if the edge function were ever compromised or
+ * an upstream returned an unexpected payload, an unguarded
+ * `window.location.href = url` could land the user on a phishing page
+ * while authenticated.
+ */
+export function isSafeStripeConnectUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    return u.hostname === "connect.stripe.com" || u.hostname.endsWith(".stripe.com");
+  } catch {
+    return false;
+  }
+}
+
 type OkContext = Extract<LoadUserContextResult, { ok: true }>;
 
 /**

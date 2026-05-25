@@ -395,9 +395,16 @@ Deno.serve(async (req: Request) => {
     const holdId = asUuid(payload.hold_id);
 
     if (holdsEnabled && holdId) {
+      // p_grace_seconds: 0 — expired holds must not be convertible. The
+      // RPC's default 120s grace creates a race where a fast diner can
+      // book the same slot before the slow diner's expired hold gets
+      // converted, then both reservations sit in the table with the
+      // exclusion constraint only catching one. Zero grace forces the
+      // slow diner to re-pick a slot if their hold expired, which is
+      // the correct outcome.
       const { data: convertData, error: convertError } = await supabase.rpc(
         "convert_reservation_hold_to_reservation",
-        { p_hold_id: holdId, p_payment_intent_id: null, p_grace_seconds: 120 },
+        { p_hold_id: holdId, p_payment_intent_id: null, p_grace_seconds: 0 },
       );
       if (convertError) {
         const code = (convertError as { code?: string }).code;

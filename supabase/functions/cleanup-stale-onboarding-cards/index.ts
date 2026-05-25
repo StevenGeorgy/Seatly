@@ -52,6 +52,9 @@ Deno.serve(async (req: Request) => {
 
   try {
     const cutoff = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
+    // Note: the 90-day cutoff on `payment_method_attached_at` already
+    // excludes any actively-used wizards — no need for a separate
+    // "recent updated_at" guard.
 
     const { data: rowsRaw, error: selectErr } = await supabaseAdmin
       .from("restaurants")
@@ -79,6 +82,14 @@ Deno.serve(async (req: Request) => {
     for (const row of rows) {
       processed += 1;
 
+      // Track whether every card on the customer was successfully
+      // detached. If anything failed (Stripe list error OR per-card
+      // detach error), leave the timestamp set so the next cron run
+      // retries. Previously we cleared the timestamp regardless,
+      // creating a DB↔Stripe divergence where the card was still
+      // attached server-side but the DB said "no card on file."
+      let allDetached = true;
+
       if (row.stripe_customer_id) {
         try {
           const pmList = await stripe.paymentMethods.list({
@@ -97,6 +108,7 @@ Deno.serve(async (req: Request) => {
                 msg,
               );
               errors.push({ restaurant_id: row.id, error: `detach:${pm.id}:${msg}` });
+              allDetached = false;
             }
           }
         } catch (listErr) {
@@ -106,9 +118,13 @@ Deno.serve(async (req: Request) => {
             msg,
           );
           errors.push({ restaurant_id: row.id, error: `list:${msg}` });
-          // Continue to clear the timestamp — the card is functionally
-          // abandoned even if we couldn't talk to Stripe right now.
+          allDetached = false;
         }
+      }
+
+      if (!allDetached) {
+        // Skip clearing the timestamp so the next run retries this row.
+        continue;
       }
 
       const { error: updateErr } = await supabaseAdmin

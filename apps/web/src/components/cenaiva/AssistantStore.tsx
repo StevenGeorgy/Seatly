@@ -721,8 +721,10 @@ export function assistantReducer(
         if (!uiAction || typeof (uiAction as { type?: unknown }).type !== "string") continue;
         try {
           next = applyUIAction(next, uiAction);
-        } catch {
-          // Malformed action — skip rather than crash
+        } catch (err) {
+          // Malformed action — skip rather than crash. Log so operators
+          // can see when the orchestrator is sending bad payloads.
+          console.warn("[Cenaiva.applyUIAction] skipped malformed action", { type: (uiAction as { type?: unknown }).type, err });
         }
       }
 
