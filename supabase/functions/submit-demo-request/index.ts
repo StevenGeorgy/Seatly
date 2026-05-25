@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { Resend } from "npm:resend@4.0.0";
 
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
@@ -104,6 +105,38 @@ Deno.serve(async (req) => {
       );
     }
     return jsonResponse({ error: "Failed to submit request" }, 500);
+  }
+
+  // Best-effort team notification. The row is already in `demo_requests`, so
+  // any email failure here just means ops has to find the request in the
+  // table — don't fail the user-facing flow.
+  const resendKey = Deno.env.get("RESEND_API_KEY");
+  const notifyTo = Deno.env.get("DEMO_REQUEST_NOTIFY_EMAIL") ?? "support@cenaiva.com";
+  const fromAddr = Deno.env.get("RESEND_FROM_EMAIL") ?? "Cenaiva <hello@cenaiva.com>";
+  if (resendKey) {
+    try {
+      const resend = new Resend(resendKey);
+      const lines = [
+        `Name: ${name}`,
+        `Email: ${email}`,
+        phone ? `Phone: ${phone}` : null,
+        restaurantName ? `Restaurant: ${restaurantName}` : null,
+        message ? `\nMessage:\n${message}` : null,
+        `\nRow ID: ${data.id}`,
+      ].filter(Boolean);
+      await resend.emails.send({
+        from: fromAddr,
+        to: notifyTo,
+        replyTo: email,
+        subject: `New demo request — ${restaurantName ?? name}`,
+        text: lines.join("\n"),
+      });
+    } catch (err) {
+      console.error(
+        "[submit-demo-request] notify email failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   return jsonResponse({ id: data.id }, 200);
