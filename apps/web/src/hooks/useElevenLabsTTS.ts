@@ -130,16 +130,14 @@ async function getBearerToken(): Promise<string | null> {
   const { data } = await client.auth.getSession();
   const session = data.session;
   if (!session?.access_token) return null;
-  // Proactive refresh: if the token expires within the next 60s, refresh
-  // now rather than firing a doomed-to-401 fetch. Supabase-js auto-refresh
-  // ticks on a timer that can lag a few seconds; for idle tabs that just
-  // came back into focus this avoids the "Voice transcription unavailable"
-  // toast that fires when ElevenLabs/Deepgram 401 due to a stale token.
-  const expiresAtMs = (session.expires_at ?? 0) * 1000;
-  if (expiresAtMs > 0 && expiresAtMs - Date.now() < 60_000) {
-    const { data: refreshed } = await client.auth.refreshSession();
-    return refreshed.session?.access_token ?? session.access_token;
-  }
+  // NOTE: previously this path proactively called `refreshSession()` if
+  // the token was within 60s of expiry. We removed it because every
+  // refresh fires onAuthStateChange(TOKEN_REFRESHED), which makes the
+  // AuthProvider flip `loading: true` momentarily — and the RequireAuth
+  // gate unmounts the page during that flicker. Background-tab focus
+  // + a near-expiry token used to trigger that cascade. Supabase-js's
+  // own auto-refresh ticker handles renewal on its own schedule;
+  // adding ours on top was a duplicate trigger.
   return session.access_token;
 }
 
@@ -147,6 +145,15 @@ async function getBearerToken(): Promise<string | null> {
 // outage doesn't dump the same warning into the console hundreds of times
 // per minute. Reset on successful fetch (next 200 clears the set).
 const warnedStatuses = new Set<number>();
+
+// Module-level "already primed this session" guard, keyed by voiceId.
+// Without this, every time the assistant-shell subtree remounts (route
+// guard flips, AssistantInner re-renders) we'd re-run primeCache from
+// scratch — potentially 30+ times during a single navigation. The
+// useRef-based single-flight guard inside primeCache only prevents
+// CONCURRENT primes; this set prevents repeat primes for the lifetime
+// of the page.
+const primedVoiceIds = new Set<string>();
 
 async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null> {
   // Cache hit → no network. Wraps in try/catch for safety; IDB rejecting
@@ -177,22 +184,13 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
         },
         body: JSON.stringify({ text, voice_id: voiceId }),
       });
-    let res = await doFetch(token);
-    // 401 retry: token may have expired between getBearerToken() above
-    // and edge-function validation. Force a session refresh and try once
-    // more before falling back to Web Speech. Without this, idle/
-    // backgrounded tabs that just came back into focus would silently
-    // route every utterance through the OS voice for ~minutes until the
-    // session auto-refresh ticker caught up.
-    if (res.status === 401 && isSupabaseConfigured()) {
-      const client = getSupabaseBrowserClient();
-      const { data: refreshed } = await client.auth.refreshSession();
-      const fresh = refreshed.session?.access_token;
-      if (fresh) {
-        token = fresh;
-        res = await doFetch(fresh);
-      }
-    }
+    const res = await doFetch(token);
+    // NOTE: previously this path called `refreshSession()` on 401 and
+    // retried. That cascaded into the AuthProvider flicker (see
+    // getBearerToken comment) — and on a session the edge function
+    // genuinely rejects (key rotation, etc), the refresh + retry would
+    // 401 again, repeat. We now fall back to the OS voice on 401 and
+    // let supabase-js's auto-refresh handle session renewal on its own.
     if (!res.ok) {
       // In dev: ALWAYS log every failure with the body so we can debug
       // intermittent failures. In prod: dedupe per-status to avoid spam.
@@ -449,15 +447,21 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
    */
   const primeCache = useCallback(async (): Promise<void> => {
     const voiceId = voiceIdRef.current ?? undefined;
+    const primeKey = `${voiceId ?? "default"}`;
+    // Page-lifetime guard: if we already primed (or attempted to prime)
+    // this voiceId in this session, don't re-run. Stops the cascade
+    // where AssistantInner remounts on every auth-loading flicker and
+    // each remount re-fires primeCache → 30+ doomed fetches per nav.
+    if (primedVoiceIds.has(primeKey)) return;
     // 1) Single-flight guard: if a prime is already in progress for this
     //    voice, don't kick off a second one. AssistantProvider calls
     //    primeTTS() from multiple gestures (pointerdown, open, sendTranscript)
     //    and each gesture used to fire 18 sequential ElevenLabs requests.
     //    With 60/min server-side rate limit, that broke voice for the rest
     //    of the minute. (2026-05-16 rate-limit fix)
-    const primeKey = `${voiceId ?? "default"}`;
     if (primeInFlightRef.current.has(primeKey)) return;
     primeInFlightRef.current.add(primeKey);
+    primedVoiceIds.add(primeKey);
     try {
       // 2) Check ALL items first via Promise.all (parallel IDB reads are
       //    cheap and don't hit the network).
