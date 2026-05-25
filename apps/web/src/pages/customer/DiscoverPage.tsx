@@ -759,6 +759,20 @@ function GoogleDiscoverMap({
     };
   }, [googleReady]);
 
+  // Refs let the click/hover listeners always read the latest handlers
+  // without forcing the marker-creation effect (below) to re-run and
+  // destroy every marker on each render. Same pattern as the map-bg
+  // click listener above.
+  const onHoverRef = useRef(onHover);
+  useEffect(() => { onHoverRef.current = onHover; }, [onHover]);
+  // We keep a parallel array of restaurant ids alongside markersRef so the
+  // active-state update effect (below) can match markers to ids without
+  // depending on closure capture.
+  const markerIdsRef = useRef<string[]>([]);
+
+  // Create markers ONCE per restaurant-list change. Active-state (hovered
+  // /selected) updates happen in a separate effect that flips icons +
+  // zIndex on the existing markers — no marker destruction on hover.
   useEffect(() => {
     const map = mapRef.current;
     const google = (window as Window & { google?: { maps?: GoogleMapsNamespace } }).google;
@@ -772,9 +786,8 @@ function GoogleDiscoverMap({
     markersRef.current.forEach((marker) => marker.setMap(null));
 
     markersRef.current = mappableRestaurants.map((restaurant) => {
-      const active = selectedId === restaurant.id || hoveredId === restaurant.id;
       const { url, size } = pinIconSvg({
-        active,
+        active: false,
         priceLevel: normalizeRestaurantPriceLevel(restaurant.priceLevel),
       });
       const marker = new maps.Marker({
@@ -785,13 +798,14 @@ function GoogleDiscoverMap({
           scaledSize: new maps.Size(size.width, size.height),
           anchor: new maps.Point(size.width / 2, size.height / 2),
         },
-        zIndex: active ? 999 : 1,
+        zIndex: 1,
       });
-      marker.addListener("click", () => onSelect(restaurant.id));
-      marker.addListener("mouseover", () => onHover(restaurant.id));
-      marker.addListener("mouseout", () => onHover(null));
+      marker.addListener("click", () => onSelectRef.current(restaurant.id));
+      marker.addListener("mouseover", () => onHoverRef.current(restaurant.id));
+      marker.addListener("mouseout", () => onHoverRef.current(null));
       return marker;
     });
+    markerIdsRef.current = mappableRestaurants.map((r) => r.id);
 
     const renderer: Renderer = {
       render: ({ count, position }: Cluster) => {
@@ -828,8 +842,32 @@ function GoogleDiscoverMap({
       }
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
+      markerIdsRef.current = [];
     };
-  }, [hoveredId, mappableRestaurants, mapReady, onHover, onSelect, selectedId]);
+  }, [mappableRestaurants, mapReady]);
+
+  // Update existing markers' icon + zIndex when the active restaurant
+  // changes. No marker destruction — no flicker.
+  useEffect(() => {
+    const google = (window as Window & { google?: { maps?: GoogleMapsNamespace } }).google;
+    const maps = google?.maps;
+    if (!maps) return;
+    markersRef.current.forEach((marker, idx) => {
+      const restaurant = mappableRestaurants[idx];
+      if (!restaurant) return;
+      const active = selectedId === restaurant.id || hoveredId === restaurant.id;
+      const { url, size } = pinIconSvg({
+        active,
+        priceLevel: normalizeRestaurantPriceLevel(restaurant.priceLevel),
+      });
+      marker.setIcon({
+        url,
+        scaledSize: new maps.Size(size.width, size.height),
+        anchor: new maps.Point(size.width / 2, size.height / 2),
+      });
+      marker.setZIndex(active ? 999 : 1);
+    });
+  }, [hoveredId, selectedId, mappableRestaurants]);
 
 
   useEffect(() => {

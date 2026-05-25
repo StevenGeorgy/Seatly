@@ -53,6 +53,8 @@ export const CENAIVA_MAP_STYLES: Array<Record<string, unknown>> = [
 
 export type GoogleMapsMarker = {
   setMap: (map: unknown | null) => void;
+  setIcon: (icon: unknown) => void;
+  setZIndex: (zIndex: number) => void;
   addListener: (eventName: string, handler: () => void) => { remove: () => void };
 };
 
