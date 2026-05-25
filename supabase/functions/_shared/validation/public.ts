@@ -71,10 +71,14 @@ export type LoyaltyWaitlistSignupInput = z.infer<
 // existing field-specific 400 messages remain the source of truth.
 // The 200/30/200/2000 caps still cut off abusive payloads at the gate.
 export const SubmitDemoRequestSchema = z.object({
-  name: BoundedText(200).optional(),
-  email: BoundedText(320).optional(),
-  phone: BoundedText(30).optional(),
-  restaurant_name: BoundedText(200).optional(),
-  message: BoundedText(2000).optional(),
+  // .nullish() — the client sends `field || null` for empty optional fields,
+  // so the schema must accept both undefined and null. Plain .optional() only
+  // permits undefined and would 400 on every form submission that left an
+  // optional field blank.
+  name: BoundedText(200).nullish(),
+  email: BoundedText(320).nullish(),
+  phone: BoundedText(30).nullish(),
+  restaurant_name: BoundedText(200).nullish(),
+  message: BoundedText(2000).nullish(),
 });
 export type SubmitDemoRequestInput = z.infer<typeof SubmitDemoRequestSchema>;
