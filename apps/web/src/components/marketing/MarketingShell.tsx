@@ -173,7 +173,6 @@ function MarketingFooter() {
       links: [
         { label: "List your restaurant", to: "/setup" },
         { label: "Pricing", to: "/restaurants#pricing" },
-        { label: "Customers", to: "/about" },
         { label: "Book a demo", to: "/book-a-demo" },
       ],
     },
@@ -181,9 +180,7 @@ function MarketingFooter() {
       heading: "Company",
       links: [
         { label: "About", to: "/about" },
-        { label: "Careers", to: "/about" },
-        { label: "Press", to: "/about" },
-        { label: "Contact", to: "/about" },
+        { label: "Contact", to: "/support" },
       ],
     },
     {
@@ -193,8 +190,7 @@ function MarketingFooter() {
         { label: "Privacy", to: "/privacy" },
         { label: "Refund Policy", to: "/refund-policy" },
         { label: "Support", to: "/support" },
-        { label: "Security", to: "/terms#account-security" },
-        { label: "Accessibility", to: "/about" },
+        { label: "Security", to: "/support" },
       ],
     },
   ];

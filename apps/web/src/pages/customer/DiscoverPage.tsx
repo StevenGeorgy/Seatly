@@ -686,6 +686,13 @@ function GoogleDiscoverMap({
   const markersRef = useRef<GoogleMapsMarker[]>([]);
   const clustererRef = useRef<MarkerClusterer | null>(null);
   const userMarkerRef = useRef<GoogleMapsMarker | null>(null);
+  // The map is created asynchronously inside loadGoogleMaps().then. Using a
+  // ref alone means the marker / pan / user-pin effects never re-run after
+  // mapRef.current goes from null → ready — the page sits with no pins until
+  // an unrelated dep (selectedId, hoveredId) bumps and forces a re-run.
+  // Tracking readiness in state forces a re-render when the map finishes
+  // loading, which triggers the dependent effects.
+  const [mapReady, setMapReady] = useState(false);
   const googleReady = hasGoogleMapsApiKey();
   const mappableRestaurants = useMemo(
     () => restaurants.filter((r) => r.lat != null && r.lng != null),
@@ -718,6 +725,7 @@ function GoogleDiscoverMap({
         backgroundColor: "#0A0A0A",
         styles: CENAIVA_MAP_STYLES,
       }) as GoogleMapInstance;
+      setMapReady(true);
     }).catch(() => undefined);
 
     return () => {
@@ -795,7 +803,7 @@ function GoogleDiscoverMap({
       markersRef.current.forEach((marker) => marker.setMap(null));
       markersRef.current = [];
     };
-  }, [hoveredId, mappableRestaurants, onHover, onSelect, selectedId]);
+  }, [hoveredId, mappableRestaurants, mapReady, onHover, onSelect, selectedId]);
 
 
   useEffect(() => {
@@ -831,7 +839,7 @@ function GoogleDiscoverMap({
         userMarkerRef.current = null;
       }
     };
-  }, [userLocation]);
+  }, [mapReady, userLocation]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -842,7 +850,7 @@ function GoogleDiscoverMap({
     const bounds = map.getBounds?.();
     if (bounds && bounds.contains(point)) return;
     map.panTo(point);
-  }, [mappableRestaurants, selectedId]);
+  }, [mappableRestaurants, mapReady, selectedId]);
 
   return (
     <div className="absolute inset-0">
