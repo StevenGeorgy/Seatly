@@ -873,9 +873,14 @@ function GoogleDiscoverMap({
     const selected = mappableRestaurants.find((restaurant) => restaurant.id === selectedId);
     if (selected?.lat == null || selected.lng == null) return;
     const point = { lat: selected.lat, lng: selected.lng };
-    const bounds = map.getBounds?.();
-    if (bounds && bounds.contains(point)) return;
     map.panTo(point);
+    // Zoom in close enough to see the street the restaurant is on. Only
+    // zoom in (never out) — if the user already zoomed past 16 manually,
+    // respect their choice.
+    const currentZoom = map.getZoom?.();
+    if (currentZoom == null || currentZoom < 16) {
+      map.setZoom(16);
+    }
   }, [mappableRestaurants, mapReady, selectedId]);
 
   return (
