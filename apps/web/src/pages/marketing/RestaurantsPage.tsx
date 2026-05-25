@@ -127,7 +127,7 @@ const VALUE_CARDS = [
       "Pre-orders attached to bookings",
       "Tier-based deposit policy",
       "Multi-payer deposit splitting",
-      "Diners cover Stripe processing fees",
+      "Diners cover processing fees",
       "Cancellation refunds handled automatically",
     ],
   },

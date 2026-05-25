@@ -83,12 +83,18 @@ export function CustomerNav() {
         activeWhen: ["/deals", "/dashboard/promotions"],
         onClick: wrap("/deals"),
       },
-      {
-        label: "Bookings",
-        to: bookingsTo,
-        activeWhen: ["/bookings", "/dashboard/reservations"],
-        onClick: wrap("/bookings"),
-      },
+      user
+        ? {
+            label: "Bookings",
+            to: bookingsTo,
+            activeWhen: ["/bookings", "/dashboard/reservations"],
+            onClick: wrap("/bookings"),
+          }
+        : {
+            label: "Find my reservation",
+            to: "/find-reservation",
+            activeWhen: ["/find-reservation"],
+          },
       {
         label: "Loyalty",
         to: loyaltyTo,
@@ -96,7 +102,7 @@ export function CustomerNav() {
         onClick: wrap("/loyalty"),
       },
     ];
-  }, [isStaff, canUseCustomerView, goCustomer]);
+  }, [user, isStaff, canUseCustomerView, goCustomer]);
 
   const isActive = (item: NavItem) =>
     item.activeWhen.some(

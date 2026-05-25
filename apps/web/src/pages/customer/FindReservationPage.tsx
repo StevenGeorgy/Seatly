@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, KeyRound, Loader2, Mail } from "lucide-react";
 
@@ -23,6 +23,7 @@ type CodeLookupResponse = {
 
 export default function FindReservationPage() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Left card — confirmation code. Email is now required alongside the code
   // (security: closes the code-only enumeration attack — the email is on the
@@ -147,11 +148,21 @@ export default function FindReservationPage() {
 
       <main className="mx-auto w-full max-w-5xl px-5 py-10 lg:px-8 lg:py-14">
         <div className="mb-8">
-          <Button variant="ghost" size="sm" asChild className="-ml-2 gap-1.5 text-text-secondary">
-            <Link to="/">
-              <ArrowLeft className="size-4" />
-              Back home
-            </Link>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              // location.key is "default" on the first router entry (deep link,
+              // fresh tab, email click) and a generated string after any
+              // in-app navigation. Fall back to "/" only when there's no
+              // in-app history to pop.
+              if (location.key !== "default") navigate(-1);
+              else void navigate("/");
+            }}
+            className="-ml-2 gap-1.5 text-text-secondary"
+          >
+            <ArrowLeft className="size-4" />
+            Back
           </Button>
           <h1 className="mt-6 font-serif text-3xl text-white sm:text-4xl">
             Find your reservation

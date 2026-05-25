@@ -12,7 +12,7 @@ type Row = { label: string; value: string; muted?: boolean; emphasis?: boolean }
 const EXAMPLE_ROWS: Row[] = [
   { label: "Deposit / order base", value: "$20.00" },
   { label: "Platform fee (5.5%)", value: "$1.10", muted: true },
-  { label: "Processing fee (Stripe gross-up)", value: "$0.95", muted: true },
+  { label: "Processing fee", value: "$0.95", muted: true },
   { label: "Total charged", value: "$22.05", emphasis: true },
   { label: "Refund (if eligible)", value: "$20.00", emphasis: true },
 ];
