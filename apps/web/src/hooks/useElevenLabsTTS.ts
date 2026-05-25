@@ -493,12 +493,20 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
   // supabase session is still hydrating from localStorage — those calls
   // 401 on the server and flood the network panel with ~18 doomed
   // requests right after every login.
+  //
+  // IMPORTANT: depend on `user?.id` (stable string) NOT `user` (fresh
+  // object reference on every supabase event). Supabase fires multiple
+  // session events back-to-back during `_recoverAndRefresh`, each
+  // creating a new User object even when the identity hasn't changed —
+  // depending on the object would re-fire this effect and primeCache on
+  // every event, defeating the abort-on-failure guard.
   const { user, loading: authLoading } = useUser();
+  const userId = user?.id;
   useEffect(() => {
     if (!options?.voiceId) return;
-    if (authLoading || !user) return;
+    if (authLoading || !userId) return;
     void primeCache();
-  }, [options?.voiceId, primeCache, authLoading, user]);
+  }, [options?.voiceId, primeCache, authLoading, userId]);
 
   return { speak, speakQueued, discardQueued, drainQueue, stop, isSpeaking, primeCache };
 }
