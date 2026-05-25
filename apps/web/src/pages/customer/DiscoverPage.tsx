@@ -182,6 +182,7 @@ type GoogleMapInstance = {
   setZoom: (zoom: number) => void;
   getZoom: () => number | undefined;
   getBounds: () => { contains: (point: GeoPoint) => boolean } | undefined;
+  addListener: (event: string, handler: (...args: unknown[]) => void) => { remove: () => void };
 };
 
 function distanceMeters(a: GeoPoint, b: GeoPoint): number {
@@ -678,7 +679,7 @@ function GoogleDiscoverMap({
   selectedId: string | null;
   hoveredId: string | null;
   userLocation: GeoPoint | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   onHover: (id: string | null) => void;
 }) {
   const mapNodeRef = useRef<HTMLDivElement | null>(null);
@@ -714,13 +715,21 @@ function GoogleDiscoverMap({
     initialCenterRef.current = { lat: mappableRestaurants[0].lat, lng: mappableRestaurants[0].lng };
   }
 
+  // Keep a ref to the latest onSelect so the map background click listener
+  // (registered once at map-init) always dismisses to the current handler
+  // without needing to re-create the map.
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
+
   useEffect(() => {
     if (!googleReady || !mapNodeRef.current) return;
     let cancelled = false;
 
     void loadGoogleMaps().then((maps) => {
       if (cancelled || !mapNodeRef.current) return;
-      mapRef.current = new maps.Map(mapNodeRef.current, {
+      const map = new maps.Map(mapNodeRef.current, {
         center: initialCenterRef.current,
         zoom: initialZoomRef.current,
         minZoom: 4,
@@ -735,6 +744,13 @@ function GoogleDiscoverMap({
         backgroundColor: "#0A0A0A",
         styles: CENAIVA_MAP_STYLES,
       }) as GoogleMapInstance;
+      // Background click dismisses the open restaurant popup. Marker
+      // clicks have their own listener and do NOT fire this — Google
+      // Maps stops propagation from markers to the map background.
+      map.addListener("click", () => {
+        onSelectRef.current(null);
+      });
+      mapRef.current = map;
       setMapReady(true);
     }).catch(() => undefined);
 
@@ -936,38 +952,36 @@ function MapRestaurantPopup({
         }
       }}
       aria-label={`Open ${restaurant.name} preview`}
-      className="group absolute bottom-4 left-4 z-10 flex w-[min(26rem,calc(100vw-2rem))] cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+      className="group absolute bottom-4 left-4 z-10 flex w-[min(20rem,calc(100vw-2rem))] cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
     >
       <div className="relative">
         <RestaurantCardImage
           restaurant={restaurant}
-          className="aspect-auto h-36 sm:h-40"
-          logoClassName="size-10 sm:size-11"
+          className="aspect-auto h-24 sm:h-28"
+          logoClassName="size-8 sm:size-9"
         />
         {restaurant.badge ? (
-          <div className="absolute left-3 top-3 sm:left-4 sm:top-4">
+          <div className="absolute left-2 top-2">
             <BadgeChip label={restaurant.badge} />
           </div>
         ) : null}
         {restaurant.dietaryTags.length > 0 ? (
-          <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5 sm:left-4 sm:right-4">
-            {restaurant.dietaryTags.slice(0, 2).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          <div className="absolute bottom-2 left-2 right-2 flex flex-wrap gap-1">
+            {restaurant.dietaryTags.slice(0, 1).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
           </div>
         ) : null}
-        <div className="absolute right-3 top-3 flex items-center gap-2 sm:right-4 sm:top-4">
+        <div className="absolute right-2 top-2 flex items-center gap-1.5">
           <FavoriteButton
             active={favorite}
             onToggle={onToggleFavorite}
             icon="heart"
             label="Favorite restaurant"
-            size="lg"
           />
           <FavoriteButton
             active={saved}
             onToggle={onToggleSave}
             icon="bookmark"
             label="Save restaurant"
-            size="lg"
           />
           <button
             type="button"
@@ -975,15 +989,15 @@ function MapRestaurantPopup({
               event.stopPropagation();
               onClose();
             }}
-            className="rounded-full border border-border bg-black/60 p-2 text-white backdrop-blur transition-colors hover:border-gold/50"
+            className="rounded-full border border-border bg-black/60 p-1.5 text-white backdrop-blur transition-colors hover:border-gold/50"
             aria-label="Close"
           >
-            <X className="size-5" />
-    </button>
+            <X className="size-4" />
+          </button>
         </div>
       </div>
-      <div className="flex flex-1 flex-col gap-3 p-4 sm:p-5">
-        <p className="font-serif text-2xl leading-tight tracking-tight text-white sm:text-[1.75rem]">
+      <div className="flex flex-1 flex-col gap-2 p-3">
+        <p className="font-serif text-lg leading-tight tracking-tight text-white sm:text-xl">
           {restaurant.name}
         </p>
         <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
@@ -992,7 +1006,7 @@ function MapRestaurantPopup({
           {restaurant.area ? <span>{capitalizeWords(restaurant.area)}</span> : null}
         </div>
         {restaurant.availableSlots.length > 0 ? (
-          <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} size="lg" />
+          <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} />
         ) : (
           <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
             <p className="text-sm text-text-secondary">Booked up tonight.</p>
