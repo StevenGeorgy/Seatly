@@ -699,20 +699,30 @@ function GoogleDiscoverMap({
     [restaurants],
   );
 
+  // Read initial center/zoom from refs so this effect runs ONCE per mount.
+  // Previously this depended on `mappableRestaurants` and `userLocation`,
+  // which meant the map was destroyed and rebuilt every time those changed
+  // — orphaning any markers attached to the prior Map instance and leaving
+  // the visible map (a fresh instance) blank. Subsequent center/zoom
+  // updates are handled by separate panTo effects below.
+  const initialCenterRef = useRef<{ lat: number; lng: number }>({ lat: 43.6532, lng: -79.3832 });
+  const initialZoomRef = useRef<number>(11);
+  if (userLocation) {
+    initialCenterRef.current = userLocation;
+    initialZoomRef.current = 13;
+  } else if (mappableRestaurants[0]?.lat != null && mappableRestaurants[0]?.lng != null) {
+    initialCenterRef.current = { lat: mappableRestaurants[0].lat, lng: mappableRestaurants[0].lng };
+  }
+
   useEffect(() => {
     if (!googleReady || !mapNodeRef.current) return;
     let cancelled = false;
 
     void loadGoogleMaps().then((maps) => {
       if (cancelled || !mapNodeRef.current) return;
-      const center = userLocation ?? (
-        mappableRestaurants[0]?.lat != null && mappableRestaurants[0]?.lng != null
-          ? { lat: mappableRestaurants[0].lat, lng: mappableRestaurants[0].lng }
-          : { lat: 43.6532, lng: -79.3832 }
-      );
       mapRef.current = new maps.Map(mapNodeRef.current, {
-        center,
-        zoom: userLocation ? 13 : 11,
+        center: initialCenterRef.current,
+        zoom: initialZoomRef.current,
         minZoom: 4,
         maxZoom: 18,
         disableDefaultUI: true,
@@ -731,7 +741,7 @@ function GoogleDiscoverMap({
     return () => {
       cancelled = true;
     };
-  }, [googleReady, mappableRestaurants, userLocation]);
+  }, [googleReady]);
 
   useEffect(() => {
     const map = mapRef.current;
