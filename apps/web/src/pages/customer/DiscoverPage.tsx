@@ -1067,6 +1067,15 @@ export default function DiscoverPage() {
   const [savedRestaurants, setSavedRestaurants] = useState<Set<string>>(new Set());
   const [availabilityByRestaurantId, setAvailabilityByRestaurantId] = useState<Record<string, AvailabilitySlot[]>>({});
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  // Separate "a fetch is in flight" flag — always set during ANY fetch
+  // (foreground or background). Used by the auto-roll effect to avoid
+  // racing with an in-progress fetch. We need this distinct from
+  // `availabilityLoading` because the 60-second tick refreshes data
+  // silently without flipping the skeleton-display flag.
+  const [availabilityFetching, setAvailabilityFetching] = useState(false);
+  // Set true when the next fetch should be silent (no skeleton flicker).
+  // Read + reset by the fetch effect on each run.
+  const silentRefreshRef = useRef(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapEdgeMode, setMapEdgeMode] = useState(false);
@@ -1192,6 +1201,10 @@ export default function DiscoverPage() {
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      // Mark this refresh as silent — the fetch effect below will swap
+      // data without flipping `availabilityLoading`, so the map/grid
+      // doesn't unmount and remount every minute.
+      silentRefreshRef.current = true;
       setAutoRollOffsetDays(0);
       setAvailabilityRefreshTick((t) => t + 1);
     }, 60_000);
@@ -1200,26 +1213,44 @@ export default function DiscoverPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // Consume the silent-refresh marker so this fetch knows whether to
+    // show skeletons. Reset immediately so the NEXT fetch (e.g. user
+    // changes filters mid-tick) shows skeletons normally.
+    const silent = silentRefreshRef.current;
+    silentRefreshRef.current = false;
     void (async () => {
       if (restaurantIds.length === 0) {
         if (!cancelled) {
           setAvailabilityByRestaurantId({});
           setAvailabilityLoading(false);
+          setAvailabilityFetching(false);
         }
         return;
       }
-      setAvailabilityLoading(true);
-      const map = await fetchDisplayAvailabilitySlotsForRestaurants(
-        restaurantIds,
-        effectiveBookingDate,
-        selectedPartySize,
-        time,
-      );
-      if (cancelled) return;
-      setAvailabilityByRestaurantId(map);
-      setAvailabilityLoading(false);
-      setAvailabilityHasLoaded(true);
-      setAvailabilitySettledForDate(effectiveBookingDate);
+      setAvailabilityFetching(true);
+      if (!silent) setAvailabilityLoading(true);
+      try {
+        const map = await fetchDisplayAvailabilitySlotsForRestaurants(
+          restaurantIds,
+          effectiveBookingDate,
+          selectedPartySize,
+          time,
+        );
+        if (cancelled) return;
+        setAvailabilityByRestaurantId(map);
+        setAvailabilityHasLoaded(true);
+        setAvailabilitySettledForDate(effectiveBookingDate);
+      } catch {
+        // Silent refresh failures must keep the existing data visible —
+        // a network blip shouldn't blank out the page. The next tick
+        // (or user action) will retry. Foreground failures fall through
+        // to the same behavior; the loading flag is cleared in `finally`
+        // so the UI doesn't get stuck on the skeleton.
+      } finally {
+        if (cancelled) return;
+        setAvailabilityFetching(false);
+        if (!silent) setAvailabilityLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -1261,7 +1292,11 @@ export default function DiscoverPage() {
     !search.trim() && activePrices.size === 0 && activeFeatures.size === 0;
   useEffect(() => {
     if (!isOnDefaultDate || !noFiltersActive) return;
-    if (availabilityLoading || cards.length === 0) return;
+    // Use `availabilityFetching` (set during ANY fetch) not
+    // `availabilityLoading` (now skipped on silent tick refreshes) —
+    // we still need to wait for an in-flight background fetch to settle
+    // before advancing the date, otherwise we race.
+    if (availabilityFetching || cards.length === 0) return;
     // Cold-load guard: don't advance the date until at least one real
     // availability fetch has settled. Without this, the brief render window
     // between "restaurants list arrived" and "fetch effect runs" wrongly
@@ -1273,7 +1308,7 @@ export default function DiscoverPage() {
     // `effectiveBookingDate` changes but `availabilitySettledForDate` still
     // points at the previous date — so this guard bails until the new fetch
     // resolves. Without it, the effect could re-fire synchronously (before
-    // `availabilityLoading` propagates) and run to the 14-day cap in a
+    // `availabilityFetching` propagates) and run to the 14-day cap in a
     // single tick, tripping React's max-update-depth warning.
     if (availabilitySettledForDate !== effectiveBookingDate) return;
     if (cardsWithSlotsCount > 0) return;
@@ -1288,7 +1323,7 @@ export default function DiscoverPage() {
   }, [
     isOnDefaultDate,
     noFiltersActive,
-    availabilityLoading,
+    availabilityFetching,
     availabilityHasLoaded,
     availabilitySettledForDate,
     effectiveBookingDate,
