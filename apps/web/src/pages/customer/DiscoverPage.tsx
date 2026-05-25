@@ -1090,10 +1090,19 @@ export default function DiscoverPage() {
   // Triggered by the post-login bounce from CustomerNav's sign-in dialog: an
   // anon visitor clicks "Concierge" → signs in → returns here, and we open the
   // assistant for them so they don't have to click the button a second time.
+  //
+  // The ref guards against re-firing within the same page load. Without it,
+  // `assistant` (a context value memo) can flip references on every render —
+  // re-running the effect after the URL strip but before React Router's
+  // searchParams update propagates — which loops open() at 60fps and pins
+  // state.isOpen=true so the X button click can never take effect.
+  const autoOpenFiredRef = useRef(false);
   useEffect(() => {
+    if (autoOpenFiredRef.current) return;
     if (!user) return;
     if (!assistant) return;
     if (searchParams.get("concierge") !== "1") return;
+    autoOpenFiredRef.current = true;
     const greetingText = buildWakeGreeting(user);
     assistant.open(undefined, undefined, { autoListen: true, greetingText });
     // Strip the param so a refresh doesn't re-open. Preserve any other
