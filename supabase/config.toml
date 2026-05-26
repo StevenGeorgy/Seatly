@@ -229,3 +229,37 @@ verify_jwt = false
 
 [functions.revoke-all-sessions]
 verify_jwt = false
+
+# Cron-driven fns — gateway must not require JWT because pg_cron calls them
+# with only an x-cron-secret header (verified in the fn body via the
+# CRON_SECRET env var). Without verify_jwt=false the gateway 401s every
+# tick before our auth check runs.
+[functions.calculate-lifetime-value]
+verify_jwt = false
+
+[functions.calculate-no-show-risk]
+verify_jwt = false
+
+[functions.compute-analytics]
+verify_jwt = false
+
+[functions.expire-loyalty-points]
+verify_jwt = false
+
+[functions.expire-reservation-holds]
+verify_jwt = false
+
+[functions.generate-shift-briefing]
+verify_jwt = false
+
+[functions.run-auto-tagging]
+verify_jwt = false
+
+[functions.send-anniversary-messages]
+verify_jwt = false
+
+[functions.send-birthday-messages]
+verify_jwt = false
+
+[functions.send-booking-reminder]
+verify_jwt = false
