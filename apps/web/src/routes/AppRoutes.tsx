@@ -7,6 +7,7 @@ import { GuestOnly } from "@/components/routing/GuestOnly";
 import { RequireAuth } from "@/components/routing/RequireAuth";
 import { RequireStaff } from "@/components/routing/RequireStaff";
 import { RouteFallback } from "@/components/routing/RouteFallback";
+import { useTrackOrigin } from "@/hooks/useTrackOrigin";
 
 const HomePage = lazy(() => import("@/pages/marketing/HomePage"));
 const FeaturesPage = lazy(() => import("@/pages/marketing/FeaturesPage"));
@@ -75,6 +76,7 @@ const HostPage = lazy(() => import("@/pages/dashboard/HostPage"));
 const AcceptInvitePage = lazy(() => import("@/pages/auth/AcceptInvitePage"));
 
 export function AppRoutes() {
+  useTrackOrigin();
   return (
     <Suspense fallback={<RouteFallback />}>
       <Routes>

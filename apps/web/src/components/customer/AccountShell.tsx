@@ -13,11 +13,12 @@
 // list the same sections in the same order.
 
 import { format } from "date-fns";
-import { type LucideIcon, ArrowLeft, CalendarDays, CreditCard, LogOut, MessageCircle, Settings, ShoppingBag, Star } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { type LucideIcon, ArrowLeft, CalendarDays, ChevronLeft, CreditCard, LogOut, MessageCircle, Settings, ShoppingBag, Star } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useUser } from "@/hooks/useUser";
+import { getAccountOriginUrl } from "@/hooks/useTrackOrigin";
 import { cn } from "@/lib/utils";
 
 export type AccountSection =
@@ -49,7 +50,14 @@ export function AccountShell({
   children: React.ReactNode;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { profile, signOut } = useUser();
+
+  // Sub-pages live under /account/<slug>. /account itself is the
+  // section-tab landing page. Breadcrumb only shows on sub-pages so
+  // users have an explicit single-click path back to the Preferences
+  // tab they came from (the big Back button still exits Account).
+  const isSubPage = location.pathname !== "/account";
 
   const initials = (profile?.full_name ?? profile?.email ?? "SK")
     .split(" ")
@@ -63,11 +71,11 @@ export function AccountShell({
     : "Member";
 
   const handleBack = () => {
-    if (window.history.length > 1) {
-      navigate(-1);
-      return;
-    }
-    navigate("/discover");
+    // Jump straight out of the Account area in one click. Origin is
+    // tracked at the router level (useTrackOrigin) — falls back to
+    // /discover when the user arrived here by direct URL.
+    const origin = getAccountOriginUrl();
+    navigate(origin ?? "/discover");
   };
 
   const handleSectionClick = (section: AccountSection) => {
@@ -81,14 +89,25 @@ export function AccountShell({
   return (
     <div className="min-h-screen bg-bg-base text-text-primary">
       <main className="mx-auto w-full max-w-[1500px] px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-        >
-          <ArrowLeft className="size-4 text-gold" />
-          Back
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+          >
+            <ArrowLeft className="size-4 text-gold" />
+            Back
+          </button>
+          {isSubPage ? (
+            <Link
+              to="/account?section=preferences"
+              className="inline-flex items-center gap-1 text-xs font-medium text-text-muted transition-colors hover:text-gold"
+            >
+              <ChevronLeft className="size-3.5" />
+              Back to Preferences
+            </Link>
+          ) : null}
+        </div>
 
         <div className="mt-6 grid w-full gap-10 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="lg:sticky lg:top-10 lg:self-start">
