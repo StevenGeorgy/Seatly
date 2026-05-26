@@ -88,6 +88,7 @@ import { normalizeRestaurantDietaryTags, type RestaurantDietaryTag } from "@/lib
 import { normalizeE164Phone } from "@/lib/validation/phone-schemas";
 import { computeDinerCharge } from "@/lib/stripe-fee";
 import { getProvincialTax } from "@/lib/billing/canadianTax";
+import { SEATING_PREFERENCES } from "@/lib/booking/seating-preferences";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Step = "details" | "menu" | "checkout" | "confirmed";
@@ -147,16 +148,6 @@ type PreviewSlotRevalidationState = {
 };
 
 const OCCASIONS = ["", "Anniversary", "Birthday", "Business Dinner", "Date Night", "Family Gathering"];
-const SEATING_PREFERENCES = [
-  "",
-  "By the window",
-  "Middle of dining room",
-  "Booth seating",
-  "Lounge seating",
-  "Patio",
-  "Bar seating",
-  "Quiet corner",
-];
 const CUISINE_GRADIENT: Record<string, string> = {
   French:   "from-indigo-900 to-blue-900",
   Japanese: "from-rose-900 to-pink-900",

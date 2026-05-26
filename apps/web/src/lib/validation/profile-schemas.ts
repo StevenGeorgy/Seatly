@@ -10,6 +10,7 @@ export const profileUpdateSchema = z.object({
   phone: z.string().trim().max(30).optional().or(z.literal("")),
   dietary_restrictions: z.array(z.string()).default([]),
   allergies: z.array(z.string()).default([]),
+  seating_preference: z.string().trim().max(80).nullable().optional(),
   avatar_url: z.string().url().nullable().optional(),
 });
 

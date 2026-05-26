@@ -28,6 +28,9 @@ export function useUpdateProfile() {
       dietary_restrictions: values.dietary_restrictions,
       allergies: values.allergies,
     };
+    if (values.seating_preference !== undefined) {
+      updateRow.seating_preference = values.seating_preference || null;
+    }
     // avatar_url is opt-in — only include when explicitly passed (string or
     // null). Leaving it undefined means "don't touch the column."
     if (values.avatar_url !== undefined) {

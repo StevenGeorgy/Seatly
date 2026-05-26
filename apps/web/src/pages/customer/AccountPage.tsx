@@ -3,7 +3,7 @@ import { format } from "date-fns";
 import { motion } from "framer-motion";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
-import { Sparkles, Star, Trash2 } from "lucide-react";
+import { ChevronDown, Sparkles, Star, Trash2 } from "lucide-react";
 import { Controller, useForm } from "react-hook-form";
 import { Link, useSearchParams } from "react-router-dom";
 import { z } from "zod";
@@ -30,6 +30,7 @@ import { useMyReservations, type MyReservationRow } from "@/hooks/useMyReservati
 import { useMyReviewsAndSnaps, type MyReviewSnapEntry } from "@/hooks/useMyReviewsAndSnaps";
 import { useUpdateProfile } from "@/hooks/useUpdateProfile";
 import { useUser } from "@/hooks/useUser";
+import { SEATING_PREFERENCES } from "@/lib/booking/seating-preferences";
 import {
   reservationDisplayStatus,
   reservationDisplayStatusKey,
@@ -66,6 +67,7 @@ type BookingPreview = {
 const profileFormSchema = z.object({
   full_name: z.string().min(1, "Name is required").max(120),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
+  seating_preference: z.string().max(80).optional(),
 });
 type ProfileFormValues = z.infer<typeof profileFormSchema>;
 
@@ -354,6 +356,7 @@ export default function AccountPage() {
     defaultValues: {
       full_name: profile?.full_name ?? "",
       phone: profile?.phone ?? "",
+      seating_preference: profile?.seating_preference ?? "",
     },
   });
 
@@ -383,6 +386,7 @@ export default function AccountPage() {
       ...values,
       dietary_restrictions: csvToArray(dietaryCsv),
       allergies: csvToArray(allergiesCsv),
+      seating_preference: (values.seating_preference ?? "").trim() || null,
     });
     reset(values);
   };
@@ -555,7 +559,6 @@ export default function AccountPage() {
                 value={profile?.dietary_restrictions?.join(", ") || "No restrictions"}
               />
               <PreferenceTile label="Seating" value={profile?.seating_preference || "No seating preference saved"} />
-              <PreferenceTile label="Language" value={profile?.preferred_language || "No language preference saved"} />
             </div>
           </div>
         </>
@@ -634,6 +637,23 @@ export default function AccountPage() {
               onChange={(event) => setAllergiesCsv(event.target.value)}
               placeholder="e.g. peanuts, shellfish"
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="seating_preference">Seating preference</Label>
+            <div className="relative">
+              <select
+                id="seating_preference"
+                {...register("seating_preference")}
+                className="h-10 w-full appearance-none rounded-md border border-border bg-bg-elevated px-3 pr-8 text-sm text-text-primary outline-none focus:border-gold/40"
+              >
+                {SEATING_PREFERENCES.map((pref) => (
+                  <option key={pref || "none"} value={pref}>
+                    {pref || "No preference"}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
+            </div>
           </div>
           <div className="flex gap-3">
             <Button type="submit" disabled={!isDirty || saving}>
