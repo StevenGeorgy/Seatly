@@ -130,8 +130,16 @@ Deno.serve(async (req: Request) => {
     const returnUrlBase = `${chosenOrigin}${safeReturnPath}${sep}stripe=return&restaurant_id=${row.id}`;
     const refreshUrlBase = `${chosenOrigin}${safeReturnPath}${sep}stripe=refresh&restaurant_id=${row.id}`;
 
-    // Stripe-hosted onboarding link. `refresh_url` is hit if the link
-    // expires before the user completes (e.g. browser tab left open
+    // Link type: 'onboarding' (default) for initial KYC + any incomplete
+    // requirements. 'update' for verified accounts that just want to
+    // change banking info / business details — Stripe scopes the hosted
+    // UI to edits only, no re-onboarding noise.
+    const requestedLinkType = (parsed.data as { link_type?: unknown }).link_type;
+    const linkType: "account_onboarding" | "account_update" =
+      requestedLinkType === "update" ? "account_update" : "account_onboarding";
+
+    // Stripe-hosted onboarding/update link. `refresh_url` is hit if the
+    // link expires before the user completes (e.g. browser tab left open
     // overnight). `return_url` is hit on successful completion AND when
     // the user clicks "Save for later" — the page must poll Stripe via
     // `accounts.retrieve` to determine whether KYC is actually done.
@@ -139,7 +147,7 @@ Deno.serve(async (req: Request) => {
       account: row.stripe_account_id,
       refresh_url: refreshUrlBase,
       return_url: returnUrlBase,
-      type: "account_onboarding",
+      type: linkType,
     });
 
     return jsonRes({ url: accountLink.url, expires_at: accountLink.expires_at });

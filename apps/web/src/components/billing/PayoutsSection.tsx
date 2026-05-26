@@ -30,10 +30,14 @@ function StripeHostedDashboardButton({
   restaurantId,
   onPollNeeded,
   ctaLabel,
+  linkType,
+  variant,
 }: {
   restaurantId: string;
   onPollNeeded: () => void;
   ctaLabel: string;
+  linkType?: "onboarding" | "update";
+  variant?: "default" | "ghost" | "outline";
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +78,7 @@ function StripeHostedDashboardButton({
           restaurant_id: restaurantId,
           app_origin: typeof window !== "undefined" ? window.location.origin : undefined,
           return_path: currentPath,
+          link_type: linkType ?? "onboarding",
         },
       );
       if (!linkRes.ok) throw new Error(linkRes.error);
@@ -103,7 +108,13 @@ function StripeHostedDashboardButton({
           {error}
         </p>
       ) : null}
-      <Button type="button" className="gap-2" onClick={handleClick} disabled={loading}>
+      <Button
+        type="button"
+        variant={variant ?? "default"}
+        className="gap-2"
+        onClick={handleClick}
+        disabled={loading}
+      >
         {loading ? (
           <>
             <Loader2 className="size-4 animate-spin" /> Opening Stripe…
@@ -326,11 +337,27 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
 
       {(() => {
         // Three states, deterministic, trust whatever Stripe reports now:
-        //   verified       → payouts_enabled = render nothing here
+        //   verified       → payouts_enabled = render the "Update banking
+        //                    info" CTA only (no scary banners)
         //   actionRequired → requirements_due OR !details_submitted →
         //                    yellow banner + "Update on Stripe" button
         //   processing     → otherwise → blue banner, NO button
-        if (data.payouts_enabled) return null;
+        if (data.payouts_enabled) {
+          return (
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 text-xs">
+              <p className="text-text-secondary">
+                Want to change the bank account that receives your payouts?
+              </p>
+              <StripeHostedDashboardButton
+                restaurantId={restaurantId}
+                ctaLabel="Update banking info"
+                onPollNeeded={handleStripeReturnPoll}
+                linkType="update"
+                variant="outline"
+              />
+            </div>
+          );
+        }
 
         const requirementsDue = Boolean(data.requirements_due);
         const detailsSubmitted = Boolean(data.details_submitted);
