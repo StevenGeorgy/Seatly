@@ -20,6 +20,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
 
 import { AvatarUploadCard } from "@/components/customer/AvatarUploadCard";
+import { ChangePasswordSection } from "@/components/customer/ChangePasswordSection";
 import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useErrorToast } from "@/lib/errors";
@@ -631,6 +632,8 @@ export default function AccountPage() {
             </Button>
           </div>
         </form>
+
+        <ChangePasswordSection />
 
         <Link
           to="/account/voice"
