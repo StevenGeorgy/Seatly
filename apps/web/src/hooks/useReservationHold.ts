@@ -51,6 +51,27 @@ export interface UseReservationHoldArgs {
   eventId?: string | null;
   promotionId?: string | null;
   appliedPromoCode?: string | null;
+  /**
+   * Page-scoped timer rule (2026-05): the silent sessionStorage rehydrate
+   * is gone. The only way to resume a persisted hold across mounts is to
+   * pass its ID explicitly here — typically from `?hold=<id>` set by a
+   * voice handoff. Without a match, any persisted entry is cleared and
+   * the auto-create effect mints a fresh hold + fresh timer.
+   */
+  resumeHoldId?: string | null;
+  /**
+   * Set true once the diner enters the payment flow (Stripe PI created OR
+   * checkout step rendered). When true, the pagehide unload cleanup will
+   * NOT cancel the server-side hold — only the local sessionStorage entry
+   * is cleared. Reason: there's a 1-2s race between Stripe PI succeeding
+   * and `confirm-hold-paid` firing where the user could close the tab. If
+   * our cancel beats the webhook, the diner's card is charged but the
+   * hold is `cancelled` so the webhook's convert RPC silently fails — no
+   * reservation, no refund. Letting the hold expire naturally (30 min)
+   * lets the webhook recover. Server-side webhook also catches this case
+   * by auto-refunding if needed (see RESERVATION_HOLDS_AUDIT.md).
+   */
+  inPaymentFlow?: boolean;
 }
 
 export interface UpdateDinerInput {
@@ -237,7 +258,14 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     eventId = null,
     promotionId = null,
     appliedPromoCode = null,
+    resumeHoldId = null,
+    inPaymentFlow = false,
   } = args;
+
+  // Keep the payment-flow flag in a ref so the pagehide cleanup (which has
+  // empty deps) can read the current value without re-binding the listener.
+  const inPaymentFlowRef = useRef<boolean>(inPaymentFlow);
+  inPaymentFlowRef.current = inPaymentFlow;
 
   const [state, setState] = useState<HoldState>({ status: "idle" });
 
@@ -489,6 +517,20 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (stateRef.current.status !== "idle") return;
     const persisted = loadPersisted(storageKey);
     if (!persisted) return;
+    // Page-scoped timer rule: only an explicit `resumeHoldId` (typically
+    // from a `?hold=<id>` voice-handoff URL) is allowed to resume a
+    // persisted hold. Without a match, the entry is stale — the user
+    // left the page and we're treating this as a fresh visit — so we
+    // drop it and let the auto-create effect mint a new hold.
+    if (!resumeHoldId || resumeHoldId !== persisted.holdId) {
+      clearPersisted(storageKey);
+      return;
+    }
+    // Hydrate requires the same full input set that `createHold` needs;
+    // otherwise we'd land in `active` state but the drift effect's
+    // sentinel `lastSyncedInputsRef` would stay null and slot/party
+    // changes would silently skip the cancel+recreate path.
+    if (!shiftId || !partySize || partySize <= 0) return;
     const secondsLeft = Math.max(
       0,
       Math.floor(
@@ -510,7 +552,12 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       tableIds: persisted.tableIds,
       durationMinutes: persisted.durationMinutes,
     });
-  }, [enabled, storageKey]);
+    // Seed the drift sentinel so a subsequent party/slot change triggers
+    // cancel+recreate. Without this, a resumed hold would freeze its
+    // input snapshot (lastSyncedInputsRef stays null) and drift would
+    // never fire.
+    lastSyncedInputsRef.current = { partySize, dateTime: dateTime as string, shiftId };
+  }, [enabled, storageKey, resumeHoldId, shiftId, partySize, dateTime]);
 
   // -------------------------------------------------------------------------
   // Auto-create on mount (when idle + enabled + inputs valid)
@@ -518,8 +565,18 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
 
   useEffect(() => {
     if (!enabled) return;
-    if (stateRef.current.status !== "idle") return;
+    const cur = stateRef.current.status;
+    // Fire on first mount (`idle`) OR on input change after a failed prior
+    // attempt (`error`). Without the `error` branch the hook gets stuck on
+    // the first failure (e.g. diner_double_book on a stale slot) and the
+    // banner never recovers when the user picks a different date/time/party.
+    if (cur !== "idle" && cur !== "error") return;
     if (!restaurantId || !shiftId || !dateTime || !partySize || partySize <= 0) return;
+    if (cur === "error") {
+      // Mint a fresh idempotency key — the previous key may already be
+      // bound to the failed attempt on the server side.
+      idempotencyKeyRef.current = null;
+    }
     void createHold();
   }, [enabled, restaurantId, shiftId, dateTime, partySize, createHold]);
 
@@ -554,6 +611,16 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     let cancelled = false;
     const handle = setTimeout(async () => {
       if (cancelled) return;
+      // Clear the OLD slot's persisted entry explicitly. `cancelHold`
+      // only wipes `persistKeyRef.current`, but by now that has already
+      // moved to the NEW slot's key (the storageKey useMemo + sync
+      // effect ran when `dateTime` changed). Without this, the prior
+      // slot's sessionStorage entry would be orphaned and would still
+      // pass the page-scope gate if the user pinned `?hold=<id>` later.
+      const prevDateTime = lastSyncedInputsRef.current?.dateTime ?? null;
+      if (restaurantId && prevDateTime) {
+        clearPersisted(getStorageKey(restaurantId, prevDateTime));
+      }
       await cancelHold();
       if (cancelled) return;
       idempotencyKeyRef.current = null;
@@ -735,24 +802,84 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   // -------------------------------------------------------------------------
 
   useEffect(() => {
-    return () => {
+    const cleanup = () => {
       const s = stateRef.current;
+      const persistKey = persistKeyRef.current;
+      // Page-scoped rule: clear the local trace FIRST and synchronously.
+      // Even if the cancel below fails (network, auth), a remount won't
+      // find a persisted entry and so will mint a fresh hold via the
+      // auto-create path. Leave = die.
+      if (persistKey) clearPersisted(persistKey);
       if (s.status !== "active") return;
+      // Skip the server-side cancel if the diner has entered the payment
+      // flow. See `inPaymentFlow` prop docs — race-window-protection so the
+      // webhook can still convert a paid hold even if the user closes the
+      // tab in the gap between Stripe PI succeeding and `confirm-hold-paid`
+      // firing. Local sessionStorage is still wiped above; the hold will
+      // expire naturally after 30 min if booking is abandoned.
+      if (inPaymentFlowRef.current) return;
       if (typeof navigator === "undefined") return;
       try {
         const url = `${getSupabaseProjectUrl()}/functions/v1/cancel-reservation-hold`;
-        const payload = JSON.stringify({ hold_id: s.holdId });
-        if (typeof navigator.sendBeacon === "function") {
-          const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon(url, blob);
+        const anon = getSupabaseAnonKey();
+        // Pull the JWT from the @supabase/ssr cookie so the cancel edge fn
+        // accepts the call. sendBeacon can't set headers, but
+        // `fetch(..., { keepalive: true })` survives page unload AND lets
+        // us include Authorization. Without auth, the server returns 401
+        // and the hold leaks, blocking the user from a fresh slot on
+        // return — defeating the page-scoped rule.
+        let bearer: string | null = null;
+        if (typeof document !== "undefined") {
+          const cookie = document.cookie
+            .split(";")
+            .map((c) => c.trim())
+            .find((c) => c.startsWith("sb-") && c.includes("-auth-token="));
+          if (cookie) {
+            const eq = cookie.indexOf("=");
+            const raw = decodeURIComponent(cookie.slice(eq + 1));
+            const stripped = raw.startsWith("base64-") ? atob(raw.slice("base64-".length)) : raw;
+            try {
+              const parsed = JSON.parse(stripped) as { access_token?: unknown };
+              if (typeof parsed.access_token === "string") bearer = parsed.access_token;
+            } catch {
+              // ignore — cookie shape isn't what we expected; cancel will go unauthenticated.
+            }
+          }
         }
+        void fetch(url, {
+          method: "POST",
+          headers: {
+            apikey: anon,
+            ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ hold_id: s.holdId }),
+          keepalive: true,
+        });
       } catch (err) {
-        // best-effort — beacon may fail on quota/CSP edge cases.
-        console.warn("[ReservationHold.unmount] beacon failed", err);
+        // best-effort — fetch may throw on quota/CSP edge cases.
+        console.warn("[ReservationHold.cleanup] cancel-on-unload failed", err);
       }
     };
+    // React unmount path (Link / useNavigate / route change). Fires when
+    // the component tree tears down but the JS context survives.
+    // Pagehide path (hard navigation, F5, tab close, browser back/forward).
+    // React's cleanup does NOT fire reliably for these — the JS context is
+    // about to be destroyed. pagehide is the canonical event for sendBeacon.
+    // sendBeacon + sessionStorage.removeItem are both synchronous-enough to
+    // complete inside the pagehide handler before the page tears down.
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", cleanup);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("pagehide", cleanup);
+      }
+      cleanup();
+    };
     // We intentionally do not re-create this on state changes — the cleanup
-    // closes over the latest stateRef and only fires on actual unmount.
+    // closes over the latest stateRef and only fires on actual unmount /
+    // page unload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -1785,6 +1785,17 @@ export default function RestaurantPublicPage() {
     eventId: searchParams.get("event_id") ?? null,
     promotionId: activePromoId ?? searchParams.get("promotion_id") ?? null,
     appliedPromoCode: searchParams.get("promo_code") ?? null,
+    // Page-scoped timer: silent rehydrate is killed. Only an explicit
+    // `?hold=<id>` (voice handoff) resumes a persisted hold; everything
+    // else gets a fresh timer on every entry to the booking page.
+    resumeHoldId: searchParams.get("hold"),
+    // Race-window protection: once the diner reaches checkout, don't let
+    // pagehide cancel the hold server-side. There's a 1-2s gap between
+    // Stripe PI succeeding and `confirm-hold-paid` firing where closing
+    // the tab could otherwise charge the card without finalising the
+    // booking (the webhook's convert RPC rejects cancelled holds). Hold
+    // expires naturally in 30 min if abandoned.
+    inPaymentFlow: step === "checkout",
   });
 
   // Push cart changes into the hold (debounced) so the server keeps the
@@ -2610,10 +2621,24 @@ export default function RestaurantPublicPage() {
         )}
 
         {/* ── Hold timer banner (suppressed in add-on mode — no hold to expire) ─ */}
-        {hold.state.status === "active" && !existingReservationId && (
+        {!existingReservationId && hold.state.status === "active" && (
           <HoldTimerBanner
+            mode="active"
             secondsLeft={hold.state.secondsLeft}
             visualState={hold.visualState}
+            className="-mx-4 sm:-mx-6 mb-4"
+          />
+        )}
+        {!existingReservationId && hold.state.status === "creating" && (
+          <HoldTimerBanner
+            mode="creating"
+            className="-mx-4 sm:-mx-6 mb-4"
+          />
+        )}
+        {!existingReservationId && hold.state.status === "error" && (
+          <HoldTimerBanner
+            mode="error"
+            message={hold.state.message}
             className="-mx-4 sm:-mx-6 mb-4"
           />
         )}

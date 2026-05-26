@@ -565,6 +565,39 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
         }
         return;
       }
+      if ((error as { code?: string } | null)?.code === "P0012") {
+        // Hold is in a non-convertible state (cancelled, or some other
+        // status that isn't `active`/`converting`). This typically means
+        // the client cancelled the hold (e.g. user closed the tab) in the
+        // 1-2s race between Stripe PI succeeding and `confirm-hold-paid`
+        // firing. Diner's card was charged but no reservation exists.
+        // Auto-refund here so the diner isn't stuck with a charge for a
+        // booking they never got. Uses the canonical shared helper which
+        // sets `reverse_transfer: true` so a destination-charge refund
+        // debits the connected restaurant (not Cenaiva's platform).
+        console.error("stripe-webhook: hold not convertible, refunding", { hold_id: holdId, pi_id: pi.id });
+        try {
+          const stripeKeyForRefund = Deno.env.get("STRIPE_SECRET_KEY");
+          if (stripeKeyForRefund) {
+            const { default: StripeRefund } = await import("npm:stripe@17");
+            const { refundPaymentIntent } = await import("../_shared/stripe-refund.ts");
+            const stripeForRefund = new StripeRefund(stripeKeyForRefund, { apiVersion: "2024-11-20.acacia" });
+            const outcome = await refundPaymentIntent(
+              stripeForRefund,
+              pi.id,
+              "hold_not_convertible_post_payment",
+            );
+            if (!outcome.ok) {
+              console.error("stripe-webhook: P0012 refund failed", { hold_id: holdId, pi_id: pi.id, error: outcome.error, code: outcome.code });
+            }
+          } else {
+            console.error("stripe-webhook: cannot refund non-convertible hold, STRIPE_SECRET_KEY missing");
+          }
+        } catch (refundErr) {
+          console.error("stripe-webhook: P0012 refund exception", refundErr);
+        }
+        return;
+      }
       if (error) {
         console.error("convert_reservation_hold_to_reservation failed in webhook", error);
         return;
