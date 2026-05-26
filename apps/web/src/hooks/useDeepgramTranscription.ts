@@ -236,6 +236,20 @@ async function transcribeWithDeepgram(blob: Blob, keyterms: string[]): Promise<D
       const bodyText = await response.text().catch(() => "");
       invalidateDeepgramTokenCache();
 
+      // 400 with "corrupt or unsupported data" → the captured audio was
+      // truncated or otherwise unreadable. Treat as a no-speech turn so
+      // the user just retries instead of seeing a "voice unavailable"
+      // toast. We log so this stays visible in DevTools.
+      if (response.status === 400 && /corrupt|unsupported/i.test(bodyText)) {
+        if (import.meta.env.DEV) {
+          console.warn(
+            "[Cenaiva STT] Deepgram rejected the audio as corrupt — treating as no-speech.",
+            bodyText.slice(0, 120),
+          );
+        }
+        return { transcript: "", alternatives: [] };
+      }
+
       const isLastAttempt = attempt === maxAttempts - 1;
       const shouldRetry =
         !isLastAttempt &&
@@ -540,15 +554,43 @@ export function useDeepgramTranscription() {
     };
 
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, {
-        type: recorder.mimeType || recorderMimeType || "audio/webm",
-      });
       void (async () => {
+        // Brief drain wait: MediaRecorder *should* deliver all final
+        // `dataavailable` events before firing `stop`, but Chrome
+        // occasionally fires `stop` while a chunk is still queued. A
+        // ~50ms yield lets pending chunks land before we assemble the
+        // blob — eliminates most "corrupt webm" rejections from
+        // Deepgram. Imperceptible to the user (Cenaiva already takes
+        // ~500ms+ for a voice turn).
+        await new Promise((r) => setTimeout(r, 50));
+
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || recorderMimeType || "audio/webm",
+        });
         cleanupMedia({ keepWarm: true });
+
         if (!blob.size || !speechDetectedRef.current) {
           finish({ transcript: "", alternatives: [] });
           return;
         }
+
+        // Minimum size guard: an opus webm container with zero audio
+        // frames is ~1-2KB of headers alone. Even the briefest legit
+        // utterance ("yes", "no") produces ~3-5KB. If we got less than
+        // ~2KB after capture, the recording was truncated or the mic
+        // never delivered audio frames — sending it to Deepgram would
+        // always 400. Skip silently and let the user retry.
+        const MIN_AUDIO_BYTES = 2048;
+        if (blob.size < MIN_AUDIO_BYTES) {
+          if (import.meta.env.DEV) {
+            console.warn(
+              `[Cenaiva STT] audio blob too small (${blob.size}B); skipping Deepgram call.`,
+            );
+          }
+          finish({ transcript: "", alternatives: [] });
+          return;
+        }
+
         try {
           const result = await transcribeWithDeepgram(blob, keytermsRef.current);
           finish(result);
