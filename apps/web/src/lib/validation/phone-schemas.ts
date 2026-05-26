@@ -81,9 +81,15 @@ export function formatE164ForDisplay(e164: string): string {
 export function formatNorthAmericanAsTyping(raw: string): string {
   if (!raw) return "";
   let digits = raw.replace(/\D/g, "");
-  // If the user typed a leading "1" (NA country code), drop it — we'll
-  // re-add "+1" via the display prefix.
-  if (digits.length === 11 && digits.startsWith("1")) {
+  // North American area codes never start with 0 or 1 (NANP rule), so
+  // a leading "1" in the digit string can only be the "+1" display
+  // prefix that the formatter re-injects each keystroke. Strip exactly
+  // one "1" — this is what makes backspace work cleanly: on delete,
+  // the input still contains "+1 (...)" and that leading 1 would
+  // otherwise get re-absorbed as if it were part of the user's number,
+  // scrambling every subsequent digit. We only strip one so that
+  // numbers like "+1 (212) 111-1111" survive intact.
+  if (digits.startsWith("1")) {
     digits = digits.slice(1);
   }
   if (digits.length > 10) digits = digits.slice(0, 10);
