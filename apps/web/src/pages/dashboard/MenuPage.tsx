@@ -344,7 +344,8 @@ export default function MenuPage() {
       }
       setCategoryModalOpen(false);
       resetCategoryForm();
-    } catch {
+    } catch (err) {
+      console.warn("[MenuPage.saveCategory] failed", err);
       toast.error(editCategory ? "Could not update category." : "Could not add category.");
     } finally {
       setSavingCat(false);
@@ -374,7 +375,8 @@ export default function MenuPage() {
       setSelectedCategory((current) => (current === id ? undefined : current));
       setDeleteCategoryId(null);
       toast.success("Category removed.");
-    } catch {
+    } catch (err) {
+      console.warn("[MenuPage.deleteCategory] failed", err);
       toast.error("Could not delete category.");
     }
   };
@@ -430,7 +432,8 @@ export default function MenuPage() {
       }
       setItemModalOpen(false);
       setSelectedItemFile(null);
-    } catch {
+    } catch (err) {
+      console.warn("[MenuPage.saveItem] failed", err);
       toast.error(editItem ? "Could not update item." : "Could not add item.");
     } finally {
       setSavingItem(false);
@@ -448,7 +451,8 @@ export default function MenuPage() {
       await deleteItem(id);
       toast.success("Item removed.");
       setDeleteId(null);
-    } catch {
+    } catch (err) {
+      console.warn("[MenuPage.deleteItem] failed", err);
       toast.error("Could not delete item.");
     }
   };

@@ -235,7 +235,8 @@ export function PayoutsSection({ restaurantId, className }: PayoutsSectionProps)
         if (cancelled) return;
         if (res.ok && body) setData(body);
         setLoading(false);
-      } catch {
+      } catch (err) {
+        console.warn("[PayoutsSection.load] failed", err);
         if (!cancelled) setLoading(false);
       }
     })();

@@ -428,7 +428,8 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
           total_amount_cents: totalAmountCents,
         });
         return { ok: res.ok && body.ok !== false };
-      } catch {
+      } catch (err) {
+        console.warn("[ReservationHold.updateHold] failed", err);
         return { ok: false };
       }
     },
@@ -448,8 +449,10 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (!holdId) return;
     try {
       await postFn<UpdateResponse>("cancel-reservation-hold", { hold_id: holdId });
-    } catch {
-      // best-effort
+    } catch (err) {
+      // best-effort — log so operators can see if hold cleanup is silently
+      // failing in production.
+      console.warn("[ReservationHold.cancelHold] failed", err);
     }
   }, []);
 
@@ -709,8 +712,10 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
             serverSkewMs: next.serverSkewMs,
           });
         }
-      } catch {
-        // ignore transient network errors; next tick retries
+      } catch (err) {
+        // ignore transient network errors; next tick retries. Log so a
+        // persistent failure stays visible in DevTools.
+        console.warn("[ReservationHold.heartbeat] tick failed", err);
       }
     };
 
@@ -741,8 +746,9 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
           const blob = new Blob([payload], { type: "application/json" });
           navigator.sendBeacon(url, blob);
         }
-      } catch {
-        // best-effort
+      } catch (err) {
+        // best-effort — beacon may fail on quota/CSP edge cases.
+        console.warn("[ReservationHold.unmount] beacon failed", err);
       }
     };
     // We intentionally do not re-create this on state changes — the cleanup

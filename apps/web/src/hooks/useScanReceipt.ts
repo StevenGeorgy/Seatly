@@ -149,7 +149,8 @@ export function useScanReceipt() {
         extractedFields: body.extractedFields ?? [],
         raw: body.aiRaw,
       };
-    } catch {
+    } catch (err) {
+      console.warn("[ScanReceipt] failed", err);
       return { ok: false, code: "network", message: friendlyMessage("network") };
     } finally {
       setLoading(false);

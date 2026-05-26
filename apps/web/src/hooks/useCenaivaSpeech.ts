@@ -5,6 +5,23 @@ const SpeechRecognitionAPI =
     ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     : null;
 
+// Minimal type matching the Web Speech Recognition API surface this hook
+// uses. TypeScript's DOM lib doesn't export the prefixed variants we need,
+// so we keep the constructor untyped (above) and type instances here.
+type SpeechRecognitionInstance = {
+  start: () => void;
+  stop: () => void;
+  abort?: () => void;
+  continuous?: boolean;
+  interimResults?: boolean;
+  lang?: string;
+  maxAlternatives?: number;
+  onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  onstart?: (() => void) | null;
+};
+
 // Browser speech recognition is intentionally disabled for Cenaiva's STT path.
 // We keep this hook for browser TTS only.
 const BROWSER_STT_ENABLED = false;
@@ -51,7 +68,7 @@ function waitForVoices(): Promise<void> {
 export function useCenaivaSpeech(lang: string = "en-CA") {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   const isRecognitionSupported = !!SpeechRecognitionAPI && BROWSER_STT_ENABLED;
   const isSynthesisSupported =

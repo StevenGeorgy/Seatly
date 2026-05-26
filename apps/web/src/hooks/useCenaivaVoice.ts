@@ -204,7 +204,8 @@ export function useCenaivaVoice() {
           if (import.meta.env.DEV) console.log(`[Cenaiva TTS] attempting ElevenLabs: "${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"`);
           try {
             played = await elevenlabs.speak(text);
-          } catch {
+          } catch (err) {
+            console.warn("[CenaivaVoice.speak] ElevenLabs first attempt failed", err);
             played = false;
           }
           // Retry ElevenLabs once on transient failure before falling back to
@@ -213,7 +214,8 @@ export function useCenaivaVoice() {
           if (!played) {
             try {
               played = await elevenlabs.speak(text);
-            } catch {
+            } catch (err) {
+              console.warn("[CenaivaVoice.speak] ElevenLabs retry failed", err);
               played = false;
             }
           }

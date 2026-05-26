@@ -211,7 +211,8 @@ export function PaymentMethodsSection() {
             exp_month: body?.exp_month ?? null,
             exp_year: body?.exp_year ?? null,
           };
-        } catch {
+        } catch (err) {
+          console.warn("[PaymentMethods.fetchRestaurantSubCards] failed for restaurant", restaurant_id, err);
           return { restaurant_id, restaurant_name, has_card: false, brand: null, last4: null, exp_month: null, exp_year: null };
         }
       }),

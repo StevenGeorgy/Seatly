@@ -417,7 +417,8 @@ export function Step8PaymentSetup({
         requirementsDue,
         requirementsProcessing,
       };
-    } catch {
+    } catch (err) {
+      console.warn("[Step8PaymentSetup.fetchKycStatus] failed to fetch Stripe KYC", err);
       return null;
     }
   }, [restaurantId, refreshRestaurantRow]);

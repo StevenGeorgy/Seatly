@@ -99,7 +99,8 @@ export function CenaivaVoicePreferenceProvider({ children }: { children: ReactNo
 
       await Storage.removeItem(storageKey).catch(() => undefined);
       setVoicePreferenceState(null);
-    } catch {
+    } catch (err) {
+      console.warn("[CenaivaVoicePreference.refresh] failed; falling back to cached", err);
       const cached = normalizeCenaivaTtsVoice(
         await Storage.getItem(storageKey).catch(() => null),
       );
@@ -144,7 +145,8 @@ export function CenaivaVoicePreferenceProvider({ children }: { children: ReactNo
           .eq("auth_user_id", authUserId);
 
         return !error;
-      } catch {
+      } catch (err) {
+        console.warn("[CenaivaVoicePreference.save] failed to persist voice", err);
         return true;
       } finally {
         setIsSaving(false);
