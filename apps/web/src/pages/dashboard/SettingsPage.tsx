@@ -30,6 +30,7 @@ import { GoogleAddressAutocompleteInput } from "@/components/restaurant/GoogleAd
 import { Button } from "@/components/ui/button";
 import { ColorPicker, BACKGROUND_PRESETS } from "@/components/ui/color-picker";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1636,7 +1637,7 @@ export default function SettingsPage() {
                   <Input value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="hello@example.com" />
                 </FieldRow>
                 <FieldRow label={t("dashboard.settings.phone")}>
-                  <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(416) 555-0142" />
+                  <PhoneInput value={phone} onChange={setPhone} />
                 </FieldRow>
                 <FieldRow label={t("dashboard.settings.websiteUrl")}>
                   <Input value={websiteUrl} onChange={(e) => setWebsiteUrl(e.target.value)} placeholder="https://example.com" />

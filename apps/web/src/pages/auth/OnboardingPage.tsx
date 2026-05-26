@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { AuthPageLayout } from "@/components/auth/AuthPageLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { useUser } from "@/hooks/useUser";
 import { useErrorToast } from "@/lib/errors";
@@ -54,6 +55,7 @@ export default function OnboardingPage() {
 
   const {
     register,
+    control,
     handleSubmit,
     reset,
     formState: { errors },
@@ -228,16 +230,23 @@ export default function OnboardingPage() {
           {missingPhone ? (
             <div className="space-y-2">
               <Label htmlFor="onboarding-phone">Phone number</Label>
-              <Input
-                id="onboarding-phone"
-                type="tel"
-                autoComplete="tel"
-                className="h-12 px-4 rounded-md"
-                placeholder="+1 416 555 1234"
-                {...register("phone", {
+              <Controller
+                control={control}
+                name="phone"
+                rules={{
                   required: "Phone number is required for SMS confirmation",
-                  minLength: { value: 7, message: "Too short" },
-                })}
+                  minLength: { value: 14, message: "Enter a 10-digit phone number" },
+                }}
+                render={({ field }) => (
+                  <PhoneInput
+                    id="onboarding-phone"
+                    value={field.value ?? ""}
+                    onChange={field.onChange}
+                    onBlur={field.onBlur}
+                    error={!!errors.phone}
+                    className="h-12 px-4 rounded-md"
+                  />
+                )}
               />
               {errors.phone ? (
                 <p className="text-destructive text-sm" role="alert">

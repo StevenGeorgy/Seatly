@@ -63,3 +63,46 @@ export function formatE164ForDisplay(e164: string): string {
   }
   return e164;
 }
+
+/**
+ * Live "format as the user types" helper for North American phone
+ * inputs. Strips non-digits, drops a leading "1" country code if the
+ * user typed it, hard-caps at 10 NA digits, and returns a partial
+ * formatted string matching whatever segment they've reached:
+ *   ""           → ""
+ *   "289"        → "+1 (289"
+ *   "2894"       → "+1 (289) 4"
+ *   "289400"     → "+1 (289) 400"
+ *   "2894000883" → "+1 (289) 400-0883"
+ *
+ * Used by the shared <PhoneInput /> component so every phone form in
+ * the app behaves identically.
+ */
+export function formatNorthAmericanAsTyping(raw: string): string {
+  if (!raw) return "";
+  let digits = raw.replace(/\D/g, "");
+  // If the user typed a leading "1" (NA country code), drop it — we'll
+  // re-add "+1" via the display prefix.
+  if (digits.length === 11 && digits.startsWith("1")) {
+    digits = digits.slice(1);
+  }
+  if (digits.length > 10) digits = digits.slice(0, 10);
+  if (digits.length === 0) return "";
+  if (digits.length <= 3) return `+1 (${digits}`;
+  if (digits.length <= 6) return `+1 (${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `+1 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+/**
+ * Strip a formatted NA phone string down to bare digits (no country
+ * code), for callers that need the 10-digit form (e.g. trimming a
+ * draft value before storing).
+ */
+export function extractNorthAmericanDigits(raw: string): string {
+  if (!raw) return "";
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) {
+    digits = digits.slice(1);
+  }
+  return digits.slice(0, 10);
+}

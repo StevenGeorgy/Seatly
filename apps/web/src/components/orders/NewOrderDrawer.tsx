@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { useMenuItems, type MenuItemRow } from "@/hooks/useMenuItems";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -166,10 +167,9 @@ export function NewOrderDrawer({ open, onClose, onSaved, restaurantId, currency 
                 </div>
                 <div className="relative">
                   <Phone className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
-                  <Input
+                  <PhoneInput
                     value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="Phone number"
+                    onChange={setCustomerPhone}
                     className="pl-9"
                   />
                 </div>

@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -1423,7 +1424,7 @@ function FloorReservationDialog({
             </div>
             <div className="grid gap-2">
               <label className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Phone</label>
-              <Input value={guestPhone} onChange={(event) => setGuestPhone(event.target.value)} placeholder="Optional" />
+              <PhoneInput value={guestPhone} onChange={setGuestPhone} placeholder="Optional" />
             </div>
           </div>
           <div className="grid gap-2">
@@ -1907,7 +1908,7 @@ function HostQuickPanel({
       <div className="mt-4 space-y-3">
         <Input value={guestName} onChange={(event) => onGuestNameChange(event.target.value)} placeholder="Guest name" />
         <div className="grid grid-cols-1 gap-2">
-          <Input value={guestPhone} onChange={(event) => onGuestPhoneChange(event.target.value)} placeholder="Phone" />
+          <PhoneInput value={guestPhone} onChange={onGuestPhoneChange} placeholder="Phone" />
           <Input value={guestEmail} onChange={(event) => onGuestEmailChange(event.target.value)} placeholder="Email" />
         </div>
         <Textarea

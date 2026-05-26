@@ -32,6 +32,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -2748,7 +2749,13 @@ export default function RestaurantPublicPage() {
                       </div>
                       <div>
                         <Label htmlFor="di-phone" className="mb-1.5 block text-xs text-text-muted">Phone <span className="text-danger">*</span></Label>
-                        <Input id="di-phone" type="tel" required maxLength={20} value={dineIn.phone} onChange={(e) => setDineIn((d) => ({ ...d, phone: e.target.value.slice(0, 20) }))} placeholder="+1 (416) 555-0100" />
+                        <PhoneInput
+                          id="di-phone"
+                          required
+                          value={dineIn.phone}
+                          onChange={(formatted) => setDineIn((d) => ({ ...d, phone: formatted }))}
+                          error={dineIn.phone.trim().length > 0 && normalizeE164Phone(dineIn.phone) === null}
+                        />
                         {dineIn.phone.trim().length > 0 && normalizeE164Phone(dineIn.phone) === null ? (
                           <p className="mt-1 text-[11px] text-danger" role="alert">
                             That phone number doesn't look right. Try +1 416 555 1234.

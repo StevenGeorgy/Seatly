@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -959,7 +960,7 @@ export default function ReservationsPage() {
               </div>
               <div className="flex flex-col gap-2">
                 <Label>Phone</Label>
-                <Input type="tel" value={guestPhone} onChange={(event) => setGuestPhone(event.target.value)} placeholder="+1 555 000 0000" />
+                <PhoneInput value={guestPhone} onChange={setGuestPhone} />
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">

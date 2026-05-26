@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Loader2, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -35,6 +36,7 @@ export function BookDemoForm({ onSuccess }: BookDemoFormProps) {
 
   const {
     register,
+    control,
     handleSubmit,
     watch,
     formState: { errors },
@@ -120,12 +122,19 @@ export function BookDemoForm({ onSuccess }: BookDemoFormProps) {
           <Label htmlFor="demo-phone" className="text-sm font-medium text-white">
             Phone <span className="text-text-muted">(optional)</span>
           </Label>
-          <Input
-            id="demo-phone"
-            type="tel"
-            autoComplete="tel"
-            {...register("phone")}
-            className="mt-2 h-11"
+          <Controller
+            control={control}
+            name="phone"
+            render={({ field }) => (
+              <PhoneInput
+                id="demo-phone"
+                value={field.value ?? ""}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+                error={!!errors.phone}
+                className="mt-2 h-11"
+              />
+            )}
           />
           {errors.phone && (
             <p className="mt-1.5 text-xs text-red-400">{errors.phone.message}</p>

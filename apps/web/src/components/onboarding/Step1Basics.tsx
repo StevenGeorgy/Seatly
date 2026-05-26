@@ -8,6 +8,7 @@ import { clearDraft, readDraft, useDraftAutosave } from "./draftPersistence";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -417,7 +418,19 @@ export function Step1Basics({
             <Label htmlFor="phone">
               Phone <span className="text-danger">*</span>
             </Label>
-            <Input id="phone" type="tel" maxLength={20} {...form.register("phone")} placeholder="+1 (416) 555-0100" />
+            <Controller
+              control={form.control}
+              name="phone"
+              render={({ field }) => (
+                <PhoneInput
+                  id="phone"
+                  value={field.value ?? ""}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  error={!!errors.phone}
+                />
+              )}
+            />
             {errors.phone ? <p className="text-xs text-danger">{errors.phone.message}</p> : null}
           </div>
         </div>
