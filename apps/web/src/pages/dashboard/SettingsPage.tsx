@@ -444,7 +444,7 @@ function Card({ children }: { children: ReactNode }) {
 
 // Cenaiva plan is a single tier: $199.99 CAD/month with a 90-day free trial.
 // In addition, $1 per confirmed reservation (billed via Stripe invoice items
-// on the restaurant's subscription). Diners pay our 5.5% platform fee plus
+// on the restaurant's subscription). Diners pay our 2% platform fee plus
 // Stripe processing on top of every deposit and pre-order at checkout, so
 // the restaurant's Connect account receives 100% of the deposit/order base —
 // nothing is deducted from what the diner promised to pay.
@@ -452,8 +452,8 @@ const PLAN_PRICE_CENTS = 19999;
 const PLAN_CURRENCY = "CAD";
 const PLAN_USAGE_FEES = [
   "$1 per confirmed reservation",
-  "5.5% diner-paid platform fee on pre-orders (you keep 100% of base)",
-  "5.5% diner-paid platform fee on deposits (you keep 100% of base)",
+  "2% diner-paid platform fee on pre-orders (you keep 100% of base)",
+  "2% diner-paid platform fee on deposits (you keep 100% of base)",
 ];
 
 type BillingSummary = {

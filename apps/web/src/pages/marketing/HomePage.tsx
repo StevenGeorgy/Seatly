@@ -553,7 +553,7 @@ export default function HomePage() {
             </div>
             <p className="mt-5 text-sm text-text-muted">
               <span className="text-gold">Free 3 months</span>, then $199.99 CAD/month.
-              $1 per reservation + 5.5% on pre-orders &amp; deposits. Cancel any month.
+              $1 per reservation + 2% on pre-orders &amp; deposits. Cancel any month.
             </p>
           </div>
 
@@ -573,7 +573,7 @@ export default function HomePage() {
                 {
                   icon: Coins,
                   title: "Honest pricing",
-                  desc: "$199.99/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
+                  desc: "$199.99/mo + $1 per confirmed booking. 2% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
                 },
                 {
                   icon: Sparkles,

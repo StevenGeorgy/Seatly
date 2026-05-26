@@ -35,7 +35,7 @@ const FEATURES = [
   {
     icon: CreditCard,
     title: "Honest pricing",
-    desc: "$199.99/mo + $1 per confirmed booking. 5.5% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
+    desc: "$199.99/mo + $1 per confirmed booking. 2% on pre-orders & deposits. Zero commission on menu prices. Native CAD.",
   },
   {
     icon: BarChart3,
@@ -68,7 +68,7 @@ const MODULES = [
   {
     icon: CreditCard,
     title: "Payments",
-    desc: "Stripe Connect Embedded onboarding. Native CAD. Diners pay our 5.5% platform fee + Stripe processing on top of every deposit and pre-order, so restaurants keep 100% of the base.",
+    desc: "Stripe Connect Embedded onboarding. Native CAD. Diners pay our 2% platform fee + Stripe processing on top of every deposit and pre-order, so restaurants keep 100% of the base.",
   },
   {
     icon: BarChart3,
@@ -140,7 +140,7 @@ const VALUE_NOTES = [
   },
   {
     title: "You keep 100% of the base",
-    desc: "Diners pay our 5.5% platform fee + Stripe processing on top of every deposit and pre-order. The full base lands in your Stripe Connect account, nothing skimmed.",
+    desc: "Diners pay our 2% platform fee + Stripe processing on top of every deposit and pre-order. The full base lands in your Stripe Connect account, nothing skimmed.",
   },
   {
     title: "Cancel any month",
@@ -181,7 +181,7 @@ export default function RestaurantsPage() {
             </h1>
             <p className="mt-7 max-w-2xl text-base leading-relaxed text-text-secondary sm:text-lg">
               Reservations, floor plan, pre-orders, deposits, payments — on one
-              dashboard, one login. {bookingFee} per confirmed booking + 5.5%
+              dashboard, one login. {bookingFee} per confirmed booking + 2%
               on pre-orders & deposits. Zero commission on your menu prices.
             </p>
             <div className="mt-10 flex flex-col gap-3 sm:flex-row">
@@ -196,7 +196,7 @@ export default function RestaurantsPage() {
             </div>
             <p className="mt-5 text-sm text-text-muted">
               <span className="text-gold">Free 3 months</span>, then $199.99 CAD/month.
-              {" "}{bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
+              {" "}{bookingFee} per reservation + 2% on pre-orders &amp; deposits.
             </p>
           </motion.div>
         </div>
@@ -241,7 +241,7 @@ export default function RestaurantsPage() {
             </div>
             <p className="mt-5 text-sm text-text-muted">
               <span className="text-gold">Free 3 months</span>, then $199.99 CAD/month.
-              {bookingFee} per reservation + 5.5% on pre-orders &amp; deposits.
+              {bookingFee} per reservation + 2% on pre-orders &amp; deposits.
               Cancel any month.
             </p>
           </motion.div>
@@ -322,7 +322,7 @@ export default function RestaurantsPage() {
             </div>
             <p className="max-w-2xl text-base leading-relaxed text-text-secondary lg:justify-self-end">
               $199.99 CAD/month per restaurant. A flat dollar per confirmed booking,
-              plus 5.5% on pre-orders & deposits. Zero commission on your menu
+              plus 2% on pre-orders & deposits. Zero commission on your menu
               prices. Cancel any month.
             </p>
           </div>
@@ -358,7 +358,7 @@ export default function RestaurantsPage() {
                     ? "$199.99"
                     : card.priceKey === "booking"
                       ? bookingFee
-                      : "5.5%"}
+                      : "2%"}
                   <span className="text-sm font-normal text-text-muted">
                     {card.priceKey === "subscription"
                       ? "CAD / month"

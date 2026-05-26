@@ -133,7 +133,7 @@ export default function BookDemoPage() {
                     <span className="block font-semibold text-white">
                       Honest pricing
                     </span>
-                    $199.99 CAD/month after trial. $1 per confirmed booking. 5.5% on
+                    $199.99 CAD/month after trial. $1 per confirmed booking. 2% on
                     pre-orders &amp; deposits. Zero commission on menu prices.
                   </span>
                 </li>

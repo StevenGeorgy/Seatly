@@ -347,7 +347,7 @@ function SplitTenderSurface({
           <span className="text-text-primary">
             ${(dinerCharge.baseCents / 100).toFixed(2)}
           </span>{" "}
-          + 5.5% platform fee{" "}
+          + 2% platform fee{" "}
           <span className="text-text-primary">
             ${(dinerCharge.cenaivaFeeCents / 100).toFixed(2)}
           </span>{" "}

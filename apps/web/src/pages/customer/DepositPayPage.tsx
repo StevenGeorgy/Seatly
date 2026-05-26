@@ -244,7 +244,7 @@ export default function DepositPayPage() {
                       </div>
                       {charge.cenaivaFeeCents > 0 && (
                         <div className="mt-2 flex items-center justify-between">
-                          <span className="text-text-secondary">Platform fee (5.5%)</span>
+                          <span className="text-text-secondary">Platform fee (2%)</span>
                           <span className="text-text-primary">
                             {ccy} ${(charge.cenaivaFeeCents / 100).toFixed(2)}
                           </span>

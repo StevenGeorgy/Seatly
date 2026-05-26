@@ -175,7 +175,7 @@ export default function ExportPage() {
         // Date filter applies to `paid_at` for both, since the accountant
         // cares about when money landed, not when the row was created.
         // Under the Option B fee model (see STRIPE_UPDATES.md): both
-        // the 5.5% platform fee and Stripe processing are paid by the
+        // the 2% platform fee and Stripe processing are paid by the
         // diner on top of the base. The amount_cents / total_amount
         // values below ARE the restaurant's net — 100% of the deposit
         // or order base — no commission or Stripe deduction needed.

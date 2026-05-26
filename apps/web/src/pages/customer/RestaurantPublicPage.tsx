@@ -3206,7 +3206,7 @@ export default function RestaurantPublicPage() {
                   )}
                   {cenaivaFeeDollars > 0 && (
                     <div className="flex justify-between text-sm">
-                      <span className="text-text-secondary">Platform fee (5.5%)</span>
+                      <span className="text-text-secondary">Platform fee (2%)</span>
                       <span className="text-text-primary">{formatCurrency(cenaivaFeeDollars, currency)}</span>
                     </div>
                   )}
