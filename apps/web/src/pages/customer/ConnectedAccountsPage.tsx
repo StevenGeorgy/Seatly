@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { AccountShell } from "@/components/customer/AccountShell";
 import { Button } from "@/components/ui/button";
 import { useUser } from "@/hooks/useUser";
 import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
@@ -125,31 +125,27 @@ export default function ConnectedAccountsPage() {
 
   if (userLoading) {
     return (
-      <div className="min-h-screen bg-bg-base text-white">
-        <main className="mx-auto max-w-3xl px-6 py-10 lg:px-10">
-          <Loader2 className="size-5 animate-spin text-text-muted" />
-        </main>
-      </div>
+      <AccountShell activeSection="preferences">
+        <Loader2 className="size-5 animate-spin text-text-muted" />
+      </AccountShell>
     );
   }
 
   return (
-    <div className="min-h-screen bg-bg-base text-white">
-      <main className="mx-auto max-w-3xl px-6 py-10 lg:px-10">
-        <Link
-          to="/account"
-          className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-text-muted hover:text-white"
-        >
-          <ArrowLeft className="size-3.5" />
-          Back to account
-        </Link>
-
-        <h1 className="mt-4 font-serif text-3xl">Connected accounts</h1>
+    <AccountShell activeSection="preferences">
+      <div>
+        <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+          <span className="h-px w-3 bg-gold/60" /> My Account
+        </span>
+        <h1 className="mt-2 font-serif text-5xl leading-none text-white">
+          Connected accounts
+        </h1>
         <p className="mt-2 max-w-xl text-sm text-text-secondary">
           Sign in to Cenaiva with any of these methods. They all point at the same
           account, so you'll see the same bookings, saved cards, and history no matter
           which one you use.
         </p>
+      </div>
 
         <section className="mt-8 space-y-3">
           <h2 className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
@@ -242,12 +238,11 @@ export default function ConnectedAccountsPage() {
           </section>
         ) : null}
 
-        <p className="mt-8 text-xs text-text-muted">
-          Disconnecting a sign-in method doesn't delete your account — you'll just need
-          to use one of the other methods to sign in next time. The last remaining
-          method can't be removed.
-        </p>
-      </main>
-    </div>
+      <p className="mt-8 text-xs text-text-muted">
+        Disconnecting a sign-in method doesn't delete your account — you'll just need
+        to use one of the other methods to sign in next time. The last remaining
+        method can't be removed.
+      </p>
+    </AccountShell>
   );
 }

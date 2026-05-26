@@ -39,6 +39,7 @@ const NotificationsPreferencesPage = lazy(
 const MyDataPage = lazy(() => import("@/pages/account/MyDataPage"));
 const MyProfileDataPage = lazy(() => import("@/pages/account/MyProfileDataPage"));
 const SignInHistoryPage = lazy(() => import("@/pages/account/SignInHistoryPage"));
+const SecurityPage = lazy(() => import("@/pages/account/SecurityPage"));
 const DepositPayPage = lazy(() => import("@/pages/customer/DepositPayPage"));
 const BookingDetailsPage = lazy(() => import("@/pages/customer/BookingDetailsPage"));
 const BookingsPage = lazy(() => import("@/pages/customer/BookingsPage"));
@@ -227,6 +228,14 @@ export function AppRoutes() {
           element={
             <RequireAuth>
               <SignInHistoryPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account/security"
+          element={
+            <RequireAuth>
+              <SecurityPage />
             </RequireAuth>
           }
         />

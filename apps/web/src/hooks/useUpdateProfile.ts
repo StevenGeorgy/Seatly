@@ -16,24 +16,15 @@ export function useUpdateProfile() {
     setSaving(true);
     const client = getSupabaseBrowserClient();
 
-    // Email change goes through Supabase auth — triggers a verification email.
-    if (values.email && values.email !== profile.email) {
-      const { error: authErr } = await client.auth.updateUser({ email: values.email });
-      if (authErr) {
-        showErrorToast(authErr, {
-          context: "Couldn't update email",
-          logTag: "[useUpdateProfile.email]",
-        });
-        setSaving(false);
-        return;
-      }
-      toast.info("Verification email sent — your email will update after you confirm it.");
-    }
+    // Email is now changed exclusively through /account/security
+    // (ChangeEmailSection), which re-verifies the current password
+    // before kicking off the Supabase verification flow. Profile-edit
+    // saves intentionally don't touch the email column to avoid the
+    // "I just wanted to fix my name and now I'm logged out" trap.
 
     const updateRow: Record<string, unknown> = {
       full_name: values.full_name,
       phone: values.phone || null,
-      email: values.email,
       dietary_restrictions: values.dietary_restrictions,
       allergies: values.allergies,
     };

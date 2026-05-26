@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
+import { AccountShell } from "@/components/customer/AccountShell";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -168,11 +169,6 @@ export default function PrivacySettingsPage(): JSX.Element {
     }, DEBOUNCE_MS);
   }
 
-  const handleBack = () => {
-    if (window.history.length > 1) navigate(-1);
-    else navigate("/account");
-  };
-
   const handleDeleteAccount = async () => {
     if (!user || !deleteEmailMatch || deleteAccountSubmitting) return;
     if (!isSupabaseConfigured()) {
@@ -237,18 +233,8 @@ export default function PrivacySettingsPage(): JSX.Element {
   };
 
   return (
-    <div className="min-h-screen bg-bg-base text-text-primary">
-      <main className="mx-auto w-full max-w-3xl px-5 py-6 sm:px-8 lg:py-10">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-        >
-          <ArrowLeft className="size-4 text-gold" />
-          Back
-        </button>
-
-        <header className="mt-6">
+    <AccountShell activeSection="preferences">
+      <header>
           <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
             <span className="h-px w-3 bg-gold/60" /> My Account
           </span>
@@ -392,8 +378,7 @@ export default function PrivacySettingsPage(): JSX.Element {
             </Dialog>
           </section>
         )}
-      </main>
-    </div>
+    </AccountShell>
   );
 }
 

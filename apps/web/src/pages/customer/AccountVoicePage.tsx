@@ -1,7 +1,6 @@
-import { ArrowLeft, Check, Loader2, Mic } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Check, Loader2, Mic } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { AccountShell } from "@/components/customer/AccountShell";
 import { useCenaivaVoicePreference } from "@/hooks/useCenaivaVoicePreference";
 import type { CenaivaTtsVoice } from "@/lib/cenaiva/voicePreference";
 import { cn } from "@/lib/utils";
@@ -29,28 +28,19 @@ export default function AccountVoicePage() {
   };
 
   return (
-    <div className="min-h-screen bg-bg-base text-white">
-      <main className="mx-auto max-w-3xl px-6 py-10 lg:px-10">
-        <Link
-          to="/account"
-          className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-text-muted hover:text-white"
-        >
-          <ArrowLeft className="size-3.5" />
-          Back to account
-        </Link>
-
-        <header className="mt-6">
-          <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
-            <span className="h-px w-3 bg-gold/60" /> Cenaiva voice
-          </span>
-          <h1 className="mt-2 font-serif text-5xl leading-none text-white">
-            Choose your voice
-          </h1>
-          <p className="mt-2 text-sm text-text-secondary">
-            How Cenaiva sounds when she speaks back. Your choice syncs across
-            web and mobile.
-          </p>
-        </header>
+    <AccountShell activeSection="preferences">
+      <header>
+        <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
+          <span className="h-px w-3 bg-gold/60" /> Cenaiva voice
+        </span>
+        <h1 className="mt-2 font-serif text-5xl leading-none text-white">
+          Choose your voice
+        </h1>
+        <p className="mt-2 text-sm text-text-secondary">
+          How Cenaiva sounds when she speaks back. Your choice syncs across
+          web and mobile.
+        </p>
+      </header>
 
         <section className="mt-8 space-y-3">
           {VOICE_OPTIONS.map((option) => {
@@ -95,19 +85,12 @@ export default function AccountVoicePage() {
               </button>
             );
           })}
-        </section>
+      </section>
 
-        <p className="mt-6 text-xs text-text-muted">
-          You can change this anytime. The next thing Cenaiva says will use the
-          new voice.
-        </p>
-
-        <div className="mt-10">
-          <Link to="/account">
-            <Button variant="outline">Done</Button>
-          </Link>
-        </div>
-      </main>
-    </div>
+      <p className="mt-6 text-xs text-text-muted">
+        You can change this anytime. The next thing Cenaiva says will use the
+        new voice.
+      </p>
+    </AccountShell>
   );
 }

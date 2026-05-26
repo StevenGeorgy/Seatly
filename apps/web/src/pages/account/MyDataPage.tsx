@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ArrowLeft, Database, Download, FileSearch, Loader2, Pencil } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Database, Download, FileSearch, Loader2, Pencil } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
+import { AccountShell } from "@/components/customer/AccountShell";
 import { Button } from "@/components/ui/button";
 import { useErrorToast } from "@/lib/errors";
 import {
@@ -21,14 +22,8 @@ function todayStamp(): string {
 }
 
 export default function MyDataPage(): JSX.Element {
-  const navigate = useNavigate();
   const { errorToast } = useErrorToast();
   const [downloading, setDownloading] = useState<boolean>(false);
-
-  const handleBack = () => {
-    if (window.history.length > 1) navigate(-1);
-    else navigate("/account");
-  };
 
   async function handleDownload(): Promise<void> {
     if (downloading) return;
@@ -98,18 +93,8 @@ export default function MyDataPage(): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen bg-bg-base text-text-primary">
-      <main className="mx-auto w-full max-w-3xl px-5 py-6 sm:px-8 lg:py-10">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-        >
-          <ArrowLeft className="size-4 text-gold" />
-          Back
-        </button>
-
-        <header className="mt-6">
+    <AccountShell activeSection="preferences">
+      <header>
           <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
             <span className="h-px w-3 bg-gold/60" /> My Account
           </span>
@@ -224,8 +209,7 @@ export default function MyDataPage(): JSX.Element {
               </p>
             </div>
           </div>
-        </section>
-      </main>
-    </div>
+      </section>
+    </AccountShell>
   );
 }

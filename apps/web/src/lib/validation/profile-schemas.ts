@@ -1,8 +1,12 @@
 import { z } from "zod";
 
+// Email is intentionally optional here even though it's still tracked on
+// the profile row. Email *changes* happen exclusively through
+// /account/security (Supabase auth verification flow); the profile-edit
+// form no longer surfaces email, so callers don't pass it.
 export const profileUpdateSchema = z.object({
   full_name: z.string().min(1, "Name is required").max(120),
-  email: z.string().email("Invalid email address"),
+  email: z.string().email("Invalid email address").optional(),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
   dietary_restrictions: z.array(z.string()).default([]),
   allergies: z.array(z.string()).default([]),

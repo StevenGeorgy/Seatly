@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Loader2, ShieldOff } from "lucide-react";
+import { Loader2, ShieldOff } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
+import { AccountShell } from "@/components/customer/AccountShell";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -149,11 +150,6 @@ export default function SignInHistoryPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const handleBack = () => {
-    if (window.history.length > 1) navigate(-1);
-    else navigate("/account");
-  };
-
   const handleRevokeAll = useCallback(async () => {
     if (!user || revoking) return;
     if (!isSupabaseConfigured()) {
@@ -230,18 +226,8 @@ export default function SignInHistoryPage(): JSX.Element {
   );
 
   return (
-    <div className="min-h-screen bg-bg-base text-text-primary">
-      <main className="mx-auto w-full max-w-4xl px-5 py-6 sm:px-8 lg:py-10">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-        >
-          <ArrowLeft className="size-4 text-gold" />
-          Back
-        </button>
-
-        <header className="mt-6">
+    <AccountShell activeSection="preferences">
+      <header>
           <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
             <span className="h-px w-3 bg-gold/60" /> My Account
           </span>
@@ -321,17 +307,16 @@ export default function SignInHistoryPage(): JSX.Element {
           )}
         </section>
 
-        <p className="mt-4 text-xs text-text-muted">
-          These events are logged for security. Email{" "}
-          <a
-            href="mailto:security@cenaiva.com"
-            className="text-gold underline-offset-2 hover:underline"
-          >
-            security@cenaiva.com
-          </a>{" "}
-          if anything looks unfamiliar.
-        </p>
-      </main>
+      <p className="mt-4 text-xs text-text-muted">
+        These events are logged for security. Email{" "}
+        <a
+          href="mailto:security@cenaiva.com"
+          className="text-gold underline-offset-2 hover:underline"
+        >
+          security@cenaiva.com
+        </a>{" "}
+        if anything looks unfamiliar.
+      </p>
 
       <Dialog
         open={revokeOpen}
@@ -375,6 +360,6 @@ export default function SignInHistoryPage(): JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </AccountShell>
   );
 }

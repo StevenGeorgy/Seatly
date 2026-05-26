@@ -1,28 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { motion } from "framer-motion";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowLeft,
-  CalendarDays,
-  CreditCard,
-  LogOut,
-  MessageCircle,
-  Settings,
-  ShoppingBag,
-  Sparkles,
-  Star,
-  Trash2,
-} from "lucide-react";
+import { Sparkles, Star, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 
+import { AccountShell, type AccountSection } from "@/components/customer/AccountShell";
 import { AvatarUploadCard } from "@/components/customer/AvatarUploadCard";
-import { ChangePasswordSection } from "@/components/customer/ChangePasswordSection";
 import { PaymentMethodsSection } from "@/components/customer/PaymentMethodsSection";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useErrorToast } from "@/lib/errors";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -49,8 +37,17 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
 
-type Section = "bookings" | "orders" | "reviews" | "concierge" | "payment" | "preferences";
+type Section = AccountSection;
 type BookingTab = "upcoming" | "past" | "cancelled";
+
+const VALID_SECTIONS: ReadonlySet<Section> = new Set([
+  "bookings",
+  "orders",
+  "reviews",
+  "concierge",
+  "payment",
+  "preferences",
+]);
 
 type BookingPreview = {
   id: string;
@@ -67,19 +64,9 @@ type BookingPreview = {
 
 const profileFormSchema = z.object({
   full_name: z.string().min(1, "Name is required").max(120),
-  email: z.string().email("Invalid email address"),
   phone: z.string().trim().max(30).optional().or(z.literal("")),
 });
 type ProfileFormValues = z.infer<typeof profileFormSchema>;
-
-const ACCOUNT_NAV: { id: Section; label: string; icon: typeof CalendarDays }[] = [
-  { id: "bookings", label: "Bookings", icon: CalendarDays },
-  { id: "orders", label: "Orders", icon: ShoppingBag },
-  { id: "reviews", label: "Reviews", icon: Star },
-  { id: "concierge", label: "Concierge", icon: MessageCircle },
-  { id: "payment", label: "Payment", icon: CreditCard },
-  { id: "preferences", label: "Preferences", icon: Settings },
-];
 
 function adaptReservation(row: MyReservationRow): BookingPreview {
   const reservedAt = new Date(row.reserved_at);
@@ -307,8 +294,8 @@ function ReviewEntryRow({
 }
 
 export default function AccountPage() {
-  const navigate = useNavigate();
-  const { profile, signOut } = useUser();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { profile } = useUser();
   const { errorToast } = useErrorToast();
   const { upcoming, past, loading: reservationsLoading } = useMyReservations();
   const { orders, loading: ordersLoading } = useMyOrders();
@@ -322,7 +309,33 @@ export default function AccountPage() {
   const [reviewToDelete, setReviewToDelete] = useState<MyReviewSnapEntry | null>(null);
   const [reviewDeleting, setReviewDeleting] = useState(false);
 
-  const [activeSection, setActiveSection] = useState<Section>("bookings");
+  const sectionFromUrl = searchParams.get("section");
+  const initialSection: Section = VALID_SECTIONS.has(sectionFromUrl as Section)
+    ? (sectionFromUrl as Section)
+    : "bookings";
+  const [activeSection, setActiveSection] = useState<Section>(initialSection);
+
+  // Keep state in sync if the user clicks a sidebar link from a sub-page
+  // (e.g. /account/voice → /account?section=preferences) while AccountPage
+  // is already mounted.
+  useEffect(() => {
+    const next = searchParams.get("section");
+    if (next && VALID_SECTIONS.has(next as Section) && next !== activeSection) {
+      setActiveSection(next as Section);
+    }
+  }, [searchParams, activeSection]);
+
+  const handleSectionChange = (section: AccountSection) => {
+    setActiveSection(section);
+    // Mirror the section into the URL with replaceState (no extra
+    // history entry). This way, when the user leaves /account for a
+    // sub-page like /account/voice and then hits Back, the browser
+    // restores /account?section=<id> and the right tab opens — instead
+    // of dumping them on the Bookings default.
+    const next = new URLSearchParams(searchParams);
+    next.set("section", section);
+    setSearchParams(next, { replace: true });
+  };
   const [bookingTab, setBookingTab] = useState<BookingTab>("upcoming");
   const [dietaryCsv, setDietaryCsv] = useState(
     () => (profile?.dietary_restrictions ?? []).join(", "),
@@ -338,7 +351,6 @@ export default function AccountPage() {
     resolver: zodResolver(profileFormSchema),
     defaultValues: {
       full_name: profile?.full_name ?? "",
-      email: profile?.email ?? "",
       phone: profile?.phone ?? "",
     },
   });
@@ -358,18 +370,6 @@ export default function AccountPage() {
 
   const activeBookings = bookingLists[bookingTab];
 
-  const initials = (profile?.full_name ?? profile?.email ?? "SK")
-    .split(" ")
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-
-  const displayName = profile?.full_name ?? profile?.email ?? "Guest";
-  const memberSince = profile?.created_at
-    ? `Member since ${format(new Date(profile.created_at), "yyyy")}`
-    : "Member";
-
   const onSubmit = async (values: ProfileFormValues) => {
     const csvToArray = (csv: string) =>
       csv
@@ -383,14 +383,6 @@ export default function AccountPage() {
       allergies: csvToArray(allergiesCsv),
     });
     reset(values);
-  };
-
-  const handleBack = () => {
-    if (window.history.length > 1) {
-      navigate(-1);
-      return;
-    }
-    navigate("/discover");
   };
 
   const renderMain = () => {
@@ -596,9 +588,16 @@ export default function AccountPage() {
               {errors.full_name && <p className="text-xs text-danger">{errors.full_name.message}</p>}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" {...register("email")} />
-              {errors.email && <p className="text-xs text-danger">{errors.email.message}</p>}
+              <Label>Email</Label>
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm">
+                <span className="truncate text-text-secondary">{profile?.email ?? "—"}</span>
+                <Link
+                  to="/account/security"
+                  className="shrink-0 text-xs font-medium text-gold hover:underline"
+                >
+                  Change
+                </Link>
+              </div>
             </div>
           </div>
           <div className="space-y-1.5">
@@ -633,11 +632,24 @@ export default function AccountPage() {
           </div>
         </form>
 
-        <ChangePasswordSection />
+        <Link
+          to="/account/security"
+          className="mt-5 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+        >
+          <div>
+            <p className="font-serif text-lg text-white">Security</p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Change your password or the email you sign in with.
+            </p>
+          </div>
+          <span className="text-xl text-gold" aria-hidden>
+            →
+          </span>
+        </Link>
 
         <Link
           to="/account/voice"
-          className="mt-5 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
+          className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-bg-surface p-5 transition-colors hover:border-gold/40"
         >
           <div>
             <p className="font-serif text-lg text-white">Cenaiva voice settings</p>
@@ -715,68 +727,9 @@ export default function AccountPage() {
   };
 
   return (
-    <div className="min-h-screen bg-bg-base text-text-primary">
-      <main className="mx-auto w-full max-w-[1500px] px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
-        <button
-          type="button"
-          onClick={handleBack}
-          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-        >
-          <ArrowLeft className="size-4 text-gold" />
-          Back
-        </button>
-
-        <div className="mt-6 grid w-full gap-10 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="lg:sticky lg:top-10 lg:self-start">
-          <div className="rounded-3xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/20">
-            <div className="flex items-center gap-4 p-2">
-              <Avatar className="size-14 border border-gold/30">
-                <AvatarImage src={profile?.avatar_url ?? undefined} />
-                <AvatarFallback className="bg-gold/10 text-gold">{initials}</AvatarFallback>
-              </Avatar>
-              <div className="min-w-0">
-                <p className="truncate text-base font-semibold text-white">{displayName}</p>
-                <p className="text-xs text-text-muted">{memberSince}</p>
-              </div>
-            </div>
-
-            <nav className="mt-6 space-y-2" aria-label="Account">
-              {ACCOUNT_NAV.map((item) => {
-                const Icon = item.icon;
-                const active = activeSection === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setActiveSection(item.id)}
-                    className={cn(
-                      "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition-colors",
-                      active
-                        ? "border border-gold/25 bg-gold/15 text-gold"
-                        : "text-text-secondary hover:bg-bg-elevated hover:text-white",
-                    )}
-                  >
-                    <Icon className="size-4" />
-                    {item.label}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => void signOut()}
-                className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-white"
-              >
-                <LogOut className="size-4" />
-                Sign out
-              </button>
-            </nav>
-          </div>
-        </aside>
-
-        <section className="min-w-0 max-w-5xl">{renderMain()}</section>
-        </div>
-      </main>
-    </div>
+    <AccountShell activeSection={activeSection} onSectionChange={handleSectionChange}>
+      {renderMain()}
+    </AccountShell>
   );
 }
 
