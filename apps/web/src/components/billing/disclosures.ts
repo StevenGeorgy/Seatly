@@ -10,8 +10,8 @@
 // the publish-confirmation modal that gates the actual trial start.
 
 export const SAVE_CARD_DISCLOSURE =
-  "Your card stays on file. We won't charge anything until you publish — your 90-day free trial starts then. Then $199.99 CAD/month. Cancel anytime.";
+  "Your card stays on file. We won't charge anything until you publish — your 90-day free trial starts then. Then $199.99 CAD/month + applicable tax. Cancel anytime.";
 
 export function PUBLISH_CONFIRM_DISCLOSURE(previewEndDate: string): string {
-  return `Your 90-day free trial starts now. You won't be charged until ${previewEndDate}. Then $199.99 CAD/month, cancel anytime.`;
+  return `Your 90-day free trial starts now. You won't be charged until ${previewEndDate}. Then $199.99 CAD/month + applicable tax, cancel anytime.`;
 }

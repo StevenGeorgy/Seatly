@@ -567,7 +567,7 @@ export function Step8PaymentSetup({
         <h1 className="text-2xl font-bold sm:text-3xl">Payments &amp; publish</h1>
         <p className="mt-1 text-sm text-text-muted">
           Set up where your money lands and add a card for your monthly Cenaiva subscription.
-          Free for 90 days, then $199.99 CAD/month.
+          Free for 90 days, then $199.99 CAD/month + applicable tax.
         </p>
       </div>
 
@@ -751,8 +751,8 @@ export function Step8PaymentSetup({
             <div>
               <h2 className="text-lg font-semibold">Your Cenaiva subscription</h2>
               <p className="text-sm text-text-muted">
-                $199.99 CAD/month. Free for the first 90 days — your trial starts when you
-                publish. Cancel anytime.
+                $199.99 CAD/month + applicable tax. Free for the first 90 days — your
+                trial starts when you publish. Cancel anytime.
               </p>
             </div>
             {showTrialActive ? (
@@ -781,7 +781,7 @@ export function Step8PaymentSetup({
                 <>
                   <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200">
                     {subscriptionStatus === "trialing"
-                      ? `Free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}, then $199.99/month.`
+                      ? `Free until ${formatTrialEnd(summary?.trial_ends_at ?? null)}, then $199.99/month + applicable tax.`
                       : "Subscription is active."}
                   </div>
                   <div className="rounded-xl border border-border bg-bg-elevated/40 p-3">

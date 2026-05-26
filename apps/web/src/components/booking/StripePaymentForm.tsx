@@ -672,6 +672,22 @@ function OneTimeCardForm({
           // Link" banner that mounts above the card form.
           paymentMethodOrder: ["card", "apple_pay", "google_pay"],
           wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+          // Collect postal code so Stripe's AVS fraud check runs on each
+          // charge. Other address fields stay hidden to keep the form
+          // short — diners abandoning the booking flow is more costly
+          // than the lower fraud signal a missing line1 might cause.
+          fields: {
+            billingDetails: {
+              address: {
+                country: "auto",
+                postalCode: "auto",
+                line1: "never",
+                line2: "never",
+                city: "never",
+                state: "never",
+              },
+            },
+          },
         }}
       />
       {isLoggedIn ? (

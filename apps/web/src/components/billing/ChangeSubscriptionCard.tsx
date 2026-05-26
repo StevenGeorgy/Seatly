@@ -134,6 +134,21 @@ function ChangeSubscriptionCardInner({
           // Apple Pay & Google Pay enabled. Link disabled to avoid the
           // cross-merchant Link signup banner.
           wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+          // Collect postal code in addition to country for Stripe AVS.
+          // Mirrors SubscriptionCard so first-card-save and change-card
+          // flows collect the same fraud signal.
+          fields: {
+            billingDetails: {
+              address: {
+                country: "auto",
+                postalCode: "auto",
+                line1: "never",
+                line2: "never",
+                city: "never",
+                state: "never",
+              },
+            },
+          },
         }}
       />
       {error ? (

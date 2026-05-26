@@ -509,6 +509,21 @@ function SlotInner({
         layout: "tabs",
         paymentMethodOrder: ["card", "apple_pay", "google_pay"],
         wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+        // Collect postal code for Stripe AVS. Mirrors the non-split
+        // payment form's setting so every payer's card runs through
+        // the same fraud check.
+        fields: {
+          billingDetails: {
+            address: {
+              country: "auto",
+              postalCode: "auto",
+              line1: "never",
+              line2: "never",
+              city: "never",
+              state: "never",
+            },
+          },
+        },
       }}
     />
   );

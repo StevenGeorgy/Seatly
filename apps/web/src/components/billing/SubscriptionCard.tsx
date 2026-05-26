@@ -152,6 +152,23 @@ function SubscriptionCardInner({
           // collection. Link disabled to avoid the "Secure, fast checkout
           // with Link" cross-merchant signup banner.
           wallets: { applePay: "auto", googlePay: "auto", link: "never" },
+          // Collect postal code in addition to the country field. Stripe
+          // uses it for AVS (Address Verification System) — without it,
+          // some US / AMEX / business cards refuse to authorize and every
+          // charge carries a higher fraud-risk score. Other address
+          // fields stay hidden so the form is still one short input row.
+          fields: {
+            billingDetails: {
+              address: {
+                country: "auto",
+                postalCode: "auto",
+                line1: "never",
+                line2: "never",
+                city: "never",
+                state: "never",
+              },
+            },
+          },
         }}
       />
       {error ? (
