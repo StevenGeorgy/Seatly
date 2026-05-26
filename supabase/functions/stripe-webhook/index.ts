@@ -546,22 +546,32 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
         { p_hold_id: holdId, p_payment_intent_id: pi.id, p_grace_seconds: 120 },
       );
       if ((error as { code?: string } | null)?.code === "P0011") {
-        // Hold expired past grace — initiate refund (best-effort, log on fail).
+        // Hold expired past grace — initiate refund via the canonical
+        // shared helper. CLAUDE.md hard rule: destination-charge refunds
+        // must set `reverse_transfer: true` so the connected restaurant
+        // gets debited; without it Cenaiva eats the refund while the
+        // restaurant keeps the original transfer. The helper applies the
+        // right flags + `charge_already_refunded` idempotency.
         console.error("stripe-webhook: hold expired past grace, refunding", { hold_id: holdId, pi_id: pi.id });
         try {
           const stripeKeyForRefund = Deno.env.get("STRIPE_SECRET_KEY");
           if (stripeKeyForRefund) {
             const { default: StripeRefund } = await import("npm:stripe@17");
+            const { refundPaymentIntent } = await import("../_shared/stripe-refund.ts");
             const stripeForRefund = new StripeRefund(stripeKeyForRefund, { apiVersion: "2024-11-20.acacia" });
-            await stripeForRefund.refunds.create({
-              payment_intent: pi.id,
-              reason: "requested_by_customer",
-            });
+            const outcome = await refundPaymentIntent(
+              stripeForRefund,
+              pi.id,
+              "hold_expired_past_grace",
+            );
+            if (!outcome.ok) {
+              console.error("stripe-webhook: P0011 refund failed", { hold_id: holdId, pi_id: pi.id, error: outcome.error, code: outcome.code });
+            }
           } else {
             console.error("stripe-webhook: cannot refund expired hold, STRIPE_SECRET_KEY missing");
           }
         } catch (refundErr) {
-          console.error("refund failed", refundErr);
+          console.error("stripe-webhook: P0011 refund exception", refundErr);
         }
         return;
       }
