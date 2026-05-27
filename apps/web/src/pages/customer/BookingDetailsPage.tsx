@@ -14,6 +14,7 @@ import {
   Phone,
   Tag,
   Ticket,
+  UtensilsCrossed,
   Users,
   X,
 } from "lucide-react";
@@ -1093,6 +1094,33 @@ export default function BookingDetailsPage() {
                     <PencilLine className="size-4" />
                     Modify booking
                   </Button>
+                )}
+                {canEditPreorder ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={openPreorderDialog}
+                    className="h-11 w-full rounded-md font-medium"
+                  >
+                    <UtensilsCrossed className="size-4" />
+                    {preorderInitialItems.length > 0 ? "Edit pre-order" : "Add pre-order"}
+                  </Button>
+                ) : (
+                  // Only render the disabled state when the booking is still
+                  // active (status pending/confirmed). Past/cancelled bookings
+                  // shouldn't show this affordance at all.
+                  cartEditAllowedByStatus ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled
+                      className="h-11 w-full rounded-md font-medium"
+                      title="Pre-order locks 2 hours before your reservation"
+                    >
+                      <UtensilsCrossed className="size-4" />
+                      Pre-order locked
+                    </Button>
+                  ) : null
                 )}
                 {reservation.restaurant?.address ? (
                   <Button asChild variant="outline" className="h-11 w-full rounded-md font-medium">
