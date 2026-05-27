@@ -554,6 +554,14 @@ function OneTimeCardForm({
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!stripe || !elements) return;
+      // Re-entrance guard. The external Place Order button is disabled via
+      // the parent's `paymentProcessing` state, which is NOT wired to this
+      // hook's local `submitting`. Without this guard, rapid clicks fire
+      // multiple handleSubmits in parallel, each creating a fresh
+      // PaymentIntent — Stripe records 4-5 abandoned PIs per booking and
+      // throws "elements.submit() must be called before stripe.confirmPayment"
+      // on the racing calls.
+      if (submitting) return;
       setSubmitting(true);
       setErrorMsg(null);
       try {
@@ -660,7 +668,7 @@ function OneTimeCardForm({
         setSubmitting(false);
       }
     },
-    [stripe, elements, restaurantId, amountCents, holdId, depositPaymentIds, onPaid, onError, isLoggedIn, saveCard],
+    [submitting, stripe, elements, restaurantId, amountCents, holdId, depositPaymentIds, onPaid, onError, isLoggedIn, saveCard],
   );
 
   return (
