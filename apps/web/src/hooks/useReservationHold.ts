@@ -592,15 +592,12 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (stateRef.current.status !== "idle") return;
     const persisted = loadPersisted(storageKey);
     if (!persisted) return;
-    // Page-scoped timer rule: only an explicit `resumeHoldId` (typically
-    // from a `?hold=<id>` voice-handoff URL) is allowed to resume a
-    // persisted hold. Without a match, the entry is stale — the user
-    // left the page and we're treating this as a fresh visit — so we
-    // drop it and let the auto-create effect mint a new hold.
-    if (!resumeHoldId || resumeHoldId !== persisted.holdId) {
-      clearPersisted(storageKey);
-      return;
-    }
+    // Account-scoped model: silently rehydrate from sessionStorage when
+    // expires_at is still in the future. The server hold is the source
+    // of truth — it lives 15 min regardless of tab state, so a returning
+    // tab can pick up where it left off. The voice-handoff `?hold=<id>`
+    // URL is still a useful explicit signal but no longer required.
+    //
     // Hydrate requires the same full input set that `createHold` needs;
     // otherwise we'd land in `active` state but the drift effect's
     // sentinel `lastSyncedInputsRef` would stay null and slot/party
@@ -885,135 +882,17 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   }, [state.status]);
 
   // -------------------------------------------------------------------------
-  // Unmount: best-effort cancel via sendBeacon when hold is still active
+  // Account-scoped model: NO unmount cancel beacon, NO pagehide listener.
+  // The server hold lives 15 min from creation regardless of tab state.
+  // Closing a tab is a no-op server-side — heartbeats from any remaining
+  // tab keep it alive (extend_reservation_hold caps at created_at + 60).
+  // The hold dies only when: TTL elapses, booking completes, OR the diner
+  // explicitly cancels via `cancelHold()` / `grabAgain()`.
+  //
+  // This unlocks multi-tab UX: 2 tabs of the same logged-in diner on the
+  // same slot share ONE hold via the recovery branch in
+  // create-reservation-hold (returns existing hold_id on P0006).
   // -------------------------------------------------------------------------
-
-  useEffect(() => {
-    const cleanup = () => {
-      const s = stateRef.current;
-      const persistKey = persistKeyRef.current;
-      // Page-scoped rule: clear the local trace FIRST and synchronously.
-      // Even if the cancel below fails (network, auth), a remount won't
-      // find a persisted entry and so will mint a fresh hold via the
-      // auto-create path. Leave = die.
-      if (persistKey) clearPersisted(persistKey);
-      // Skip the server-side cancel if the diner has entered the payment
-      // flow. See `inPaymentFlow` prop docs — race-window-protection so the
-      // webhook can still convert a paid hold even if the user closes the
-      // tab in the gap between Stripe PI succeeding and `confirm-hold-paid`
-      // firing. Local sessionStorage is still wiped above; the hold will
-      // expire naturally after 30 min if booking is abandoned.
-      if (inPaymentFlowRef.current) {
-        clientTokenRef.current = null;
-        return;
-      }
-      if (typeof navigator === "undefined") return;
-      // Resolve identifiers. The cleanup ALWAYS fires a cancel (no
-      // early-return on status !== "active") so we catch the
-      // navigated-away-during-create race: hold_id isn't known yet, but
-      // client_token IS. The server tombstones on client_token so a cancel
-      // arriving before create completes still causes the eventual row to
-      // be born 'cancelled'.
-      const holdId =
-        s.status === "active" || s.status === "expired" ? s.holdId : null;
-      const clientToken = clientTokenRef.current;
-      // Reset clientTokenRef now — the in-flight request below holds its
-      // own local copy. Prevents a remount-then-unmount-again pattern from
-      // double-cancelling on the same token.
-      clientTokenRef.current = null;
-      if (!holdId && !clientToken) return;
-      try {
-        const url = `${getSupabaseProjectUrl()}/functions/v1/cancel-reservation-hold`;
-        const anon = getSupabaseAnonKey();
-        // Pull the JWT from the @supabase/ssr cookie so the cancel edge fn
-        // accepts the call. sendBeacon can't set headers, but
-        // `fetch(..., { keepalive: true })` survives page unload AND lets
-        // us include Authorization. Without auth, the server returns 401
-        // and the hold leaks, blocking the user from a fresh slot on
-        // return — defeating the page-scoped rule.
-        let bearer: string | null = null;
-        if (typeof document !== "undefined") {
-          const cookie = document.cookie
-            .split(";")
-            .map((c) => c.trim())
-            .find((c) => c.startsWith("sb-") && c.includes("-auth-token="));
-          if (cookie) {
-            const eq = cookie.indexOf("=");
-            const raw = decodeURIComponent(cookie.slice(eq + 1));
-            const stripped = raw.startsWith("base64-") ? atob(raw.slice("base64-".length)) : raw;
-            try {
-              const parsed = JSON.parse(stripped) as { access_token?: unknown };
-              if (typeof parsed.access_token === "string") bearer = parsed.access_token;
-            } catch {
-              // ignore — cookie shape isn't what we expected; cancel will go unauthenticated.
-            }
-          }
-        }
-        const cancelBody: Record<string, string> = {};
-        if (holdId) cancelBody.hold_id = holdId;
-        if (clientToken) cancelBody.client_token = clientToken;
-        const pending = fetch(url, {
-          method: "POST",
-          headers: {
-            apikey: anon,
-            ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(cancelBody),
-          keepalive: true,
-        });
-        // Dev-only observability: surface no-op cancels so we can see in
-        // dev when a cancel landed on a row that was already gone (which
-        // usually means the create POST returned but UI never saw it, or
-        // the tombstone path raced as expected).
-        if (import.meta.env.DEV) {
-          void pending
-            .then(async (res) => {
-              const parsed = (await res
-                .json()
-                .catch(() => ({}))) as CancelHoldResponse;
-              if (parsed.cancelled === false) {
-                console.warn(
-                  "[ReservationHold.cleanup] server reports cancelled=false",
-                  { status: res.status, body: parsed, holdId, clientToken },
-                );
-              }
-            })
-            .catch((err: unknown) => {
-              console.warn("[ReservationHold.cleanup] cancel response error", err);
-            });
-        } else {
-          // Drop the promise — keepalive request continues in the background.
-          void pending.catch(() => {
-            /* unmount path — nothing useful to do here */
-          });
-        }
-      } catch (err) {
-        // best-effort — fetch may throw on quota/CSP edge cases.
-        console.warn("[ReservationHold.cleanup] cancel-on-unload failed", err);
-      }
-    };
-    // React unmount path (Link / useNavigate / route change). Fires when
-    // the component tree tears down but the JS context survives.
-    // Pagehide path (hard navigation, F5, tab close, browser back/forward).
-    // React's cleanup does NOT fire reliably for these — the JS context is
-    // about to be destroyed. pagehide is the canonical event for sendBeacon.
-    // sendBeacon + sessionStorage.removeItem are both synchronous-enough to
-    // complete inside the pagehide handler before the page tears down.
-    if (typeof window !== "undefined") {
-      window.addEventListener("pagehide", cleanup);
-    }
-    return () => {
-      if (typeof window !== "undefined") {
-        window.removeEventListener("pagehide", cleanup);
-      }
-      cleanup();
-    };
-    // We intentionally do not re-create this on state changes — the cleanup
-    // closes over the latest stateRef and only fires on actual unmount /
-    // page unload.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // -------------------------------------------------------------------------
   // Disabled → drop any active state without server cancel (caller's call).
