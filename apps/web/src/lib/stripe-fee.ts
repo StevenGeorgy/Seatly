@@ -1,13 +1,13 @@
 // Client mirror of supabase/functions/_shared/stripe-fee.ts.
 // Server is the source of truth — this is only for cart display.
 //
-// Option B (visible-fees model): diner pays base + Cenaiva 2% + Stripe fee
+// Option B (visible-fees model): diner pays base + Cenaiva 2.2% + Stripe fee
 // as three visible line items. Refund returns the base only — both fees
 // are non-refundable and disclosed at checkout.
 
 export const STRIPE_CARD_PERCENT = 0.029;
 export const STRIPE_CARD_FIXED_CENTS = 30;
-export const PLATFORM_FEE_PERCENT = 0.02;
+export const PLATFORM_FEE_PERCENT = 0.022;
 
 export interface DinerCharge {
   baseCents: number;

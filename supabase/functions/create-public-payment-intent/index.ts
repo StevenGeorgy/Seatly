@@ -217,6 +217,11 @@ async function chargeSavedCardWithHold(opts: {
   if (opts.stripeAccountId) {
     params.application_fee_amount = opts.applicationFeeCents;
     params.transfer_data = { destination: opts.stripeAccountId };
+    // on_behalf_of: Stripe debits its processing fee from the connected
+    // (restaurant) account, not from Cenaiva's platform balance. Without
+    // this the diner's grossed-up $0.41 ends up at the restaurant AND
+    // Cenaiva still eats the Stripe fee — net loss per booking.
+    params.on_behalf_of = opts.stripeAccountId;
   }
 
   let paymentIntent;
@@ -614,6 +619,10 @@ Deno.serve(async (req: Request) => {
       if (row.stripe_account_id) {
         holdStripeParams.application_fee_amount = applicationFeeCents;
         holdStripeParams.transfer_data = { destination: row.stripe_account_id };
+        // on_behalf_of: Stripe processing fee debits from connected
+        // (restaurant) account, not Cenaiva. Required so the diner's
+        // grossed-up processing fee actually pays for itself.
+        holdStripeParams.on_behalf_of = row.stripe_account_id;
       }
       // Save-card path: tell Stripe to save the PM during charge so the
       // diner sees it in their saved cards next time. Required because
@@ -760,10 +769,13 @@ Deno.serve(async (req: Request) => {
 
       if (row.stripe_account_id) {
         // Same destination-charge pattern as the one-time path.
-        // Funds settle to the restaurant's Connect account; the 5.5%
+        // Funds settle to the restaurant's Connect account; the 2.2%
         // application fee stays with Cenaiva.
         savedCardParams.application_fee_amount = applicationFeeCents;
         savedCardParams.transfer_data = { destination: row.stripe_account_id };
+        // on_behalf_of: Stripe processing fee debits from connected
+        // (restaurant) account, not Cenaiva's platform balance.
+        savedCardParams.on_behalf_of = row.stripe_account_id;
       }
 
       let paymentIntent;
@@ -847,9 +859,12 @@ Deno.serve(async (req: Request) => {
 
     if (row.stripe_account_id) {
       // Destination charge: funds settle to restaurant's Connect account.
-      // application_fee_amount is 5.5% of BASE (not the grossed-up total).
+      // application_fee_amount is 2.2% of BASE (not the grossed-up total).
       stripeParams.application_fee_amount = applicationFeeCents;
       stripeParams.transfer_data = { destination: row.stripe_account_id };
+      // on_behalf_of: Stripe processing fee debits from connected
+      // (restaurant) account, not Cenaiva's platform balance.
+      stripeParams.on_behalf_of = row.stripe_account_id;
     }
     // If no Connect account, this becomes a platform-only charge; manual
     // payout to the restaurant happens out-of-band. Pre-launch fallback.
