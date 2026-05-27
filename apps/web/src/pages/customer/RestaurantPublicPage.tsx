@@ -3378,6 +3378,7 @@ export default function RestaurantPublicPage() {
                     onError={(msg) => {
                       setOrderError(msg);
                     }}
+                    onProcessingChange={setPaymentProcessing}
                   />
                 ) : (
                   <div className="rounded-xl border border-dashed border-border bg-bg-elevated/40 p-4 text-sm text-text-muted">
