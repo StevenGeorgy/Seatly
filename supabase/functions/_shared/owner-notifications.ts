@@ -28,7 +28,8 @@ export type OwnerNotificationType =
   | "cancellation_owner"
   | "payment_failed_diner"
   | "charge_dispute_created"
-  | "charge_dispute_closed";
+  | "charge_dispute_closed"
+  | "booking_cart_modified";
 
 export interface SendOwnerNotificationOpts {
   supabase: SupabaseClient;
@@ -89,6 +90,10 @@ const DEFAULT_IDEMPOTENCY_WINDOWS: Record<OwnerNotificationType, number> = {
   // is a terminal state per dispute and we never want to re-notify.
   charge_dispute_created: 7 * 86400,
   charge_dispute_closed: 30 * 86400,
+  // Cart modifications: tight burst window so a flurry of edits within
+  // a few seconds collapses to one email, but legitimate sequential
+  // updates each surface to the owner.
+  booking_cart_modified: 30,
 };
 
 export async function getOwnerContact(
@@ -465,6 +470,56 @@ function buildTemplate(
         ].join("\n"),
       };
     }
+    case "booking_cart_modified": {
+      const dinerName = typeof context.dinerName === "string" && context.dinerName.trim()
+        ? (context.dinerName as string).trim()
+        : "A diner";
+      const reservedAtLabel = typeof context.reservedAtLabel === "string"
+        ? (context.reservedAtLabel as string)
+        : fmtDate(context.reservedAt);
+      const summary = typeof context.summary === "string"
+        ? (context.summary as string)
+        : "Cart updated";
+      const confirmationCode = typeof context.confirmationCode === "string"
+        ? (context.confirmationCode as string)
+        : null;
+      const addedItems = Array.isArray(context.addedItems)
+        ? (context.addedItems as Array<{ name?: string; quantity?: number }>)
+        : [];
+      const removedItems = Array.isArray(context.removedItems)
+        ? (context.removedItems as Array<{ name?: string; quantity?: number }>)
+        : [];
+      const newTotal = typeof context.newTotalLabel === "string"
+        ? (context.newTotalLabel as string)
+        : null;
+
+      const addedBlock = addedItems.length > 0
+        ? `Added:\n${addedItems
+          .map((i) => `  + ${i.quantity ?? 1}× ${i.name ?? "(item)"}`)
+          .join("\n")}\n\n`
+        : "";
+      const removedBlock = removedItems.length > 0
+        ? `Removed:\n${removedItems
+          .map((i) => `  − ${i.quantity ?? 1}× ${i.name ?? "(item)"}`)
+          .join("\n")}\n\n`
+        : "";
+      const totalLine = newTotal ? `New pre-order total: ${newTotal}\n` : "";
+      const confLine = confirmationCode ? `Confirmation: ${confirmationCode}\n` : "";
+
+      return {
+        subject: `Pre-order updated at ${restaurantName} — ${dinerName}`,
+        body:
+          `${greet}\n\n` +
+          `${dinerName} updated their pre-order at ${restaurantName} for ${reservedAtLabel}.\n` +
+          `${summary}.\n\n` +
+          addedBlock +
+          removedBlock +
+          totalLine +
+          confLine +
+          `\nView the booking: https://cenaiva.com/dashboard/reservations\n\n` +
+          `— Cenaiva`,
+      };
+    }
   }
 }
 
@@ -801,6 +856,163 @@ export async function notifyOwnerCancellation(
     restaurant_id: opts.restaurant_id,
     type: "cancellation_owner",
     context,
+    contactOverride: contact,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cart modified — pre-order updated by diner mid-flow
+//
+// Mirrors the new_booking / cancellation pattern: looks up the owner profile,
+// builds an itemized summary, fires email via `sendOwnerNotification` (which
+// owns the restaurant_notification_log idempotency check). Fire-and-forget
+// from the caller — never await blocking.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface NotifyOwnerCartModifiedOpts {
+  supabase: SupabaseClient;
+  restaurant_id: string;
+  reservation_id: string;
+  /** Diner name as captured at booking time. */
+  diner_name: string | null;
+  reserved_at: string | Date;
+  added_items: Array<{ name: string; quantity: number }>;
+  removed_items: Array<{ name: string; quantity: number }>;
+  /** Net price delta in cents. Positive = additional charge. */
+  delta_cents: number;
+  /** Refund amount in cents (caller may set this when delta is negative-style). */
+  refund_cents: number;
+  /** New pre-order total in cents (post-modification). */
+  new_total_cents: number;
+  confirmation_code?: string | null;
+}
+
+export async function notifyOwnerCartModified(
+  restaurantId: string,
+  reservationId: string,
+  opts: Omit<NotifyOwnerCartModifiedOpts, "restaurant_id" | "reservation_id">,
+): Promise<SendOwnerNotificationResult> {
+  const supabase = opts.supabase;
+
+  // Look up the owner profile (email + name) the same way other
+  // reservation-event notifications do. No per-owner toggle here — cart
+  // modifications mid-flow are always operationally relevant.
+  const contact = await getRestaurantOwnerProfile(supabase, restaurantId);
+  if (!contact.email || !contact.profileId) {
+    return { status: "failed", message: "no_owner_profile" };
+  }
+
+  // Resolve timezone for date label (matches buildReservationContext).
+  let timezone = "America/Toronto";
+  try {
+    const { data } = await supabase
+      .from("restaurants")
+      .select("timezone")
+      .eq("id", restaurantId)
+      .maybeSingle();
+    const tz = (data as any)?.timezone;
+    if (typeof tz === "string" && tz.trim()) timezone = tz;
+  } catch (_) {
+    // ignore
+  }
+  let reservedAtLabel = "soon";
+  try {
+    const d = opts.reserved_at instanceof Date ? opts.reserved_at : new Date(opts.reserved_at);
+    if (!Number.isNaN(d.getTime())) {
+      reservedAtLabel = new Intl.DateTimeFormat("en-US", {
+        dateStyle: "full",
+        timeStyle: "short",
+        timeZone: timezone,
+      }).format(d);
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  const fmt = (cents: number): string => `$${(Math.abs(cents) / 100).toFixed(2)}`;
+  let summary: string;
+  if (opts.delta_cents > 0) {
+    summary = `+${fmt(opts.delta_cents)} charged`;
+  } else if (opts.refund_cents > 0) {
+    summary = `${fmt(opts.refund_cents)} refunded`;
+  } else {
+    summary = `No price change`;
+  }
+
+  // SMS goes to the OWNER'S user_profiles.phone (not restaurants.phone,
+  // which is public-facing). Best-effort: pulled inline so we don't widen
+  // the OwnerContact contract just for one channel. Fire-and-forget via
+  // .catch so a Twilio failure can't surface to the caller.
+  void (async () => {
+    try {
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("phone")
+        .eq("id", contact.profileId!)
+        .maybeSingle();
+      const phone = (profile as any)?.phone ?? null;
+      if (!phone) return;
+
+      const smsDisabled = Deno.env.get("CENAIVA_SMS_DISABLED") === "true";
+      if (smsDisabled) return;
+      const twilioSid = Deno.env.get("TWILIO_ACCOUNT_SID");
+      const twilioToken = Deno.env.get("TWILIO_AUTH_TOKEN");
+      const twilioFromPhone = Deno.env.get("TWILIO_PHONE_NUMBER");
+      if (!twilioSid || !twilioToken || !twilioFromPhone) return;
+
+      // Honor owner opt-out the same way diner SMS does.
+      const { isPhoneOptedOut } = await import("./sms.ts");
+      if (await isPhoneOptedOut(supabase, phone)) return;
+
+      const normalized = (() => {
+        const trimmed = phone.trim();
+        if (trimmed.startsWith("+")) return trimmed;
+        const digits = trimmed.replace(/\D/g, "");
+        if (digits.length === 10) return `+1${digits}`;
+        if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+        return trimmed;
+      })();
+
+      const twilioMod = await import("npm:twilio@5.0.0");
+      const twilioFactory = (twilioMod as any).default ?? twilioMod;
+      const twilioClient = twilioFactory(twilioSid, twilioToken);
+      const dinerLabel = opts.diner_name?.trim() || "A diner";
+      const smsBody =
+        `Pre-order updated by ${dinerLabel} for ${reservedAtLabel}. ${summary}.`;
+      await twilioClient.messages.create({
+        body: smsBody,
+        from: twilioFromPhone,
+        to: normalized,
+      });
+    } catch (err) {
+      console.warn(
+        "[owner-notifications] cart_modified SMS failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  })();
+
+  // Email + log-row are owned by sendOwnerNotification, which also enforces
+  // the idempotency window on restaurant_notification_log.
+  return sendOwnerNotification({
+    supabase,
+    restaurant_id: restaurantId,
+    type: "booking_cart_modified",
+    context: {
+      restaurantName: contact.restaurantName,
+      dinerName: opts.diner_name,
+      reservedAt: opts.reserved_at,
+      reservedAtLabel,
+      addedItems: opts.added_items,
+      removedItems: opts.removed_items,
+      deltaCents: opts.delta_cents,
+      refundCents: opts.refund_cents,
+      newTotalCents: opts.new_total_cents,
+      newTotalLabel: fmt(opts.new_total_cents),
+      summary,
+      confirmationCode: opts.confirmation_code ?? null,
+      reservationId,
+    },
     contactOverride: contact,
   });
 }

@@ -15,6 +15,7 @@ import { computeBreakEvenRefund } from "../_shared/refund-math.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ModifyReservationSchema } from "../_shared/validation/booking.ts";
 import { getStripeClient } from "../_shared/stripe-client.ts";
+import { DEFAULT_TAX_RATE_FALLBACK } from "../_shared/booking-defaults.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -132,14 +133,45 @@ Deno.serve(async (req: Request) => {
     const reservationId = (parsed.data.reservation_id ?? parsed.data.reservationId)!;
     const providedCode =
       parsed.data.confirmation_code ?? parsed.data.confirmationCode ?? "";
+
+    // 2026-05-27: cart-modify path. Mixed payloads (cart + slot fields in
+    // the SAME call) are rejected — each kind has its own payment surface.
+    const cartItemsInput = parsed.data.cart_items;
+    const isCartModify = cartItemsInput !== undefined;
+    const hasSlotFields =
+      parsed.data.date !== undefined ||
+      parsed.data.time !== undefined ||
+      parsed.data.party_size !== undefined ||
+      parsed.data.partySize !== undefined;
+    if (isCartModify && hasSlotFields) {
+      return json(
+        {
+          error:
+            "Cart and slot modifications must be sent separately. Submit one or the other.",
+          unavailable_reason: "mixed_modify_not_allowed",
+        },
+        400,
+      );
+    }
+
     const date = parsed.data.date;
     const time = parsed.data.time;
-    const partySize = (parsed.data.party_size ?? parsed.data.partySize)!;
+    const partySize = parsed.data.party_size ?? parsed.data.partySize;
     const specialRequest =
       parsed.data.special_request ?? parsed.data.specialRequest ?? "";
 
-    if (parseTimeToMinutes(time) == null) {
-      return json({ error: "Valid time is required" }, 400);
+    // Slot-only validation. Cart modify reuses the same auth + rate-limit
+    // path below, then forks into its own branch and returns early.
+    if (!isCartModify) {
+      if (!time || parseTimeToMinutes(time) == null) {
+        return json({ error: "Valid time is required" }, 400);
+      }
+      if (!date) {
+        return json({ error: "Valid date is required" }, 400);
+      }
+      if (partySize == null) {
+        return json({ error: "Party size is required" }, 400);
+      }
     }
 
     const { data: reservation, error: reservationError } = await adminClient
@@ -241,6 +273,32 @@ Deno.serve(async (req: Request) => {
       throw e;
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // CART-MODIFY BRANCH (2026-05-27)
+    // ═══════════════════════════════════════════════════════════════════
+    // Separate from the slot-modify path below. Validates 2h cutoff,
+    // resolves promo, recomputes food + tax server-side, and either:
+    //   delta > 0 → seeds a pending deposit row + cart snapshot, returns
+    //               requires_payment so the client mounts a fresh
+    //               StripePaymentForm and later calls
+    //               confirm-modify-payment with change_type='cart_delta'.
+    //   delta < 0 → refunds |delta| via reverse_transfer, replaces order
+    //               items in-place, updates promo, returns success.
+    //   delta = 0 → just replaces items + updates promo, returns success.
+    if (isCartModify) {
+      return await handleCartModify({
+        adminClient,
+        reservation,
+        guest,
+        cartItems: cartItemsInput!,
+        appliedPromoCodeInput: parsed.data.applied_promo_code,
+        clientTaxCents: parsed.data.tax_cents,
+        specialRequest,
+        json,
+      });
+    }
+    // ═══════════════════════════════════════════════════════════════════
+
     const { data: restaurant, error: restaurantError } = await adminClient
       .from("restaurants")
       .select("name, timezone, hours_json, settings_json, stripe_account_id, currency")
@@ -257,12 +315,18 @@ Deno.serve(async (req: Request) => {
         ? restaurant.name.trim()
         : "the restaurant";
     const previousDateLabel = formatReservationDate(new Date(reservation.reserved_at), timezone);
-    const reservedAtIso = localToUTC(date, time, timezone);
+    // Slot-modify path: date/time/partySize were validated as present above.
+    // Re-bind to non-null locals for TS narrowing (the cart branch above
+    // returns early, but TS doesn't propagate that into these later refs).
+    const slotDate = date!;
+    const slotTime = time!;
+    const slotPartySize = partySize!;
+    const reservedAtIso = localToUTC(slotDate, slotTime, timezone);
     const reservedAt = new Date(reservedAtIso);
     if (Number.isNaN(reservedAt.getTime()) || reservedAt.getTime() < Date.now()) {
       return json({ error: "Reservation time must be in the future" }, 400);
     }
-    const closure = findClosedSpecialDayForDate(restaurant?.hours_json, date);
+    const closure = findClosedSpecialDayForDate(restaurant?.hours_json, slotDate);
     if (closure) {
       return json({ error: closureUnavailableMessage(closure), unavailable_reason: "closed" }, 409);
     }
@@ -271,12 +335,12 @@ Deno.serve(async (req: Request) => {
       p_restaurant_id: reservation.restaurant_id,
     });
     const floorCapacity = Number.isFinite(Number(floorCapacityData)) ? Number(floorCapacityData) : 0;
-    if (partySize > floorCapacity) {
+    if (slotPartySize > floorCapacity) {
       return json({ error: `Party size exceeds this restaurant's capacity of ${floorCapacity}` }, 400);
     }
 
-    const dayOfWeek = localDayOfWeek(date, timezone);
-    const requestedMinute = parseTimeToMinutes(time);
+    const dayOfWeek = localDayOfWeek(slotDate, timezone);
+    const requestedMinute = parseTimeToMinutes(slotTime);
     const { data: shifts, error: shiftsError } = await adminClient
       .from("shifts")
       .select("id, start_time, end_time, turn_time_minutes, max_covers")
@@ -305,8 +369,8 @@ Deno.serve(async (req: Request) => {
     const maxCovers: number | null =
       typeof selectedShift.max_covers === "number" ? selectedShift.max_covers : null;
     const slotEnd = new Date(reservedAt.getTime() + turnMinutes * 60_000);
-    const dayStart = localToUTC(date, "00:00", timezone);
-    const dayEnd = localToUTC(date, "23:59", timezone);
+    const dayStart = localToUTC(slotDate, "00:00", timezone);
+    const dayEnd = localToUTC(slotDate, "23:59", timezone);
 
     const { data: activeReservations, error: activeReservationError } = await adminClient
       .from("reservations")
@@ -327,7 +391,7 @@ Deno.serve(async (req: Request) => {
         return total + (row.party_size || 0);
       }
       return total;
-    }, partySize);
+    }, slotPartySize);
     if (maxCovers !== null && totalCovers > maxCovers) {
       return json({ error: "That time is no longer available for this party size" }, 409);
     }
@@ -390,10 +454,10 @@ Deno.serve(async (req: Request) => {
     //                  confirm-modify-payment finalizes the modification.
     let depositDeltaCents = 0;
     let currentChargedCents = 0;
-    if (partySize !== reservation.party_size) {
+    if (slotPartySize !== reservation.party_size) {
       const { data: newExpectedRaw } = await adminClient.rpc("compute_deposit_for_party", {
         p_restaurant_id: reservation.restaurant_id,
-        p_party_size: partySize,
+        p_party_size: slotPartySize,
       });
       const newExpectedCents = Number(newExpectedRaw) || 0;
       const { data: chargedSumRaw } = await adminClient
@@ -441,9 +505,9 @@ Deno.serve(async (req: Request) => {
           reservation_id: reservationId,
           // The diner's UI uses these to remember the requested change so
           // we can apply it post-payment via confirm-modify-payment.
-          pending_date: date,
-          pending_time: time,
-          pending_party_size: partySize,
+          pending_date: slotDate,
+          pending_time: slotTime,
+          pending_party_size: slotPartySize,
           pending_special_request: specialRequest || null,
         });
       }
@@ -458,7 +522,7 @@ Deno.serve(async (req: Request) => {
       p_restaurant_id: reservation.restaurant_id,
       p_shift_id: selectedShift.id,
       p_new_reserved_at: reservedAtIso,
-      p_new_party_size: partySize,
+      p_new_party_size: slotPartySize,
       p_turn_minutes: turnMinutes,
     });
 
@@ -687,7 +751,7 @@ Deno.serve(async (req: Request) => {
       : "";
     const modifyBody =
       `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
-      `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
+      `to ${nextDateLabel} for ${slotPartySize} ${slotPartySize === 1 ? "guest" : "guests"}.` +
       codeLine +
       eventLine +
       promoLine +
@@ -745,7 +809,7 @@ Deno.serve(async (req: Request) => {
       ok: true,
       reservation_id: reservationId,
       reserved_at: reservedAtIso,
-      party_size: partySize,
+      party_size: slotPartySize,
       special_request: specialRequest || null,
       table_ids: nextTableIds,
       notification_delivery: notification.status,
@@ -756,3 +820,698 @@ Deno.serve(async (req: Request) => {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// Cart-modify branch (2026-05-27)
+// ════════════════════════════════════════════════════════════════════════
+//
+// Called by Deno.serve handler ABOVE when the request body has
+// `cart_items`. Strictly separate from the slot-modify path; the caller's
+// mixed-payload guard ensures we never co-mingle.
+//
+// Behavior summary:
+//   1. Enforce a 2-hour cutoff: cart can't be changed within 2h of the
+//      reservation (kitchen lead time).
+//   2. Resolve promo (tri-state): undefined keeps current,
+//      string sets/replaces (validated against `promotions`),
+//      null/"" clears.
+//   3. Recompute food + tax server-side from `menu_items.price`. The
+//      client's `tax_cents`, if supplied, is cross-checked; on mismatch
+//      >1¢ we log a warning but use the server value (source of truth).
+//   4. Diff against the current orders + order_items totals:
+//        delta > 0 → seed a pending reservation_deposit_payments row
+//                    AND stamp the new cart on `pending_cart_snapshot`
+//                    so confirm-modify-payment can replay it.
+//        delta < 0 → refund |delta| via refundPaymentIntent + replace
+//                    items in-place + update promo on the reservation.
+//        delta = 0 → just replace items + update promo.
+//   5. Fire owner + diner notifications via the cart-modified helpers
+//      that sub-agent E2 is adding. We call them defensively (try/catch)
+//      so a missing template can't block the response.
+
+// (GuestRow and ReservationRow types already declared at module top.)
+type ReservationRowForCart = ReservationRow;
+type CartItemInput = { menu_item_id: string; quantity: number };
+
+type CartLineComputed = {
+  menu_item_id: string;
+  name: string;
+  quantity: number;
+  unit_price_cents: number;
+  line_total_cents: number;
+};
+
+// 2-hour cutoff (kitchen prep window). Tunable per-restaurant via
+// settings_json in a future change; for now 2h matches the existing
+// pre-order policy elsewhere in the app.
+const CART_MODIFY_CUTOFF_MS = 2 * 60 * 60 * 1000;
+
+interface HandleCartModifyArgs {
+  adminClient: ReturnType<typeof createClient>;
+  reservation: ReservationRowForCart;
+  guest: GuestRow | null;
+  cartItems: CartItemInput[];
+  appliedPromoCodeInput: string | null | undefined;
+  clientTaxCents: number | undefined;
+  specialRequest: string;
+  json: (body: unknown, status?: number) => Response;
+}
+
+async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
+  const {
+    adminClient,
+    reservation,
+    guest,
+    cartItems,
+    appliedPromoCodeInput,
+    clientTaxCents,
+    specialRequest,
+    json,
+  } = args;
+  const reservationId = reservation.id;
+
+  // ── (1) 2-hour cutoff ─────────────────────────────────────────────
+  const reservedAtMs = new Date(reservation.reserved_at).getTime();
+  if (!Number.isFinite(reservedAtMs)) {
+    return json({ error: "Reservation time is invalid" }, 400);
+  }
+  if (reservedAtMs - Date.now() < CART_MODIFY_CUTOFF_MS) {
+    return json(
+      {
+        error:
+          "The cart can no longer be changed — your reservation is within 2 hours.",
+        unavailable_reason: "cart_modify_too_late",
+      },
+      409,
+    );
+  }
+
+  // ── (2) Promo resolution (tri-state) ──────────────────────────────
+  // undefined        → keep existing reservation.applied_promo_code
+  // string non-empty → validate against promotions; on success, use it
+  // null OR "" string→ clear the promo
+  type PromoState =
+    | { kind: "keep"; code: string | null }
+    | { kind: "clear" }
+    | { kind: "set"; code: string; row: PromoRowForCompute };
+  type PromoRowForCompute = {
+    id: string;
+    restaurant_id: string;
+    is_active: boolean;
+    starts_at: string;
+    ends_at: string | null;
+    promo_code: string | null;
+    promo_type: "bogo" | "percentage" | "fixed" | "free_item";
+    discount_value: number | null;
+    min_order_amount: number | null;
+    eligible_item_ids: string[] | null;
+    free_item_id: string | null;
+    bogo_item_ids: string[] | null;
+    buy_quantity: number | null;
+    get_quantity: number | null;
+  };
+
+  let promoState: PromoState;
+  if (appliedPromoCodeInput === undefined) {
+    promoState = { kind: "keep", code: reservation.applied_promo_code };
+  } else if (
+    appliedPromoCodeInput === null ||
+    (typeof appliedPromoCodeInput === "string" &&
+      appliedPromoCodeInput.trim() === "")
+  ) {
+    promoState = { kind: "clear" };
+  } else {
+    const codeRaw = String(appliedPromoCodeInput).trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,32}$/.test(codeRaw)) {
+      return json(
+        { error: "Invalid promo code format.", unavailable_reason: "promo_invalid" },
+        400,
+      );
+    }
+    const { data: promoRow, error: promoErr } = await adminClient
+      .from("promotions")
+      .select(
+        "id, restaurant_id, is_active, starts_at, ends_at, promo_code, promo_type, discount_value, min_order_amount, eligible_item_ids, free_item_id, bogo_item_ids, buy_quantity, get_quantity",
+      )
+      .eq("restaurant_id", reservation.restaurant_id)
+      .ilike("promo_code", codeRaw)
+      .maybeSingle<PromoRowForCompute>();
+    if (promoErr) {
+      return json(
+        { error: promoErr.message, unavailable_reason: "promo_invalid" },
+        400,
+      );
+    }
+    if (!promoRow) {
+      return json(
+        { error: "Promo code not found.", unavailable_reason: "promo_invalid" },
+        400,
+      );
+    }
+    const now = Date.now();
+    const startsAtMs = Date.parse(promoRow.starts_at);
+    const endsAtMs = promoRow.ends_at ? Date.parse(promoRow.ends_at) : Infinity;
+    if (
+      !promoRow.is_active ||
+      !Number.isFinite(startsAtMs) ||
+      now < startsAtMs ||
+      now > endsAtMs
+    ) {
+      return json(
+        {
+          error: "This promo is no longer active.",
+          unavailable_reason: "promo_invalid",
+        },
+        400,
+      );
+    }
+    promoState = { kind: "set", code: codeRaw, row: promoRow };
+  }
+
+  // ── (3) Server-side food + tax computation ────────────────────────
+  // Look up menu items by id, sum quantity * price. Reject if any
+  // requested menu_item is missing, archived, or belongs to another
+  // restaurant.
+  const menuItemIds = Array.from(new Set(cartItems.map((c) => c.menu_item_id)));
+  if (menuItemIds.length === 0) {
+    // Empty cart_items is a valid request — diner is wiping their pre-order.
+  }
+  type MenuItemRow = {
+    id: string;
+    restaurant_id: string;
+    name: string;
+    price: number; // dollars (matches existing menu_items.price column)
+    is_available: boolean;
+  };
+  const menuItemsById = new Map<string, MenuItemRow>();
+  if (menuItemIds.length > 0) {
+    const { data: menuRowsRaw, error: menuErr } = await adminClient
+      .from("menu_items")
+      .select("id, restaurant_id, name, price, is_available")
+      .in("id", menuItemIds);
+    if (menuErr) return json({ error: menuErr.message }, 400);
+    for (const r of (menuRowsRaw ?? []) as MenuItemRow[]) {
+      if (r.restaurant_id !== reservation.restaurant_id) continue;
+      menuItemsById.set(r.id, r);
+    }
+    for (const id of menuItemIds) {
+      const row = menuItemsById.get(id);
+      if (!row) {
+        return json(
+          {
+            error: `Menu item ${id} is not available for this restaurant.`,
+            unavailable_reason: "menu_item_unavailable",
+            menu_item_id: id,
+          },
+          400,
+        );
+      }
+      if (!row.is_available) {
+        return json(
+          {
+            error: `"${row.name}" is no longer available.`,
+            unavailable_reason: "menu_item_unavailable",
+            menu_item_id: id,
+          },
+          400,
+        );
+      }
+    }
+  }
+
+  // Build computed lines (cents-based).
+  const computedLines: CartLineComputed[] = cartItems.map((c) => {
+    const row = menuItemsById.get(c.menu_item_id)!;
+    const unitCents = Math.round(Number(row.price) * 100);
+    return {
+      menu_item_id: c.menu_item_id,
+      name: row.name,
+      quantity: c.quantity,
+      unit_price_cents: unitCents,
+      line_total_cents: unitCents * c.quantity,
+    };
+  });
+  const rawFoodCents = computedLines.reduce((s, l) => s + l.line_total_cents, 0);
+
+  // Apply promo discount in cents. Mirrors the client computePromoDiscount
+  // semantics but works in integer cents.
+  let discountCents = 0;
+  if (promoState.kind === "set") {
+    discountCents = computePromoDiscountCents(promoState.row, computedLines);
+  } else if (promoState.kind === "keep" && promoState.code) {
+    // The old promo may have been removed/expired; we re-fetch and
+    // re-apply if still valid. If it's no longer valid we silently treat
+    // the discount as zero (the original order's discount sticks for
+    // historical reconciliation, but the new total just won't honor it).
+    const { data: keepPromoRaw } = await adminClient
+      .from("promotions")
+      .select(
+        "id, restaurant_id, is_active, starts_at, ends_at, promo_code, promo_type, discount_value, min_order_amount, eligible_item_ids, free_item_id, bogo_item_ids, buy_quantity, get_quantity",
+      )
+      .eq("restaurant_id", reservation.restaurant_id)
+      .ilike("promo_code", promoState.code)
+      .maybeSingle<PromoRowForCompute>();
+    if (keepPromoRaw) {
+      const now = Date.now();
+      const sa = Date.parse(keepPromoRaw.starts_at);
+      const ea = keepPromoRaw.ends_at ? Date.parse(keepPromoRaw.ends_at) : Infinity;
+      if (keepPromoRaw.is_active && now >= sa && now <= ea) {
+        discountCents = computePromoDiscountCents(keepPromoRaw, computedLines);
+      }
+    }
+  }
+  const newFoodCents = Math.max(0, rawFoodCents - discountCents);
+
+  // Tax: server pulls from restaurants.tax_rate; falls back to default 13%.
+  const { data: restRow, error: restErr } = await adminClient
+    .from("restaurants")
+    .select("tax_rate, name, timezone")
+    .eq("id", reservation.restaurant_id)
+    .maybeSingle<{ tax_rate: number | null; name: string | null; timezone: string | null }>();
+  if (restErr) return json({ error: restErr.message }, 400);
+  const taxRate =
+    typeof restRow?.tax_rate === "number" && restRow.tax_rate >= 0
+      ? restRow.tax_rate
+      : DEFAULT_TAX_RATE_FALLBACK;
+  const newTaxCents = Math.round(newFoodCents * taxRate);
+  if (
+    typeof clientTaxCents === "number" &&
+    Math.abs(clientTaxCents - newTaxCents) > 1
+  ) {
+    console.warn(
+      "[modify-reservation] cart tax mismatch — client:",
+      clientTaxCents,
+      "server:",
+      newTaxCents,
+      "(using server value)",
+    );
+  }
+
+  // ── (4) Current totals from existing order + order_items ──────────
+  const { data: existingOrderRaw } = await adminClient
+    .from("orders")
+    .select("id, subtotal, tax_amount, discount_amount, total_amount, order_items(id, line_total)")
+    .eq("reservation_id", reservationId)
+    .eq("is_preorder", true)
+    .maybeSingle();
+  const existingOrder = existingOrderRaw as
+    | {
+        id: string;
+        subtotal: number | null;
+        tax_amount: number | null;
+        discount_amount: number | null;
+        total_amount: number | null;
+        order_items: Array<{ id: string; line_total: number | null }> | null;
+      }
+    | null;
+  const currentFoodCents = existingOrder
+    ? Math.round(Number(existingOrder.subtotal ?? 0) * 100) -
+      Math.round(Number(existingOrder.discount_amount ?? 0) * 100)
+    : 0;
+  const currentTaxCents = existingOrder
+    ? Math.round(Number(existingOrder.tax_amount ?? 0) * 100)
+    : 0;
+  const currentTotalCents = currentFoodCents + currentTaxCents;
+  const newTotalCents = newFoodCents + newTaxCents;
+  const deltaCents = newTotalCents - currentTotalCents;
+
+  // Shared snapshot of the new cart (used by confirm-modify-payment for
+  // delta>0, and for owner/diner notification bodies in all branches).
+  const cartSnapshotForResponse = computedLines.map((l) => ({
+    menu_item_id: l.menu_item_id,
+    name: l.name,
+    quantity: l.quantity,
+    unit_price_cents: l.unit_price_cents,
+    line_total_cents: l.line_total_cents,
+  }));
+  const newCartSummary = {
+    items: cartSnapshotForResponse,
+    food_cents: newFoodCents,
+    tax_cents: newTaxCents,
+    discount_cents: discountCents,
+    total_cents: newTotalCents,
+    applied_promo_code:
+      promoState.kind === "set"
+        ? promoState.code
+        : promoState.kind === "clear"
+          ? null
+          : promoState.code,
+  };
+
+  // ── (5) Branch on delta ───────────────────────────────────────────
+  if (deltaCents > 0) {
+    // Diner owes more money. Seed a pending deposit row with the new
+    // cart snapshot stamped on it; client must mount StripePaymentForm
+    // and then call confirm-modify-payment with change_type='cart_delta'.
+    const payerEmail =
+      reservation.guest_email?.trim() || guest?.email?.trim() || null;
+    const payerName =
+      reservation.guest_full_name?.trim() || guest?.full_name?.trim() || null;
+    const { data: pendingRow, error: pendingErr } = await adminClient
+      .from("reservation_deposit_payments")
+      .insert({
+        reservation_id: reservationId,
+        amount_cents: deltaCents,
+        status: "pending",
+        payer_email: payerEmail,
+        payer_full_name: payerName,
+        payer_user_profile_id: reservation.user_profile_id,
+        pending_cart_snapshot: {
+          items: cartSnapshotForResponse,
+          food_cents: newFoodCents,
+          tax_cents: newTaxCents,
+          discount_cents: discountCents,
+          applied_promo_code:
+            promoState.kind === "set"
+              ? promoState.code
+              : promoState.kind === "clear"
+                ? null
+                : promoState.code,
+          special_request: specialRequest || null,
+        },
+      })
+      .select("id")
+      .single();
+    if (pendingErr || !pendingRow) {
+      return json(
+        { error: pendingErr?.message ?? "Could not prepare cart payment." },
+        400,
+      );
+    }
+    return json({
+      ok: false,
+      requires_payment: true,
+      change_type: "cart_delta",
+      deposit_payment_id: (pendingRow as { id: string }).id,
+      restaurant_id: reservation.restaurant_id,
+      reservation_id: reservationId,
+      delta_cents: deltaCents,
+      food_cents: newFoodCents,
+      tax_cents: newTaxCents,
+      new_cart_summary: newCartSummary,
+    });
+  }
+
+  // delta <= 0 — apply the change in-place (then refund if shrink).
+  // Replace order_items: delete existing, insert new. Wrap in a best-
+  // effort sequence; if anything fails partway through, surface the
+  // error (no money has moved yet at this point — refund happens AFTER).
+  let orderIdToUse = existingOrder?.id ?? null;
+  if (!orderIdToUse) {
+    // No pre-order row exists yet. Create one so we have something to
+    // attach items to. Confirmation code mirrors the reservation's so
+    // owner-dashboard joins line up.
+    const { data: createdOrder, error: orderCreateErr } = await adminClient
+      .from("orders")
+      .insert({
+        restaurant_id: reservation.restaurant_id,
+        reservation_id: reservationId,
+        guest_id: reservation.guest_id,
+        is_preorder: true,
+        order_type: "dine_in",
+        status: "pending",
+        subtotal: newFoodCents / 100 + discountCents / 100, // pre-discount
+        tax_amount: newTaxCents / 100,
+        tip_amount: 0,
+        total_amount: newTotalCents / 100,
+        discount_amount: discountCents > 0 ? discountCents / 100 : null,
+        payment_method: "card",
+        source: "web",
+        confirmation_code: reservation.confirmation_code,
+      })
+      .select("id")
+      .single();
+    if (orderCreateErr || !createdOrder) {
+      return json(
+        { error: orderCreateErr?.message ?? "Failed to create order row." },
+        400,
+      );
+    }
+    orderIdToUse = (createdOrder as { id: string }).id;
+  } else {
+    // Wipe old items
+    await adminClient.from("order_items").delete().eq("order_id", orderIdToUse);
+    // Update order totals
+    await adminClient
+      .from("orders")
+      .update({
+        subtotal: newFoodCents / 100 + discountCents / 100, // pre-discount
+        tax_amount: newTaxCents / 100,
+        total_amount: newTotalCents / 100,
+        discount_amount: discountCents > 0 ? discountCents / 100 : null,
+        status: "pending",
+      })
+      .eq("id", orderIdToUse);
+  }
+  // Insert new items
+  if (computedLines.length > 0) {
+    const { error: itemsErr } = await adminClient.from("order_items").insert(
+      computedLines.map((l) => ({
+        order_id: orderIdToUse,
+        menu_item_id: l.menu_item_id,
+        name: l.name,
+        quantity: l.quantity,
+        unit_price: l.unit_price_cents / 100,
+        line_total: l.line_total_cents / 100,
+        status: "pending",
+      })),
+    );
+    if (itemsErr) return json({ error: itemsErr.message }, 400);
+  }
+  // Update reservation.applied_promo_code if it changed.
+  if (promoState.kind === "set" || promoState.kind === "clear") {
+    await adminClient
+      .from("reservations")
+      .update({
+        applied_promo_code:
+          promoState.kind === "set" ? promoState.code : null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", reservationId);
+  }
+
+  // Refund the shrink (if any). Mirrors the slot-modify shrink path:
+  // find the most recent charged deposit row with a PI and partial-
+  // refund |delta| via reverse_transfer.
+  type CartRefundResult =
+    | { kind: "none" }
+    | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null; refund_id: string }
+    | { kind: "failed"; reason: string };
+  let cartRefund: CartRefundResult = { kind: "none" };
+  if (deltaCents < 0) {
+    const refundAmount = -deltaCents;
+    const { data: chargedRowsRaw } = await adminClient
+      .from("reservation_deposit_payments")
+      .select("id, amount_cents, stripe_payment_intent_id, status")
+      .eq("reservation_id", reservationId)
+      .eq("status", "charged")
+      .order("created_at", { ascending: false });
+    const chargedRows = (chargedRowsRaw ?? []) as Array<{
+      id: string;
+      amount_cents: number;
+      stripe_payment_intent_id: string | null;
+      status: string;
+    }>;
+    const target = chargedRows.find(
+      (r) => (r.amount_cents ?? 0) > 0 && r.stripe_payment_intent_id,
+    );
+    if (target && target.stripe_payment_intent_id) {
+      const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+      if (stripeKey) {
+        const stripe = await getStripeClient(stripeKey);
+        try {
+          const cappedRefund = Math.min(refundAmount, target.amount_cents ?? 0);
+          const outcome = await refundPaymentIntent(
+            stripe,
+            target.stripe_payment_intent_id,
+            "cart_shrink",
+            cappedRefund,
+          );
+          if (outcome.ok) {
+            cartRefund = {
+              kind: "refunded",
+              amount_cents: cappedRefund,
+              payment_intent_id: target.stripe_payment_intent_id,
+              refund_id: outcome.refund_id,
+            };
+            // Reduce the deposit row's amount_cents so books reconcile.
+            const remaining = (target.amount_cents ?? 0) - cappedRefund;
+            if (remaining <= 0) {
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ status: "refunded", amount_cents: 0 })
+                .eq("id", target.id);
+            } else {
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ amount_cents: remaining })
+                .eq("id", target.id);
+            }
+          } else {
+            cartRefund = { kind: "failed", reason: outcome.error };
+            console.warn(
+              "[modify-reservation cart] shrink refund failed:",
+              outcome.error,
+            );
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          cartRefund = { kind: "failed", reason: msg };
+          console.warn("[modify-reservation cart] shrink refund errored:", msg);
+        }
+      }
+    }
+  }
+
+  // ── (6) Notifications (owner + diner) ─────────────────────────────
+  // Helpers are added by sub-agent E2; we call them defensively so a
+  // missing template can never block the response.
+  try {
+    // deno-lint-ignore no-explicit-any
+    const ownerMod: any = await import("../_shared/owner-notifications.ts");
+    if (typeof ownerMod.notifyOwnerCartModified === "function") {
+      await ownerMod.notifyOwnerCartModified({
+        supabase: adminClient,
+        restaurant_id: reservation.restaurant_id,
+        reservation_id: reservationId,
+        summary: newCartSummary,
+      });
+    }
+  } catch (e) {
+    console.warn("[modify-reservation cart] owner notify skipped:", e);
+  }
+  try {
+    const guestEmailForDiner =
+      reservation.guest_email?.trim() || guest?.email?.trim() || null;
+    const guestPhoneForDiner =
+      reservation.guest_phone?.trim() || guest?.phone?.trim() || null;
+    const restaurantName = restRow?.name?.trim() || "the restaurant";
+    const itemsLine =
+      computedLines.length > 0
+        ? `\nNew pre-order: ${computedLines
+            .map((l) => `${l.quantity}× ${l.name}`)
+            .join(", ")}`
+        : "\nPre-order: (cart cleared)";
+    const refundLine =
+      cartRefund.kind === "refunded"
+        ? `\nRefunded: ${formatCents(cartRefund.amount_cents)}`
+        : "";
+    await sendReservationNotification({
+      supabase: adminClient,
+      guestId: guest?.id ?? reservation.guest_id ?? null,
+      restaurantId: reservation.restaurant_id,
+      reservationId,
+      // sub-agent E2 is adding the "reservation_cart_modified" template
+      // — until that lands the generic helper will fall through with
+      // body-only content, which is acceptable.
+      type: "reservation_cart_modified",
+      email: guestEmailForDiner,
+      phone: guestPhoneForDiner,
+      subject: `Your pre-order at ${restaurantName} was updated`,
+      body:
+        `Your pre-order at ${restaurantName} has been updated.` +
+        itemsLine +
+        `\nNew total: ${formatCents(newTotalCents)}` +
+        refundLine,
+    });
+  } catch (e) {
+    console.warn("[modify-reservation cart] diner notify skipped:", e);
+  }
+
+  return json({
+    ok: true,
+    requires_payment: false,
+    change_type: "cart_delta",
+    reservation_id: reservationId,
+    delta_cents: deltaCents,
+    food_cents: newFoodCents,
+    tax_cents: newTaxCents,
+    new_cart_summary: newCartSummary,
+    refund: cartRefund,
+  });
+}
+
+// Cents-based promo discount — mirrors apps/web/src/lib/computePromoDiscount.ts
+// semantics. Operates on integer cents so we never lose pennies.
+function computePromoDiscountCents(
+  promo: {
+    promo_type: "bogo" | "percentage" | "fixed" | "free_item";
+    discount_value: number | null;
+    min_order_amount: number | null;
+    eligible_item_ids: string[] | null;
+    bogo_item_ids: string[] | null;
+    free_item_id: string | null;
+    buy_quantity: number | null;
+    get_quantity: number | null;
+  },
+  cart: CartLineComputed[],
+): number {
+  const cartTotalCents = cart.reduce((s, l) => s + l.line_total_cents, 0);
+  if (cartTotalCents <= 0) return 0;
+  const minOrderCents =
+    promo.min_order_amount != null
+      ? Math.round(Number(promo.min_order_amount) * 100)
+      : null;
+
+  switch (promo.promo_type) {
+    case "bogo": {
+      const eligibleIds = promo.bogo_item_ids ?? [];
+      const eligible =
+        eligibleIds.length > 0
+          ? cart.filter((l) => eligibleIds.includes(l.menu_item_id))
+          : cart;
+      const buy = promo.buy_quantity ?? 1;
+      const get = promo.get_quantity ?? 1;
+      const cycle = buy + get;
+      let discount = 0;
+      for (const line of eligible) {
+        const freeUnits = Math.floor(line.quantity / cycle) * get;
+        if (freeUnits > 0) discount += freeUnits * line.unit_price_cents;
+      }
+      return Math.min(discount, cartTotalCents);
+    }
+    case "percentage": {
+      if (!promo.discount_value) return 0;
+      if (minOrderCents != null && cartTotalCents < minOrderCents) return 0;
+      const eligibleIds = promo.eligible_item_ids ?? [];
+      const eligible =
+        eligibleIds.length > 0
+          ? cart.filter((l) => eligibleIds.includes(l.menu_item_id))
+          : cart;
+      const eligibleSubtotal = eligible.reduce(
+        (s, l) => s + l.line_total_cents,
+        0,
+      );
+      return Math.min(
+        Math.round(eligibleSubtotal * (Number(promo.discount_value) / 100)),
+        cartTotalCents,
+      );
+    }
+    case "fixed": {
+      if (!promo.discount_value) return 0;
+      if (minOrderCents != null && cartTotalCents < minOrderCents) return 0;
+      const eligibleIds = promo.eligible_item_ids ?? [];
+      const eligible =
+        eligibleIds.length > 0
+          ? cart.filter((l) => eligibleIds.includes(l.menu_item_id))
+          : cart;
+      const eligibleSubtotal = eligible.reduce(
+        (s, l) => s + l.line_total_cents,
+        0,
+      );
+      return Math.min(
+        Math.round(Number(promo.discount_value) * 100),
+        eligibleSubtotal,
+        cartTotalCents,
+      );
+    }
+    case "free_item": {
+      if (!promo.free_item_id) return 0;
+      const line = cart.find((l) => l.menu_item_id === promo.free_item_id);
+      if (!line) return 0;
+      return Math.min(line.unit_price_cents, cartTotalCents);
+    }
+    default:
+      return 0;
+  }
+}

@@ -22,11 +22,21 @@ import { Button } from "@/components/ui/button";
 import { CenaivaWordmark } from "@/components/brand/CenaivaWordmark";
 import { CustomerNav } from "@/components/customer/CustomerNav";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ModifyBookingFields,
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
+import {
+  BookingPaymentContactCard,
+  type BookingPaymentCardSplitTender,
+} from "@/components/customer/BookingPaymentContactCard";
+import { formatPaymentMethods } from "@/lib/booking/paymentMethods";
+import {
+  EditPreorderModal,
+  type EditPreorderInitialItem,
+} from "@/components/customer/EditPreorderModal";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import { type MyReservationRow } from "@/hooks/useMyReservations";
@@ -396,6 +406,12 @@ export default function BookingDetailsPage() {
     reasonKind: null,
   });
 
+  // 2026-05-27: Edit-pre-order modal. Mutually exclusive with the
+  // slot-modify dialog and the deposit-delta payment dialog — opening one
+  // closes the others. Tracked as a single discriminated state so two
+  // modals can't both be on screen at once.
+  const [preorderOpen, setPreorderOpen] = useState(false);
+
   const reservation: MyReservationRow | null = reservationRow;
 
   const status = reservation ? statusFor(reservation) : null;
@@ -429,7 +445,65 @@ export default function BookingDetailsPage() {
     setModifyInitial(initial);
     setModifyValues(initial);
     setModifyValidity({ canSave: false, reason: null, reasonKind: null });
+    // Mutual exclusion: never let the preorder modal stay open behind the
+    // modify dialog.
+    setPreorderOpen(false);
     setModifyOpen(true);
+  };
+
+  // ── Pre-order section gating + snapshot ────────────────────────────
+  // Cart edits lock 2 hours before the reservation (server enforces too).
+  const cartEditLockedByTime = useMemo(() => {
+    if (!reservedAt) return true;
+    const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+    return reservedAt.getTime() - Date.now() < TWO_HOURS_MS;
+  }, [reservedAt]);
+  const reservationStatus = reservation?.status ?? null;
+  const cartEditAllowedByStatus =
+    reservationStatus === "pending" || reservationStatus === "confirmed";
+  const canEditPreorder = Boolean(
+    reservation && cartEditAllowedByStatus && !cartEditLockedByTime,
+  );
+
+  // First preorder = source of truth for the editable cart. There's
+  // normally one preorder per reservation; if multiple exist (rare,
+  // legacy split-cart) we edit the first.
+  const preorderOrder = useMemo(() => {
+    if (!paymentData) return null;
+    return paymentData.orders.find((o) => o.is_preorder) ?? null;
+  }, [paymentData]);
+  const preorderInitialItems = useMemo<EditPreorderInitialItem[]>(() => {
+    if (!preorderOrder) return [];
+    return preorderOrder.order_items
+      .filter((it) => it.menu_item_id !== null)
+      .map((it) => ({
+        menu_item_id: it.menu_item_id as string,
+        name: it.name,
+        unit_price: Number(it.unit_price) || 0,
+        quantity: it.quantity,
+      }));
+  }, [preorderOrder]);
+  const preorderSubtotalDollars = useMemo(
+    () =>
+      preorderOrder
+        ? preorderOrder.order_items.reduce(
+            (s, it) => s + Number(it.unit_price) * it.quantity,
+            0,
+          )
+        : 0,
+    [preorderOrder],
+  );
+  const preorderTaxRate = paymentData?.restaurant?.tax_rate ?? null;
+  const preorderTaxDollars =
+    preorderTaxRate != null ? preorderSubtotalDollars * preorderTaxRate : 0;
+  const preorderTotalDollars = preorderSubtotalDollars + preorderTaxDollars;
+
+  const openPreorderDialog = () => {
+    if (!canEditPreorder) return;
+    // Mutual exclusion: close slot-modify + delta-payment dialogs.
+    setModifyOpen(false);
+    setPendingPayment(null);
+    setPreorderOpen(true);
   };
 
   useEffect(() => {
@@ -738,6 +812,180 @@ export default function BookingDetailsPage() {
                   )}
                 </div>
 
+                {/* 2026-05-28: enriched "Payment & contact details" card.
+                    Renders for every reservation (not just paid ones) so
+                    diners see their contact info + cancellation deadline
+                    + tax rate even when there's no deposit/pre-order. */}
+                {paymentData && (
+                  <BookingPaymentContactCard
+                    guestEmail={
+                      paymentData.reservation?.guest_email ??
+                      profile?.email ??
+                      null
+                    }
+                    guestPhone={
+                      paymentData.reservation?.guest_phone ??
+                      profile?.phone ??
+                      null
+                    }
+                    contactUpdateHint="To update, edit your profile in Account."
+                    paymentMethods={formatPaymentMethods([
+                      ...paymentData.orders.map((o) => ({
+                        key: `order-${o.id}`,
+                        cardBrand: o.card_brand,
+                        cardLast4: o.card_last4,
+                        context: o.is_preorder ? "Pre-order" : "Order",
+                      })),
+                      ...paymentData.deposits.map((d) => ({
+                        key: `dep-${d.id}`,
+                        cardBrand: d.card_brand,
+                        cardLast4: d.card_last4,
+                        context: d.payer_full_name
+                          ? `${d.payer_full_name} · deposit`
+                          : "Deposit",
+                      })),
+                    ])}
+                    depositTier={(() => {
+                      // Reconstruct per-person × party = total from the
+                      // stored deposit_amount_cents. The original tier
+                      // breakdown isn't kept on the reservation row, but
+                      // this is mathematically equivalent for display.
+                      const total =
+                        paymentData.reservation?.deposit_amount_cents ?? 0;
+                      const party = paymentData.reservation?.party_size ?? 0;
+                      if (total <= 0 || party <= 0) return null;
+                      return {
+                        amountPerPersonCents: Math.round(total / party),
+                        partySize: party,
+                        totalCents: total,
+                      };
+                    })()}
+                    splitTender={
+                      paymentData.deposits.length > 1
+                        ? paymentData.deposits.map<BookingPaymentCardSplitTender>(
+                            (d) => ({
+                              id: d.id,
+                              payerName: d.payer_full_name,
+                              status: d.status,
+                              amountCents: d.amount_cents,
+                              cardBrand: d.card_brand,
+                              cardLast4: d.card_last4,
+                            }),
+                          )
+                        : []
+                    }
+                    appliedPromoCode={
+                      paymentData.reservation?.applied_promo_code ??
+                      reservation.applied_promo_code ??
+                      null
+                    }
+                    reservedAtIso={
+                      paymentData.reservation?.reserved_at ??
+                      reservation.reserved_at
+                    }
+                    cancellationHours={
+                      paymentData.restaurant?.cancellation_hours ?? null
+                    }
+                    taxRate={paymentData.restaurant?.tax_rate ?? null}
+                    province={paymentData.restaurant?.province ?? null}
+                    timezone={reservation.restaurant?.timezone ?? null}
+                  />
+                )}
+
+                {/* 2026-05-27: Pre-order section. Always visible for
+                    pending/confirmed reservations — even when there's no
+                    pre-order yet, the diner can use the "Add pre-order"
+                    button to attach one. Edit/Add both lock 2h before
+                    the reservation (server enforces too). */}
+                {paymentData && cartEditAllowedByStatus && (
+                  <div className="mt-10">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="size-4 text-gold" />
+                      <h2 className="font-serif text-2xl text-white">Pre-order</h2>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-border bg-bg-surface/60 p-5">
+                      {preorderInitialItems.length > 0 ? (
+                        <>
+                          <ul className="space-y-2">
+                            {preorderInitialItems.map((it) => (
+                              <li
+                                key={it.menu_item_id}
+                                className="flex justify-between text-sm text-text-secondary"
+                              >
+                                <span>
+                                  {it.quantity} × {it.name}
+                                </span>
+                                <span className="font-mono">
+                                  ${(it.unit_price * it.quantity).toFixed(2)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                          <dl className="mt-4 space-y-1 border-t border-border pt-3 text-sm">
+                            <div className="flex justify-between">
+                              <dt className="text-text-muted">Subtotal</dt>
+                              <dd className="font-mono text-text-secondary">
+                                ${preorderSubtotalDollars.toFixed(2)}
+                              </dd>
+                            </div>
+                            {preorderTaxRate != null && preorderTaxRate > 0 && (
+                              <div className="flex justify-between">
+                                <dt className="text-text-muted">
+                                  Tax ({(preorderTaxRate * 100).toFixed(2)}%)
+                                </dt>
+                                <dd className="font-mono text-text-secondary">
+                                  ${preorderTaxDollars.toFixed(2)}
+                                </dd>
+                              </div>
+                            )}
+                            <div className="flex justify-between border-t border-border pt-1 text-base">
+                              <dt className="text-white">Total</dt>
+                              <dd className="font-mono font-semibold text-white">
+                                ${preorderTotalDollars.toFixed(2)}
+                              </dd>
+                            </div>
+                          </dl>
+                        </>
+                      ) : (
+                        <p className="text-sm text-text-secondary">
+                          You haven't added a pre-order to this booking. Add
+                          dishes now so the kitchen has time to prep before
+                          you arrive.
+                        </p>
+                      )}
+
+                      <div className="mt-4">
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-block w-full sm:w-auto">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={!canEditPreorder}
+                                  onClick={openPreorderDialog}
+                                  className="h-10 w-full rounded-md font-medium sm:w-auto"
+                                >
+                                  <PencilLine className="size-4" />
+                                  {preorderInitialItems.length > 0
+                                    ? "Edit pre-order"
+                                    : "Add pre-order"}
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            {!canEditPreorder && (
+                              <TooltipContent side="top">
+                                Pre-order locks 2 hours before your reservation
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {paymentData &&
                   (paymentData.orders.length > 0 || paymentData.deposits.length > 0) && (
                     <div className="mt-10">
@@ -1008,6 +1256,43 @@ export default function BookingDetailsPage() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* 2026-05-27: Edit pre-order modal. Mutually exclusive with the
+          modify dialog above. On success refreshes both reservation +
+          payments so the new cart appears immediately. */}
+      {reservation?.restaurant?.id && (
+        <EditPreorderModal
+          open={preorderOpen}
+          onOpenChange={setPreorderOpen}
+          reservationId={reservation.id}
+          restaurantId={reservation.restaurant.id}
+          restaurantProvince={paymentData?.restaurant?.province ?? null}
+          restaurantTaxRate={paymentData?.restaurant?.tax_rate ?? null}
+          initialItems={preorderInitialItems}
+          initialPromoCode={
+            paymentData?.reservation?.applied_promo_code ??
+            reservation.applied_promo_code ??
+            null
+          }
+          auth={{ kind: "logged_in" }}
+          onSaved={(summary) => {
+            void refresh();
+            void refreshPayments();
+            if (reservation.restaurant?.id) {
+              invalidateAvailabilityCache(reservation.restaurant.id);
+            }
+            if (summary.requiredPayment) {
+              toast.success("Pre-order updated and charged.");
+            } else if (summary.refundedCents && summary.refundedCents > 0) {
+              toast.success(
+                `Pre-order updated. $${(summary.refundedCents / 100).toFixed(2)} refunded to your card.`,
+              );
+            } else {
+              toast.success("Pre-order updated.");
+            }
+          }}
+        />
+      )}
 
       <Dialog open={cancelConfirmOpen} onOpenChange={(open) => !cancelling && setCancelConfirmOpen(open)}>
         <DialogContent className="sm:max-w-md">
