@@ -42,7 +42,20 @@ type SavedCard = {
 
 type StripePaymentFormProps = {
   restaurantId: string;
+  /**
+   * Food portion (commission-bearing) in cents. Passed to
+   * create-public-payment-intent as `amount_cents`. This is the BASE that
+   * Cenaiva's 2% commission and Stripe's processing fee are computed on.
+   */
   amountCents: number;
+  /**
+   * Tax portion (HST pass-through) in cents. Optional — defaults to 0.
+   * Passed to create-public-payment-intent as `tax_cents` so the server
+   * grosses up correctly: tax is added to the diner total but bears no
+   * Cenaiva commission. Deposits don't carry tax, so the deposit-only
+   * magic-link path leaves this unset.
+   */
+  taxCents?: number;
   /**
    * Optional active reservation_hold id. When present, gets passed to
    * create-public-payment-intent so the PI's metadata.hold_id is stamped —
@@ -143,7 +156,7 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
       </div>
     );
   }
-  if (props.amountCents < 50) {
+  if (props.amountCents + (props.taxCents ?? 0) < 50) {
     return (
       <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
         Total is below Stripe's 50¢ minimum charge.
@@ -166,6 +179,7 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
       isLoggedIn={Boolean(user)}
       restaurantId={props.restaurantId}
       amountCents={props.amountCents}
+      taxCents={props.taxCents ?? 0}
       holdId={props.holdId ?? null}
       depositPaymentIds={props.depositPaymentIds ?? null}
       onPaid={props.onPaid}
@@ -184,6 +198,7 @@ function PaymentSurface({
   isLoggedIn,
   restaurantId,
   amountCents,
+  taxCents,
   holdId,
   depositPaymentIds,
   onPaid,
@@ -198,6 +213,7 @@ function PaymentSurface({
   isLoggedIn: boolean;
   restaurantId: string;
   amountCents: number;
+  taxCents: number;
   holdId: string | null;
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
@@ -241,6 +257,7 @@ function PaymentSurface({
         onAddDifferent={() => setSelectedSavedCardId(null)}
         restaurantId={restaurantId}
         amountCents={amountCents}
+        taxCents={taxCents}
         holdId={holdId}
         depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
@@ -270,7 +287,11 @@ function PaymentSurface({
       stripe={stripePromise}
       options={{
         mode: "payment",
-        amount: amountCents,
+        // Hint for wallet payment sheets only — server PI is the source of
+        // truth on the actual charge amount. Include tax so the Apple/Google
+        // Pay sheet shows a representative total close to what the diner
+        // actually pays.
+        amount: amountCents + taxCents,
         currency: "cad",
         // Card + wallets: the server PI now uses `automatic_payment_methods`
         // with `allow_redirects: "never"`, which yields card + Link (and on
@@ -300,6 +321,7 @@ function PaymentSurface({
       <OneTimeCardForm
         restaurantId={restaurantId}
         amountCents={amountCents}
+        taxCents={taxCents}
         holdId={holdId}
         depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
@@ -326,6 +348,7 @@ function SavedCardPath({
   onAddDifferent,
   restaurantId,
   amountCents,
+  taxCents,
   holdId,
   depositPaymentIds,
   onPaid,
@@ -342,6 +365,7 @@ function SavedCardPath({
   onAddDifferent: () => void;
   restaurantId: string;
   amountCents: number;
+  taxCents: number;
   holdId: string | null;
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
@@ -389,6 +413,7 @@ function SavedCardPath({
             body: JSON.stringify({
               restaurant_id: restaurantId,
               amount_cents: amountCents,
+              tax_cents: taxCents,
               saved_card_id: selectedId,
               hold_id: holdId,
               deposit_payment_ids: depositPaymentIds ?? undefined,
@@ -453,7 +478,7 @@ function SavedCardPath({
         setSubmitting(false);
       }
     },
-    [submitting, restaurantId, amountCents, selectedId, depositPaymentIds, holdId, onPaid, onError, stripePromise],
+    [submitting, restaurantId, amountCents, taxCents, selectedId, depositPaymentIds, holdId, onPaid, onError, stripePromise],
   );
 
   return (
@@ -537,6 +562,7 @@ function SavedCardPath({
 function OneTimeCardForm({
   restaurantId,
   amountCents,
+  taxCents,
   holdId,
   depositPaymentIds,
   onPaid,
@@ -553,6 +579,7 @@ function OneTimeCardForm({
 }: {
   restaurantId: string;
   amountCents: number;
+  taxCents: number;
   holdId: string | null;
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
@@ -626,6 +653,7 @@ function OneTimeCardForm({
             body: JSON.stringify({
               restaurant_id: restaurantId,
               amount_cents: amountCents,
+              tax_cents: taxCents,
               hold_id: holdId,
               save_card: isLoggedIn && saveCard,
               deposit_payment_ids: depositPaymentIds ?? undefined,
@@ -696,7 +724,7 @@ function OneTimeCardForm({
         setSubmitting(false);
       }
     },
-    [submitting, stripe, elements, restaurantId, amountCents, holdId, depositPaymentIds, onPaid, onError, isLoggedIn, saveCard],
+    [submitting, stripe, elements, restaurantId, amountCents, taxCents, holdId, depositPaymentIds, onPaid, onError, isLoggedIn, saveCard],
   );
 
   return (

@@ -80,6 +80,27 @@ export const ConfirmDepositPaidSchema = z.object({
 });
 export type ConfirmDepositPaidInput = z.infer<typeof ConfirmDepositPaidSchema>;
 
+// create-public-payment-intent: creates a Stripe PaymentIntent for a diner
+// to pay a deposit / pre-order. `amount_cents` is the FOOD-only base
+// (commission-bearing). `tax_cents` is the pass-through HST/GST portion
+// (no commission). Both are folded into the diner-pays-all-fees gross-up
+// via computeDinerCharge(food, tax) on the server.
+// NOTE: the edge fn currently does handcrafted validation; this schema is
+// provided for future migration to parseJsonBody and for type sharing.
+export const CreatePublicPaymentIntentSchema = z.object({
+  restaurant_id: Uuid,
+  amount_cents: z.number().int().nonnegative().max(10_000_000),
+  tax_cents: z.number().int().nonnegative().max(10_000_000).optional(),
+  saved_card_id: BoundedText(200).optional(),
+  deposit_payment_ids: z.array(Uuid).max(16).optional(),
+  hold_id: Uuid.optional(),
+  save_card: z.boolean().optional(),
+  idempotency_key: BoundedText(240).optional(),
+});
+export type CreatePublicPaymentIntentInput = z.infer<
+  typeof CreatePublicPaymentIntentSchema
+>;
+
 // confirm-modify-payment: finalizes a reservation modification AFTER the
 // diner has paid the deposit delta via Stripe. Mirrors modify-reservation's
 // auth shape (bearer OR confirmation_code + email).

@@ -57,6 +57,11 @@ const corsHeaders = {
 type Payload = {
   restaurant_id?: unknown;
   amount_cents?: unknown;
+  // Tax portion (HST/GST) that passes through to the restaurant. Cenaiva
+  // does NOT take commission on tax. Folded into the diner-pays-all-fees
+  // gross-up via computeDinerCharge(food, tax). When omitted, treated as 0
+  // (pre-tax callers like deposit-only and legacy clients keep working).
+  tax_cents?: unknown;
   saved_card_id?: unknown;
   // Deposit-link metadata (Vuln 2 hardening 2026-05-20). When the client
   // creates a PI for one or more `reservation_deposit_payments` rows, it
@@ -160,6 +165,7 @@ async function chargeSavedCardWithHold(opts: {
   restaurantName: string;
   stripeAccountId: string | null;
   amountCents: number;
+  taxCents: number;
   dinerTotalCents: number;
   processingFeeCents: number;
   applicationFeeCents: number;
@@ -210,6 +216,7 @@ async function chargeSavedCardWithHold(opts: {
       saved_card_id: savedCard.id ?? savedCard.stripe_payment_method_id,
       hold_id: opts.holdId,
       base_amount_cents: String(opts.amountCents),
+      tax_cents: String(opts.taxCents),
       processing_fee_cents: String(opts.processingFeeCents),
     },
     description: `Reservation at ${opts.restaurantName}`,
@@ -217,11 +224,6 @@ async function chargeSavedCardWithHold(opts: {
   if (opts.stripeAccountId) {
     params.application_fee_amount = opts.applicationFeeCents;
     params.transfer_data = { destination: opts.stripeAccountId };
-    // on_behalf_of: Stripe debits its processing fee from the connected
-    // (restaurant) account, not from Cenaiva's platform balance. Without
-    // this the diner's grossed-up $0.41 ends up at the restaurant AND
-    // Cenaiva still eats the Stripe fee — net loss per booking.
-    params.on_behalf_of = opts.stripeAccountId;
   }
 
   let paymentIntent;
@@ -343,6 +345,14 @@ Deno.serve(async (req: Request) => {
       typeof payload.amount_cents === "number" && Number.isFinite(payload.amount_cents)
         ? Math.round(payload.amount_cents)
         : null;
+    // tax_cents: optional pass-through HST/GST. Validated bounds match
+    // amount_cents (0 to $100k CAD). Missing / non-numeric → 0.
+    const taxCentsRaw =
+      typeof payload.tax_cents === "number" && Number.isFinite(payload.tax_cents)
+        ? Math.round(payload.tax_cents)
+        : 0;
+    const taxCents =
+      taxCentsRaw >= 0 && taxCentsRaw <= 10_000_000 ? taxCentsRaw : 0;
     const savedCardId =
       typeof payload.saved_card_id === "string" && payload.saved_card_id.trim()
         ? payload.saved_card_id.trim()
@@ -458,7 +468,7 @@ Deno.serve(async (req: Request) => {
     const stripe = await getStripeClient(stripeKey);
 
     const currency = (row.currency ?? "CAD").toLowerCase();
-    const charge = computeDinerCharge(amountCents);
+    const charge = computeDinerCharge(amountCents, taxCents);
     const dinerTotalCents = charge.dinerTotalCents;
     const processingFeeCents = charge.processingFeeCents;
     const applicationFeeCents = charge.applicationFeeCents;
@@ -588,6 +598,7 @@ Deno.serve(async (req: Request) => {
           restaurantName: row.name ?? "Cenaiva restaurant",
           stripeAccountId: row.stripe_account_id,
           amountCents,
+          taxCents,
           dinerTotalCents,
           processingFeeCents,
           applicationFeeCents,
@@ -612,6 +623,7 @@ Deno.serve(async (req: Request) => {
           ...metadata,
           hold_id: hold.id,
           base_amount_cents: String(amountCents),
+          tax_cents: String(taxCents),
           processing_fee_cents: String(processingFeeCents),
         },
         description: `Reservation hold at ${row.name ?? "Cenaiva restaurant"}`,
@@ -619,10 +631,6 @@ Deno.serve(async (req: Request) => {
       if (row.stripe_account_id) {
         holdStripeParams.application_fee_amount = applicationFeeCents;
         holdStripeParams.transfer_data = { destination: row.stripe_account_id };
-        // on_behalf_of: Stripe processing fee debits from connected
-        // (restaurant) account, not Cenaiva. Required so the diner's
-        // grossed-up processing fee actually pays for itself.
-        holdStripeParams.on_behalf_of = row.stripe_account_id;
       }
       // Save-card path: tell Stripe to save the PM during charge so the
       // diner sees it in their saved cards next time. Required because
@@ -762,6 +770,7 @@ Deno.serve(async (req: Request) => {
           ...metadata,
           saved_card_id: savedCard.id ?? savedCard.stripe_payment_method_id,
           base_amount_cents: String(amountCents),
+          tax_cents: String(taxCents),
           processing_fee_cents: String(processingFeeCents),
         },
         description: `Reservation at ${row.name ?? "Cenaiva restaurant"}`,
@@ -773,9 +782,6 @@ Deno.serve(async (req: Request) => {
         // application fee stays with Cenaiva.
         savedCardParams.application_fee_amount = applicationFeeCents;
         savedCardParams.transfer_data = { destination: row.stripe_account_id };
-        // on_behalf_of: Stripe processing fee debits from connected
-        // (restaurant) account, not Cenaiva's platform balance.
-        savedCardParams.on_behalf_of = row.stripe_account_id;
       }
 
       let paymentIntent;
@@ -852,6 +858,7 @@ Deno.serve(async (req: Request) => {
       metadata: {
         ...metadata,
         base_amount_cents: String(amountCents),
+        tax_cents: String(taxCents),
         processing_fee_cents: String(processingFeeCents),
       },
       description: `Reservation at ${row.name ?? "Cenaiva restaurant"}`,
@@ -862,9 +869,6 @@ Deno.serve(async (req: Request) => {
       // application_fee_amount is 2.2% of BASE (not the grossed-up total).
       stripeParams.application_fee_amount = applicationFeeCents;
       stripeParams.transfer_data = { destination: row.stripe_account_id };
-      // on_behalf_of: Stripe processing fee debits from connected
-      // (restaurant) account, not Cenaiva's platform balance.
-      stripeParams.on_behalf_of = row.stripe_account_id;
     }
     // If no Connect account, this becomes a platform-only charge; manual
     // payout to the restaurant happens out-of-band. Pre-launch fallback.

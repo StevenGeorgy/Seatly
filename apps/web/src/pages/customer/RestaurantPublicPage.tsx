@@ -1688,12 +1688,20 @@ export default function RestaurantPublicPage() {
   // Previously this excluded the deposit from totalNow in split mode, which
   // caused pre-order-only split-tender to fall through to single-card form.
   const totalNow = total + previewDepositDollars;
+  // 2026-05-27: split food vs tax for `computeDinerCharge`. Food =
+  // commission-bearing portion (pre-order subtotal after discount + deposit).
+  // Tax = HST passes through to the restaurant with no Cenaiva commission.
+  // Deposits don't carry tax (deposits are pre-charge holds, not menu sales).
+  const foodOnlyDollars = discountedSubtotal + previewDepositDollars;
+  const taxOnlyDollars = tax;
+  const foodOnlyCents = Math.round(foodOnlyDollars * 100);
+  const taxOnlyCents = Math.round(taxOnlyDollars * 100);
   // Stripe processing fee pass-through: diner pays our 2.9% + 30¢ on top so
   // the restaurant nets the full base. Display-only; server is the source of
   // truth on the actual amount charged.
   const dinerCharge = useMemo(
-    () => computeDinerCharge(Math.round(totalNow * 100)),
-    [totalNow],
+    () => computeDinerCharge(foodOnlyCents, taxOnlyCents),
+    [foodOnlyCents, taxOnlyCents],
   );
   const cenaivaFeeDollars = dinerCharge.cenaivaFeeCents / 100;
   const processingFeeDollars = dinerCharge.processingFeeCents / 100;
@@ -3343,7 +3351,8 @@ export default function RestaurantPublicPage() {
                 {paymentSplitMode === "split" && totalNow > 0 && restaurant?.id ? (
                   <SplitTenderPaymentForm
                     restaurantId={restaurant.id}
-                    shareCents={Math.round((totalNow * 100) / Math.max(2, splitPartyCount))}
+                    foodTotalCents={foodOnlyCents}
+                    taxTotalCents={taxOnlyCents}
                     payerCount={Math.max(2, Math.min(10, splitPartyCount))}
                     holdId={hold.state.status === "active" ? hold.state.holdId : null}
                     formId="diner-pay-form"
@@ -3368,7 +3377,8 @@ export default function RestaurantPublicPage() {
                 ) : Math.round(totalNow * 100) > 0 && restaurant?.id ? (
                   <StripePaymentForm
                     restaurantId={restaurant.id}
-                    amountCents={Math.round(totalNow * 100)}
+                    amountCents={foodOnlyCents}
+                    taxCents={taxOnlyCents}
                     holdId={hold.state.status === "active" ? hold.state.holdId : null}
                     formId="diner-pay-form"
                     hideInternalSubmit
