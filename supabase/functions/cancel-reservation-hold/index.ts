@@ -4,9 +4,21 @@
 //
 // Anon-callable. Fire-and-forget on the client side via
 // navigator.sendBeacon, so the response may never be observed — we
-// always return ok: true unless the request itself is malformed.
-// cancel_reservation_hold is idempotent (UPDATE … WHERE status IN
-// ('active','converting')), so repeated calls are safe.
+// always return { ok: true, cancelled: <bool> } with status 200
+// unless the request itself is malformed. Both underlying RPCs are
+// idempotent (UPDATE … WHERE status IN ('active','converting')), so
+// repeated calls are safe.
+//
+// Accepts either { hold_id } OR { client_token } OR both. If both
+// are provided we prefer client_token: it routes through
+// cancel_reservation_hold_by_token, which upserts a tombstone in
+// hold_cancellation_intents AND flips any existing matching hold —
+// this is race-safe against the create-then-immediately-cancel
+// window where the browser never learned the hold_id.
+//
+// The `cancelled` boolean in the response reflects whether a row
+// was actually flipped (true) or the call was a no-op (false) — for
+// dev-console / log observability only; beacon callers can't react.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -61,7 +73,8 @@ Deno.serve(async (req: Request) => {
       jsonRes: (b, s) => jsonResponse(b as Record<string, unknown>, s),
     });
     if ("response" in parsed) return parsed.response;
-    const holdId = parsed.data.hold_id;
+    const holdId = parsed.data.hold_id ?? null;
+    const clientToken = parsed.data.client_token ?? null;
 
     // Resolve auth purely for rate-limit bucketing. Anon-callable: a
     // missing or invalid token just leaves userProfileId null (per-IP
@@ -97,17 +110,40 @@ Deno.serve(async (req: Request) => {
       throw err;
     }
 
-    const { error } = await supabaseAdmin.rpc("cancel_reservation_hold", {
-      p_hold_id: holdId,
-    });
-
-    if (error) {
-      // Log but still return ok: true — beacon callers can't react,
-      // and the cleanup cron will expire orphaned holds anyway.
-      console.warn("[cancel-reservation-hold] rpc error:", error.message);
+    // Prefer client_token when both are provided — the tombstone path
+    // is race-safe against the create-then-cancel window.
+    let cancelled = false;
+    if (clientToken) {
+      const { data, error } = await supabaseAdmin.rpc(
+        "cancel_reservation_hold_by_token",
+        { p_client_token: clientToken },
+      );
+      if (error) {
+        // Log but still return ok: true — beacon callers can't react,
+        // and the cleanup cron will expire orphaned holds anyway.
+        console.warn(
+          "[cancel-reservation-hold] cancel_reservation_hold_by_token error:",
+          error.message,
+        );
+      } else {
+        cancelled = data === true;
+      }
+    } else if (holdId) {
+      const { data, error } = await supabaseAdmin.rpc(
+        "cancel_reservation_hold",
+        { p_hold_id: holdId },
+      );
+      if (error) {
+        console.warn(
+          "[cancel-reservation-hold] cancel_reservation_hold error:",
+          error.message,
+        );
+      } else {
+        cancelled = data === true;
+      }
     }
 
-    return jsonResponse({ ok: true });
+    return jsonResponse({ ok: true, cancelled });
   } catch (err) {
     return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

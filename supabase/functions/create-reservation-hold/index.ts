@@ -117,6 +117,7 @@ Deno.serve(async (req: Request) => {
     const eventId = parsed.data.event_id ?? null;
     const promotionId = parsed.data.promotion_id ?? null;
     const appliedPromoCode = parsed.data.applied_promo_code ?? null;
+    const clientToken = asUuid(parsed.data.client_token);
 
     if (!restaurantId || !shiftId || !dateTime || partySizeRaw < 1) {
       return jsonResponse(
@@ -188,6 +189,7 @@ Deno.serve(async (req: Request) => {
         p_event_id: eventId,
         p_promotion_id: promotionId,
         p_applied_promo_code: appliedPromoCode,
+        p_client_token: clientToken ?? null,
       },
     );
 
@@ -221,7 +223,7 @@ Deno.serve(async (req: Request) => {
           const { data: existing } = await supabaseAdmin
             .from("reservation_holds")
             .select(
-              "id, confirmation_code, table_ids, duration_minutes, expires_at, deposit_amount_cents",
+              "id, confirmation_code, table_ids, duration_minutes, expires_at, deposit_amount_cents, client_token",
             )
             .eq("user_profile_id", userProfileId)
             .eq("restaurant_id", restaurantId)
@@ -247,6 +249,8 @@ Deno.serve(async (req: Request) => {
               ),
               server_now: new Date().toISOString(),
               recovered: true,
+              client_token:
+                asUuid((existing as { client_token?: unknown }).client_token) ?? null,
             };
             if (cacheKey) {
               idempotencyCache.set(cacheKey, {
@@ -288,6 +292,7 @@ Deno.serve(async (req: Request) => {
           ? row.deposit_amount_cents
           : Number(row.deposit_amount_cents ?? 0),
       server_now: row.server_now,
+      client_token: clientToken ?? null,
     };
 
     if (cacheKey) {

@@ -28,6 +28,11 @@ export const CreateReservationHoldSchema = z.object({
   event_id: Uuid.nullish(),
   promotion_id: Uuid.nullish(),
   applied_promo_code: BoundedText(64).nullish(),
+  // client_token: pre-generated UUID from the browser, persisted on
+  // the row. Enables cancel-by-token when the user navigates away
+  // before the create POST returns the hold_id. Optional for
+  // backward compat (old clients still work).
+  client_token: Uuid.nullish(),
 });
 export type CreateReservationHoldInput = z.infer<
   typeof CreateReservationHoldSchema
@@ -66,10 +71,18 @@ export type HeartbeatReservationHoldInput = z.infer<
   typeof HeartbeatReservationHoldSchema
 >;
 
-// cancel-reservation-hold: { hold_id }
-export const CancelReservationHoldSchema = z.object({
-  hold_id: Uuid,
-});
+// cancel-reservation-hold: { hold_id? } OR { client_token? } OR both.
+// At least one must be present; handler enforces. client_token enables
+// cancel-by-token for the race-during-create case where the client
+// never learned the hold_id.
+export const CancelReservationHoldSchema = z
+  .object({
+    hold_id: Uuid.nullish(),
+    client_token: Uuid.nullish(),
+  })
+  .refine((d) => d.hold_id || d.client_token, {
+    message: "hold_id or client_token required",
+  });
 export type CancelReservationHoldInput = z.infer<
   typeof CancelReservationHoldSchema
 >;

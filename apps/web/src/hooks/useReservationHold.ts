@@ -20,10 +20,11 @@ export type HoldErrorReason =
 
 export type HoldState =
   | { status: "idle" }
-  | { status: "creating" }
+  | { status: "creating"; clientToken: string | null }
   | {
       status: "active";
       holdId: string;
+      clientToken: string | null;
       expiresAt: string;
       secondsLeft: number;
       serverSkewMs: number;
@@ -105,6 +106,7 @@ export interface UseReservationHoldReturn {
 interface CreateHoldResponse {
   ok?: boolean;
   hold_id?: string;
+  client_token?: string;
   expires_at?: string;
   server_now?: string;
   deposit_amount_cents?: number;
@@ -114,6 +116,13 @@ interface CreateHoldResponse {
   error?: string;
   reason?: string;
   unavailable_reason?: string;
+}
+
+interface CancelHoldResponse {
+  ok?: boolean;
+  cancelled?: boolean;
+  error?: string;
+  reason?: string;
 }
 
 interface HeartbeatResponse {
@@ -131,6 +140,7 @@ interface UpdateResponse {
 
 interface PersistedHold {
   holdId: string;
+  clientToken: string | null;
   expiresAt: string;
   depositAmountCents: number;
   confirmationCode: string;
@@ -172,6 +182,7 @@ function loadPersisted(key: string): PersistedHold | null {
     }
     return {
       holdId: parsed.holdId,
+      clientToken: typeof parsed.clientToken === "string" ? parsed.clientToken : null,
       expiresAt: parsed.expiresAt,
       depositAmountCents:
         typeof parsed.depositAmountCents === "number" ? parsed.depositAmountCents : 0,
@@ -271,6 +282,13 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
 
   // Persisted refs (don't trigger renders).
   const idempotencyKeyRef = useRef<string | null>(null);
+  // `client_token` minted right before the createHold POST fires. Lets the
+  // cleanup cancel even when the user navigates away DURING the ~500ms
+  // create POST (we don't know hold_id yet, but the server stores the
+  // client_token alongside, so cancel-by-client_token resolves to the same
+  // row — or pre-tombstones it so the row is born 'cancelled' when create
+  // lands). Reset on slot drift (new slot = new token) and on unmount.
+  const clientTokenRef = useRef<string | null>(null);
   const lastActiveAtRef = useRef<number>(Date.now());
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -311,7 +329,6 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (creatingInFlightRef.current) return null;
 
     creatingInFlightRef.current = true;
-    setState({ status: "creating" });
 
     if (!idempotencyKeyRef.current) {
       idempotencyKeyRef.current =
@@ -319,6 +336,17 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
+
+    // Mint a fresh client_token if we don't have one already. The cleanup
+    // path uses this when the user navigates away before the create POST
+    // returns — server has a tombstone mechanism so a cancel-by-client_token
+    // arriving first will cause the row to be born 'cancelled'.
+    if (!clientTokenRef.current) {
+      clientTokenRef.current = crypto.randomUUID();
+    }
+    const clientToken = clientTokenRef.current;
+
+    setState({ status: "creating", clientToken });
 
     try {
       const { res, body } = await postFn<CreateHoldResponse>("create-reservation-hold", {
@@ -328,6 +356,7 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
         party_size: partySize,
         source,
         idempotency_key: idempotencyKeyRef.current,
+        client_token: clientToken,
         event_id: eventId,
         promotion_id: promotionId,
         applied_promo_code: appliedPromoCode,
@@ -357,9 +386,18 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
         Math.floor((Date.parse(expiresAt) - (Date.now() + serverSkewMs)) / 1000),
       );
 
+      // Prefer the server-echoed token (authoritative) but fall back to
+      // what we sent in case the edge fn omits it from the response.
+      const echoedToken =
+        typeof body.client_token === "string" && body.client_token.length > 0
+          ? body.client_token
+          : clientToken;
+      clientTokenRef.current = echoedToken;
+
       const next: HoldState = {
         status: "active",
         holdId: body.hold_id,
+        clientToken: echoedToken,
         expiresAt,
         secondsLeft,
         serverSkewMs,
@@ -374,6 +412,7 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       if (persistKeyRef.current) {
         savePersisted(persistKeyRef.current, {
           holdId: next.holdId,
+          clientToken: next.clientToken,
           expiresAt: next.expiresAt,
           depositAmountCents: next.depositAmountCents,
           confirmationCode: next.confirmationCode,
@@ -471,12 +510,23 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   const cancelHold = useCallback(async (): Promise<void> => {
     const current = stateRef.current;
     const holdId = current.status === "active" || current.status === "expired" ? current.holdId : null;
+    const clientToken = clientTokenRef.current;
     // Always clear local state regardless of network result.
     if (persistKeyRef.current) clearPersisted(persistKeyRef.current);
+    // Reset the client token before idle — a fresh createHold call will mint
+    // a new one. Holding onto the old one would let a re-create accidentally
+    // collide with the cancelled tombstone server-side.
+    clientTokenRef.current = null;
     setState({ status: "idle" });
-    if (!holdId) return;
+    if (!holdId && !clientToken) return;
     try {
-      await postFn<UpdateResponse>("cancel-reservation-hold", { hold_id: holdId });
+      const { body } = await postFn<CancelHoldResponse>("cancel-reservation-hold", {
+        ...(holdId ? { hold_id: holdId } : {}),
+        ...(clientToken ? { client_token: clientToken } : {}),
+      });
+      if (import.meta.env.DEV && body.cancelled === false) {
+        console.warn("[ReservationHold.cancelHold] server reports cancelled=false", body);
+      }
     } catch (err) {
       // best-effort — log so operators can see if hold cleanup is silently
       // failing in production.
@@ -491,6 +541,7 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   const grabAgain = useCallback(async (): Promise<boolean> => {
     if (persistKeyRef.current) clearPersisted(persistKeyRef.current);
     idempotencyKeyRef.current = null; // fresh key for the new attempt
+    clientTokenRef.current = null; // fresh client_token for the new attempt
     setState({ status: "idle" });
     const result = await createHold();
     return result !== null;
@@ -503,6 +554,10 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   const confirmConverted = useCallback(
     (reservationId: string, confirmationCode: string): void => {
       if (persistKeyRef.current) clearPersisted(persistKeyRef.current);
+      // The hold has been converted to a reservation — the client_token has
+      // done its job. Clear it so a stray cancel doesn't attempt to tombstone
+      // anything (server should already report converted, but no point firing).
+      clientTokenRef.current = null;
       setState({ status: "confirmed", reservationId, confirmationCode });
     },
     [],
@@ -541,9 +596,14 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       clearPersisted(storageKey);
       return;
     }
+    // Restore the client_token from persistence so the cleanup path can
+    // still cancel-by-client_token even on a resumed hold (defense-in-depth;
+    // we have holdId here, but symmetry keeps cleanup branches simple).
+    clientTokenRef.current = persisted.clientToken;
     setState({
       status: "active",
       holdId: persisted.holdId,
+      clientToken: persisted.clientToken,
       expiresAt: persisted.expiresAt,
       secondsLeft,
       serverSkewMs: persisted.serverSkewMs,
@@ -621,9 +681,15 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       if (restaurantId && prevDateTime) {
         clearPersisted(getStorageKey(restaurantId, prevDateTime));
       }
+      // cancelHold clears clientTokenRef internally — the OLD slot's cancel
+      // uses the OLD token via the cleanup branch inside cancelHold.
       await cancelHold();
       if (cancelled) return;
       idempotencyKeyRef.current = null;
+      // Defensive: cancelHold already nulled this, but spell it out so the
+      // NEW slot's createHold mints a fresh token rather than reusing the
+      // tombstoned one.
+      clientTokenRef.current = null;
       await createHold();
       // lastSyncedInputsRef gets updated INSIDE createHold on success.
     }, 400);
@@ -771,6 +837,7 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
         if (persistKeyRef.current) {
           savePersisted(persistKeyRef.current, {
             holdId: next.holdId,
+            clientToken: next.clientToken,
             expiresAt: next.expiresAt,
             depositAmountCents: next.depositAmountCents,
             confirmationCode: next.confirmationCode,
@@ -810,15 +877,31 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
       // find a persisted entry and so will mint a fresh hold via the
       // auto-create path. Leave = die.
       if (persistKey) clearPersisted(persistKey);
-      if (s.status !== "active") return;
       // Skip the server-side cancel if the diner has entered the payment
       // flow. See `inPaymentFlow` prop docs — race-window-protection so the
       // webhook can still convert a paid hold even if the user closes the
       // tab in the gap between Stripe PI succeeding and `confirm-hold-paid`
       // firing. Local sessionStorage is still wiped above; the hold will
       // expire naturally after 30 min if booking is abandoned.
-      if (inPaymentFlowRef.current) return;
+      if (inPaymentFlowRef.current) {
+        clientTokenRef.current = null;
+        return;
+      }
       if (typeof navigator === "undefined") return;
+      // Resolve identifiers. The cleanup ALWAYS fires a cancel (no
+      // early-return on status !== "active") so we catch the
+      // navigated-away-during-create race: hold_id isn't known yet, but
+      // client_token IS. The server tombstones on client_token so a cancel
+      // arriving before create completes still causes the eventual row to
+      // be born 'cancelled'.
+      const holdId =
+        s.status === "active" || s.status === "expired" ? s.holdId : null;
+      const clientToken = clientTokenRef.current;
+      // Reset clientTokenRef now — the in-flight request below holds its
+      // own local copy. Prevents a remount-then-unmount-again pattern from
+      // double-cancelling on the same token.
+      clientTokenRef.current = null;
+      if (!holdId && !clientToken) return;
       try {
         const url = `${getSupabaseProjectUrl()}/functions/v1/cancel-reservation-hold`;
         const anon = getSupabaseAnonKey();
@@ -846,16 +929,45 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
             }
           }
         }
-        void fetch(url, {
+        const cancelBody: Record<string, string> = {};
+        if (holdId) cancelBody.hold_id = holdId;
+        if (clientToken) cancelBody.client_token = clientToken;
+        const pending = fetch(url, {
           method: "POST",
           headers: {
             apikey: anon,
             ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ hold_id: s.holdId }),
+          body: JSON.stringify(cancelBody),
           keepalive: true,
         });
+        // Dev-only observability: surface no-op cancels so we can see in
+        // dev when a cancel landed on a row that was already gone (which
+        // usually means the create POST returned but UI never saw it, or
+        // the tombstone path raced as expected).
+        if (import.meta.env.DEV) {
+          void pending
+            .then(async (res) => {
+              const parsed = (await res
+                .json()
+                .catch(() => ({}))) as CancelHoldResponse;
+              if (parsed.cancelled === false) {
+                console.warn(
+                  "[ReservationHold.cleanup] server reports cancelled=false",
+                  { status: res.status, body: parsed, holdId, clientToken },
+                );
+              }
+            })
+            .catch((err: unknown) => {
+              console.warn("[ReservationHold.cleanup] cancel response error", err);
+            });
+        } else {
+          // Drop the promise — keepalive request continues in the background.
+          void pending.catch(() => {
+            /* unmount path — nothing useful to do here */
+          });
+        }
       } catch (err) {
         // best-effort — fetch may throw on quota/CSP edge cases.
         console.warn("[ReservationHold.cleanup] cancel-on-unload failed", err);
@@ -892,6 +1004,7 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
     if (stateRef.current.status === "idle") return;
     // Just clear local; do NOT cancel server-side. Disabling typically means
     // the inputs changed and a new hold for a different slot is about to begin.
+    clientTokenRef.current = null;
     setState({ status: "idle" });
   }, [enabled]);
 
