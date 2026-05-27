@@ -156,7 +156,7 @@ application_fee = cenaiva_fee + processing_fee           # what Stripe sees as a
 We'll go in this order — simplest → most complex. Each row is one
 test session. **Don't skip ahead.**
 
-### Phase 1 — Diner-side happy paths (build confidence)
+### Phase 1 — Diner-side happy paths (LOGGED IN — savyoyaqoop2)
 
 | # | Test | Approx cost |
 |---|---|---|
@@ -164,47 +164,72 @@ test session. **Don't skip ahead.**
 | 2 | **Deposit only**, party 3, no menu items — verify deposit charge + metadata | ~$2 charge → refund → ~$0.36 cost |
 | 3 | **Pre-order only**, party 2, $1.25 sushi — verify food + tax + commission + Stripe gross-up | ~$1.80 → refund → ~$0.36 cost |
 | 4 | **Pre-order + Deposit**, party 3 with menu items — verify combined PI | ~$8 → refund → ~$0.42 cost |
-| 5 | **Guest checkout (not logged in)** — fresh card, party 2 deposit only | ~$2 → refund → ~$0.36 |
 
 After Phase 1: confirm all PIs in Stripe dashboard show
 `application_fee_amount`, `on_behalf_of: null`, correct `metadata.tax_cents`.
+Also confirm SMS + email arrived for each (see Notification Verification section below).
 
-### Phase 2 — Modify flows
+### Phase 1B — Guest checkout (NOT logged in)
 
-| # | Test |
-|---|---|
-| 6 | Modify party 2 → 4 (crosses deposit threshold) — diner pays delta |
-| 7 | Modify party 4 → 2 (drops below threshold) — partial refund |
-| 8 | Modify date/time, same party — no money change |
-| 9 | Modify cart: add menu items mid-flow — new PI for delta |
+Sign out of savyoyaqoop2 OR open a fresh incognito window with no
+session. Test the SAME 4 scenarios as guest — different code paths
+(no saved-card option, no user_profile_id, identity attached via
+email/phone only).
+
+| # | Test | What's different from logged-in |
+|---|---|---|
+| 5 | **Guest free booking** | No "save card" anything; reservation has `user_profile_id: null`, identity via guest_email/guest_phone |
+| 6 | **Guest deposit only**, party 3 | Fresh card path mandatory (no saved-card picker shown). Reservation row uses guest_email. |
+| 7 | **Guest pre-order only**, party 2 | Same — verify metadata.tax_cents still works for guests |
+| 8 | **Guest pre-order + deposit**, party 3 | Combined PI, identity via guest fields |
+
+Per-test verification specific to guest paths:
+- ✓ The booking page does NOT show the "Use saved card" picker
+- ✓ The "Save card for faster checkout" checkbox is HIDDEN (only shown to logged-in diners)
+- ✓ DB: `reservations.user_profile_id IS NULL`, `guest_email` + `guest_phone` populated
+- ✓ Stripe PI: `customer: null` (no Stripe customer created for guests)
+- ✓ Confirmation SMS + email still arrive to the guest's contact info
+- ✓ The guest can find/manage their booking via `/find-reservation` (confirmation code lookup)
+
+### Phase 2 — Modify flows (mix of logged-in + guest)
+
+| # | Test | Mode |
+|---|---|---|
+| 9 | Modify party 2 → 4 (crosses deposit threshold) — diner pays delta | Logged-in |
+| 10 | Modify party 4 → 2 (drops below threshold) — partial refund | Logged-in |
+| 11 | Modify date/time, same party — no money change | Logged-in |
+| 12 | Modify cart: add menu items mid-flow — new PI for delta | Logged-in |
+| 13 | Guest modify via /find-reservation lookup — same as #9 but as guest | **Guest** |
 
 ### Phase 3 — Owner dashboard (Tab B becomes active)
 
 | # | Test |
 |---|---|
-| 10 | Mark Seated WITHIN window (current reservation) — deposit auto-refunds to diner |
-| 11 | Mark Seated OUTSIDE window (future reservation) — should be blocked with error |
-| 12 | Force Mark Seated as owner — succeeds + audit log |
-| 13 | Mark No-show WITHIN window — diner gets SMS + email, deposit forfeited |
-| 14 | Mark No-show OUTSIDE window — blocked |
-| 15 | Force Mark No-show as owner — succeeds + audit + diner notification |
-| 16 | Mark No-show TWICE on same reservation — notification does NOT re-fire (idempotency) |
-| 17 | Mark Arrived (undo no-show) — deposit refunds back |
+| 14 | Mark Seated WITHIN window (current reservation) — deposit auto-refunds to diner |
+| 15 | Mark Seated OUTSIDE window (future reservation) — should be blocked with error |
+| 16 | Force Mark Seated as owner — succeeds + audit log |
+| 17 | Mark No-show WITHIN window for LOGGED-IN diner — SMS + email arrive, deposit forfeited |
+| 18 | Mark No-show WITHIN window for **GUEST** diner — SMS + email arrive at guest contact info |
+| 19 | Mark No-show OUTSIDE window — blocked |
+| 20 | Force Mark No-show as owner — succeeds + audit + diner notification |
+| 21 | Mark No-show TWICE on same reservation — notification does NOT re-fire (idempotency) |
+| 22 | Mark Arrived (undo no-show) — deposit refunds back |
 
 ### Phase 4 — Cancel flows
 
-| # | Test |
-|---|---|
-| 18 | Cancel paid booking from diner side — verify refund routing |
-| 19 | Cancel free booking (no money) |
+| # | Test | Mode |
+|---|---|---|
+| 23 | Cancel paid booking from diner side — verify refund routing | Logged-in |
+| 24 | Cancel paid GUEST booking via /find-reservation — verify refund + notification | **Guest** |
+| 25 | Cancel free booking (no money) | Either |
 
 ### Phase 5 — Edge cases (optional — only if time + budget)
 
 | # | Test |
 |---|---|
-| 20 | Multiple rapid Place Order clicks — only 1 PI created |
-| 21 | Close tab during 2-5s Stripe call — hold survives |
-| 22 | Voice handoff with `?hold=<id>` URL |
+| 26 | Multiple rapid Place Order clicks — only 1 PI created |
+| 27 | Close tab during 2-5s Stripe call — hold survives |
+| 28 | Voice handoff with `?hold=<id>` URL |
 
 ### Skipped (no UI yet)
 
@@ -212,6 +237,118 @@ After Phase 1: confirm all PIs in Stripe dashboard show
 - Split tender (would need to invoke via API directly)
 - 3DS challenge (needs Stripe test mode — not in scope today)
 - International card (needs Stripe test mode)
+
+---
+
+## Notification verification (SMS + email content checks)
+
+**For EVERY test that triggers a notification, we will verify all of:**
+1. The SMS actually arrives on your phone (within 30 sec typically)
+2. The email actually arrives in the inbox (within 1-2 min)
+3. The CONTENT shows the correct figures + restaurant + confirmation code
+4. The `communication_log` table has the row with `status='sent'`
+
+### What each notification should say
+
+#### 📩 Booking confirmation (every successful paid or free booking)
+
+**Trigger:** reservation created (paid or free)
+
+**SMS content to verify:**
+- Restaurant name matches the one booked (e.g. "nova ristorante")
+- Date + time matches the booked slot (in restaurant's timezone)
+- Party size matches
+- Confirmation code (8 hex chars) appears
+- If deposit paid: "Deposit paid: $X.XX" line shows the BASE amount (food + tax for preorder, OR just deposit value for deposit-only)
+
+**Email content to verify:**
+- Subject includes restaurant name
+- All the above details
+- "Manage reservation" link works (clicking opens `/find-reservation` or `/booking/:code`)
+
+**Where it sends:**
+- Logged-in: `user_profiles.email` + `user_profiles.phone`
+- Guest: the email + phone the diner typed in the booking form
+
+---
+
+#### 🚫 No-show notification (NEW — shipped today)
+
+**Trigger:** owner marks reservation as no-show
+
+**SMS content to verify (under 160 chars):**
+> "Hi {firstName}, your reservation at {restaurantName} was marked no-show. Deposit was kept per restaurant policy. If incorrect, contact {restaurantPhone}."
+
+Verify:
+- First name matches diner's name from booking
+- Restaurant name correct
+- Restaurant phone is the actual contact phone (not a Cenaiva number)
+- Message arrives within 60 sec of owner clicking No-show
+
+**Email content to verify:**
+- Subject: "Your {restaurantName} reservation"
+- States the date/time of the marked-no-show reservation
+- Shows the deposit amount that was kept (e.g. "$6.00")
+- Confirmation code present
+- Instructs to contact restaurant within 48 hours if incorrect
+- Restaurant address + phone
+
+**Idempotency check (Test #21):**
+- Mark no-show → SMS + email arrive → record in `communication_log`
+- Click No-show again on same reservation → NO new SMS, NO new email
+- `communication_log` should still have only ONE row per channel for that reservation
+
+---
+
+#### 💸 Cancel / refund notification
+
+**Trigger:** diner cancels reservation (or owner cancels)
+
+**SMS content to verify:**
+- Restaurant name
+- Reservation date/time
+- Refund amount shown = food + tax (the "base" — NOT the diner total, since fees are non-refundable)
+- Confirmation code
+
+**Email content to verify:**
+- Subject mentions cancellation
+- Refund breakdown: "Refunded: $X.XX (Cenaiva 2% fee + Stripe processing fee are non-refundable, as disclosed at checkout)"
+- If split-tender: each payer gets their own email with their share
+
+---
+
+#### 🔄 Modify notification
+
+**Trigger:** diner modifies reservation (party / time / cart)
+
+**SMS/email content to verify:**
+- New date/time/party (updated values)
+- If payment changed: "You were charged an additional $X" or "Refund of $X issued"
+- Confirmation code unchanged
+
+---
+
+#### 🪑 Mark-seated notification
+
+**Trigger:** owner marks reservation as seated
+
+**Diner-facing:** No SMS or email currently fires on seated (the deposit refund is silent — diner sees the refund on their card statement only).
+
+**This is by design** — seating is a positive event; we don't spam diners with "you've been seated" messages. The refund hits their card with the standard Stripe descriptor.
+
+---
+
+### How to verify content during the session
+
+For each test that involves a notification:
+
+1. **Run the test** (e.g. mark no-show)
+2. **Check your phone** — does the SMS arrive? Is the content correct?
+3. **Check the email inbox** for savyoyaqoop2@gmail.com — does the email arrive?
+4. **Claude queries communication_log** to confirm both rows inserted with `status='sent'`
+5. **Read the message back to Claude** if anything looks off, so we can spot bugs in the template
+
+For GUEST tests, the SMS/email goes to whatever contact info you typed into the booking form. Use a contact info you can also check (e.g. same phone, different fake guest email like savyo+guest@gmail.com).
 
 ---
 
@@ -290,10 +427,19 @@ ORDER BY sent_at DESC;
 
 ## Total session estimate
 
-- ~17 tests in Phases 1-4
-- ~$5-7 real money out of pocket (all refunded, just Stripe fees stay with Stripe)
-- ~1.5-2 hours of session time
-- Each test takes 5-10 min including verification
+- **25 tests** across Phases 1–4 (was 17, expanded for guest + notification coverage)
+- **~$8–12** real money out of pocket (all refunded; Stripe processing fees stay)
+- **~2–3 hours** of session time
+- Each test takes 5–10 min including verification
 
 If anything looks wrong mid-session, we **stop**, debug, fix, re-test
 before moving on.
+
+### Guest-test contact info suggestion
+
+For guest tests, use a contact you can also check:
+- **Email:** `savyoyaqoop+guest@gmail.com` (Gmail "+" trick — same inbox)
+- **Phone:** your number — works for verifying SMS delivery
+
+This way you can see notifications arrive at the "guest" contact while
+also being able to read them.
