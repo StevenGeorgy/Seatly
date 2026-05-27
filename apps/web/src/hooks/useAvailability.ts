@@ -513,7 +513,23 @@ export function useDinerConflictWindows(args: {
       dayEndUtcIso,
       excludeReservationId: excludeReservationId ?? null,
     }).then((result) => {
-      if (!cancelled) setWindows(result);
+      if (cancelled) return;
+      // 2026-05-27: the server filter pads ±24h to handle timezone edges,
+      // which means a Thu reservation can come back when viewing Wed.
+      // Re-filter results to only keep conflicts whose local date in the
+      // restaurant's timezone matches the viewed date. Without this, a Thu
+      // 5–7pm STK booking incorrectly blocks Wed 5–7pm slots and shows up
+      // in the "Some times are hidden" notices.
+      const tz = timezone || "America/Toronto";
+      const localDateOf = (d: Date) =>
+        d.toLocaleDateString("en-CA", { timeZone: tz });
+      const filtered = result.filter((c) => {
+        // Keep when either the start OR the end falls on the viewed local
+        // day — covers reservations that straddle midnight (start before,
+        // end after).
+        return localDateOf(c.start) === date || localDateOf(c.end) === date;
+      });
+      setWindows(filtered);
     });
     return () => {
       cancelled = true;
