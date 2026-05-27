@@ -22,7 +22,11 @@ export type ReservationNotificationResult = {
 
 type SendReservationNotificationParams = {
   supabase: SupabaseClient;
-  guestId: string;
+  // null when the caller can't resolve a canonical guest row (e.g. the
+  // hold-conversion path of create-public-booking). The SMS + email still
+  // fire; only the communication_log insert is skipped, since the FK to
+  // guests(id) requires a valid id.
+  guestId: string | null;
   restaurantId: string;
   reservationId: string;
   type: "reservation_confirmation" | "reservation_cancellation" | "reservation_modification";
@@ -199,7 +203,10 @@ export async function sendReservationNotification({
 
   const { status, channel } = deriveAggregate(smsResult, emailResult);
 
-  if (channel) {
+  // Insert ONE row per send. Skip the log when there's no guest_id to bind
+  // to — the FK to guests(id) would reject a null guest_id and the rest of
+  // the function (SMS + email) still does its job.
+  if (channel && guestId) {
     const { error } = await supabase.from("communication_log").insert({
       guest_id: guestId,
       restaurant_id: restaurantId,
