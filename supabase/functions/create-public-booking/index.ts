@@ -524,91 +524,17 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // 2026-05-27: diner confirmation (SMS + email) on the hold-conversion
-      // path. Previously skipped entirely — only the owner got notified.
-      // Mirrors the notification block in the non-hold path below, but with
-      // the data we already have in scope from the hold convert + side
-      // effects above. Skip on the idempotent retry path so a re-entry by
-      // the same caller doesn't double-send.
-      let holdNotificationStatus: "sent" | "skipped" | "failed" = "skipped";
-      let holdNotificationChannel: "email" | "sms" | "both" | null = null;
-      if (!row.idempotent) {
-        try {
-          const reservationDateLabel = formatReservationDate(reservedAt);
-          const manageLink = restaurantSlug && row.confirmation_code
-            ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(row.confirmation_code)}${guestEmail ? `&email=${encodeURIComponent(guestEmail)}` : ""}`
-            : null;
-          // Preorder items came in via the hold and were inserted by
-          // runPostHoldConversion above. Query them back for the body.
-          const { data: preorderRows } = await supabase
-            .from("orders")
-            .select("id, order_items(name, quantity)")
-            .eq("reservation_id", row.reservation_id)
-            .eq("is_preorder", true)
-            .maybeSingle();
-          const preorderItems = preorderRows
-            && Array.isArray((preorderRows as { order_items?: unknown }).order_items)
-            ? (((preorderRows as { order_items: Array<{ name?: unknown; quantity?: unknown }> }).order_items)
-              .map((it) => ({
-                name: typeof it.name === "string" ? it.name : "",
-                quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1),
-              }))
-              .filter((it) => it.name && Number.isFinite(it.quantity) && it.quantity > 0))
-            : null;
-
-          // Look up guest_id for the communication_log FK. The hold-convert
-          // RPC links the diner to a canonical guest row internally; query
-          // it here so we can stamp it on the log row.
-          const { data: rsv } = await supabase
-            .from("reservations")
-            .select("guest_id")
-            .eq("id", row.reservation_id)
-            .maybeSingle();
-          const linkedGuestId = (rsv as { guest_id?: string | null } | null)?.guest_id ?? null;
-
-          const body = buildConfirmationBody({
-            guestName,
-            restaurantName,
-            partySize,
-            reservationDateLabel,
-            confirmationCode: row.confirmation_code,
-            manageLink,
-            restaurantPhone,
-            preorderItems,
-            // Deposit is just-required at this point, not just-paid — leave
-            // the "Deposit paid" line out of the booking-time confirmation.
-            // The post-settle confirmation in confirm-deposit-paid will
-            // include it once the deposit charges.
-            depositPaidCents: null,
-          });
-          const notification = await sendReservationNotification({
-            supabase,
-            guestId: linkedGuestId,
-            restaurantId,
-            reservationId: row.reservation_id,
-            type: "reservation_confirmation",
-            email: guestEmail || null,
-            phone: guestPhone || null,
-            subject: `Your reservation at ${restaurantName}`,
-            body,
-          });
-          holdNotificationStatus = notification.status;
-          holdNotificationChannel = notification.channel;
-        } catch (notifyErr) {
-          console.error(
-            "[create-public-booking.hold-convert] confirmation notify failed",
-            notifyErr,
-          );
-        }
-      }
+      // Diner confirmation (SMS + email) is sent by runPostHoldConversion
+      // above — single source of truth for every hold-conversion path.
+      // 2026-05-27: previously this branch had an inline duplicate; moved
+      // into the shared helper so confirm-hold-paid + stripe-webhook get
+      // it for free too.
 
       return jsonResponse({
         reservation_id: row.reservation_id,
         confirmation_code: row.confirmation_code,
         table_ids: row.table_ids,
         duration_minutes: row.duration_minutes,
-        confirmation_delivery: holdNotificationStatus,
-        confirmation_delivery_channel: holdNotificationChannel,
         deposit_required: holdDepositCents > 0,
         deposit_amount_cents: holdDepositCents,
         split_tender_deposit_row_ids: holdSplitTenderRowIds,
