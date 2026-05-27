@@ -116,8 +116,9 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
     if (!guest) return jsonRes({ error: "Unauthorized: order does not belong to you" }, 403);
 
-    // Calculate base total (subtotal + tax + tip - discount). This is the
-    // amount the restaurant + Cenaiva expect to net. The diner pays this
+    // Calculate base total. Split into food (commissionable) and tax
+    // (pass-through). Cenaiva's 5.5% commission applies only to food;
+    // tax is remitted by the restaurant. The diner pays food + tax
     // plus the Stripe processing fee; see computeDinerCharge below.
     const subtotal = Number(order.subtotal || 0);
     const tax = Number(order.tax_amount || 0);
@@ -127,7 +128,22 @@ Deno.serve(async (req: Request) => {
       : tip_percentage !== undefined
         ? Math.round(subtotal * (tip_percentage / 100) * 100) / 100
         : 0;
-    const baseTotal = Math.round((subtotal + tax - discount + tipAmount) * 100) / 100;
+    const foodAfterDiscount = subtotal - discount;
+    const taxOnly = tax;
+    // TODO(tip-handling): tips are currently passed to staff in person,
+    // not through the platform. For back-compat we fold any non-zero
+    // tipAmount into foodCents so the diner is still charged the same
+    // total as before — but this means Cenaiva's 5.5% commission base
+    // includes the tip. Revisit when we formalize tip routing.
+    let foodCents = Math.round(foodAfterDiscount * 100);
+    const taxCents = Math.round(taxOnly * 100);
+    if (tipAmount > 0) {
+      console.warn(
+        `[stripe-charge-order] order ${order_id}: non-zero tip (${tipAmount}) folded into foodCents; tip routing is out of scope`,
+      );
+      foodCents += Math.round(tipAmount * 100);
+    }
+    const baseTotal = Math.round(((foodCents + taxCents) / 100) * 100) / 100;
 
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     const paidAt = new Date().toISOString();
@@ -216,8 +232,7 @@ Deno.serve(async (req: Request) => {
       }, 400);
     }
 
-    const baseCents = Math.round(baseTotal * 100);
-    const charge = computeDinerCharge(baseCents);
+    const charge = computeDinerCharge(foodCents, taxCents);
     const dinerTotalCents = charge.dinerTotalCents;
     const processingFeeCents = charge.processingFeeCents;
     const applicationFeeCents = charge.applicationFeeCents;
@@ -256,7 +271,8 @@ Deno.serve(async (req: Request) => {
             order_id,
             restaurant_id: order.restaurant_id,
             user_profile_id: profile.id,
-            base_amount_cents: String(baseCents),
+            base_amount_cents: String(foodCents),
+            tax_cents: String(taxCents),
             processing_fee_cents: String(processingFeeCents),
             // Pointer back to the platform-side source for support /
             // reconciliation. Cenaiva's audit trail can find the
@@ -267,7 +283,7 @@ Deno.serve(async (req: Request) => {
         },
         {
           stripeAccount: stripeAccountId,
-          idempotencyKey: `charge_order_${order_id}_${baseCents}`,
+          idempotencyKey: `charge_order_${order_id}_${foodCents}_${taxCents}`,
         },
       );
     } catch (stripeErr: any) {

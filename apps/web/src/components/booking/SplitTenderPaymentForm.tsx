@@ -31,8 +31,19 @@ export type SplitTenderPreCheckoutResult = {
 
 export type SplitTenderPaymentFormProps = {
   restaurantId: string;
-  /** Per-payer share in cents (BASE amount; gross-up via computeDinerCharge). */
-  shareCents: number;
+  /**
+   * Total commission-bearing food portion across the WHOLE party, in cents
+   * (pre-order subtotal after discount + deposit). Divided across N payers
+   * before being passed to `create-public-payment-intent` as `amount_cents`.
+   * The 2% Cenaiva commission applies per-payer's food share.
+   */
+  foodTotalCents: number;
+  /**
+   * Total tax portion (HST pass-through) across the WHOLE party, in cents.
+   * Divided across N payers and passed as `tax_cents`. Tax bears no
+   * Cenaiva commission. Deposits don't carry tax.
+   */
+  taxTotalCents: number;
   /** N: how many separate cards we collect. */
   payerCount: number;
   /** Optional active hold id — only stamped on slot 0's PI to drive
@@ -89,7 +100,7 @@ const initialSlotState = (): SlotState => ({
  */
 export function SplitTenderPaymentForm(props: SplitTenderPaymentFormProps) {
   const stripePromise = useMemo(() => getStripePromise(), []);
-  const { shareCents, payerCount } = props;
+  const { foodTotalCents, taxTotalCents, payerCount } = props;
 
   if (!stripePromise) {
     return (
@@ -98,7 +109,19 @@ export function SplitTenderPaymentForm(props: SplitTenderPaymentFormProps) {
       </div>
     );
   }
-  if (payerCount < 2 || payerCount > 10 || !Number.isFinite(shareCents) || shareCents < 50) {
+  // Per-payer total (food + tax share) must clear Stripe's 50¢ minimum.
+  // Round the per-payer base the same way the per-slot fetch does so this
+  // gate matches the actual charge attempt.
+  const perPayerFoodShare = Math.round(foodTotalCents / Math.max(2, payerCount));
+  const perPayerTaxShare = Math.round(taxTotalCents / Math.max(2, payerCount));
+  const perPayerBaseShare = perPayerFoodShare + perPayerTaxShare;
+  if (
+    payerCount < 2 ||
+    payerCount > 10 ||
+    !Number.isFinite(foodTotalCents) ||
+    !Number.isFinite(taxTotalCents) ||
+    perPayerBaseShare < 50
+  ) {
     return (
       <div className="rounded-xl border border-border bg-bg-elevated/40 p-4 text-sm text-text-muted">
         Set how many people are splitting to enter cards.
@@ -111,7 +134,8 @@ export function SplitTenderPaymentForm(props: SplitTenderPaymentFormProps) {
 
 function SplitTenderSurface({
   restaurantId,
-  shareCents,
+  foodTotalCents,
+  taxTotalCents,
   payerCount,
   holdId,
   formId,
@@ -120,6 +144,13 @@ function SplitTenderSurface({
   onError,
   stripePromise,
 }: SplitTenderPaymentFormProps & { stripePromise: Promise<StripeJs | null> }) {
+  // Per-payer shares. Food carries 2% commission; tax passes through.
+  // `roundMoney`-style rounding on each piece (matches RestaurantPublicPage's
+  // approach for split math). Any sub-cent residue is absorbed by the
+  // restaurant — the spread across N payers is at most N-1 cents.
+  const foodShareCents = Math.round(foodTotalCents / Math.max(2, payerCount));
+  const taxShareCents = Math.round(taxTotalCents / Math.max(2, payerCount));
+  const shareCents = foodShareCents + taxShareCents;
   // Each slot has its own ref-handle exposing a submit method. We collect
   // them lazily as <SlotInner> instances mount.
   type SlotHandle = {
@@ -148,7 +179,10 @@ function SplitTenderSurface({
     });
   }
 
-  const dinerCharge = useMemo(() => computeDinerCharge(shareCents), [shareCents]);
+  const dinerCharge = useMemo(
+    () => computeDinerCharge(foodShareCents, taxShareCents),
+    [foodShareCents, taxShareCents],
+  );
 
   const updateSlot = useCallback((idx: number, patch: Partial<SlotState>) => {
     setSlots((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
@@ -209,7 +243,8 @@ function SplitTenderSurface({
                 },
                 body: JSON.stringify({
                   restaurant_id: restaurantId,
-                  amount_cents: shareCents,
+                  amount_cents: foodShareCents,
+                  tax_cents: taxShareCents,
                   deposit_payment_ids: [rowId],
                   // hold_id only on slot 0 — that's the slot that drives
                   // the hold→reservation conversion if a hold is active.
@@ -325,7 +360,8 @@ function SplitTenderSurface({
       }
     },
     [
-      submitting, onPreCheckout, payerCount, slots, restaurantId, shareCents,
+      submitting, onPreCheckout, payerCount, slots, restaurantId,
+      foodShareCents, taxShareCents,
       holdId, onAllPaid, onError, updateSlot,
     ],
   );
@@ -405,6 +441,9 @@ function SplitTenderSurface({
                   stripe={stripePromise}
                   options={{
                     mode: "payment",
+                    // Wallet sheet display only — server PI is the source
+                    // of truth. Use the per-payer base (food + tax) so
+                    // Apple/Google Pay sheets show a representative total.
                     amount: shareCents,
                     currency: "cad",
                     // Do NOT pin paymentMethodTypes — server uses

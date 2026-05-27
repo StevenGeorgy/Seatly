@@ -1,15 +1,18 @@
 // Client mirror of supabase/functions/_shared/stripe-fee.ts.
 // Server is the source of truth — this is only for cart display.
 //
-// Option B (visible-fees model): diner pays base + Cenaiva 2.2% + Stripe fee
-// as three visible line items. Refund returns the base only — both fees
-// are non-refundable and disclosed at checkout.
+// Option B (visible-fees model): diner pays food + tax + Cenaiva 2% (on
+// food only) + Stripe fee as visible line items. Refund returns
+// food + tax — Cenaiva and Stripe fees are non-refundable, disclosed at
+// checkout.
 
 export const STRIPE_CARD_PERCENT = 0.029;
 export const STRIPE_CARD_FIXED_CENTS = 30;
-export const PLATFORM_FEE_PERCENT = 0.022;
+export const PLATFORM_FEE_PERCENT = 0.02;
 
 export interface DinerCharge {
+  foodCents: number;
+  taxCents: number;
   baseCents: number;
   cenaivaFeeCents: number;
   processingFeeCents: number;
@@ -19,9 +22,13 @@ export interface DinerCharge {
   dinerPaysFee: boolean;
 }
 
-export function computeDinerCharge(baseCents: number): DinerCharge {
-  if (!Number.isFinite(baseCents) || baseCents <= 0) {
+export function computeDinerCharge(foodCents: number, taxCents: number = 0): DinerCharge {
+  const food = Math.max(0, Math.round(Number.isFinite(foodCents) ? foodCents : 0));
+  const tax = Math.max(0, Math.round(Number.isFinite(taxCents) ? taxCents : 0));
+  if (food + tax <= 0) {
     return {
+      foodCents: 0,
+      taxCents: 0,
       baseCents: 0,
       cenaivaFeeCents: 0,
       processingFeeCents: 0,
@@ -30,18 +37,20 @@ export function computeDinerCharge(baseCents: number): DinerCharge {
       dinerPaysFee: false,
     };
   }
-  const base = Math.round(baseCents);
-  const cenaivaFee = Math.max(Math.round(base * PLATFORM_FEE_PERCENT), 1);
-  const subtotal = base + cenaivaFee;
+  const cenaivaFee = food > 0 ? Math.max(Math.round(food * PLATFORM_FEE_PERCENT), 1) : 0;
+  const subtotal = food + tax + cenaivaFee;
   const dinerTotal = Math.ceil(
     (subtotal + STRIPE_CARD_FIXED_CENTS) / (1 - STRIPE_CARD_PERCENT),
   );
+  const processingFee = dinerTotal - subtotal;
   return {
-    baseCents: base,
+    foodCents: food,
+    taxCents: tax,
+    baseCents: food + tax,
     cenaivaFeeCents: cenaivaFee,
-    processingFeeCents: dinerTotal - subtotal,
+    processingFeeCents: processingFee,
     dinerTotalCents: dinerTotal,
-    applicationFeeCents: cenaivaFee,
+    applicationFeeCents: cenaivaFee + processingFee,
     dinerPaysFee: true,
   };
 }
