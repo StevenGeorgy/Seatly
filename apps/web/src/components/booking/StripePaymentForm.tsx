@@ -64,6 +64,13 @@ type StripePaymentFormProps = {
    */
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
+  /**
+   * Fires whenever the internal form is submitting. The parent uses this
+   * to grey-out / spinner an external Place Order button while Stripe is
+   * processing — without this, the button stays visually clickable for
+   * the 2-5s of the call and users hammer it.
+   */
+  onProcessingChange?: (processing: boolean) => void;
   payButtonLabel?: string;
   formId?: string;
   hideInternalSubmit?: boolean;
@@ -163,6 +170,7 @@ export function StripePaymentForm(props: StripePaymentFormProps) {
       depositPaymentIds={props.depositPaymentIds ?? null}
       onPaid={props.onPaid}
       onError={props.onError}
+      onProcessingChange={props.onProcessingChange}
       payButtonLabel={props.payButtonLabel ?? "Pay & confirm"}
       formId={props.formId}
       hideInternalSubmit={props.hideInternalSubmit}
@@ -180,6 +188,7 @@ function PaymentSurface({
   depositPaymentIds,
   onPaid,
   onError,
+  onProcessingChange,
   payButtonLabel,
   formId,
   hideInternalSubmit,
@@ -193,6 +202,7 @@ function PaymentSurface({
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
+  onProcessingChange?: (processing: boolean) => void;
   payButtonLabel: string;
   formId?: string;
   hideInternalSubmit?: boolean;
@@ -235,6 +245,7 @@ function PaymentSurface({
         depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
         onError={onError}
+        onProcessingChange={onProcessingChange}
         payButtonLabel={payButtonLabel}
         formId={formId}
         hideInternalSubmit={hideInternalSubmit}
@@ -293,6 +304,7 @@ function PaymentSurface({
         depositPaymentIds={depositPaymentIds}
         onPaid={onPaid}
         onError={onError}
+        onProcessingChange={onProcessingChange}
         payButtonLabel={payButtonLabel}
         formId={formId}
         hideInternalSubmit={hideInternalSubmit}
@@ -318,6 +330,7 @@ function SavedCardPath({
   depositPaymentIds,
   onPaid,
   onError,
+  onProcessingChange,
   payButtonLabel,
   formId,
   hideInternalSubmit,
@@ -333,6 +346,7 @@ function SavedCardPath({
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
+  onProcessingChange?: (processing: boolean) => void;
   payButtonLabel: string;
   formId?: string;
   hideInternalSubmit?: boolean;
@@ -340,6 +354,12 @@ function SavedCardPath({
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Bubble the local submitting state up so the parent's external
+  // Place Order button can spinner / grey-out during the Stripe call.
+  useEffect(() => {
+    onProcessingChange?.(submitting);
+  }, [submitting, onProcessingChange]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -521,6 +541,7 @@ function OneTimeCardForm({
   depositPaymentIds,
   onPaid,
   onError,
+  onProcessingChange,
   payButtonLabel,
   formId,
   hideInternalSubmit,
@@ -536,6 +557,7 @@ function OneTimeCardForm({
   depositPaymentIds: string[] | null;
   onPaid: (paymentIntentId: string) => Promise<void> | void;
   onError?: (message: string) => void;
+  onProcessingChange?: (processing: boolean) => void;
   payButtonLabel: string;
   formId?: string;
   hideInternalSubmit?: boolean;
@@ -549,6 +571,12 @@ function OneTimeCardForm({
   const elements = useElements();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Bubble the local submitting state up so the parent's external
+  // Place Order button can spinner / grey-out during the Stripe call.
+  useEffect(() => {
+    onProcessingChange?.(submitting);
+  }, [submitting, onProcessingChange]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
