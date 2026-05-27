@@ -54,6 +54,14 @@ export type NotifyDepositPayersRefundedInput = z.infer<
   typeof NotifyDepositPayersRefundedSchema
 >;
 
+// notify-no-show: { reservation_id } — fires when an owner marks a
+// reservation as no_show. Emails + SMSes the diner so they can dispute
+// the forfeited deposit (reduces chargeback risk).
+export const NotifyNoShowSchema = z.object({
+  reservation_id: Uuid,
+});
+export type NotifyNoShowInput = z.infer<typeof NotifyNoShowSchema>;
+
 // detect-duplicates: { restaurant_id, phone?, email? } — must include phone OR email
 export const DetectDuplicatesSchema = z
   .object({
