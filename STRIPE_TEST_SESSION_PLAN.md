@@ -67,6 +67,44 @@ For EACH test:
 If anything looks off, **stop**, investigate together, fix if needed,
 re-test before moving on.
 
+### 🚨 NON-NEGOTIABLE — Stripe verification per payment
+
+**For EVERY paid test (and EVERY refund), Claude WILL run the
+following BEFORE we move to the next test. No skipping.**
+
+1. **Pull the live PaymentIntent from Stripe** via either:
+   - Stripe MCP `list_payment_intents` (most recent)
+   - OR direct API: `curl https://api.stripe.com/v1/payment_intents/pi_…`
+2. **Inspect and report ALL of:**
+   - `amount` matches the diner total we calculated
+   - `application_fee_amount` matches `cenaiva_fee + processing_fee`
+   - `on_behalf_of` is `null` (the broken setting from our morning mistake — confirm it stays gone)
+   - `transfer_data.destination` matches the restaurant's `acct_…`
+   - `metadata.base_amount_cents` matches the food portion
+   - `metadata.tax_cents` matches the HST portion
+   - `metadata.hold_id` (if applicable) matches our hold
+   - `status === "succeeded"` (or `requires_action` for 3DS, etc.)
+3. **For refunds:** pull `GET /v1/refunds?payment_intent=pi_…` and
+   confirm:
+   - `amount` = food + tax (the base — fees stay non-refundable)
+   - `reverse_transfer: true` (restaurant pays back, not Cenaiva)
+   - `refund_application_fee: false` (Cenaiva keeps the app fee)
+   - `status === "succeeded"`
+4. **Confirm the DB matches** the Stripe state:
+   - `reservations.status` is what we expect
+   - `orders.stripe_payment_intent_id` matches the PI
+   - `orders.card_brand` + `orders.card_last4` populated (within
+     ~5 sec of charge; webhook may have a slight delay)
+   - `reservation_deposit_payments.status` matches Stripe's
+5. **Tell Savyo the verification result clearly** before moving on:
+   - ✅ "Stripe shows X, matches expected Y. DB row consistent. Safe to proceed."
+   - ❌ "Mismatch — Stripe says A but expected B. Stopping to investigate."
+
+**If we skip this even once, we don't have real evidence the test
+passed.** A booking that "looks fine" on the UI but has wrong PI
+metadata is a silent bug. The whole point of this session is
+catching those.
+
 ---
 
 ## Payment math reference (so we can verify each charge)
