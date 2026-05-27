@@ -14,6 +14,80 @@ import {
 import { matchesReservationSearch } from "@/lib/reservations/search";
 import { localDayBoundsUtcIso } from "@/lib/utils/time";
 
+/**
+ * Typed error thrown when the 2026-05-27 seat/no-show time-window guard
+ * blocks the action. Pages catch this to surface a force-confirm prompt
+ * (owner/manager can override per `restaurants_seat_window_guard`).
+ */
+export type SeatingWindowErrorCode =
+  | "outside_seating_window"
+  | "force_requires_owner_or_manager";
+
+export class SeatingWindowError extends Error {
+  readonly code: SeatingWindowErrorCode;
+  readonly reservedAt: string | null;
+  constructor(code: SeatingWindowErrorCode, message: string, reservedAt: string | null = null) {
+    super(message);
+    this.name = "SeatingWindowError";
+    this.code = code;
+    this.reservedAt = reservedAt;
+  }
+}
+
+function mapSeatingWindowError(
+  rpcError: { code?: string | null; message?: string | null } | null | undefined,
+  reservedAt: string | null,
+): SeatingWindowError | null {
+  if (!rpcError) return null;
+  const code = (rpcError.code ?? "").toString();
+  const message = (rpcError.message ?? "").toString();
+  if (code === "P0020" || message.includes("outside_seating_window")) {
+    return new SeatingWindowError(
+      "outside_seating_window",
+      "This reservation is outside the normal seating window (1 hour before to 24 hours after).",
+      reservedAt,
+    );
+  }
+  if (code === "P0021" || message.includes("force_requires_owner_or_manager")) {
+    return new SeatingWindowError(
+      "force_requires_owner_or_manager",
+      "Only owners or managers can override the seating window.",
+      reservedAt,
+    );
+  }
+  return null;
+}
+
+async function fireNoShowNotification(
+  reservationId: string,
+  accessToken: string | null,
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${getSupabaseProjectUrl()}/functions/v1/notify-no-show`,
+      {
+        method: "POST",
+        headers: {
+          apikey: getSupabaseAnonKey(),
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reservation_id: reservationId }),
+      },
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      console.error(
+        "[useReservations.notifyNoShow]",
+        res.status,
+        body?.error ?? "non-ok",
+      );
+    }
+  } catch (err) {
+    console.error("[useReservations.notifyNoShow] network", err);
+  }
+}
+
 type RefundOutcome = {
   payment_id: string;
   status: "refunded" | "already_refunded" | "failed" | "stub_refunded";
@@ -296,7 +370,12 @@ export function useReservations(filters?: ReservationFilters) {
     return () => { void client.removeChannel(channel); };
   }, [selectedRestaurantId, fetchReservations]);
 
-  const updateStatus = async (id: string, status: string, approvalToken?: string) => {
+  const updateStatus = async (
+    id: string,
+    status: string,
+    approvalToken?: string,
+    opts?: { force?: boolean },
+  ) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
 
@@ -334,15 +413,34 @@ export function useReservations(filters?: ReservationFilters) {
       return;
     }
 
+    // Look up reserved_at so we can return it on the window-guard error
+    // — the UI uses it to phrase "X hours before/after" in the prompt.
+    const existing = reservations.find((r) => r.id === id);
+    const reservedAt = existing?.reserved_at ?? null;
+
     const { error: statusError } = await client.rpc("update_staff_reservation_status", {
       p_reservation_id: id,
       p_status: status,
       p_approval_token: approvalToken ?? null,
+      p_force: opts?.force ?? false,
     });
     if (statusError) {
+      const windowError = mapSeatingWindowError(statusError, reservedAt);
+      if (windowError) {
+        console.warn("[useReservations.updateStatus]", windowError.code, statusError);
+        throw windowError;
+      }
       const friendly = toUserFacingError(statusError, "Couldn't update reservation status.");
       console.error("[useReservations.updateStatus]", friendly.code, friendly.technical ?? statusError);
       throw new Error(friendly.message);
+    }
+
+    // Fire the no-show notification fire-and-forget after a successful flip.
+    // Failures are logged but don't unwind the status change.
+    if (status === "no_show") {
+      const { data: sessionData } = await client.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      void fireNoShowNotification(id, token);
     }
 
     void fetchReservations();
@@ -352,14 +450,23 @@ export function useReservations(filters?: ReservationFilters) {
     reservationId: string,
     tableId: string,
     partySize: number,
+    opts?: { force?: boolean },
   ) => {
     if (!isSupabaseConfigured()) return;
     const client = getSupabaseBrowserClient();
+    const existing = reservations.find((r) => r.id === reservationId);
+    const reservedAt = existing?.reserved_at ?? null;
     const { error: seatError } = await client.rpc("seat_staff_reservation", {
       p_reservation_id: reservationId,
       p_table_id: tableId,
+      p_force: opts?.force ?? false,
     });
     if (seatError) {
+      const windowError = mapSeatingWindowError(seatError, reservedAt);
+      if (windowError) {
+        console.warn("[useReservations.seat]", windowError.code, seatError);
+        throw windowError;
+      }
       const friendly = toUserFacingError(seatError, "Couldn't seat the reservation.");
       console.error("[useReservations.seat]", friendly.code, friendly.technical ?? seatError);
       throw new Error(friendly.message);

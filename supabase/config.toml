@@ -173,6 +173,9 @@ verify_jwt = false
 [functions.notify-deposit-payers-refunded]
 verify_jwt = false
 
+[functions.notify-no-show]
+verify_jwt = false
+
 [functions.validate-referral-code]
 verify_jwt = false
 

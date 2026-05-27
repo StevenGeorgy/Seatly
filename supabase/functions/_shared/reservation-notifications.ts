@@ -29,7 +29,11 @@ type SendReservationNotificationParams = {
   guestId: string | null;
   restaurantId: string;
   reservationId: string;
-  type: "reservation_confirmation" | "reservation_cancellation" | "reservation_modification";
+  type:
+    | "reservation_confirmation"
+    | "reservation_cancellation"
+    | "reservation_modification"
+    | "reservation_no_show";
   email: string | null;
   phone: string | null;
   subject: string;
@@ -109,6 +113,55 @@ export function buildConfirmationBody(args: ConfirmationBodyArgs): string {
     `\nLost this message? Visit https://cenaiva.com/find-reservation` +
     phoneLine
   );
+}
+
+export type NoShowBodyArgs = {
+  guestName: string;
+  restaurantName: string;
+  restaurantPhone: string | null;
+  reservationDateLabel: string;
+  partySize: number;
+  confirmationCode: string;
+  depositAmountCents: number;
+};
+
+// Builds the no-show notification body. Returns subject/body/smsBody as
+// separate fields because the SMS channel is fixed at 160 chars while
+// email gets the longer dispute-instructions block. Caller passes
+// `body` (long-form) to email and `smsBody` to SMS via
+// `sendReservationNotification` — that helper currently sends the same
+// `body` to both channels, so this fn is shaped to let no-show callers
+// dispatch two calls if they need divergent SMS vs email bodies.
+export function buildNoShowBody(args: NoShowBodyArgs): {
+  subject: string;
+  body: string;
+  smsBody: string;
+} {
+  const firstName = args.guestName.trim().split(/\s+/)[0] || "there";
+  const phoneForContact = args.restaurantPhone?.trim() || "the restaurant";
+  const depositDisplay = `$${(args.depositAmountCents / 100).toFixed(2)}`;
+
+  const smsBody =
+    `Hi ${firstName}, your reservation at ${args.restaurantName} was marked ` +
+    `no-show. Deposit was kept per restaurant policy. If incorrect, contact ` +
+    `${phoneForContact}.`;
+
+  const subject = `Your ${args.restaurantName} reservation`;
+
+  const body =
+    `Hi ${firstName},\n\n` +
+    `The restaurant marked your ${args.reservationDateLabel} reservation for ` +
+    `${args.partySize} as a no-show. The deposit of ${depositDisplay} was kept ` +
+    `per the restaurant's policy.\n\n` +
+    `If you believe this is incorrect — for example, you arrived and were not ` +
+    `seated, or your reservation was cancelled but the system didn't reflect ` +
+    `it — please contact the restaurant directly at ${phoneForContact} within ` +
+    `48 hours.\n\n` +
+    `Reservation confirmation: ${args.confirmationCode}\n` +
+    `Restaurant: ${args.restaurantName}\n\n` +
+    `— Cenaiva`;
+
+  return { subject, body, smsBody };
 }
 
 function deriveAggregate(

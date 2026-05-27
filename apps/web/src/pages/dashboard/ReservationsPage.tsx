@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  SeatingWindowError,
   useReservations,
   type ReservationEventRef,
   type ReservationFilters,
@@ -372,6 +373,15 @@ export default function ReservationsPage() {
   const [noShowTarget, setNoShowTarget] = useState<ReservationRow | null>(null);
   const [markArrivedTarget, setMarkArrivedTarget] = useState<ReservationRow | null>(null);
   const [seatingId, setSeatingId] = useState<string | null>(null);
+  // 2026-05-27 seat/no-show time-window guard: when the RPC rejects with
+  // outside_seating_window, stash the action + reservation here so we can
+  // show a force-confirm dialog. Only owners/managers may proceed.
+  const [forcePrompt, setForcePrompt] = useState<
+    | { action: "seat"; row: ReservationRow; tableId: string }
+    | { action: "no_show"; row: ReservationRow }
+    | null
+  >(null);
+  const [forcing, setForcing] = useState(false);
 
   const restaurantCurrency = selectedRestaurant?.currency ?? "CAD";
   const resolveDepositDollars = (row: ReservationRow | null): number | null => {
@@ -416,10 +426,26 @@ export default function ReservationsPage() {
     try {
       await seatReservation(row.id, tableId, row.party_size);
     } catch (error) {
-      errorToast(error, {
-        fallback: "Couldn't seat that reservation. Try again.",
-        logTag: "[ReservationsPage.seat]",
-      });
+      if (error instanceof SeatingWindowError) {
+        if (error.code === "outside_seating_window") {
+          if (canManageRiskyActions) {
+            setForcePrompt({ action: "seat", row, tableId });
+          } else {
+            toast.error(
+              "Contact your manager. This action is outside the normal window (1 hour before to 24 hours after).",
+            );
+          }
+        } else {
+          toast.error(
+            "Only owners or managers can override the seating window. Contact your manager.",
+          );
+        }
+      } else {
+        errorToast(error, {
+          fallback: "Couldn't seat that reservation. Try again.",
+          logTag: "[ReservationsPage.seat]",
+        });
+      }
     } finally {
       setSeatingId(null);
     }
@@ -432,10 +458,61 @@ export default function ReservationsPage() {
       toast.success("Marked no-show. Deposit kept.");
       setNoShowTarget(null);
     } catch (error) {
+      if (error instanceof SeatingWindowError) {
+        const row = noShowTarget;
+        setNoShowTarget(null);
+        if (error.code === "outside_seating_window") {
+          if (canManageRiskyActions) {
+            setForcePrompt({ action: "no_show", row });
+          } else {
+            toast.error(
+              "Contact your manager. This action is outside the normal window (1 hour before to 24 hours after).",
+            );
+          }
+        } else {
+          toast.error(
+            "Only owners or managers can override the seating window. Contact your manager.",
+          );
+        }
+        return;
+      }
       errorToast(error, {
         fallback: "Couldn't mark as no-show. Try again.",
         logTag: "[ReservationsPage.noShow]",
       });
+    }
+  };
+
+  const handleConfirmForce = async () => {
+    if (!forcePrompt) return;
+    setForcing(true);
+    try {
+      if (forcePrompt.action === "seat") {
+        await seatReservation(
+          forcePrompt.row.id,
+          forcePrompt.tableId,
+          forcePrompt.row.party_size,
+          { force: true },
+        );
+      } else {
+        await updateStatus(forcePrompt.row.id, "no_show", undefined, { force: true });
+        toast.success("Marked no-show. Deposit kept.");
+      }
+      setForcePrompt(null);
+    } catch (error) {
+      if (error instanceof SeatingWindowError && error.code === "force_requires_owner_or_manager") {
+        toast.error(
+          "Only owners or managers can override the seating window. Contact your manager.",
+        );
+        setForcePrompt(null);
+        return;
+      }
+      errorToast(error, {
+        fallback: "Couldn't force this action. Try again.",
+        logTag: "[ReservationsPage.force]",
+      });
+    } finally {
+      setForcing(false);
     }
   };
 
@@ -893,6 +970,55 @@ export default function ReservationsPage() {
             </Button>
             <Button variant="destructive" onClick={() => void handleConfirmNoShow()}>
               Mark as no-show
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={forcePrompt !== null}
+        onOpenChange={(open) => {
+          if (!open && !forcing) setForcePrompt(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {forcePrompt?.action === "seat"
+                ? "Force-seat outside the normal window?"
+                : "Force-mark no-show outside the normal window?"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-secondary">
+            <p>
+              This reservation is outside the normal window (1 hour before to 24 hours after the
+              reserved time). Only owners and managers can force this action.
+            </p>
+            {forcePrompt ? (
+              <p className="rounded-lg border border-border bg-bg-surface p-3 text-text-primary">
+                {forcePrompt.row.guests?.full_name ?? forcePrompt.row.guest_full_name ?? "Guest"} ·
+                Party of {forcePrompt.row.party_size}
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setForcePrompt(null)}
+              disabled={forcing}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void handleConfirmForce()}
+              disabled={forcing}
+            >
+              {forcing
+                ? "Working..."
+                : forcePrompt?.action === "seat"
+                ? "Force seat"
+                : "Force no-show"}
             </Button>
           </DialogFooter>
         </DialogContent>
