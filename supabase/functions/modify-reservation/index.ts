@@ -662,6 +662,26 @@ Deno.serve(async (req: Request) => {
     // `guest` is null but the contact info is on the reservation. The
     // helper now tolerates a null guestId (just skips the
     // communication_log audit insert).
+    //
+    // Body enrichment: include preorder items + refund line when applicable.
+    const { data: orderRow } = await adminClient
+      .from("orders")
+      .select("id, order_items(name, quantity)")
+      .eq("reservation_id", reservationId)
+      .eq("is_preorder", true)
+      .maybeSingle();
+    const preorderItemsList =
+      orderRow && Array.isArray((orderRow as { order_items?: unknown }).order_items)
+        ? ((orderRow as { order_items: Array<{ name?: unknown; quantity?: unknown }> }).order_items)
+          .map((it) => ({
+            name: typeof it.name === "string" ? it.name : "",
+            quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1),
+          }))
+          .filter((it) => it.name && Number.isFinite(it.quantity) && it.quantity > 0)
+        : [];
+    const preorderLine = preorderItemsList.length > 0
+      ? `\nPre-ordered: ${preorderItemsList.map((it) => `${it.quantity}× ${it.name}`).join(", ")}`
+      : "";
     const refundLine = depositAdjustment.kind === "refunded" && depositAdjustment.amount_cents > 0
       ? `\nDeposit refunded: ${formatCents(depositAdjustment.amount_cents)}`
       : "";
@@ -671,6 +691,7 @@ Deno.serve(async (req: Request) => {
       codeLine +
       eventLine +
       promoLine +
+      preorderLine +
       refundLine;
     const notification = await sendReservationNotification({
       supabase: adminClient,

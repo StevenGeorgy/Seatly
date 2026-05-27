@@ -8,6 +8,7 @@ import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_share
 import { sendNotifyMeSms, type FulfilledAlertRow } from "../_shared/notify-me-sms.ts";
 import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
 import { computeBreakEvenRefund } from "../_shared/refund-math.ts";
+import { formatCents } from "../_shared/money.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { CancelReservationSchema } from "../_shared/validation/booking.ts";
 import { notifyOwnerCancellation } from "../_shared/owner-notifications.ts";
@@ -328,14 +329,29 @@ Deno.serve(async (req: Request) => {
       promoLine = ` Promo code: ${reservation.applied_promo_code}.`;
     }
 
+    // 2026-05-27: notification body is built AFTER the refund phase so we
+    // can include the refund total + preorder items the diner had. The
+    // helper itself tolerates a null guestId — only the communication_log
+    // audit insert is skipped when there's no linked guests row.
+    // Look up preorder items up-front (orders + order_items rows survive
+    // the cancel — we flip the order status but don't delete the rows).
+    const { data: cancelOrderRow } = await adminClient
+      .from("orders")
+      .select("id, order_items(name, quantity)")
+      .eq("reservation_id", reservationId)
+      .eq("is_preorder", true)
+      .maybeSingle();
+    const cancelPreorderItems =
+      cancelOrderRow && Array.isArray((cancelOrderRow as { order_items?: unknown }).order_items)
+        ? ((cancelOrderRow as { order_items: Array<{ name?: unknown; quantity?: unknown }> }).order_items)
+          .map((it) => ({
+            name: typeof it.name === "string" ? it.name : "",
+            quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1),
+          }))
+          .filter((it) => it.name && Number.isFinite(it.quantity) && it.quantity > 0)
+        : [];
+
     const sendCancellationNotice = async () => {
-      // 2026-05-27: no longer gated on a non-null `guest` row. Recent
-      // bookings have reservations.guest_id = NULL (RPCs denormalize
-      // contact onto reservation.* but don't populate guest_id), which
-      // means the previous `if (!guest) skip` branch fired on every
-      // recent cancel and the diner got no SMS/email. The helper now
-      // tolerates a null guestId — it skips only the communication_log
-      // audit insert and still sends the SMS+email.
       const opener =
         actor === "owner"
           ? `Hi ${guestName}, ${restaurantName} had to cancel your reservation for ${reservation.party_size} ` +
@@ -346,6 +362,37 @@ Deno.serve(async (req: Request) => {
         actor === "owner"
           ? `${restaurantName} cancelled your reservation`
           : `Your reservation at ${restaurantName} was cancelled`;
+
+      // Refund summary: split between successful preorder and deposit refunds
+      // so the diner sees both lines when both apply.
+      const successfulRefunds = refundOutcomes.filter((r) => r.ok);
+      const depositRefundCents = successfulRefunds
+        .filter((r) => r.kind === "deposit")
+        .reduce((sum, r) => sum + r.amount_cents, 0);
+      const preorderRefundCents = successfulRefunds
+        .filter((r) => r.kind === "preorder")
+        .reduce((sum, r) => sum + r.amount_cents, 0);
+      let refundLine = "";
+      if (depositRefundCents > 0 && preorderRefundCents > 0) {
+        refundLine =
+          `\nRefunded: ${formatCents(depositRefundCents + preorderRefundCents)}` +
+          ` (deposit ${formatCents(depositRefundCents)}` +
+          ` + pre-order ${formatCents(preorderRefundCents)}) to your card.` +
+          ` Refunds typically appear within 5–10 business days.`;
+      } else if (depositRefundCents > 0) {
+        refundLine =
+          `\nDeposit refunded: ${formatCents(depositRefundCents)} to your card.` +
+          ` Refunds typically appear within 5–10 business days.`;
+      } else if (preorderRefundCents > 0) {
+        refundLine =
+          `\nPre-order refunded: ${formatCents(preorderRefundCents)} to your card.` +
+          ` Refunds typically appear within 5–10 business days.`;
+      }
+
+      const preorderLine = cancelPreorderItems.length > 0
+        ? `\nPre-ordered items: ${cancelPreorderItems.map((it) => `${it.quantity}× ${it.name}`).join(", ")}`
+        : "";
+
       return await sendReservationNotification({
         supabase: adminClient,
         guestId: guest?.id ?? reservation.guest_id ?? null,
@@ -355,7 +402,7 @@ Deno.serve(async (req: Request) => {
         email: guestEmail,
         phone: guestPhone,
         subject,
-        body: opener + codeLine + eventLine + promoLine,
+        body: opener + codeLine + eventLine + promoLine + preorderLine + refundLine,
       });
     };
 

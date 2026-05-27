@@ -459,10 +459,32 @@ Deno.serve(async (req: Request) => {
       promoLine = ` Promo code: ${reservation.applied_promo_code}.`;
     }
 
+    // Body enrichment: include preorder items so the diner can see what
+    // they had ordered alongside the updated time/party + deposit charged.
+    const { data: orderRow } = await supabaseAdmin
+      .from("orders")
+      .select("id, order_items(name, quantity)")
+      .eq("reservation_id", reservationId)
+      .eq("is_preorder", true)
+      .maybeSingle();
+    const preorderItemsList =
+      orderRow && Array.isArray((orderRow as { order_items?: unknown }).order_items)
+        ? ((orderRow as { order_items: Array<{ name?: unknown; quantity?: unknown }> }).order_items)
+          .map((it) => ({
+            name: typeof it.name === "string" ? it.name : "",
+            quantity: typeof it.quantity === "number" ? it.quantity : Number(it.quantity ?? 1),
+          }))
+          .filter((it) => it.name && Number.isFinite(it.quantity) && it.quantity > 0)
+        : [];
+    const preorderLine = preorderItemsList.length > 0
+      ? `\nPre-ordered: ${preorderItemsList.map((it) => `${it.quantity}× ${it.name}`).join(", ")}`
+      : "";
+
     const body =
       `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
       `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
       codeLine + eventLine + promoLine +
+      preorderLine +
       `\nDeposit charged: ${formatCents(depositRow.amount_cents)}` +
       (restaurantPhone ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.` : "");
     void restaurantSlug; // reserved for future manage-link inclusion in modify SMS
