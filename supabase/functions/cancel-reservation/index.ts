@@ -329,10 +329,13 @@ Deno.serve(async (req: Request) => {
     }
 
     const sendCancellationNotice = async () => {
-      if (!guest) {
-        // No linked guest record — skip notification but report skipped status.
-        return { status: "skipped" as const, channel: null };
-      }
+      // 2026-05-27: no longer gated on a non-null `guest` row. Recent
+      // bookings have reservations.guest_id = NULL (RPCs denormalize
+      // contact onto reservation.* but don't populate guest_id), which
+      // means the previous `if (!guest) skip` branch fired on every
+      // recent cancel and the diner got no SMS/email. The helper now
+      // tolerates a null guestId — it skips only the communication_log
+      // audit insert and still sends the SMS+email.
       const opener =
         actor === "owner"
           ? `Hi ${guestName}, ${restaurantName} had to cancel your reservation for ${reservation.party_size} ` +
@@ -345,7 +348,7 @@ Deno.serve(async (req: Request) => {
           : `Your reservation at ${restaurantName} was cancelled`;
       return await sendReservationNotification({
         supabase: adminClient,
-        guestId: guest.id,
+        guestId: guest?.id ?? reservation.guest_id ?? null,
         restaurantId: reservation.restaurant_id,
         reservationId,
         type: "reservation_cancellation",
