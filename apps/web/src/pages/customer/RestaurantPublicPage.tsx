@@ -3538,7 +3538,20 @@ export default function RestaurantPublicPage() {
           // The hook reports failures via `state.status === "error"` —
           // surfacing the toast/banner is owned by the hook & dialog UI.
         }}
-        onPickDifferentTime={() => {
+        onPickDifferentTime={async () => {
+          // 1) Flip the hook's status off `expired` so the modal closes
+          //    (Dialog `open` is bound to `hold.state.status === "expired"`).
+          //    cancelHold() is the canonical "back to idle" entry — also
+          //    tombstones the server row as good hygiene.
+          await hold.cancelHold();
+          // 2) Clear the pre-selected slot so the diner has to pick a new
+          //    pill before the auto-create effect fires a fresh hold.
+          setPickedAvailabilitySlot(null);
+          // 3) Strip the `?slot=` / `?time=` / `?shift_id=` URL params so
+          //    `bookingLockedFromPreview` flips to false and the inline
+          //    `AvailabilityPanel` (slot picker) re-renders. Without this,
+          //    the read-only Date/Time/Party summary stays put.
+          navigate(`${location.pathname}`, { replace: true });
           setStep("details");
         }}
       />
