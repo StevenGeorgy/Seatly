@@ -11,6 +11,7 @@ import {
 } from "./booking-defaults.ts";
 import { makeConfirmationCode } from "./confirmation-code.ts";
 import {
+  buildConfirmationBody,
   formatReservationDate,
   sendReservationNotification,
 } from "./reservation-notifications.ts";
@@ -544,22 +545,21 @@ export async function completeBooking(
     } else if (applied_promo_code) {
       promoLine = ` Promo code: ${applied_promo_code}.`;
     }
-    // Phase 11 (2026-05-15): multi-line confirmation body matching the
-    // create-public-booking format. Includes find-reservation recovery
-    // hint + restaurant phone (when set) so guests have a fallback path
-    // if they lose the email/SMS.
-    const restaurantPhoneLine = restaurantPhone
-      ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.`
-      : "";
-    const guestLabelForBody = party_size === 1 ? "guest" : "guests";
-    const confirmationBody =
-      `Hi ${guestNameForBody},\n\n` +
-      `Your table at ${restaurantName} is booked for ${party_size} ${guestLabelForBody} on ${reservationDateLabel}.` +
-      eventLine + promoLine + `\n\n` +
-      `Confirmation code: ${persistedConfirmationCode}\n` +
-      (manageLink ? `Manage or cancel: ${manageLink}\n` : "") +
-      `\nLost this message? Visit https://cenaiva.com/find-reservation` +
-      restaurantPhoneLine;
+    const confirmationBody = buildConfirmationBody({
+      guestName: guestNameForBody,
+      restaurantName,
+      partySize: party_size,
+      reservationDateLabel,
+      eventLine,
+      promoLine,
+      confirmationCode: persistedConfirmationCode,
+      manageLink,
+      restaurantPhone,
+      preorderItems: items.length > 0
+        ? items.map((item) => ({ name: item.name, quantity: item.quantity }))
+        : null,
+      depositPaidCents: null,
+    });
     await sendReservationNotification({
       supabase: supabaseAdmin,
       guestId: guestId!,

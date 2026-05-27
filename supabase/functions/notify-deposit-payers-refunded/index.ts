@@ -24,6 +24,7 @@ import { Resend } from "npm:resend@4.0.0";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { NotifyDepositPayersRefundedSchema } from "../_shared/validation/restaurant-ops.ts";
+import { formatCents } from "../_shared/money.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -175,7 +176,7 @@ Deno.serve(async (req: Request) => {
       }
 
       const recipientName = row.payer_full_name?.trim() ?? "there";
-      const amountDisplay = `${currency} $${(row.amount_cents / 100).toFixed(2)}`;
+      const amountDisplay = `${currency} ${formatCents(row.amount_cents)}`;
 
       const subject = `Your ${amountDisplay} refund — ${organizerName}'s ${restaurantName} reservation was cancelled`;
       const text =

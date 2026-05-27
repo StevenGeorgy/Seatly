@@ -25,6 +25,11 @@ import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_share
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ConfirmDepositPaidSchema } from "../_shared/validation/payment.ts";
 import { getStripeClient } from "../_shared/stripe-client.ts";
+import {
+  buildConfirmationBody,
+  formatReservationDate,
+  sendReservationNotification,
+} from "../_shared/reservation-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -191,6 +196,150 @@ Deno.serve(async (req: Request) => {
       .select("id, reservation_id, status, amount_cents, stripe_payment_intent_id, paid_at")
       .single();
     if (error) return jsonRes({ error: error.message }, 400);
+
+    // 2026-05-27: Post-settle confirmation fan-out. The DB settle trigger
+    // (migration 20260510000400_deposit_policy.sql:204-257) flips the
+    // reservation from `pending_payment` to `confirmed` synchronously on
+    // this UPDATE once every row for the reservation is `charged`. So if
+    // we re-fetch and see `confirmed`, this was the last pending row.
+    //
+    // Idempotency: the early-return at lines 102-107 above already covers
+    // retries (a second call sees the row already 'charged' and short-
+    // circuits before reaching this point). No additional log-lookup
+    // guard is needed here.
+    //
+    // Fan-out: dedupe by lowercased payer_email so today's behavior (all
+    // rows seeded with the booker's contact) collapses to ONE email to
+    // the booker. When `split_tender_payer_details` is provided at
+    // booking time, each row carries a distinct email and the dedupe
+    // naturally splits into N sends — one per friend with their share.
+    try {
+      const { data: reservation } = await supabaseAdmin
+        .from("reservations")
+        .select(
+          "id, status, guest_id, restaurant_id, party_size, reserved_at, confirmation_code, guest_full_name, guest_email, guest_phone",
+        )
+        .eq("id", depositRow.reservation_id)
+        .maybeSingle();
+
+      if (reservation && reservation.status === "confirmed") {
+        const { data: restaurant } = await supabaseAdmin
+          .from("restaurants")
+          .select("name, slug, timezone, phone")
+          .eq("id", reservation.restaurant_id)
+          .maybeSingle();
+
+        const restaurantName = typeof restaurant?.name === "string" && restaurant.name.trim()
+          ? restaurant.name.trim()
+          : "the restaurant";
+        const restaurantSlug = typeof restaurant?.slug === "string" && restaurant.slug.trim()
+          ? restaurant.slug.trim()
+          : null;
+        const restaurantPhone = typeof restaurant?.phone === "string" && restaurant.phone.trim()
+          ? restaurant.phone.trim()
+          : null;
+        const tz = (typeof restaurant?.timezone === "string" && restaurant.timezone) || "America/Toronto";
+        const reservationDateLabel = formatReservationDate(new Date(reservation.reserved_at), tz);
+
+        // Preorder items for the body (joined from orders → order_items).
+        const { data: orderRow } = await supabaseAdmin
+          .from("orders")
+          .select("id, order_items(name, quantity)")
+          .eq("reservation_id", reservation.id)
+          .eq("is_preorder", true)
+          .maybeSingle();
+        const preorderItems =
+          orderRow && Array.isArray((orderRow as { order_items?: unknown }).order_items)
+            ? (((orderRow as { order_items: Array<{ name?: unknown; quantity?: unknown }> }).order_items)
+              .map((item) => ({
+                name: typeof item.name === "string" ? item.name : "",
+                quantity: typeof item.quantity === "number" ? item.quantity : Number(item.quantity ?? 1),
+              }))
+              .filter((item) => item.name && Number.isFinite(item.quantity) && item.quantity > 0))
+            : null;
+
+        // Pull every charged row for the reservation so we can dedupe by
+        // email and sum each unique payer's totalCents.
+        const { data: chargedRows } = await supabaseAdmin
+          .from("reservation_deposit_payments")
+          .select("payer_email, payer_full_name, amount_cents")
+          .eq("reservation_id", reservation.id)
+          .eq("status", "charged");
+
+        const organizerEmailLower = reservation.guest_email
+          ? reservation.guest_email.trim().toLowerCase()
+          : null;
+        const organizerPhone = reservation.guest_phone ?? null;
+        const organizerName = reservation.guest_full_name?.trim() || "there";
+
+        type PayerEntry = { email: string; name: string; totalCents: number };
+        const recipientMap = new Map<string, PayerEntry>();
+        for (const row of (chargedRows ?? [])) {
+          const rawEmail = typeof row.payer_email === "string" ? row.payer_email.trim() : "";
+          if (!rawEmail) continue;
+          const key = rawEmail.toLowerCase();
+          const entry = recipientMap.get(key);
+          const amount = typeof row.amount_cents === "number" ? row.amount_cents : 0;
+          if (entry) {
+            entry.totalCents += amount;
+          } else {
+            const name = typeof row.payer_full_name === "string" && row.payer_full_name.trim()
+              ? row.payer_full_name.trim()
+              : (key === organizerEmailLower ? organizerName : "there");
+            recipientMap.set(key, { email: rawEmail, name, totalCents: amount });
+          }
+        }
+
+        // Fallback: if no charged rows carry an email (shouldn't happen
+        // given the deposit-row check constraint, but defensive), send a
+        // single confirmation to the organizer using the reservation's
+        // own contact + the just-charged row's amount.
+        if (recipientMap.size === 0 && organizerEmailLower) {
+          recipientMap.set(organizerEmailLower, {
+            email: reservation.guest_email!,
+            name: organizerName,
+            totalCents: data.amount_cents,
+          });
+        }
+
+        for (const entry of recipientMap.values()) {
+          const isOrganizer = organizerEmailLower !== null
+            && entry.email.toLowerCase() === organizerEmailLower;
+          const manageLink = isOrganizer && restaurantSlug && reservation.confirmation_code
+            ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(reservation.confirmation_code)}${reservation.guest_email ? `&email=${encodeURIComponent(reservation.guest_email)}` : ""}`
+            : null;
+          const body = buildConfirmationBody({
+            guestName: entry.name,
+            restaurantName,
+            partySize: reservation.party_size,
+            reservationDateLabel,
+            confirmationCode: reservation.confirmation_code ?? "",
+            manageLink,
+            restaurantPhone,
+            preorderItems: isOrganizer ? preorderItems : null,
+            depositPaidCents: entry.totalCents,
+          });
+          await sendReservationNotification({
+            supabase: supabaseAdmin,
+            guestId: reservation.guest_id,
+            restaurantId: reservation.restaurant_id,
+            reservationId: reservation.id,
+            type: "reservation_confirmation",
+            email: entry.email,
+            phone: isOrganizer ? organizerPhone : null,
+            subject: `Your reservation at ${restaurantName} is confirmed`,
+            body,
+          });
+        }
+      }
+    } catch (notifyErr) {
+      // Post-settle notification failure must NOT roll back the deposit
+      // settlement. The deposit is paid; we just log and continue.
+      console.error(
+        "[confirm-deposit-paid] post-settle notification failed:",
+        notifyErr,
+      );
+    }
 
     return jsonRes({ deposit: data });
   } catch (err) {

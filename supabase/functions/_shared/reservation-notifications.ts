@@ -3,11 +3,19 @@ import { Resend } from "npm:resend@4.0.0";
 import twilio from "npm:twilio@5.0.0";
 
 import { isPhoneOptedOut } from "./sms.ts";
+import { formatCents } from "./money.ts";
 
-export type ReservationNotificationChannel = "email" | "sms" | null;
+export type ReservationNotificationChannel = "email" | "sms" | "both" | null;
 export type ReservationNotificationStatus = "sent" | "skipped" | "failed";
 
+export type ChannelResult = {
+  status: ReservationNotificationStatus;
+  reason?: string;
+};
+
 export type ReservationNotificationResult = {
+  sms: ChannelResult;
+  email: ChannelResult;
   status: ReservationNotificationStatus;
   channel: ReservationNotificationChannel;
 };
@@ -28,8 +36,6 @@ export function formatReservationDate(
   date: Date,
   timeZone = "America/Toronto",
 ): string {
-  // en-US for "7:00 PM" not "7:00 p.m." (en-CA), to match the rest of the
-  // system's uppercase AM/PM formatting. Audit caught 2026-05-11.
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "full",
     timeStyle: "short",
@@ -44,6 +50,80 @@ function normalizeNorthAmericanPhone(phone: string | null): string | null {
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   return phone.trim();
+}
+
+export type ConfirmationBodyArgs = {
+  guestName: string;
+  restaurantName: string;
+  partySize: number;
+  reservationDateLabel: string;
+  eventLine?: string;
+  promoLine?: string;
+  confirmationCode: string;
+  manageLink?: string | null;
+  restaurantPhone?: string | null;
+  preorderItems?: Array<{ name: string; quantity: number }> | null;
+  depositPaidCents?: number | null;
+};
+
+export function buildConfirmationBody(args: ConfirmationBodyArgs): string {
+  const guestLabel = args.partySize === 1 ? "guest" : "guests";
+  const eventLine = args.eventLine ?? "";
+  const promoLine = args.promoLine ?? "";
+
+  const preorderLine = args.preorderItems && args.preorderItems.length > 0
+    ? `Pre-ordered: ${
+      args.preorderItems
+        .map((item) => `${item.quantity}× ${item.name}`)
+        .join(", ")
+    }\n`
+    : "";
+
+  const depositLine = args.depositPaidCents && args.depositPaidCents > 0
+    ? `Deposit paid: ${formatCents(args.depositPaidCents)}\n`
+    : "";
+
+  const extrasBlock = preorderLine || depositLine
+    ? `\n${preorderLine}${depositLine}`
+    : "";
+
+  const manageLine = args.manageLink ? `Manage or cancel: ${args.manageLink}\n` : "";
+  const phoneLine = args.restaurantPhone
+    ? `\nNeed to reach the restaurant directly? Call ${args.restaurantPhone}.`
+    : "";
+
+  return (
+    `Hi ${args.guestName},\n\n` +
+    `Your table at ${args.restaurantName} is booked for ${args.partySize} ${guestLabel} on ${args.reservationDateLabel}.` +
+    eventLine +
+    promoLine +
+    `\n` +
+    extrasBlock +
+    `\n` +
+    `Confirmation code: ${args.confirmationCode}\n` +
+    manageLine +
+    `\nLost this message? Visit https://cenaiva.com/find-reservation` +
+    phoneLine
+  );
+}
+
+function deriveAggregate(
+  sms: ChannelResult,
+  email: ChannelResult,
+): { status: ReservationNotificationStatus; channel: ReservationNotificationChannel } {
+  const smsSent = sms.status === "sent";
+  const emailSent = email.status === "sent";
+  if (smsSent && emailSent) return { status: "sent", channel: "both" };
+  if (smsSent) return { status: "sent", channel: "sms" };
+  if (emailSent) return { status: "sent", channel: "email" };
+
+  const smsAttempted = sms.status === "failed";
+  const emailAttempted = email.status === "failed";
+  if (smsAttempted && emailAttempted) return { status: "failed", channel: "both" };
+  if (smsAttempted) return { status: "failed", channel: "sms" };
+  if (emailAttempted) return { status: "failed", channel: "email" };
+
+  return { status: "skipped", channel: null };
 }
 
 export async function sendReservationNotification({
@@ -69,34 +149,40 @@ export async function sendReservationNotification({
   const twilioFromPhone = Deno.env.get("TWILIO_PHONE_NUMBER");
   const twilioClient = !smsDisabled && twilioSid && twilioToken ? twilio(twilioSid, twilioToken) : null;
 
-  let channel: ReservationNotificationChannel = null;
-  let status: ReservationNotificationStatus = "skipped";
+  let smsResult: ChannelResult = { status: "skipped", reason: "no_phone" };
+  let emailResult: ChannelResult = { status: "skipped", reason: "no_email" };
 
+  // SMS branch — runs independently of email outcome.
   const smsToPhone = normalizeNorthAmericanPhone(phone);
-  if (smsToPhone && twilioClient && twilioFromPhone) {
-    if (await isPhoneOptedOut(supabase, smsToPhone)) {
-      console.log(
-        `[reservation-notifications:${type}] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
-      );
-      // fall through to email
-    } else {
-      try {
-        await twilioClient.messages.create({
-          body,
-          from: twilioFromPhone,
-          to: smsToPhone,
-        });
-        channel = "sms";
-        status = "sent";
-      } catch (err) {
-        console.error(`${type} SMS failed`, err);
-        channel = "sms";
-        status = "failed";
-      }
+  if (!smsToPhone) {
+    smsResult = { status: "skipped", reason: "no_phone" };
+  } else if (!twilioClient || !twilioFromPhone) {
+    smsResult = { status: "skipped", reason: smsDisabled ? "sms_disabled" : "twilio_unconfigured" };
+  } else if (await isPhoneOptedOut(supabase, smsToPhone)) {
+    console.log(
+      `[reservation-notifications:${type}] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
+    );
+    smsResult = { status: "skipped", reason: "opted_out" };
+  } else {
+    try {
+      await twilioClient.messages.create({
+        body,
+        from: twilioFromPhone,
+        to: smsToPhone,
+      });
+      smsResult = { status: "sent" };
+    } catch (err) {
+      console.error(`${type} SMS failed`, err);
+      smsResult = { status: "failed", reason: err instanceof Error ? err.message : String(err) };
     }
   }
 
-  if (status !== "sent" && email && resend) {
+  // Email branch — runs independently of SMS outcome (dual-channel by design).
+  if (!email) {
+    emailResult = { status: "skipped", reason: "no_email" };
+  } else if (!resend) {
+    emailResult = { status: "skipped", reason: "resend_unconfigured" };
+  } else {
     try {
       await resend.emails.send({
         from: Deno.env.get("RESEND_FROM_EMAIL") ?? "Cenaiva <noreply@cenaiva.com>",
@@ -104,14 +190,14 @@ export async function sendReservationNotification({
         subject,
         text: body,
       });
-      channel = "email";
-      status = "sent";
+      emailResult = { status: "sent" };
     } catch (err) {
       console.error(`${type} email failed`, err);
-      channel = "email";
-      status = "failed";
+      emailResult = { status: "failed", reason: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  const { status, channel } = deriveAggregate(smsResult, emailResult);
 
   if (channel) {
     const { error } = await supabase.from("communication_log").insert({
@@ -131,5 +217,5 @@ export async function sendReservationNotification({
     }
   }
 
-  return { status, channel };
+  return { sms: smsResult, email: emailResult, status, channel };
 }

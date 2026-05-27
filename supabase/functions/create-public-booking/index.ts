@@ -1,9 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
-import { Resend } from "npm:resend@4.0.0";
-import twilio from "npm:twilio@5.0.0";
-import { isPhoneOptedOut } from "../_shared/sms.ts";
 import {
   closureUnavailableMessage,
   findClosedSpecialDayForDate,
@@ -12,6 +9,11 @@ import {
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { BookingInputSchema } from "../_shared/validation/booking.ts";
 import { notifyOwnerNewReservation } from "../_shared/owner-notifications.ts";
+import {
+  buildConfirmationBody,
+  formatReservationDate,
+  sendReservationNotification,
+} from "../_shared/reservation-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -78,23 +80,6 @@ function normalizeCartItems(value: unknown): Array<{
   });
 }
 
-function formatReservationDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    dateStyle: "full",
-    timeStyle: "short",
-    timeZone: "America/Toronto",
-  }).format(date);
-}
-
-function normalizeNorthAmericanPhone(phone: string | null): string | null {
-  if (!phone) return null;
-  if (phone.trim().startsWith("+")) return phone.trim();
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return phone.trim();
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "POST required" }, 405);
@@ -126,13 +111,6 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
-
-    const resendKey = Deno.env.get("RESEND_API_KEY");
-    const resend = resendKey ? new Resend(resendKey) : null;
-    const twilioSid = Deno.env.get("TWILIO_ACCOUNT_SID");
-    const twilioToken = Deno.env.get("TWILIO_AUTH_TOKEN");
-    const twilioFromPhone = Deno.env.get("TWILIO_PHONE_NUMBER");
-    const twilioClient = twilioSid && twilioToken ? twilio(twilioSid, twilioToken) : null;
 
     let userProfileId: string | null = null;
     const authorization = req.headers.get("authorization");
@@ -515,15 +493,18 @@ Deno.serve(async (req: Request) => {
           const shares = Array.from({ length: n }, (_, i) =>
             i === 0 ? baseShare + remainder : baseShare,
           );
+          const payerDetails = payload.split_tender_payer_details ?? null;
+          const fallbackPayerEmail = asText(payload.guest_email) ?? null;
+          const fallbackPayerName = asText(payload.guest_name) ?? null;
           const { data: insertedRows, error: insertErr } = await supabase
             .from("reservation_deposit_payments")
             .insert(
-              shares.map((amount_cents) => ({
+              shares.map((amount_cents, i) => ({
                 reservation_id: row.reservation_id,
                 amount_cents,
                 status: "pending",
-                payer_email: asText(payload.guest_email) ?? null,
-                payer_full_name: asText(payload.guest_name) ?? null,
+                payer_email: payerDetails?.[i]?.email ?? fallbackPayerEmail,
+                payer_full_name: payerDetails?.[i]?.full_name ?? fallbackPayerName,
               })),
             )
             .select("id");
@@ -718,17 +699,22 @@ Deno.serve(async (req: Request) => {
         );
         // payer_email/full_name required by the check constraint
         // `reservation_deposit_payments_payer_required` — at minimum one
-        // payer identity field. We stamp the booking diner on the first
-        // row; co-payers will be filled in by their own card-entry flow.
+        // payer identity field. When the booker provides per-payer details
+        // (2026-05-27), each row carries that friend's email/name so the
+        // post-settle confirmation reaches them; otherwise we stamp the
+        // booker on every row.
+        const payerDetails = payload.split_tender_payer_details ?? null;
+        const fallbackPayerEmail = asText(payload.guest_email) ?? null;
+        const fallbackPayerName = asText(payload.guest_name) ?? null;
         const { data: insertedRows, error: insertErr } = await supabase
           .from("reservation_deposit_payments")
           .insert(
-            shares.map((amount_cents) => ({
+            shares.map((amount_cents, i) => ({
               reservation_id: reservationId,
               amount_cents,
               status: "pending",
-              payer_email: asText(payload.guest_email) ?? null,
-              payer_full_name: asText(payload.guest_name) ?? null,
+              payer_email: payerDetails?.[i]?.email ?? fallbackPayerEmail,
+              payer_full_name: payerDetails?.[i]?.full_name ?? fallbackPayerName,
             })),
           )
           .select("id");
@@ -824,80 +810,46 @@ Deno.serve(async (req: Request) => {
     } else if (reservationPromoCode) {
       promoLine = ` Promo code: ${reservationPromoCode}.`;
     }
-    const guestLabel = partySize === 1 ? "guest" : "guests";
     // Phase 11 (2026-05-15): multi-line confirmation body. The blank line
     // after the booking summary separates the body from the confirmation
     // code block; another blank line separates code+manage from the
     // recovery hint + restaurant phone. Renders cleanly in both SMS
     // (Twilio preserves \n) and email plaintext bodies.
-    const restaurantPhoneLine = restaurantPhone
-      ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.`
-      : "";
-    const confirmationBody =
-      `Hi ${guestName},\n\n` +
-      `Your table at ${restaurantName} is booked for ${partySize} ${guestLabel} on ${reservationDateLabel}.` +
-      eventLine + promoLine + `\n\n` +
-      `Confirmation code: ${savedConfirmationCode}\n` +
-      (manageLink ? `Manage or cancel: ${manageLink}\n` : "") +
-      `\nLost this message? Visit https://cenaiva.com/find-reservation` +
-      restaurantPhoneLine;
-    let confirmationChannel: "email" | "sms" | null = null;
-    let confirmationStatus: "sent" | "skipped" | "failed" = "skipped";
+    //
+    // 2026-05-27: now built via buildConfirmationBody so preorder items
+    // are included when present. depositPaidCents is null here because
+    // at booking time the deposit hasn't charged yet — the "Deposit paid"
+    // line appears in the post-settle confirmation fired by
+    // confirm-deposit-paid, not in this booking-time confirmation.
+    const confirmationBody = buildConfirmationBody({
+      guestName,
+      restaurantName,
+      partySize,
+      reservationDateLabel,
+      eventLine,
+      promoLine,
+      confirmationCode: savedConfirmationCode,
+      manageLink,
+      restaurantPhone,
+      preorderItems: cartItems.length > 0
+        ? cartItems.map((item) => ({ name: item.name, quantity: item.quantity }))
+        : null,
+      depositPaidCents: null,
+    });
 
-    const smsToPhone = normalizeNorthAmericanPhone(guestPhone);
-    if (smsToPhone && twilioClient && twilioFromPhone) {
-      if (await isPhoneOptedOut(supabase, smsToPhone)) {
-        console.log(
-          `[create-public-booking] phone opted out, skipping SMS to ${smsToPhone.slice(-4)}`,
-        );
-        // fall through to email
-      } else {
-        try {
-          await twilioClient.messages.create({
-            body: confirmationBody,
-            from: twilioFromPhone,
-            to: smsToPhone,
-          });
-          confirmationChannel = "sms";
-          confirmationStatus = "sent";
-        } catch (err) {
-          console.error("Reservation confirmation SMS failed", err);
-          confirmationChannel = "sms";
-          confirmationStatus = "failed";
-        }
-      }
-    }
-
-    if (confirmationStatus !== "sent" && guestEmail && resend) {
-      try {
-        await resend.emails.send({
-          from: Deno.env.get("RESEND_FROM_EMAIL") ?? "Cenaiva <noreply@cenaiva.com>",
-          to: guestEmail,
-          subject: confirmationSubject,
-          text: confirmationBody,
-        });
-        confirmationChannel = "email";
-        confirmationStatus = "sent";
-      } catch (err) {
-        console.error("Reservation confirmation email failed", err);
-        confirmationChannel = "email";
-        confirmationStatus = "failed";
-      }
-    }
-
-    if (confirmationChannel) {
-      await supabase.from("communication_log").insert({
-        guest_id: guestId,
-        restaurant_id: restaurantId,
-        channel: confirmationChannel,
-        type: "reservation_confirmation",
-        subject: confirmationSubject,
-        body: confirmationBody,
-        status: confirmationStatus,
-        sent_at: confirmationStatus === "sent" ? new Date().toISOString() : null,
-        campaign_id: reservationId,
-      });
-    }
+    // 2026-05-27: dual-channel send — SMS AND email both fire when both
+    // contacts are present, instead of the old SMS-or-email pattern.
+    const notification = await sendReservationNotification({
+      supabase,
+      guestId: guestId!,
+      restaurantId,
+      reservationId,
+      type: "reservation_confirmation",
+      email: guestEmail || null,
+      phone: guestPhone || null,
+      subject: confirmationSubject,
+      body: confirmationBody,
+    });
 
     // Owner notification (fire-and-forget). Honors the owner's
     // notification_preferences_json.new_reservation_email toggle internally
@@ -921,8 +873,8 @@ Deno.serve(async (req: Request) => {
       confirmation_code: savedConfirmationCode,
       table_ids: assignedTableIds,
       duration_minutes: turnMinutes,
-      confirmation_delivery: confirmationStatus,
-      confirmation_delivery_channel: confirmationChannel,
+      confirmation_delivery: notification.status,
+      confirmation_delivery_channel: notification.channel,
       deposit_amount_cents: depositAmountCents,
       deposit_required: depositAmountCents > 0,
       split_tender_deposit_row_ids: splitTenderDepositRowIds,

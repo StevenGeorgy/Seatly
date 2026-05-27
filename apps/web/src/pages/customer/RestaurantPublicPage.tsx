@@ -127,7 +127,7 @@ type PublicBookingResponse = {
   order_id?: string | null;
   confirmation_code?: string;
   confirmation_delivery?: "sent" | "skipped" | "failed";
-  confirmation_delivery_channel?: "email" | "sms" | null;
+  confirmation_delivery_channel?: "email" | "sms" | "both" | null;
   deposit_required?: boolean;
   deposit_amount_cents?: number;
   error?: string;
@@ -1477,7 +1477,7 @@ export default function RestaurantPublicPage() {
   const [confirmationCode, setConfirmationCode] = useState<string>("");
   const [confirmationDelivery, setConfirmationDelivery] = useState<{
     status: "sent" | "skipped" | "failed";
-    channel: "email" | "sms" | null;
+    channel: "email" | "sms" | "both" | null;
   }>({ status: "skipped", channel: null });
 
   const currency = restaurant?.currency ?? "cad";

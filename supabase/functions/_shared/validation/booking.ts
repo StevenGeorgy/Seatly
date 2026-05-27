@@ -76,7 +76,31 @@ export const BookingInputSchema = z.object({
   // to cover their share of the food). For deposit-only split (legacy
   // behavior) omit this and the backend derives shares from deposit alone.
   split_tender_share_cents: z.number().int().min(1).max(10_000_000).nullish(),
-});
+  // 2026-05-27: optional per-payer contact details. When set, each entry's
+  // email + name are written onto the matching reservation_deposit_payments
+  // row (by index) so the post-settle confirmation fan-out can email each
+  // friend their own share. When omitted, all rows are seeded with the
+  // booker's contact (today's behavior).
+  split_tender_payer_details: z
+    .array(
+      z.object({
+        email: EmailLower,
+        full_name: NonEmptyText(120).optional(),
+      }),
+    )
+    .max(10)
+    .nullish(),
+}).refine(
+  (data) => {
+    if (!data.split_tender_payer_details) return true;
+    if (!data.split_tender_payers) return false;
+    return data.split_tender_payer_details.length === data.split_tender_payers;
+  },
+  {
+    message: "split_tender_payer_details length must equal split_tender_payers",
+    path: ["split_tender_payer_details"],
+  },
+);
 
 export type BookingInput = z.infer<typeof BookingInputSchema>;
 
