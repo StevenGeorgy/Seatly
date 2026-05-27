@@ -547,18 +547,30 @@ Deno.serve(async (req: Request) => {
       // Amount validation — must match deposit_amount_cents or
       // total_amount_cents (caller picks which one applies based on whether
       // this is a deposit-only or full-order hold).
+      //
+      // 2026-05-27: `amountCents` is now the FOOD-only portion (no tax);
+      // tax flows separately as `taxCents`. The hold's
+      // `total_amount_cents` still represents food+tax combined (set by
+      // update-reservation-hold-cart). So the match becomes
+      // (amountCents + taxCents) === totalCents. Deposit-only holds carry
+      // no tax — keep the strict `amountCents === depositCents` check.
+      // Backwards compat: if an old client sends only `amountCents`
+      // (tax=0), and the cart actually had no tax, the sum still equals
+      // totalCents and matches.
       const depositCents = Number(hold.deposit_amount_cents ?? 0);
       const totalCents = Number(hold.total_amount_cents ?? 0);
       const amountMatches =
-        (depositCents > 0 && amountCents === depositCents) ||
-        (totalCents > 0 && amountCents === totalCents);
+        (depositCents > 0 && amountCents === depositCents && taxCents === 0) ||
+        (totalCents > 0 && (amountCents + taxCents) === totalCents);
       if (!amountMatches) {
         return jsonRes(
           {
             error: "amount_mismatch",
             expected_deposit_cents: depositCents,
             expected_total_cents: totalCents,
-            received_cents: amountCents,
+            received_food_cents: amountCents,
+            received_tax_cents: taxCents,
+            received_total_cents: amountCents + taxCents,
           },
           400,
         );
