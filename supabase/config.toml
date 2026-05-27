@@ -92,6 +92,9 @@ verify_jwt = false
 [functions.confirm-deposit-paid]
 verify_jwt = false
 
+[functions.confirm-modify-payment]
+verify_jwt = false
+
 [functions.stripe-attach-payment-method]
 verify_jwt = false
 

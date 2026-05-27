@@ -27,6 +27,7 @@ import {
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
+import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import { type MyReservationRow } from "@/hooks/useMyReservations";
 import { useReservationById } from "@/hooks/useReservationById";
@@ -176,9 +177,19 @@ type ModifyDepositAdjustment =
   | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null }
   | { kind: "failed"; reason: string };
 
-type ModifyResult = {
-  deposit_adjustment: ModifyDepositAdjustment;
-};
+type ModifyResult =
+  | { kind: "applied"; deposit_adjustment: ModifyDepositAdjustment }
+  | {
+      kind: "requires_payment";
+      deposit_payment_row_id: string;
+      delta_cents: number;
+      restaurant_id: string;
+      reservation_id: string;
+      pending_date: string;
+      pending_time: string;
+      pending_party_size: number;
+      pending_special_request: string | null;
+    };
 
 async function modifyReservation(
   reservationId: string,
@@ -201,10 +212,6 @@ async function modifyReservation(
     throw new Error("Pick a valid time and try again.");
   }
 
-  // Raw fetch (not client.functions.invoke) so we can read body.error on
-  // non-2xx responses. functions.invoke wraps any 4xx/5xx as a generic
-  // "Edge Function returned a non-2xx status code" message and discards the
-  // JSON body the edge function uses to explain why.
   const client = getSupabaseBrowserClient();
   const { data: sessionData } = await client.auth.getSession();
   const token = sessionData.session?.access_token ?? null;
@@ -229,22 +236,119 @@ async function modifyReservation(
     unavailable_reason?: string;
     deposit_adjustment?: ModifyDepositAdjustment;
     delta_cents?: number;
+    requires_payment?: boolean;
+    deposit_payment_row_id?: string;
+    restaurant_id?: string;
+    reservation_id?: string;
+    pending_date?: string;
+    pending_time?: string;
+    pending_party_size?: number;
+    pending_special_request?: string | null;
   };
+
+  // 2026-05-27: the deposit-delta-charge flow now redirects to a payment
+  // step instead of trying to charge a saved card behind the scenes. When
+  // the response carries requires_payment=true the caller mounts Stripe
+  // Elements with the returned client params; on payment success the
+  // confirmModifyPayment helper finalizes the slot change.
+  if (
+    res.ok &&
+    body.requires_payment === true &&
+    body.deposit_payment_row_id &&
+    typeof body.delta_cents === "number" &&
+    body.restaurant_id &&
+    body.reservation_id &&
+    body.pending_date &&
+    body.pending_time &&
+    typeof body.pending_party_size === "number"
+  ) {
+    return {
+      kind: "requires_payment",
+      deposit_payment_row_id: body.deposit_payment_row_id,
+      delta_cents: body.delta_cents,
+      restaurant_id: body.restaurant_id,
+      reservation_id: body.reservation_id,
+      pending_date: body.pending_date,
+      pending_time: body.pending_time,
+      pending_party_size: body.pending_party_size,
+      pending_special_request: body.pending_special_request ?? null,
+    };
+  }
+
   if (!res.ok || body.error || body.ok !== true) {
-    // Surface the modify_requires_card case with a more actionable
-    // message so the diner knows what to do next.
-    if (body.unavailable_reason === "modify_requires_card") {
-      const dollars = typeof body.delta_cents === "number"
-        ? ` ($${(body.delta_cents / 100).toFixed(2)})`
-        : "";
-      throw new Error(
-        (body.error ?? `Increasing your party size needs a card on file${dollars}.`)
-        + " Add a card in Account → Payment and try again.",
-      );
-    }
     throw new Error(body.error ?? `Could not modify reservation (${res.status}).`);
   }
   return {
+    kind: "applied",
+    deposit_adjustment: body.deposit_adjustment ?? { kind: "none" },
+  };
+}
+
+type ConfirmModifyResult = {
+  reservation_id: string;
+  reserved_at: string;
+  party_size: number;
+  deposit_adjustment: ModifyDepositAdjustment;
+};
+
+async function confirmModifyPayment(payload: {
+  reservationId: string;
+  depositPaymentRowId: string;
+  paymentIntentId: string;
+  date: string;
+  time: string;
+  partySize: number;
+  specialRequest: string;
+}): Promise<ConfirmModifyResult> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Authentication is not available. Configure Supabase first.");
+  }
+  const normalisedTime = to24HourTime(payload.time);
+  if (!normalisedTime) throw new Error("Internal: invalid time format.");
+  const client = getSupabaseBrowserClient();
+  const { data: sessionData } = await client.auth.getSession();
+  const token = sessionData.session?.access_token ?? null;
+  const res = await fetch(
+    `${getSupabaseProjectUrl()}/functions/v1/confirm-modify-payment`,
+    {
+      method: "POST",
+      headers: {
+        apikey: getSupabaseAnonKey(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        reservation_id: payload.reservationId,
+        deposit_payment_row_id: payload.depositPaymentRowId,
+        payment_intent_id: payload.paymentIntentId,
+        date: payload.date,
+        time: normalisedTime,
+        party_size: payload.partySize,
+        special_request: payload.specialRequest || undefined,
+      }),
+    },
+  );
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    refunded?: boolean;
+    reservation_id?: string;
+    reserved_at?: string;
+    party_size?: number;
+    deposit_adjustment?: ModifyDepositAdjustment;
+  };
+  if (!res.ok || body.error || body.ok !== true) {
+    if (body.refunded) {
+      throw new Error(
+        body.error ?? "That time was just taken. We refunded your payment.",
+      );
+    }
+    throw new Error(body.error ?? `Could not finalize modification (${res.status}).`);
+  }
+  return {
+    reservation_id: body.reservation_id ?? payload.reservationId,
+    reserved_at: body.reserved_at ?? "",
+    party_size: body.party_size ?? payload.partySize,
     deposit_adjustment: body.deposit_adjustment ?? { kind: "none" },
   };
 }
@@ -271,6 +375,21 @@ export default function BookingDetailsPage() {
   const [modifying, setModifying] = useState(false);
   const [modifyInitial, setModifyInitial] = useState<ModifyBookingValues | null>(null);
   const [modifyValues, setModifyValues] = useState<ModifyBookingValues | null>(null);
+  // 2026-05-27: pending modification awaiting payment delta. When the
+  // edge fn returns requires_payment, we stash the new params here and
+  // open the payment dialog; on Stripe success we call
+  // confirm-modify-payment to finalize.
+  const [pendingPayment, setPendingPayment] = useState<{
+    reservationId: string;
+    depositPaymentRowId: string;
+    deltaCents: number;
+    restaurantId: string;
+    date: string;
+    time: string;
+    partySize: number;
+    specialRequest: string;
+  } | null>(null);
+  const [finalizingPayment, setFinalizingPayment] = useState(false);
   const [modifyValidity, setModifyValidity] = useState<ModifyBookingValidity>({
     canSave: false,
     reason: null,
@@ -386,26 +505,39 @@ export default function BookingDetailsPage() {
         partySize: modifyValues.partySize,
         specialRequest: modifyValues.notes.trim(),
       });
+
+      // 2026-05-27: the edge fn signals a deposit-delta payment is needed.
+      // Stash the pending change + open the payment dialog. The actual
+      // modification doesn't apply until the diner pays and we call
+      // confirm-modify-payment.
+      if (result.kind === "requires_payment") {
+        setPendingPayment({
+          reservationId: result.reservation_id,
+          depositPaymentRowId: result.deposit_payment_row_id,
+          deltaCents: result.delta_cents,
+          restaurantId: result.restaurant_id,
+          date: result.pending_date,
+          time: result.pending_time,
+          partySize: result.pending_party_size,
+          specialRequest: result.pending_special_request ?? "",
+        });
+        setModifyOpen(false);
+        return;
+      }
+
       await refresh();
       void refreshPayments();
-      // Drop cached availability so the previous slot reappears and the new
-      // slot disappears for this device on the next view.
       if (reservation.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
       setModifyOpen(false);
-      // Phase 8 (2026-05-15): tell the diner exactly what happened to
-      // their deposit when party size changed.
+
       const adj = result.deposit_adjustment;
-      if (adj.kind === "charged") {
-        toast.success(
-          `Reservation modified. $${(adj.amount_cents / 100).toFixed(2)} added to your deposit on file.`,
-        );
-      } else if (adj.kind === "refunded") {
+      if (adj.kind === "refunded") {
         toast.success(
           `Reservation modified. $${(adj.amount_cents / 100).toFixed(2)} refunded to your card.`,
         );
       } else if (adj.kind === "failed") {
         toast.warning(
-          "Reservation modified, but we couldn't adjust your deposit automatically. The restaurant will reach out.",
+          "Reservation modified, but the deposit refund didn't go through. The restaurant will reach out.",
         );
       } else {
         toast.success("Reservation modified.");
@@ -417,6 +549,39 @@ export default function BookingDetailsPage() {
       });
     } finally {
       setModifying(false);
+    }
+  };
+
+  const handleModifyPaymentPaid = async (paymentIntentId: string) => {
+    if (!pendingPayment || finalizingPayment) return;
+    setFinalizingPayment(true);
+    try {
+      await confirmModifyPayment({
+        reservationId: pendingPayment.reservationId,
+        depositPaymentRowId: pendingPayment.depositPaymentRowId,
+        paymentIntentId,
+        date: pendingPayment.date,
+        time: pendingPayment.time,
+        partySize: pendingPayment.partySize,
+        specialRequest: pendingPayment.specialRequest,
+      });
+      await refresh();
+      void refreshPayments();
+      if (reservation?.restaurant?.id) invalidateAvailabilityCache(reservation.restaurant.id);
+      setPendingPayment(null);
+      toast.success(
+        `Reservation modified. $${(pendingPayment.deltaCents / 100).toFixed(2)} charged to complete the change.`,
+      );
+    } catch (error) {
+      // confirm-modify-payment will have auto-refunded the diner if the
+      // slot was taken between payment + confirm. Surface clearly.
+      errorToast(error, {
+        fallback: "Couldn't finalize the modification. Try again.",
+        logTag: "[BookingDetailsPage.confirmModifyPayment]",
+      });
+      setPendingPayment(null);
+    } finally {
+      setFinalizingPayment(false);
     }
   };
 
@@ -793,6 +958,54 @@ export default function BookingDetailsPage() {
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 2026-05-27: deposit-delta payment dialog. Mounted when modify-
+          reservation returned requires_payment. After Stripe succeeds we
+          call confirm-modify-payment to actually apply the slot change. */}
+      <Dialog
+        open={pendingPayment !== null}
+        onOpenChange={(open) => {
+          if (!open && !finalizingPayment) setPendingPayment(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Pay deposit to confirm changes</DialogTitle>
+          </DialogHeader>
+          {pendingPayment ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-border bg-bg-surface/60 p-4 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-secondary">Additional deposit</span>
+                  <span className="font-mono text-base font-semibold text-white">
+                    ${(pendingPayment.deltaCents / 100).toFixed(2)}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-text-muted">
+                  Your party size update requires a larger deposit. Pay now to
+                  confirm. We'll only charge if Stripe accepts the card.
+                </p>
+              </div>
+              <StripePaymentForm
+                restaurantId={pendingPayment.restaurantId}
+                amountCents={pendingPayment.deltaCents}
+                depositPaymentIds={[pendingPayment.depositPaymentRowId]}
+                onPaid={handleModifyPaymentPaid}
+                payButtonLabel={finalizingPayment ? "Finalizing…" : "Pay & confirm changes"}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setPendingPayment(null)}
+                disabled={finalizingPayment}
+                className="h-9 w-full text-sm font-normal text-text-muted hover:text-text-primary"
+              >
+                Cancel — keep current booking
+              </Button>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
 
