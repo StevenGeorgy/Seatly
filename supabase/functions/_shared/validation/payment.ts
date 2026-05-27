@@ -104,22 +104,48 @@ export type CreatePublicPaymentIntentInput = z.infer<
 // confirm-modify-payment: finalizes a reservation modification AFTER the
 // diner has paid the deposit delta via Stripe. Mirrors modify-reservation's
 // auth shape (bearer OR confirmation_code + email).
-export const ConfirmModifyPaymentSchema = z.object({
-  reservation_id: Uuid,
-  deposit_payment_row_id: Uuid,
-  payment_intent_id: PaymentIntentId,
-  date: BoundedText(20).regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
-  time: BoundedText(10).regex(
-    /^([01]?\d|2[0-3]):[0-5]\d(\s?[apAP][mM])?$/,
-    "invalid time",
-  ),
-  party_size: z.number().int().min(1).max(30),
-  special_request: BoundedText(500).optional(),
-  // Guest path auth (mirrors modify-reservation). Ignored when a valid
-  // bearer token is present.
-  confirmation_code: BoundedText(40).optional(),
-  email: BoundedText(254).optional(),
-});
+//
+// 2026-05-27: now supports two change_type branches:
+//   - "party_delta" (default, legacy): finalize a slot/party-size change.
+//     Requires date + time + party_size.
+//   - "cart_delta": finalize a pre-order cart change. Reads the cart
+//     snapshot from reservation_deposit_payments.pending_cart_snapshot
+//     (JSONB) which modify-reservation stamped. date/time/party_size
+//     are not required in this branch.
+export const ConfirmModifyPaymentSchema = z
+  .object({
+    reservation_id: Uuid,
+    deposit_payment_row_id: Uuid,
+    payment_intent_id: PaymentIntentId,
+    change_type: z.enum(["party_delta", "cart_delta"]).optional(),
+    date: BoundedText(20)
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+      .optional(),
+    time: BoundedText(10)
+      .regex(/^([01]?\d|2[0-3]):[0-5]\d(\s?[apAP][mM])?$/, "invalid time")
+      .optional(),
+    party_size: z.number().int().min(1).max(30).optional(),
+    special_request: BoundedText(500).optional(),
+    // Guest path auth (mirrors modify-reservation). Ignored when a valid
+    // bearer token is present.
+    confirmation_code: BoundedText(40).optional(),
+    email: BoundedText(254).optional(),
+  })
+  .refine(
+    (b) => {
+      if (b.change_type === "cart_delta") return true;
+      // Default branch (party_delta) requires the slot fields.
+      return (
+        b.date !== undefined &&
+        b.time !== undefined &&
+        b.party_size !== undefined
+      );
+    },
+    {
+      message: "date, time and party_size are required for party_delta",
+      path: ["date"],
+    },
+  );
 export type ConfirmModifyPaymentInput = z.infer<
   typeof ConfirmModifyPaymentSchema
 >;

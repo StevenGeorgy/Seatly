@@ -33,7 +33,8 @@ type SendReservationNotificationParams = {
     | "reservation_confirmation"
     | "reservation_cancellation"
     | "reservation_modification"
-    | "reservation_no_show";
+    | "reservation_no_show"
+    | "reservation_cart_modified";
   email: string | null;
   phone: string | null;
   subject: string;
@@ -159,6 +160,105 @@ export function buildNoShowBody(args: NoShowBodyArgs): {
     `48 hours.\n\n` +
     `Reservation confirmation: ${args.confirmationCode}\n` +
     `Restaurant: ${args.restaurantName}\n\n` +
+    `— Cenaiva`;
+
+  return { subject, body, smsBody };
+}
+
+export type CartModifiedItem = {
+  name: string;
+  quantity: number;
+};
+
+export type CartModifiedBodyArgs = {
+  guestName: string;
+  restaurantName: string;
+  /** ISO timestamp or Date — formatted into a short date label. */
+  reservedAt: string | Date;
+  addedItems: CartModifiedItem[];
+  removedItems: CartModifiedItem[];
+  /** Net cents difference. Positive = additional charge, negative = refund.
+   *  Caller may instead pass `deltaCents > 0` AND `refundCents > 0` for the
+   *  rare case where both apply (mid-flow remix); we surface whichever side
+   *  is non-zero. */
+  deltaCents: number;
+  refundCents: number;
+  newTotalCents: number;
+  confirmationCode: string;
+};
+
+function fmtMoney(cents: number): string {
+  // Render absolute value — sign is conveyed in the surrounding phrase.
+  return `$${(Math.abs(cents) / 100).toFixed(2)}`;
+}
+
+function fmtShortDate(value: string | Date, timeZone = "America/Toronto"): string {
+  try {
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return new Intl.DateTimeFormat("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone,
+    }).format(d);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+// Builds the cart-modified notification body. Mirrors `buildNoShowBody` —
+// returns separate `body` (long-form email) and `smsBody` (≤160 chars).
+// The SMS summary collapses delta + refund to a single phrase; the email
+// body itemizes added/removed lines and shows the new total.
+export function buildCartModifiedBody(args: CartModifiedBodyArgs): {
+  subject: string;
+  body: string;
+  smsBody: string;
+} {
+  const firstName = args.guestName.trim().split(/\s+/)[0] || "there";
+  const dateLabel = fmtShortDate(args.reservedAt);
+  const newTotalStr = fmtMoney(args.newTotalCents);
+
+  // Build a one-phrase summary for SMS + the inline email line.
+  let summary: string;
+  if (args.deltaCents > 0) {
+    summary = `+${fmtMoney(args.deltaCents)} charged`;
+  } else if (args.refundCents > 0) {
+    summary = `${fmtMoney(args.refundCents)} refunded`;
+  } else {
+    summary = `No price change`;
+  }
+
+  const smsBody =
+    `Hi ${firstName}, your pre-order at ${args.restaurantName} for ${dateLabel} ` +
+    `was updated. ${summary}. Confirmation: ${args.confirmationCode}.`;
+
+  const subject = `Your ${args.restaurantName} pre-order updated`;
+
+  const addedBlock = args.addedItems.length > 0
+    ? `Added:\n${args.addedItems.map((i) => `  + ${i.quantity}× ${i.name}`).join("\n")}\n\n`
+    : "";
+  const removedBlock = args.removedItems.length > 0
+    ? `Removed:\n${args.removedItems.map((i) => `  − ${i.quantity}× ${i.name}`).join("\n")}\n\n`
+    : "";
+
+  const chargeLine = args.deltaCents > 0
+    ? `Charged to your card: ${fmtMoney(args.deltaCents)}\n`
+    : "";
+  const refundLine = args.refundCents > 0
+    ? `Refunded to your card: ${fmtMoney(args.refundCents)} (3-5 business days)\n`
+    : "";
+
+  const body =
+    `Hi ${firstName},\n\n` +
+    `Your pre-order for ${args.restaurantName} on ${dateLabel} has been updated.\n\n` +
+    addedBlock +
+    removedBlock +
+    `New pre-order total: ${newTotalStr}\n` +
+    chargeLine +
+    refundLine +
+    `\nConfirmation: ${args.confirmationCode}\n\n` +
+    `If this is incorrect, contact the restaurant.\n\n` +
     `— Cenaiva`;
 
   return { subject, body, smsBody };

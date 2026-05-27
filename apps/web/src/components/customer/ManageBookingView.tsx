@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, CalendarDays, Clock, Loader2, Users } from "lucide-react";
+import { ArrowLeft, CalendarDays, Clock, Loader2, PencilLine, Users } from "lucide-react";
 import { useUser } from "@/hooks/useUser";
 
 import { Button } from "@/components/ui/button";
@@ -12,11 +12,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ModifyBookingFields,
   type ModifyBookingValidity,
   type ModifyBookingValues,
 } from "@/components/booking/ModifyBookingFields";
 import { RefundRequestDialog } from "@/components/customer/RefundRequestDialog";
+import {
+  BookingPaymentContactCard,
+  type BookingPaymentCardSplitTender,
+} from "@/components/customer/BookingPaymentContactCard";
+import {
+  EditPreorderModal,
+  type EditPreorderAuth,
+  type EditPreorderInitialItem,
+} from "@/components/customer/EditPreorderModal";
+import { formatPaymentMethods } from "@/lib/booking/paymentMethods";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import {
   getSupabaseAnonKey,
@@ -28,6 +44,91 @@ import { formatCompactTimeLabel, to24HourTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
 import { toUserFacingError, toUserFacingEdgeError } from "@/lib/errors";
 
+// 2026-05-28: shape returned by lookup_reservation_details(slug, code, email).
+// The RPC returns a single JSONB blob with nested reservation, restaurant,
+// deposit_tier, orders[], deposits[] objects. We re-type defensively here
+// because the RPC's return type is `jsonb` from PostgREST's POV.
+export type ReservationDetailsOrderItem = {
+  id: string;
+  menu_item_id: string | null;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number | null;
+};
+
+export type ReservationDetailsOrder = {
+  id: string;
+  status: string;
+  subtotal: number | null;
+  tax_amount: number | null;
+  tip_amount: number | null;
+  total_amount: number | null;
+  is_preorder: boolean | null;
+  stripe_payment_intent_id: string | null;
+  card_brand: string | null;
+  card_last4: string | null;
+  items: ReservationDetailsOrderItem[];
+};
+
+export type ReservationDetailsDeposit = {
+  id: string;
+  payer_full_name: string | null;
+  payer_email: string | null;
+  amount_cents: number;
+  status: string;
+  paid_at: string | null;
+  card_brand: string | null;
+  card_last4: string | null;
+  stripe_payment_intent_id: string | null;
+};
+
+export type ReservationDetailsBlob = {
+  reservation: {
+    id: string;
+    confirmation_code: string | null;
+    status: string | null;
+    reserved_at: string;
+    party_size: number;
+    duration_minutes: number | null;
+    special_request: string | null;
+    guest_full_name: string | null;
+    guest_email: string | null;
+    guest_phone: string | null;
+    applied_promo_code: string | null;
+    cancelled_at: string | null;
+    cancellation_reason: string | null;
+    seated_at: string | null;
+    no_show_at: string | null;
+    completed_at: string | null;
+    deposit_amount_cents: number | null;
+    deposit_status: string | null;
+  };
+  restaurant: {
+    id: string;
+    name: string | null;
+    slug: string | null;
+    address: string | null;
+    phone: string | null;
+    city: string | null;
+    province: string | null;
+    timezone: string | null;
+    tax_rate: number | null;
+    logo_url: string | null;
+    cover_photo_url: string | null;
+  };
+  deposit_tier: {
+    min_party_size: number;
+    amount_per_person_cents: number;
+    total_cents: number;
+  } | null;
+  orders: ReservationDetailsOrder[];
+  deposits: ReservationDetailsDeposit[];
+};
+
+// Narrow view used by the existing render path (date/time/party UI etc.).
+// Mapped from the JSONB blob so the rest of this component keeps the
+// same field names without churn.
 type LookupRow = {
   id: string;
   restaurant_id: string;
@@ -39,11 +140,6 @@ type LookupRow = {
   special_request: string | null;
   restaurant_name: string | null;
   restaurant_timezone: string | null;
-  // Gap 2 fix (2026-05-21): present so the cancel dialog can show a
-  // stricter refund disclosure when an actual deposit was charged.
-  // Source: reservations.deposit_status ('none' | 'pending' | 'charged'
-  // | 'waived' | 'failed'). Treated as null when the lookup query
-  // didn't return it (older callers).
   deposit_status: string | null;
 };
 
@@ -112,6 +208,12 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
   const navigate = useNavigate();
   const { user } = useUser();
   const [reservation, setReservation] = useState<LookupRow | null>(null);
+  // 2026-05-28: full enriched blob from lookup_reservation_details. We
+  // keep the narrow LookupRow above for the existing cancel/modify code
+  // paths and use this for the new "Payment & contact details" section.
+  // NULL when the (slug, code, email) trio doesn't resolve or when the
+  // page is still loading.
+  const [details, setDetails] = useState<ReservationDetailsBlob | null>(null);
   const [lookupState, setLookupState] = useState<"loading" | "found" | "missing" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -142,6 +244,12 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
 
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
 
+  // 2026-05-27: edit-pre-order modal state. Single source for mutual
+  // exclusion with the `mode === "modify"` slot panel.
+  const [preorderOpen, setPreorderOpen] = useState(false);
+  // Bump to retrigger the lookup useEffect after a successful save.
+  const [refreshTick, setRefreshTick] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -152,7 +260,73 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
         }
         return;
       }
+      // 2026-05-28: guest path now uses the enriched
+      // lookup_reservation_details RPC, which requires (slug, code,
+      // email). When the diner navigated here without an email param,
+      // we short-circuit to the "verify your email" UI — same gate as
+      // the cancel/modify edge fns enforce. Logged-in callers can fall
+      // back to the original by-code lookup so they still see the page
+      // even without forwarding the email.
       const client = getSupabaseBrowserClient();
+      const isLoggedInCaller = Boolean(user);
+      if (!email && !isLoggedInCaller) {
+        if (!cancelled) {
+          setLookupState("missing");
+        }
+        return;
+      }
+
+      if (email) {
+        const { data, error } = await client.rpc("lookup_reservation_details", {
+          p_slug: slug,
+          p_code: code,
+          p_email: email,
+        });
+        if (cancelled) return;
+        if (error) {
+          const friendly = toUserFacingError(error, "Couldn't load this reservation. Try again.");
+          setLookupState("error");
+          setErrorMessage(friendly.message);
+          console.error("[ManageBookingView.lookup]", friendly.code, friendly.technical ?? error);
+          return;
+        }
+        const blob = (data as ReservationDetailsBlob | null) ?? null;
+        if (!blob || !blob.reservation) {
+          setLookupState("missing");
+          return;
+        }
+        setDetails(blob);
+        const row: LookupRow = {
+          id: blob.reservation.id,
+          restaurant_id: blob.restaurant.id,
+          reserved_at: blob.reservation.reserved_at,
+          party_size: blob.reservation.party_size,
+          status: blob.reservation.status,
+          guest_full_name: blob.reservation.guest_full_name,
+          duration_minutes: blob.reservation.duration_minutes,
+          special_request: blob.reservation.special_request,
+          restaurant_name: blob.restaurant.name,
+          restaurant_timezone: blob.restaurant.timezone,
+          deposit_status: blob.reservation.deposit_status,
+        };
+        setReservation(row);
+        setLookupState("found");
+        const initial: ModifyBookingValues = {
+          date: isoDateInTz(row.reserved_at, row.restaurant_timezone),
+          time: isoTimeInTz(row.reserved_at, row.restaurant_timezone),
+          partySize: row.party_size,
+          notes: row.special_request ?? "",
+        };
+        setModifyInitial(initial);
+        setModifyValues(initial);
+        setModifyValidity({ canSave: false, reason: null, reasonKind: null });
+        return;
+      }
+
+      // Logged-in caller, no email forwarded: fall back to the legacy
+      // code-only lookup so we don't strand them at "verify your
+      // email". They lose the enriched payment-detail section but the
+      // base manage UI still works.
       const { data, error } = await client.rpc("lookup_reservation_by_code", {
         p_slug: slug,
         p_code: code,
@@ -173,7 +347,6 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
       const row = rows[0];
       setReservation(row);
       setLookupState("found");
-      // Seed modify form
       const initial: ModifyBookingValues = {
         date: isoDateInTz(row.reserved_at, row.restaurant_timezone),
         time: isoTimeInTz(row.reserved_at, row.restaurant_timezone),
@@ -188,13 +361,56 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [slug, code]);
+    // refreshTick is intentional — bumping it re-runs the lookup.
+  }, [slug, code, email, user, refreshTick]);
+
+  const refreshDetails = useCallback(() => {
+    setRefreshTick((t) => t + 1);
+  }, []);
 
   const labels = useMemo(
     () => (reservation ? formatLocalDate(reservation.reserved_at, reservation.restaurant_timezone) : null),
     [reservation],
   );
   const isFinal = reservation && reservation.status && FINAL_STATUSES.has(reservation.status);
+
+  // ── Pre-order edit derivations ─────────────────────────────────────
+  // Modal availability mirrors BookingDetailsPage: status in
+  // (pending, confirmed) AND > 2h before reservation. Server enforces
+  // both — this is just to grey the button + show the tooltip.
+  const cartEditLockedByTime = useMemo(() => {
+    if (!reservation) return true;
+    const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+    return new Date(reservation.reserved_at).getTime() - Date.now() < TWO_HOURS_MS;
+  }, [reservation]);
+  const cartEditAllowedByStatus =
+    reservation?.status === "pending" || reservation?.status === "confirmed";
+  const canEditPreorder = Boolean(
+    reservation && cartEditAllowedByStatus && !cartEditLockedByTime && !guestNeedsEmail,
+  );
+  // Source-of-truth pre-order = first row with is_preorder=true in the
+  // enriched lookup blob. NULL when the lookup wasn't enriched (no email
+  // forwarded for the logged-in fallback path).
+  const preorderOrder = useMemo(
+    () => details?.orders.find((o) => o.is_preorder) ?? null,
+    [details],
+  );
+  const preorderInitialItems = useMemo<EditPreorderInitialItem[]>(() => {
+    if (!preorderOrder) return [];
+    return preorderOrder.items
+      .filter((it) => it.menu_item_id !== null)
+      .map((it) => ({
+        menu_item_id: it.menu_item_id as string,
+        name: it.name,
+        unit_price: Number(it.unit_price) || 0,
+        quantity: it.quantity,
+      }));
+  }, [preorderOrder]);
+  const preorderAuth: EditPreorderAuth = useMemo(() => {
+    if (isLoggedIn) return { kind: "logged_in" };
+    // Guest path needs both code + email — caller proves identity.
+    return { kind: "guest", confirmation_code: code, email: email ?? "" };
+  }, [isLoggedIn, code, email]);
 
   const handleCancel = async () => {
     if (!reservation) return;
@@ -443,6 +659,159 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
             ) : null}
           </dl>
 
+          {/* 2026-05-28: enriched payment + contact detail card. Only
+              renders when we have the lookup_reservation_details blob
+              (i.e. email was forwarded). Guest-path message tells the
+              diner that updates require contacting the restaurant
+              since they have no account to edit. */}
+          {details && (
+            <BookingPaymentContactCard
+              guestEmail={details.reservation.guest_email}
+              guestPhone={details.reservation.guest_phone}
+              contactUpdateHint="To update, contact the restaurant."
+              paymentMethods={formatPaymentMethods([
+                ...details.orders.map((o) => ({
+                  key: `order-${o.id}`,
+                  cardBrand: o.card_brand,
+                  cardLast4: o.card_last4,
+                  context: o.is_preorder ? "Pre-order" : "Order",
+                })),
+                ...details.deposits.map((d) => ({
+                  key: `dep-${d.id}`,
+                  cardBrand: d.card_brand,
+                  cardLast4: d.card_last4,
+                  context: d.payer_full_name ? `${d.payer_full_name} · deposit` : "Deposit",
+                })),
+              ])}
+              depositTier={
+                details.deposit_tier
+                  ? {
+                      amountPerPersonCents: details.deposit_tier.amount_per_person_cents,
+                      partySize: details.reservation.party_size,
+                      totalCents: details.deposit_tier.total_cents,
+                    }
+                  : null
+              }
+              splitTender={
+                details.deposits.length > 1
+                  ? details.deposits.map<BookingPaymentCardSplitTender>((d) => ({
+                      id: d.id,
+                      payerName: d.payer_full_name,
+                      status: d.status,
+                      amountCents: d.amount_cents,
+                      cardBrand: d.card_brand,
+                      cardLast4: d.card_last4,
+                    }))
+                  : []
+              }
+              appliedPromoCode={details.reservation.applied_promo_code}
+              reservedAtIso={details.reservation.reserved_at}
+              cancellationHours={null}
+              taxRate={details.restaurant.tax_rate}
+              province={details.restaurant.province}
+              timezone={details.restaurant.timezone}
+            />
+          )}
+
+          {/* Pre-order section — combines the existing item list with
+              an Edit button. Surfaced from the enriched RPC when email
+              was forwarded; logged-in fallback path (no email) doesn't
+              get this section because `details` is null. Empty cart
+              still shows the section so the diner can add a first
+              pre-order via the same modal. */}
+          {details && cartEditAllowedByStatus && (
+            <div className="mt-6 rounded-2xl border border-border bg-bg-surface/60 p-4">
+              <h3 className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                Pre-order
+              </h3>
+              {preorderInitialItems.length > 0 ? (
+                <ul className="mt-3 space-y-1.5 text-sm">
+                  {preorderInitialItems.map((it) => (
+                    <li
+                      key={it.menu_item_id}
+                      className="flex justify-between text-text-secondary"
+                    >
+                      <span>
+                        {it.quantity} × {it.name}
+                      </span>
+                      <span className="text-white">
+                        ${(it.unit_price * it.quantity).toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-sm text-text-secondary">
+                  No pre-order on this booking yet. Add dishes now so the
+                  kitchen has time to prep before you arrive.
+                </p>
+              )}
+              <div className="mt-4">
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-block">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!canEditPreorder}
+                          onClick={() => {
+                            // Mutual exclusion with slot-modify panel.
+                            if (mode === "modify") setMode("view");
+                            setPreorderOpen(true);
+                          }}
+                          className="gap-2"
+                        >
+                          <PencilLine className="size-3.5" />
+                          {preorderInitialItems.length > 0
+                            ? "Edit pre-order"
+                            : "Add pre-order"}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {!canEditPreorder && (
+                      <TooltipContent side="top">
+                        Pre-order locks 2 hours before your reservation
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </div>
+          )}
+
+          {/* 2026-05-27: Edit pre-order modal. Mounted only when the
+              enriched lookup gave us a restaurant.id. Pre-order flow
+              uses guest auth for the logged-out path. */}
+          {details?.restaurant.id && (
+            <EditPreorderModal
+              open={preorderOpen}
+              onOpenChange={setPreorderOpen}
+              reservationId={reservation.id}
+              restaurantId={details.restaurant.id}
+              restaurantProvince={details.restaurant.province}
+              restaurantTaxRate={details.restaurant.tax_rate}
+              initialItems={preorderInitialItems}
+              initialPromoCode={details.reservation.applied_promo_code}
+              auth={preorderAuth}
+              onSaved={(summary) => {
+                invalidateAvailabilityCache(reservation.restaurant_id);
+                refreshDetails();
+                if (summary.requiredPayment) {
+                  setDoneMessage("Pre-order updated and charged.");
+                } else if (summary.refundedCents && summary.refundedCents > 0) {
+                  setDoneMessage(
+                    `Pre-order updated. $${(summary.refundedCents / 100).toFixed(2)} refunded to your card.`,
+                  );
+                } else {
+                  setDoneMessage("Pre-order updated.");
+                }
+                setMode("done");
+              }}
+            />
+          )}
+
           {errorMessage && (
             <div className="mt-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
               {errorMessage}
@@ -476,7 +845,15 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
 
           {!isFinal && mode === "view" && !guestNeedsEmail && (
             <div className="mt-6 flex flex-wrap gap-2">
-              <Button onClick={() => setMode("modify")} disabled={busy}>
+              <Button
+                onClick={() => {
+                  // Mutual exclusion: don't leave the pre-order modal
+                  // open behind the modify panel.
+                  setPreorderOpen(false);
+                  setMode("modify");
+                }}
+                disabled={busy}
+              >
                 Modify booking
               </Button>
               <Button

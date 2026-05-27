@@ -104,14 +104,30 @@ export const BookingInputSchema = z.object({
 
 export type BookingInput = z.infer<typeof BookingInputSchema>;
 
+// Cart-modify item shape (2026-05-27). Distinct from CartItemSchema above —
+// modify-reservation only needs (menu_item_id, quantity); server looks up
+// the price from menu_items.price so the client cannot influence pricing.
+export const ModifyCartItemSchema = z.object({
+  menu_item_id: Uuid,
+  quantity: z.number().int().positive().max(99),
+});
+
 export const ModifyReservationSchema = z
   .object({
     reservation_id: Uuid.optional(),
     reservationId: Uuid.optional(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+    // 2026-05-27: date/time/party_size are now optional. A cart-only modify
+    // (cart_items present, no slot fields) bypasses slot validation entirely.
+    // The mixed-payload guard inside modify-reservation rejects requests
+    // that try to combine both kinds.
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+      .optional(),
     time: z
       .string()
-      .regex(/^([01]?\d|2[0-3]):[0-5]\d(\s?[apAP][mM])?$/, "invalid time"),
+      .regex(/^([01]?\d|2[0-3]):[0-5]\d(\s?[apAP][mM])?$/, "invalid time")
+      .optional(),
     party_size: PositiveInt(30).optional(),
     partySize: PositiveInt(30).optional(),
     special_request: BoundedText(500).optional(),
@@ -122,6 +138,19 @@ export const ModifyReservationSchema = z
     // for the rationale — closes the code-only enumeration attack. Ignored
     // for JWT-authed callers.
     email: BoundedText(254).optional(),
+    // ──────────────────────────────────────────────────────────────────
+    // Cart-modify path (2026-05-27). Strictly separate from the slot
+    // modify path — combining them returns 400 `mixed_modify_not_allowed`.
+    // - cart_items: full replacement of the reservation's pre-order cart.
+    // - applied_promo_code: tri-state — `undefined` keeps existing,
+    //   `string` sets/replaces, `null`/`""` clears.
+    // - tax_cents: client's calculated tax for cross-check. Server
+    //   recomputes from restaurants.tax_rate and uses its own value;
+    //   a mismatch >1¢ is logged but not rejected.
+    // ──────────────────────────────────────────────────────────────────
+    cart_items: z.array(ModifyCartItemSchema).max(50).optional(),
+    applied_promo_code: z.string().trim().max(64).nullable().optional(),
+    tax_cents: z.number().int().nonnegative().max(10_000_000).optional(),
   })
   .refine(
     (b) => b.reservation_id !== undefined || b.reservationId !== undefined,
@@ -130,10 +159,28 @@ export const ModifyReservationSchema = z
       path: ["reservation_id"],
     },
   )
-  .refine((b) => b.party_size !== undefined || b.partySize !== undefined, {
-    message: "party_size is required",
-    path: ["party_size"],
-  });
+  .refine(
+    (b) => {
+      const isCartModify = b.cart_items !== undefined;
+      if (isCartModify) return true; // party_size not required for cart-only
+      return b.party_size !== undefined || b.partySize !== undefined;
+    },
+    {
+      message: "party_size is required for slot modifications",
+      path: ["party_size"],
+    },
+  )
+  .refine(
+    (b) => {
+      const isCartModify = b.cart_items !== undefined;
+      if (isCartModify) return true; // date/time not required for cart-only
+      return b.date !== undefined && b.time !== undefined;
+    },
+    {
+      message: "date and time are required for slot modifications",
+      path: ["date"],
+    },
+  );
 
 export type ModifyReservationInput = z.infer<typeof ModifyReservationSchema>;
 

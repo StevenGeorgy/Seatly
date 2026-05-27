@@ -47,6 +47,27 @@ type DepositRow = {
   amount_cents: number;
   status: string;
   stripe_payment_intent_id: string | null;
+  // 2026-05-27: cart-modify snapshot. Present only when modify-reservation
+  // seeded this row via the cart branch with delta > 0. Replayed here to
+  // rebuild order_items after the diner pays the delta.
+  pending_cart_snapshot: CartSnapshot | null;
+};
+
+type CartSnapshotItem = {
+  menu_item_id: string;
+  name: string;
+  quantity: number;
+  unit_price_cents: number;
+  line_total_cents: number;
+};
+
+type CartSnapshot = {
+  items: CartSnapshotItem[];
+  food_cents: number;
+  tax_cents: number;
+  discount_cents: number;
+  applied_promo_code: string | null;
+  special_request: string | null;
 };
 
 type ReservationRow = {
@@ -150,6 +171,7 @@ Deno.serve(async (req: Request) => {
       reservation_id: reservationId,
       deposit_payment_row_id: depositRowId,
       payment_intent_id: paymentIntentId,
+      change_type: changeType = "party_delta",
       date,
       time,
       party_size: partySize,
@@ -157,6 +179,7 @@ Deno.serve(async (req: Request) => {
       confirmation_code: providedCode = "",
       email: providedEmail = "",
     } = parsed.data;
+    const isCartDelta = changeType === "cart_delta";
 
     // Load reservation + deposit row.
     const { data: reservationRaw, error: reservationErr } = await supabaseAdmin
@@ -172,11 +195,28 @@ Deno.serve(async (req: Request) => {
 
     const { data: depositRowRaw } = await supabaseAdmin
       .from("reservation_deposit_payments")
-      .select("id, reservation_id, amount_cents, status, stripe_payment_intent_id")
+      .select(
+        "id, reservation_id, amount_cents, status, stripe_payment_intent_id, pending_cart_snapshot",
+      )
       .eq("id", depositRowId)
       .maybeSingle();
     const depositRow = depositRowRaw as DepositRow | null;
     if (!depositRow) return jsonRes({ error: "Deposit row not found" }, 404);
+
+    // For cart_delta confirms the deposit row MUST carry a snapshot
+    // (modify-reservation stamps it on insert). If absent, the caller
+    // is likely confirming with the wrong change_type or against the
+    // wrong row.
+    if (isCartDelta && !depositRow.pending_cart_snapshot) {
+      return jsonRes(
+        {
+          error:
+            "Deposit row is missing its cart snapshot — cannot apply cart_delta.",
+          unavailable_reason: "missing_cart_snapshot",
+        },
+        400,
+      );
+    }
     if (depositRow.reservation_id !== reservationId) {
       return jsonRes({ error: "Deposit row does not match reservation" }, 400);
     }
@@ -291,6 +331,184 @@ Deno.serve(async (req: Request) => {
       .eq("id", depositRowId);
     if (flipErr) return jsonRes({ error: flipErr.message }, 400);
 
+    // ═══════════════════════════════════════════════════════════════════
+    // CART-DELTA BRANCH (2026-05-27)
+    // ═══════════════════════════════════════════════════════════════════
+    // For change_type='cart_delta', the row was seeded by modify-reservation
+    // with a `pending_cart_snapshot`. Now that the diner has paid the
+    // upcharge, replay the snapshot into orders + order_items + update
+    // the reservation's promo. No slot/RPC validation required.
+    if (isCartDelta) {
+      const snap = depositRow.pending_cart_snapshot!;
+      try {
+        const { data: existingOrderRaw } = await supabaseAdmin
+          .from("orders")
+          .select("id")
+          .eq("reservation_id", reservationId)
+          .eq("is_preorder", true)
+          .maybeSingle();
+        let orderId =
+          (existingOrderRaw as { id?: string } | null)?.id ?? null;
+        const subtotalDollars =
+          (snap.food_cents + snap.discount_cents) / 100; // pre-discount
+        const taxDollars = snap.tax_cents / 100;
+        const totalDollars = (snap.food_cents + snap.tax_cents) / 100;
+        const discountDollars =
+          snap.discount_cents > 0 ? snap.discount_cents / 100 : null;
+        if (!orderId) {
+          const { data: created, error: orderErr } = await supabaseAdmin
+            .from("orders")
+            .insert({
+              restaurant_id: reservation.restaurant_id,
+              reservation_id: reservationId,
+              guest_id: reservation.guest_id,
+              is_preorder: true,
+              order_type: "dine_in",
+              status: "pending",
+              subtotal: subtotalDollars,
+              tax_amount: taxDollars,
+              tip_amount: 0,
+              total_amount: totalDollars,
+              discount_amount: discountDollars,
+              payment_method: "card",
+              source: "web",
+              confirmation_code: reservation.confirmation_code,
+            })
+            .select("id")
+            .single();
+          if (orderErr || !created) {
+            console.error(
+              "[confirm-modify-payment cart] order insert failed:",
+              orderErr,
+            );
+            return jsonRes(
+              { error: orderErr?.message ?? "order_insert_failed" },
+              400,
+            );
+          }
+          orderId = (created as { id: string }).id;
+        } else {
+          await supabaseAdmin
+            .from("order_items")
+            .delete()
+            .eq("order_id", orderId);
+          await supabaseAdmin
+            .from("orders")
+            .update({
+              subtotal: subtotalDollars,
+              tax_amount: taxDollars,
+              total_amount: totalDollars,
+              discount_amount: discountDollars,
+              status: "pending",
+            })
+            .eq("id", orderId);
+        }
+        if (snap.items.length > 0) {
+          const { error: itemsErr } = await supabaseAdmin
+            .from("order_items")
+            .insert(
+              snap.items.map((it) => ({
+                order_id: orderId,
+                menu_item_id: it.menu_item_id,
+                name: it.name,
+                quantity: it.quantity,
+                unit_price: it.unit_price_cents / 100,
+                line_total: it.line_total_cents / 100,
+                status: "pending",
+              })),
+            );
+          if (itemsErr) {
+            console.error(
+              "[confirm-modify-payment cart] items insert failed:",
+              itemsErr,
+            );
+            return jsonRes({ error: itemsErr.message }, 400);
+          }
+        }
+        await supabaseAdmin
+          .from("reservations")
+          .update({
+            applied_promo_code: snap.applied_promo_code,
+            special_request:
+              snap.special_request ?? specialRequest ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", reservationId);
+        await supabaseAdmin
+          .from("reservation_deposit_payments")
+          .update({ pending_cart_snapshot: null })
+          .eq("id", depositRowId);
+
+        try {
+          const { data: restRow } = await supabaseAdmin
+            .from("restaurants")
+            .select("name")
+            .eq("id", reservation.restaurant_id)
+            .maybeSingle();
+          const restName =
+            (restRow as { name?: string } | null)?.name?.trim() ||
+            "the restaurant";
+          const itemsLine =
+            snap.items.length > 0
+              ? `\nNew pre-order: ${snap.items
+                  .map((it) => `${it.quantity}× ${it.name}`)
+                  .join(", ")}`
+              : "\nPre-order: (cart cleared)";
+          await sendReservationNotification({
+            supabase: supabaseAdmin,
+            guestId: reservation.guest_id ?? null,
+            restaurantId: reservation.restaurant_id,
+            reservationId,
+            type: "reservation_cart_modified",
+            email: reservation.guest_email,
+            phone: reservation.guest_phone,
+            subject: `Your pre-order at ${restName} was updated`,
+            body:
+              `Your pre-order at ${restName} has been updated.` +
+              itemsLine +
+              `\nDeposit charged: ${formatCents(depositRow.amount_cents)}` +
+              `\nNew total: ${formatCents(snap.food_cents + snap.tax_cents)}`,
+          });
+        } catch (e) {
+          console.warn(
+            "[confirm-modify-payment cart] diner notify failed:",
+            e,
+          );
+        }
+
+        return jsonRes({
+          ok: true,
+          change_type: "cart_delta",
+          reservation_id: reservationId,
+          order_id: orderId,
+          deposit_adjustment: {
+            kind: "charged",
+            amount_cents: depositRow.amount_cents,
+            payment_intent_id: paymentIntentId,
+          },
+          new_cart_summary: {
+            items: snap.items,
+            food_cents: snap.food_cents,
+            tax_cents: snap.tax_cents,
+            discount_cents: snap.discount_cents,
+            total_cents: snap.food_cents + snap.tax_cents,
+            applied_promo_code: snap.applied_promo_code,
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[confirm-modify-payment cart] replay failed:", msg);
+        return jsonRes(
+          {
+            error: "Cart replay failed — please contact support.",
+            details: msg,
+          },
+          500,
+        );
+      }
+    }
+    // ═══════════════════════════════════════════════════════════════════
+
     // Look up restaurant + run the same shift/capacity validation as
     // modify-reservation. Below this point, any rejection must auto-refund.
     const refundAndError = async (
@@ -322,6 +540,13 @@ Deno.serve(async (req: Request) => {
       );
     };
 
+    // Slot-modify (party_delta) path. Schema enforces date/time/party_size
+    // are present when change_type != 'cart_delta', so the non-null asserts
+    // below are safe.
+    const slotDate = date!;
+    const slotTime = time!;
+    const slotPartySize = partySize!;
+
     const { data: restaurantRaw, error: restaurantErr } = await supabaseAdmin
       .from("restaurants")
       .select("name, slug, timezone, phone, hours_json, settings_json, stripe_account_id")
@@ -335,19 +560,19 @@ Deno.serve(async (req: Request) => {
     const restaurantSlug = restaurant?.slug?.trim() || null;
     const restaurantPhone = restaurant?.phone?.trim() || null;
 
-    const closure = findClosedSpecialDayForDate(restaurant?.hours_json, date);
+    const closure = findClosedSpecialDayForDate(restaurant?.hours_json, slotDate);
     if (closure) {
       return refundAndError(closureUnavailableMessage(closure), "closed", 409);
     }
 
-    const reservedAtIso = localToUTC(date, time, timezone);
+    const reservedAtIso = localToUTC(slotDate, slotTime, timezone);
     const reservedAt = new Date(reservedAtIso);
     if (Number.isNaN(reservedAt.getTime()) || reservedAt.getTime() < Date.now()) {
       return refundAndError("Reservation time must be in the future", "past_time", 400);
     }
 
-    const dayOfWeek = localDayOfWeek(date, timezone);
-    const requestedMinute = parseTimeToMinutes(time);
+    const dayOfWeek = localDayOfWeek(slotDate, timezone);
+    const requestedMinute = parseTimeToMinutes(slotTime);
     const { data: shifts } = await supabaseAdmin
       .from("shifts")
       .select("id, start_time, end_time, turn_time_minutes, max_covers")
@@ -380,7 +605,7 @@ Deno.serve(async (req: Request) => {
         p_restaurant_id: reservation.restaurant_id,
         p_shift_id: selectedShift.id,
         p_new_reserved_at: reservedAtIso,
-        p_new_party_size: partySize,
+        p_new_party_size: slotPartySize,
         p_turn_minutes: turnMinutes,
       },
     );
@@ -482,7 +707,7 @@ Deno.serve(async (req: Request) => {
 
     const body =
       `Hi ${guestName}, your reservation at ${restaurantName} was updated from ${previousDateLabel} ` +
-      `to ${nextDateLabel} for ${partySize} ${partySize === 1 ? "guest" : "guests"}.` +
+      `to ${nextDateLabel} for ${slotPartySize} ${slotPartySize === 1 ? "guest" : "guests"}.` +
       codeLine + eventLine + promoLine +
       preorderLine +
       `\nDeposit charged: ${formatCents(depositRow.amount_cents)}` +
@@ -504,7 +729,7 @@ Deno.serve(async (req: Request) => {
       ok: true,
       reservation_id: reservationId,
       reserved_at: reservedAtIso,
-      party_size: partySize,
+      party_size: slotPartySize,
       table_ids: nextTableIds,
       previous_reserved_at: previousReservedAt,
       previous_party_size: previousPartySize,

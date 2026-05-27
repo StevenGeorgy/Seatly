@@ -130,6 +130,17 @@ type PaymentIntentLike = {
   status?: string;
   metadata?: Record<string, string>;
   last_payment_error?: { message?: string } | null;
+  latest_charge?: string | null;
+};
+
+type ChargeLike = {
+  id?: string;
+  payment_method_details?: {
+    card?: {
+      brand?: string | null;
+      last4?: string | null;
+    } | null;
+  } | null;
 };
 
 type DisputeLike = {
@@ -527,6 +538,73 @@ async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
   }
 }
 
+// Populates orders.card_brand/last4 + reservation_deposit_payments.card_brand/last4
+// for any rows linked to this PI. Idempotent: re-firing the same webhook updates
+// the same rows to the same values (no-op). Best-effort: never throws.
+//
+// Card details live on the Charge, not the PaymentIntent. We retrieve the
+// Charge via `pi.latest_charge` (string ID on the PI payload) and read
+// `payment_method_details.card.{brand,last4}`. SetupIntents and PIs without
+// a successful charge have null `latest_charge` — we early-return in that
+// case.
+async function populateCardDetailsForPI(pi: PaymentIntentLike): Promise<void> {
+  if (!pi.id) return;
+  if (!pi.latest_charge) {
+    // No charge yet (e.g. SetupIntent-style event) — nothing to populate.
+    return;
+  }
+  const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+  if (!stripeKey) {
+    console.warn("[stripe-webhook] populateCardDetailsForPI: STRIPE_SECRET_KEY missing");
+    return;
+  }
+  try {
+    const stripe = await getStripeClient(stripeKey);
+    const charge = (await stripe.charges.retrieve(pi.latest_charge)) as ChargeLike;
+    const brand = charge.payment_method_details?.card?.brand ?? null;
+    const last4 = charge.payment_method_details?.card?.last4 ?? null;
+    if (!brand && !last4) {
+      // Non-card payment method (ACH/etc.) — nothing to mirror.
+      return;
+    }
+    const patch = { card_brand: brand, card_last4: last4 };
+
+    // Match by PI id on both tables. Both updates are no-ops if no rows
+    // match (e.g. a hold path that hasn't yet written the deposit row, or
+    // a deposit-only PI with no pre-order). Errors are logged + swallowed.
+    const [{ error: depErr, count: depCount }, { error: ordErr, count: ordCount }] = await Promise.all([
+      supabaseAdmin
+        .from("reservation_deposit_payments")
+        .update(patch, { count: "exact" })
+        .eq("stripe_payment_intent_id", pi.id),
+      supabaseAdmin
+        .from("orders")
+        .update(patch, { count: "exact" })
+        .eq("stripe_payment_intent_id", pi.id),
+    ]);
+    if (depErr) {
+      console.warn(
+        `[stripe-webhook] card-details deposit update failed for ${pi.id}:`,
+        depErr.message,
+      );
+    }
+    if (ordErr) {
+      console.warn(
+        `[stripe-webhook] card-details order update failed for ${pi.id}:`,
+        ordErr.message,
+      );
+    }
+    console.log(
+      `[stripe-webhook] card-details populated for ${pi.id} (${brand}/${last4}): deposit_rows=${depCount ?? 0}, order_rows=${ordCount ?? 0}`,
+    );
+  } catch (err) {
+    console.warn(
+      "[stripe-webhook] populateCardDetailsForPI threw",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void> {
   if (!pi.id) return;
 
@@ -629,6 +707,9 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
           console.error("[stripe-webhook] post-conversion side effect failed", sideErr);
         }
       }
+      // Mirror card brand/last4 onto deposit + order rows. Best-effort,
+      // idempotent — safe to fire on every (including retried) webhook.
+      await populateCardDetailsForPI(pi);
       return;
     } catch (e) {
       console.error("hold conversion path failed", e);
@@ -643,6 +724,9 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
   const orderId = pi.metadata?.order_id ?? null;
   if (!reservationId) {
     console.log(`[stripe-webhook] payment_intent.succeeded ${pi.id} — no reservation_id in metadata, skipping`);
+    // Still try to mirror card details — the PI may match a deposit/order
+    // row inserted by a different path (e.g. split-tender magic link).
+    await populateCardDetailsForPI(pi);
     return;
   }
   // Mark all pending deposit payment rows for this reservation as 'charged'.
@@ -669,6 +753,10 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
     .update({ status: "confirmed" })
     .eq("id", reservationId)
     .in("status", ["pending", "pending_payment"]);
+
+  // Mirror card brand/last4 onto deposit + order rows. Best-effort,
+  // idempotent — safe to fire on every (including retried) webhook.
+  await populateCardDetailsForPI(pi);
 }
 
 async function handlePaymentIntentFailed(pi: PaymentIntentLike): Promise<void> {
