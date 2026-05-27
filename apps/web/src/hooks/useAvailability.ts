@@ -514,19 +514,26 @@ export function useDinerConflictWindows(args: {
       excludeReservationId: excludeReservationId ?? null,
     }).then((result) => {
       if (cancelled) return;
-      // 2026-05-27: the server filter pads ±24h to handle timezone edges,
-      // which means a Thu reservation can come back when viewing Wed.
-      // Re-filter results to only keep conflicts whose local date in the
-      // restaurant's timezone matches the viewed date. Without this, a Thu
-      // 5–7pm STK booking incorrectly blocks Wed 5–7pm slots and shows up
-      // in the "Some times are hidden" notices.
+      // 2026-05-27: two post-fetch filters needed.
+      //
+      // (1) The server query pads ±24h to handle timezone edges, which
+      //     pulls in next-day or prior-day reservations. Re-filter so only
+      //     conflicts that touch the viewed local date in the restaurant's
+      //     timezone are kept. Without this, a Thu 5–7pm STK booking
+      //     incorrectly blocks Wed 5–7pm slots when viewing Wed.
+      //
+      // (2) Earlier-today reservations whose [start,end] window has
+      //     ALREADY ended should not block tonight's slots. The
+      //     "Upcoming reservations" list correctly buckets these as
+      //     past; the conflict hook needs the same cutoff.
       const tz = timezone || "America/Toronto";
       const localDateOf = (d: Date) =>
         d.toLocaleDateString("en-CA", { timeZone: tz });
+      const now = Date.now();
       const filtered = result.filter((c) => {
+        if (c.end.getTime() <= now) return false; // already ended
         // Keep when either the start OR the end falls on the viewed local
-        // day — covers reservations that straddle midnight (start before,
-        // end after).
+        // day — covers reservations that straddle midnight.
         return localDateOf(c.start) === date || localDateOf(c.end) === date;
       });
       setWindows(filtered);
