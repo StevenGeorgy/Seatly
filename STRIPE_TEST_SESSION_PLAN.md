@@ -231,6 +231,50 @@ Per-test verification specific to guest paths:
 | 27 | Close tab during 2-5s Stripe call — hold survives |
 | 28 | Voice handoff with `?hold=<id>` URL |
 
+### Phase 6 — Stripe dashboard configuration checks (settle the standing reminders)
+
+These are dashboard-only — no real money moved, no diner involved. Tab C in your Stripe dashboard.
+
+#### Test 29 — Verify subscription `automatic_tax` enabled
+**Action:**
+1. Stripe dashboard → **Billing → Subscriptions**
+2. Pick any active restaurant subscription (e.g. nova ristorante or Mark Testing at $199.99/mo)
+3. Look in the right sidebar / details panel for "Automatic tax"
+4. Confirm toggle is **ON**
+
+**Expected:** Toggle shows "Stripe Tax — Enabled". HST/GST line itemized on the invoice.
+
+**If OFF:**
+- Click toggle to enable + customer address must include postal code
+- Code follow-up needed: edit `publish-restaurant` edge fn to pass `automatic_tax: { enabled: true }` on `stripe.subscriptions.create()` so all FUTURE subscriptions get it automatically
+- For existing subs: each one needs the toggle flipped manually (Stripe API supports batch update if many)
+
+**Verify same on `bill-booking-fees` invoice items:**
+- Stripe → Billing → Invoices → open any monthly invoice for a restaurant with booking fees
+- Click into a `Booking fee` line item
+- Look at "Tax behavior" — should show `exclusive`
+- If shows `unspecified` or `inclusive`: update `bill-booking-fees` edge fn to add `tax_behavior: "exclusive"` to `stripe.invoiceItems.create()`
+
+#### Test 30 — Flip dispute liability onto restaurants (the big chargeback fix)
+**Action:**
+1. Stripe dashboard → **Connect** → **Settings** → **Risk & disputes** (path may vary by Stripe version)
+2. Look for "Dispute liability" — currently shows **Platform** (Cenaiva)
+3. Decide if you're ready to flip (industry norm: yes — restaurants control the experience that causes disputes)
+4. If flipping: toggle to **Connected account** → save
+
+**Verify it works:**
+1. Find any recent successful PI from a Connect account (e.g. one of today's test charges to nova)
+2. Stripe dashboard → that PI → click **⋯** (more menu) → **Simulate dispute** (test mode only — in live mode you'd need to wait for a real dispute)
+3. Confirm the $15 dispute fee shows up on the **connected account's balance**, NOT Cenaiva's platform balance
+
+**Expected:** Dispute reverses the original transfer from the restaurant + debits $15 from the restaurant's pending balance. Cenaiva's platform balance untouched.
+
+**If flipping breaks something:**
+- Most likely scenario: restaurants need to acknowledge the new dispute liability in their onboarding terms. Update Stripe Connect application terms to disclose this clearly.
+- Worst-case: revert the toggle (Stripe lets you flip it back); Cenaiva absorbs disputes until terms are updated.
+
+**Why this matters (math):** Every dispute = $15 to whoever's liable. If you process 1,000 bookings/month with 1% dispute rate = 10 disputes/month. On Cenaiva: −$150/mo loss. On restaurants: each restaurant only sees disputes from their own diners (typically 0-2/mo), so it's a small cost-of-business they accept.
+
 ### Skipped (no UI yet)
 
 - Post-meal pay-the-bill (`stripe-charge-order` is dormant)
@@ -427,10 +471,11 @@ ORDER BY sent_at DESC;
 
 ## Total session estimate
 
-- **25 tests** across Phases 1–4 (was 17, expanded for guest + notification coverage)
+- **27 tests** across Phases 1–6 (25 booking flows + 2 Stripe dashboard configs)
 - **~$8–12** real money out of pocket (all refunded; Stripe processing fees stay)
-- **~2–3 hours** of session time
-- Each test takes 5–10 min including verification
+- **~2.5–3 hours** of session time
+- Each booking test takes 5–10 min; dashboard checks ~5 min each
+- Phase 6 (dashboard configs) is dashboard-only, $0 cost
 
 If anything looks wrong mid-session, we **stop**, debug, fix, re-test
 before moving on.
