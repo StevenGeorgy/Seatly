@@ -613,11 +613,27 @@ function OneTimeCardForm({
           return;
         }
 
-        // 3. Confirm with the just-fetched client_secret.
+        // 3. Confirm with the just-fetched client_secret. We MUST pass empty
+        // strings for every address field we set to `fields.billingDetails.
+        // address.* = "never"` above — Stripe enforces parity between the
+        // PaymentElement fields config and confirmParams.payment_method_data.
+        // Missing this throws IntegrationError and silently kills Place Order.
         const { paymentIntent, error: confirmError } = await stripe.confirmPayment({
           elements,
           clientSecret: intentBody.client_secret,
-          confirmParams: { return_url: window.location.href },
+          confirmParams: {
+            return_url: window.location.href,
+            payment_method_data: {
+              billing_details: {
+                address: {
+                  line1: "",
+                  line2: "",
+                  city: "",
+                  state: "",
+                },
+              },
+            },
+          },
           redirect: "if_required",
         });
         if (confirmError) {

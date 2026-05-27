@@ -539,10 +539,30 @@ export function useReservationHold(args: UseReservationHoldArgs): UseReservation
   // -------------------------------------------------------------------------
 
   const grabAgain = useCallback(async (): Promise<boolean> => {
+    // Cancel the OLD server-side hold first, then create a fresh one.
+    // Without this, the new createHold collides with the still-'active'
+    // expired row: the exclusion constraint on reservation_holds filters
+    // by status only (not expires_at), so the cron-not-yet-flipped row
+    // blocks the INSERT with diner_double_book until the cron sweeps it.
+    const current = stateRef.current;
+    const oldHoldId = current.status === "expired" ? current.holdId : null;
+    const oldClientToken = clientTokenRef.current;
     if (persistKeyRef.current) clearPersisted(persistKeyRef.current);
     idempotencyKeyRef.current = null; // fresh key for the new attempt
     clientTokenRef.current = null; // fresh client_token for the new attempt
     setState({ status: "idle" });
+    if (oldHoldId || oldClientToken) {
+      try {
+        await postFn<CancelHoldResponse>("cancel-reservation-hold", {
+          ...(oldHoldId ? { hold_id: oldHoldId } : {}),
+          ...(oldClientToken ? { client_token: oldClientToken } : {}),
+        });
+      } catch (err) {
+        // Best-effort — if cancel fails, createHold will surface the
+        // diner_double_book and the user gets a real error message.
+        console.warn("[ReservationHold.grabAgain] pre-cancel failed", err);
+      }
+    }
     const result = await createHold();
     return result !== null;
   }, [createHold]);
