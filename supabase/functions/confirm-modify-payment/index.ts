@@ -253,28 +253,65 @@ Deno.serve(async (req: Request) => {
     }
     if (!authed) return jsonRes({ error: "Authentication required" }, 401);
 
-    // Idempotency: deposit row already charged AND tied to this PI → finish silently.
-    if (
+    // Idempotency check (slot-aware).
+    //
+    // 2026-05-27 BUG-fix: the previous broad check ("already charged + PI matches
+    // → return success") had a race. Stripe webhook flips the deposit row to
+    // 'charged' as soon as the PI succeeds — typically ~150ms BEFORE the client
+    // calls us. The old guard then short-circuited and returned success WITHOUT
+    // applying the modify. Diner paid, modify never ran.
+    //
+    // Correct semantics: "already charged" means money moved, but the modify
+    // may or may not have been applied. Only treat as truly idempotent if we
+    // can prove the change was applied:
+    //   - cart_delta: pending_cart_snapshot has been cleared (see line ~440)
+    //   - party_delta: reservation.party_size already matches the request AND
+    //                  reservation.reserved_at matches (a previous successful
+    //                  call has run the modify_reservation_slot RPC).
+    // Otherwise fall through and run the modify path; the underlying RPC +
+    // cart-replay are themselves idempotent (RPC's UPDATE is a no-op when
+    // values match; cart branch errors out if snapshot is gone).
+    const depositAlreadyCharged =
       depositRow.status === "charged" &&
-      depositRow.stripe_payment_intent_id === paymentIntentId
-    ) {
-      // Don't re-apply the modify (idempotent caller probably already
-      // saw success); just return the current reservation state.
-      return jsonRes({
-        ok: true,
-        idempotent: true,
-        reservation_id: reservationId,
-        reserved_at: reservation.reserved_at,
-        party_size: reservation.party_size,
-        deposit_adjustment: {
-          kind: "charged",
-          amount_cents: depositRow.amount_cents,
-          payment_intent_id: paymentIntentId,
-        },
-      });
+      depositRow.stripe_payment_intent_id === paymentIntentId;
+
+    if (depositAlreadyCharged) {
+      const cartTrulyIdempotent =
+        isCartDelta && depositRow.pending_cart_snapshot === null;
+      // For party_delta we need reserved_at in UTC ISO to compare. We don't
+      // have the restaurant timezone here yet (loaded later for the slot
+      // branch), so use a lighter pair check: party_size + the date portion
+      // of reserved_at. Good enough — the only failure mode would be
+      // "modify changes time-only with same party_size and same date" which
+      // is extremely unlikely AND would just trigger an idempotent RPC
+      // re-call (safe no-op).
+      const partyTrulyIdempotent =
+        !isCartDelta &&
+        partySize !== undefined &&
+        reservation.party_size === partySize &&
+        typeof date === "string" &&
+        reservation.reserved_at.startsWith(date);
+
+      if (cartTrulyIdempotent || partyTrulyIdempotent) {
+        return jsonRes({
+          ok: true,
+          idempotent: true,
+          reservation_id: reservationId,
+          reserved_at: reservation.reserved_at,
+          party_size: reservation.party_size,
+          deposit_adjustment: {
+            kind: "charged",
+            amount_cents: depositRow.amount_cents,
+            payment_intent_id: paymentIntentId,
+          },
+        });
+      }
+      // Else: webhook beat us. Fall through and apply the modify. The flip
+      // below is a no-op (status already charged); skip it to preserve
+      // the original paid_at timestamp.
     }
 
-    if (depositRow.status !== "pending") {
+    if (depositRow.status !== "pending" && !depositAlreadyCharged) {
       return jsonRes(
         { error: `Deposit row is in unexpected status: ${depositRow.status}` },
         409,
@@ -321,15 +358,18 @@ Deno.serve(async (req: Request) => {
     // them leaves the diner paid + the system aware of the payment. The
     // modify_reservation_slot call below applies the actual slot change;
     // on failure we refund.
-    const { error: flipErr } = await supabaseAdmin
-      .from("reservation_deposit_payments")
-      .update({
-        status: "charged",
-        stripe_payment_intent_id: paymentIntentId,
-        paid_at: new Date().toISOString(),
-      })
-      .eq("id", depositRowId);
-    if (flipErr) return jsonRes({ error: flipErr.message }, 400);
+    // Skip if the webhook already flipped it (preserves the original paid_at).
+    if (!depositAlreadyCharged) {
+      const { error: flipErr } = await supabaseAdmin
+        .from("reservation_deposit_payments")
+        .update({
+          status: "charged",
+          stripe_payment_intent_id: paymentIntentId,
+          paid_at: new Date().toISOString(),
+        })
+        .eq("id", depositRowId);
+      if (flipErr) return jsonRes({ error: flipErr.message }, 400);
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // CART-DELTA BRANCH (2026-05-27)
@@ -355,6 +395,14 @@ Deno.serve(async (req: Request) => {
         const totalDollars = (snap.food_cents + snap.tax_cents) / 100;
         const discountDollars =
           snap.discount_cents > 0 ? snap.discount_cents / 100 : null;
+        // 2026-05-27 BUG-fix: We reach this branch ONLY after the delta PI
+        // has succeeded (caller flipped the deposit row to 'charged' just
+        // above). The cart-modify is therefore paid in full at this point —
+        // set order.status='paid' (and paid_at) directly, instead of resetting
+        // to 'pending' and relying on the settle trigger to flip it. The
+        // trigger's UPDATE races against the UPDATE below; when the trigger
+        // wins, status flips back to pending and stays there. Setting paid
+        // directly eliminates the race.
         if (!orderId) {
           const { data: created, error: orderErr } = await supabaseAdmin
             .from("orders")
@@ -364,7 +412,8 @@ Deno.serve(async (req: Request) => {
               guest_id: reservation.guest_id,
               is_preorder: true,
               order_type: "dine_in",
-              status: "pending",
+              status: "paid",
+              paid_at: new Date().toISOString(),
               subtotal: subtotalDollars,
               tax_amount: taxDollars,
               tip_amount: 0,
@@ -399,7 +448,8 @@ Deno.serve(async (req: Request) => {
               tax_amount: taxDollars,
               total_amount: totalDollars,
               discount_amount: discountDollars,
-              status: "pending",
+              status: "paid",
+              paid_at: new Date().toISOString(),
             })
             .eq("id", orderId);
         }

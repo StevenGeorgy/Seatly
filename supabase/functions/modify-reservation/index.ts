@@ -1198,6 +1198,15 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
         400,
       );
     }
+    // 2026-05-27 BUG-fix: the client mounts StripePaymentForm with
+    // amountCents=food_cents + taxCents=tax_cents to compute the diner
+    // charge. Previously we returned the NEW totals here, so Stripe was
+    // asked to charge the full new cart amount (e.g. $2.83) on top of
+    // what the diner already paid for the original cart ($1.41) — a
+    // ~2x overcharge. food_cents/tax_cents must be the DELTA the diner
+    // owes for this modification, not the new totals. New totals live
+    // in new_cart_summary for any caller that needs them (and in
+    // pending_cart_snapshot for the confirm-modify-payment replay).
     return json({
       ok: false,
       requires_payment: true,
@@ -1206,8 +1215,8 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
       restaurant_id: reservation.restaurant_id,
       reservation_id: reservationId,
       delta_cents: deltaCents,
-      food_cents: newFoodCents,
-      tax_cents: newTaxCents,
+      food_cents: newFoodCents - currentFoodCents,
+      tax_cents: newTaxCents - currentTaxCents,
       new_cart_summary: newCartSummary,
     });
   }

@@ -729,15 +729,44 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
     await populateCardDetailsForPI(pi);
     return;
   }
-  // Mark all pending deposit payment rows for this reservation as 'charged'.
+  // Mark deposit payment rows for this reservation as 'charged'.
   // The reservation_deposit_payments settle trigger then flips the reservation
   // to 'confirmed' (see supabase/migrations/*_deposit_policy.sql).
-  const { error: depErr } = await supabaseAdmin
-    .from("reservation_deposit_payments")
-    .update({ status: "charged", stripe_payment_intent_id: pi.id, paid_at: new Date().toISOString() })
-    .eq("reservation_id", reservationId)
-    .eq("status", "pending");
-  if (depErr) console.error("[stripe-webhook] deposit row update failed", depErr);
+  //
+  // 2026-05-27 BUG-fix: scope the UPDATE by metadata.deposit_payment_ids when
+  // available. The previous broad UPDATE (every pending row on the reservation)
+  // over-flipped orphan rows when a diner abandoned a modify-cart attempt and
+  // retried — Stripe's NEW PI succeeded and the webhook charged the orphan
+  // pending row from the abandoned attempt too. Now we only flip rows the
+  // PI was actually bound to. Fall back to broad UPDATE for legacy PIs that
+  // don't carry deposit_payment_ids metadata.
+  const stampedDepositIdsRaw =
+    typeof pi.metadata?.deposit_payment_ids === "string"
+      ? pi.metadata.deposit_payment_ids
+      : "";
+  const stampedDepositIds = stampedDepositIdsRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (stampedDepositIds.length > 0) {
+    const { error: depErr } = await supabaseAdmin
+      .from("reservation_deposit_payments")
+      .update({
+        status: "charged",
+        stripe_payment_intent_id: pi.id,
+        paid_at: new Date().toISOString(),
+      })
+      .in("id", stampedDepositIds)
+      .eq("status", "pending");
+    if (depErr) console.error("[stripe-webhook] scoped deposit row update failed", depErr);
+  } else {
+    const { error: depErr } = await supabaseAdmin
+      .from("reservation_deposit_payments")
+      .update({ status: "charged", stripe_payment_intent_id: pi.id, paid_at: new Date().toISOString() })
+      .eq("reservation_id", reservationId)
+      .eq("status", "pending");
+    if (depErr) console.error("[stripe-webhook] broad deposit row update failed", depErr);
+  }
   // If there's an associated pre-order, mark it paid too.
   if (orderId) {
     const { error: ordErr } = await supabaseAdmin

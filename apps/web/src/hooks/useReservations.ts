@@ -273,10 +273,14 @@ export function useReservations(filters?: ReservationFilters) {
 
     if (filterStatus && filterStatus !== "all") {
       query = query.eq("status", filterStatus);
-    } else {
-      // Keep cancellations and completed bookings visible so staff can distinguish Cancelled and Past.
-      query = query.not("status", "eq", "no_show");
     }
+    // 2026-05-27 BUG-fix: previously excluded status='no_show' from the
+    // default query. That made no-show reservations invisible to owners on
+    // the dashboard — they couldn't see them in any filter, click in, or
+    // undo via the UI. The ReservationsPage already renders no_show rows
+    // (see "Mark arrived" action at line ~1266) but they never reached the
+    // page because the hook dropped them upstream. Keep them visible by
+    // default; rendering layer handles styling per status.
 
     if (filterDateFrom || filterDateTo) {
       const startBounds = filterDateFrom ? localDayBoundsUtcIso(filterDateFrom, filterTimezone) : null;
