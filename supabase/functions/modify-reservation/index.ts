@@ -1361,7 +1361,7 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
   // ── (4) Current totals from existing order + order_items ──────────
   const { data: existingOrderRaw } = await adminClient
     .from("orders")
-    .select("id, subtotal, tax_amount, discount_amount, total_amount, order_items(id, line_total)")
+    .select("id, subtotal, tax_amount, discount_amount, total_amount, stripe_payment_intent_id, status, order_items(id, line_total)")
     .eq("reservation_id", reservationId)
     .eq("is_preorder", true)
     .maybeSingle();
@@ -1372,6 +1372,8 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
         tax_amount: number | null;
         discount_amount: number | null;
         total_amount: number | null;
+        stripe_payment_intent_id: string | null;
+        status: string | null;
         order_items: Array<{ id: string; line_total: number | null }> | null;
       }
     | null;
@@ -1738,31 +1740,24 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
     // deposit) have ZERO reservation_deposit_payments rows — the Stripe
     // charge lives on `orders.stripe_payment_intent_id` instead. Without
     // this fallback, cart-shrink on a preorder-only booking silently
-    // skipped the refund (diner out the full cart cost). Synthesize a
-    // pseudo "row" pointing at the order's PI so the refund loop below
-    // treats it identically. amount_cents = full order total so the
-    // proportional split picks it up.
-    if (activeRows.length === 0) {
-      const { data: orderRowsRaw } = await adminClient
-        .from("orders")
-        .select("id, stripe_payment_intent_id, total_amount")
-        .eq("reservation_id", reservationId)
-        .eq("is_preorder", true)
-        .eq("status", "paid")
-        .not("stripe_payment_intent_id", "is", null);
-      const orderRows = (orderRowsRaw ?? []) as Array<{
-        id: string;
-        stripe_payment_intent_id: string | null;
-        total_amount: number | string | null;
-      }>;
-      activeRows = orderRows.map((o) => ({
-        id: `order:${o.id}`,
-        amount_cents: Math.round(Number(o.total_amount ?? 0) * 100),
-        stripe_payment_intent_id: o.stripe_payment_intent_id,
-        status: "charged",
-        payer_email: reservation.guest_email,
-        payer_full_name: reservation.guest_full_name,
-      })).filter((r) => r.amount_cents > 0 && r.stripe_payment_intent_id);
+    // skipped the refund (diner out the full cart cost). Use the
+    // pre-update snapshot of the order (existingOrder, captured in
+    // section (4) BEFORE the in-place wipe at line 1654) so the
+    // original total + PI are still known after the cart change.
+    if (activeRows.length === 0 && existingOrder?.stripe_payment_intent_id) {
+      const originalTotalCents = Math.round(
+        Number(existingOrder.total_amount ?? 0) * 100,
+      );
+      if (originalTotalCents > 0) {
+        activeRows = [{
+          id: `order:${existingOrder.id}`,
+          amount_cents: originalTotalCents,
+          stripe_payment_intent_id: existingOrder.stripe_payment_intent_id,
+          status: "charged",
+          payer_email: reservation.guest_email,
+          payer_full_name: reservation.guest_full_name,
+        }];
+      }
     }
     if (activeRows.length > 0) {
       const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");

@@ -26,6 +26,38 @@ explaining behavior or copying code.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-28 Preorder-only PI binding + cart-shrink refund fix** —
+  Two bugs surfaced in PR-K Phase 6 cart-shrink QA, both fixed and
+  re-verified live: (1) Pure preorder bookings (no deposit) had
+  `orders.stripe_payment_intent_id = NULL` because `create-public-
+  booking` never accepted the PI ID from the client — Mode B PI (saved
+  card, no hold) doesn't put `reservation_id` on PI metadata so
+  stripe-webhook can't back-fill. Fix: `BookingInputSchema` gained
+  optional `payment_intent_id` field; `create-public-booking` stamps
+  it onto `orders.stripe_payment_intent_id` + sets `status='paid'` /
+  `paid_at=now()` when present; `RestaurantPublicPage.tsx` passes
+  the succeeded PI ID alongside booking payload. (2) Even with PI
+  binding present, cart-shrink silently skipped the refund because
+  the in-place order wipe at lines 1654-1663 flipped `status='paid'
+  → pending` and `total_amount → $0` BEFORE the refund logic ran;
+  the fallback query at line 1745+ then filtered by `status='paid'`
+  (zero matches) and `total_amount > 0` (zero matches). Fix: capture
+  `existingOrder.stripe_payment_intent_id` + `total_amount` snapshot
+  in section (4) BEFORE the wipe; refund-path fallback uses the
+  snapshot directly (no re-query). Verified: refund
+  `re_3Tc1s4JABKj4FeJX0hTH8cKp` posted for $1.41 with
+  `metadata.cenaiva_reason='cart_shrink'` after a Nova sushi-only
+  booking → add → shrink test. Deployed: `create-public-booking` +
+  `modify-reservation` v137 + `apps/web` (RestaurantPublicPage).
+
+- **2026-05-28 confirm-hold-paid owner notification gap** —
+  Solo deposit+hold bookings were never emailing the restaurant
+  owner because `confirm-hold-paid` calls `runPostHoldConversion`
+  which fired diner email but NOT owner email. Fix:
+  `_shared/hold-conversion.ts` imports `notifyOwnerNewReservation`
+  and calls it after `sendReservationNotification`. Idempotent via
+  `restaurant_notification_log` partial unique index.
+
 - **2026-05-28 PR-K Split-tender parity (all 10 gaps in one push)** —
   Split-tender bookings now behave identically to solo bookings on
   modify + cancel + dashboard surfaces. Server changes: `modify-reservation`
