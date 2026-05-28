@@ -49,6 +49,20 @@ verify, don't guess. The user's words: "when you encounter a issue
 or bug retest the mistake and retest all previous tests before
 continuing to the next task".
 
+**Verify charges against Stripe directly, not just the DB row (added 2026-05-28):**
+Every test that involves a Stripe charge, refund, or PI lifecycle event
+must verify the Stripe side directly — not just the Supabase row that
+the webhook populated. Use `mcp__plugin_stripe_stripe__list_refunds` for
+refunds and `list_payment_intents` (or `retrieve`) for charges. Why:
+the DB row only reflects what the webhook landed; if the webhook is
+delayed, mis-routed, or fires against the wrong customer/account, the
+DB can show "charged/paid" while Stripe shows something different (or
+nothing at all). The split-tender QA caught this exact pattern when
+RDP rows showed `status='charged'` but the PI was on the wrong
+customer. Every charge test gets two checks: (1) DB row reflects
+the expected state, (2) Stripe API confirms the underlying PI/charge/
+refund exists with the expected amount, status, metadata.
+
 **Always fan out sub-agents where possible (added 2026-05-28):**
 Use the Agent tool with the right subagent_type whenever the work
 fits — and when multiple independent investigations or actions exist,
