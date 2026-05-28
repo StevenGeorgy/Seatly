@@ -848,6 +848,14 @@ Deno.serve(async (req: Request) => {
 
     let orderId: string | null = null;
     const cartItems = normalizeCartItems(payload.cart_items);
+    // 2026-05-28: client passes payment_intent_id post-Stripe-confirm so
+    // we can bind the order to the charge for refund traceability. Without
+    // this, "Mode B" PIs (saved card, no hold) end up orphaned — the
+    // webhook can't back-fill because its metadata has no reservation_id.
+    const paymentIntentForOrder =
+      typeof payload.payment_intent_id === "string" && payload.payment_intent_id.startsWith("pi_")
+        ? payload.payment_intent_id
+        : null;
     if (cartItems.length > 0) {
       const { data: order, error: orderError } = await supabase
         .from("orders")
@@ -857,7 +865,9 @@ Deno.serve(async (req: Request) => {
           guest_id: guestId,
           is_preorder: true,
           order_type: "dine_in",
-          status: "pending",
+          status: paymentIntentForOrder ? "paid" : "pending",
+          paid_at: paymentIntentForOrder ? new Date().toISOString() : null,
+          stripe_payment_intent_id: paymentIntentForOrder,
           subtotal: roundMoney(payload.subtotal),
           tax_amount: roundMoney(payload.tax_amount),
           tip_amount: roundMoney(payload.tip_amount),

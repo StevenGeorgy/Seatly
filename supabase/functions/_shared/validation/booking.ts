@@ -64,6 +64,13 @@ export const BookingInputSchema = z.object({
   event_id: Uuid.nullish(),
   promotion_id: Uuid.nullish(),
   hold_id: Uuid.nullish(),
+  // 2026-05-28: PI bound by client AFTER it succeeds with Stripe but
+  // BEFORE create-public-booking returns. Lets us stamp the PI ID onto
+  // orders.stripe_payment_intent_id so cart-shrink + cancel refund paths
+  // can find the right Stripe charge to reverse. The "Mode B" PI path
+  // (saved card, no hold) doesn't put reservation_id on PI metadata, so
+  // the stripe-webhook can't back-fill on its own — this is the fix.
+  payment_intent_id: z.string().regex(/^pi_/, "must start with pi_").max(255).nullish(),
   // Split-tender mode (2026-05-20). When set, the fn creates the
   // reservation in `pending_payment` status AND inserts N rows in
   // `reservation_deposit_payments` (each share of the deposit), then

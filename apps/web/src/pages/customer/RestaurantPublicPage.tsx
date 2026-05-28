@@ -2220,6 +2220,15 @@ export default function RestaurantPublicPage() {
                 // Server forks on hold presence behind the
                 // CENAIVA_HOLDS_ENABLED env flag — passing null is safe.
                 hold_id: activeHoldId,
+                // 2026-05-28: when the diner used Mode B (saved card, no
+                // hold-conversion path), the Stripe PI metadata won't have
+                // reservation_id, so the webhook can't back-fill
+                // orders.stripe_payment_intent_id on its own. Pass the
+                // confirmed PI here so create-public-booking stamps it on
+                // the order at insert time. Refund + cart-shrink paths
+                // depend on this binding to find the right charge to
+                // reverse.
+                payment_intent_id: paymentIntentId ?? null,
               }),
             });
         const body = await res.json().catch(() => ({})) as PublicBookingResponse;

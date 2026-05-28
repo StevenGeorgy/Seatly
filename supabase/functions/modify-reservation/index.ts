@@ -1731,9 +1731,39 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
       payer_email: string | null;
       payer_full_name: string | null;
     }>;
-    const activeRows = chargedRows.filter(
+    let activeRows = chargedRows.filter(
       (r) => (r.amount_cents ?? 0) > 0 && r.stripe_payment_intent_id,
     );
+    // 2026-05-28: preorder-only fallback. Pure preorder bookings (no
+    // deposit) have ZERO reservation_deposit_payments rows — the Stripe
+    // charge lives on `orders.stripe_payment_intent_id` instead. Without
+    // this fallback, cart-shrink on a preorder-only booking silently
+    // skipped the refund (diner out the full cart cost). Synthesize a
+    // pseudo "row" pointing at the order's PI so the refund loop below
+    // treats it identically. amount_cents = full order total so the
+    // proportional split picks it up.
+    if (activeRows.length === 0) {
+      const { data: orderRowsRaw } = await adminClient
+        .from("orders")
+        .select("id, stripe_payment_intent_id, total_amount")
+        .eq("reservation_id", reservationId)
+        .eq("is_preorder", true)
+        .eq("status", "paid")
+        .not("stripe_payment_intent_id", "is", null);
+      const orderRows = (orderRowsRaw ?? []) as Array<{
+        id: string;
+        stripe_payment_intent_id: string | null;
+        total_amount: number | string | null;
+      }>;
+      activeRows = orderRows.map((o) => ({
+        id: `order:${o.id}`,
+        amount_cents: Math.round(Number(o.total_amount ?? 0) * 100),
+        stripe_payment_intent_id: o.stripe_payment_intent_id,
+        status: "charged",
+        payer_email: reservation.guest_email,
+        payer_full_name: reservation.guest_full_name,
+      })).filter((r) => r.amount_cents > 0 && r.stripe_payment_intent_id);
+    }
     if (activeRows.length > 0) {
       const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
       if (stripeKey) {
@@ -1774,17 +1804,35 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
             if (outcome.ok) {
               totalRefunded += slice;
               if (!firstRefundId) firstRefundId = outcome.refund_id;
-              const remaining = (row.amount_cents ?? 0) - slice;
-              if (remaining <= 0) {
-                await adminClient
-                  .from("reservation_deposit_payments")
-                  .update({ status: "refunded", amount_cents: 0 })
-                  .eq("id", row.id);
+              // 2026-05-28: synthetic "order:<uuid>" rows route the
+              // DB-side bookkeeping to the orders table instead of RDP.
+              if (row.id.startsWith("order:")) {
+                const realOrderId = row.id.slice("order:".length);
+                const remaining = (row.amount_cents ?? 0) - slice;
+                if (remaining <= 0) {
+                  await adminClient
+                    .from("orders")
+                    .update({ status: "refunded" })
+                    .eq("id", realOrderId);
+                }
+                // For partial cart-shrink on a preorder-only order, leave
+                // status as "paid" — the order_items table already
+                // reflects the new cart contents (modify-reservation
+                // replaced items above) so the order total still maps
+                // to the live snapshot.
               } else {
-                await adminClient
-                  .from("reservation_deposit_payments")
-                  .update({ amount_cents: remaining })
-                  .eq("id", row.id);
+                const remaining = (row.amount_cents ?? 0) - slice;
+                if (remaining <= 0) {
+                  await adminClient
+                    .from("reservation_deposit_payments")
+                    .update({ status: "refunded", amount_cents: 0 })
+                    .eq("id", row.id);
+                } else {
+                  await adminClient
+                    .from("reservation_deposit_payments")
+                    .update({ amount_cents: remaining })
+                    .eq("id", row.id);
+                }
               }
               perRow.push({
                 row_id: row.id,
