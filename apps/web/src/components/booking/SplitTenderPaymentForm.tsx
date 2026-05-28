@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadStripe, type Stripe as StripeJs } from "@stripe/stripe-js";
 import {
   Elements,
@@ -184,6 +184,21 @@ function SplitTenderSurface({
     [foodShareCents, taxShareCents],
   );
 
+  // 2026-05-28: memoize the first successful onPreCheckout result so retry
+  // clicks (after a per-slot Stripe error, network blip, etc.) REUSE the
+  // existing reservation + RDP rows instead of creating fresh ones. Before
+  // this, each "Place Order" retry called onPreCheckout → which called
+  // create-public-booking → which inserted a new reservation + N pending
+  // rows, leaving the previous one orphaned and re-spamming the owner.
+  //
+  // Invalidate on cart-input change: payerCount or share amounts. Those
+  // are the inputs that materially change the shape of the RDP rows
+  // (count or amount_cents). Restaurant/holdId are stable for the session.
+  const preCheckoutResultRef = useRef<SplitTenderPreCheckoutResult | null>(null);
+  useEffect(() => {
+    preCheckoutResultRef.current = null;
+  }, [payerCount, foodShareCents, taxShareCents]);
+
   const updateSlot = useCallback((idx: number, patch: Partial<SlotState>) => {
     setSlots((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   }, []);
@@ -196,16 +211,22 @@ function SplitTenderSurface({
       setSubmitting(true);
       try {
         // Step 1: parent creates reservation + N deposit rows.
-        // Idempotency: parent should also dedupe this if called twice (we
-        // do too via `submitting` flag).
+        // Reuse the previous successful result on retry — avoids creating
+        // duplicate reservations after a per-slot Stripe error. Cleared
+        // automatically when cart inputs (payerCount, shares) change.
         let pre: SplitTenderPreCheckoutResult;
-        try {
-          pre = await onPreCheckout();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Couldn't start checkout.";
-          setTopError(msg);
-          onError?.(msg);
-          return;
+        if (preCheckoutResultRef.current) {
+          pre = preCheckoutResultRef.current;
+        } else {
+          try {
+            pre = await onPreCheckout();
+            preCheckoutResultRef.current = pre;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Couldn't start checkout.";
+            setTopError(msg);
+            onError?.(msg);
+            return;
+          }
         }
         if (pre.deposit_row_ids.length !== payerCount) {
           const msg = `Expected ${payerCount} deposit rows but got ${pre.deposit_row_ids.length}.`;

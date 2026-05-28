@@ -541,6 +541,82 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // 2026-05-28 split-tender server-side dedup. The client's
+    // SplitTenderPaymentForm memoizes onPreCheckout results, but page
+    // reloads, multi-tab opens, and browser-level network retries can
+    // still trigger duplicate create-public-booking calls. Detect them
+    // here by looking for an existing pending_payment reservation that
+    // matches (restaurant, slot, party, payer identity) within the last
+    // 5 min. If found AND the existing RDP row count matches the requested
+    // payerCount, return the existing IDs instead of inserting fresh.
+    //
+    // Only runs for split-tender. Single-payment / free bookings have
+    // their own guards (advisory lock + diner_double_book constraint).
+    if (payload.split_tender_payers && payload.split_tender_payers >= 2) {
+      const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+      let dedupQuery = supabase
+        .from("reservations")
+        .select("id, confirmation_code, table_ids:reservation_tables(table_id), duration_minutes, deposit_amount_cents")
+        .eq("restaurant_id", restaurantId)
+        .eq("reserved_at", reservedAt.toISOString())
+        .eq("party_size", partySize)
+        .eq("status", "pending_payment")
+        .gte("created_at", fiveMinAgo);
+      if (userProfileId) {
+        dedupQuery = dedupQuery.eq("user_profile_id", userProfileId);
+      } else if (guestEmail) {
+        dedupQuery = dedupQuery.eq("guest_email", guestEmail).is("user_profile_id", null);
+      } else {
+        // No identity → can't dedup safely; fall through and let the
+        // normal flow run. (No-identity bookings shouldn't reach here
+        // anyway — book_reservation rejects them with P0007.)
+        dedupQuery = null as never;
+      }
+      if (dedupQuery) {
+        const { data: dup } = await dedupQuery
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (dup) {
+          const dupId = (dup as { id: string }).id;
+          const { data: existingRdpRows } = await supabase
+            .from("reservation_deposit_payments")
+            .select("id")
+            .eq("reservation_id", dupId)
+            .eq("status", "pending")
+            .order("created_at", { ascending: true });
+          if (
+            Array.isArray(existingRdpRows) &&
+            existingRdpRows.length === payload.split_tender_payers
+          ) {
+            console.log(
+              "[create-public-booking] split-tender dedup hit",
+              dupId,
+              "rows=",
+              existingRdpRows.length,
+            );
+            return jsonResponse({
+              reservation_id: dupId,
+              confirmation_code: (dup as { confirmation_code?: string }).confirmation_code ?? "",
+              duration_minutes: (dup as { duration_minutes?: number }).duration_minutes ?? null,
+              deposit_amount_cents: (dup as { deposit_amount_cents?: number }).deposit_amount_cents ?? 0,
+              deposit_required:
+                ((dup as { deposit_amount_cents?: number }).deposit_amount_cents ?? 0) > 0,
+              split_tender_deposit_row_ids: existingRdpRows
+                .map((r) => (r as { id?: string }).id)
+                .filter((id): id is string => typeof id === "string"),
+              confirmation_delivery: "skipped",
+              confirmation_delivery_channel: null,
+              idempotent: true,
+            });
+          }
+          // Row count mismatch → corrupted state. Fall through to
+          // create-fresh; the original orphaned rows will sit in
+          // pending_payment until the orphan-sweep cron cancels them.
+        }
+      }
+    }
+
     // Atomic booking: cover-cap re-check, table selection, reservation insert,
     // and reservation_tables insert all happen under a single advisory lock
     // keyed on (restaurant_id, reserved_at). Two concurrent callers for the
@@ -861,17 +937,28 @@ Deno.serve(async (req: Request) => {
     // notification_preferences_json.new_reservation_email toggle internally
     // — no need to gate here. Goes to the owner's user_profile.email, never
     // restaurants.email (the shared inbox).
-    void notifyOwnerNewReservation({
-      supabase,
-      restaurant_id: restaurantId,
-      reservation_id: reservationId,
-      reserved_at: reservedAt.toISOString(),
-      party_size: partySize,
-      guest_full_name: guestName,
-      confirmation_code: savedConfirmationCode,
-    }).catch((err) => {
-      console.error("[create-public-booking] notifyOwnerNewReservation failed", err);
-    });
+    //
+    // 2026-05-28 split-tender gate: skip the notification when the
+    // reservation is created in 'pending_payment' status (split-tender).
+    // The split-tender reservation hasn't been paid yet; firing the owner
+    // notification now risks spamming Mark every time a diner bounces off
+    // the Stripe form without paying. The notification re-fires from
+    // confirm-deposit-paid when the last RDP charges and the settle trigger
+    // flips status to 'confirmed' — single source of truth for "this
+    // reservation is real."
+    if (!payload.split_tender_payers) {
+      void notifyOwnerNewReservation({
+        supabase,
+        restaurant_id: restaurantId,
+        reservation_id: reservationId,
+        reserved_at: reservedAt.toISOString(),
+        party_size: partySize,
+        guest_full_name: guestName,
+        confirmation_code: savedConfirmationCode,
+      }).catch((err) => {
+        console.error("[create-public-booking] notifyOwnerNewReservation failed", err);
+      });
+    }
 
     return jsonResponse({
       reservation_id: reservationId,

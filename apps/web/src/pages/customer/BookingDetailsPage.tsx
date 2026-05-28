@@ -127,6 +127,11 @@ async function cancelReservation(reservationId: string): Promise<CancelResult> {
       apikey: getSupabaseAnonKey(),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       "Content-Type": "application/json",
+      // 2026-05-28: idempotency key. Cancel is naturally idempotent at the
+      // row level (server early-returns when status is already cancelled),
+      // but the explicit header documents the intent and lets future
+      // server-side dedup hook off it.
+      "x-idempotency-key": `cancel_${reservationId}`,
     },
     body: JSON.stringify({ reservation_id: reservationId }),
   });
@@ -232,6 +237,11 @@ async function modifyReservation(
       apikey: getSupabaseAnonKey(),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       "Content-Type": "application/json",
+      // 2026-05-28: idempotency key keyed on target slot. Prevents
+      // browser network retries from running the slot-modify pipeline
+      // twice (the existing confirm-modify-payment slot-aware guard
+      // is the inner safety net).
+      "x-idempotency-key": `modify_${reservationId}_${payload.date}_${normalisedTime}_${payload.partySize}`,
     },
     body: JSON.stringify({
       reservation_id: reservationId,
@@ -327,6 +337,11 @@ async function confirmModifyPayment(payload: {
         apikey: getSupabaseAnonKey(),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": "application/json",
+        // 2026-05-28: idempotency key keyed on (reservation, deposit row,
+        // PI). confirm-modify-payment already has slot-aware idempotency
+        // server-side; this header documents intent + provides a stable
+        // key for any future dedup table.
+        "x-idempotency-key": `confirm_modify_${payload.reservationId}_${payload.depositPaymentRowId}_${payload.paymentIntentId}`,
       },
       body: JSON.stringify({
         reservation_id: payload.reservationId,
