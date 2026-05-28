@@ -4,6 +4,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   Plus,
   Search,
   Utensils,
@@ -382,6 +383,11 @@ export default function ReservationsPage() {
     | null
   >(null);
   const [forcing, setForcing] = useState(false);
+  // 2026-05-28: per-action submission flags. Used to disable dialog
+  // confirm buttons during in-flight cancel / no-show RPCs so a rapid
+  // double-click doesn't fire two concurrent requests.
+  const [cancelling, setCancelling] = useState(false);
+  const [noShowing, setNoShowing] = useState(false);
 
   const restaurantCurrency = selectedRestaurant?.currency ?? "CAD";
   const resolveDepositDollars = (row: ReservationRow | null): number | null => {
@@ -417,6 +423,12 @@ export default function ReservationsPage() {
   };
 
   const handleSeated = async (row: ReservationRow) => {
+    // 2026-05-28 early-exit guard: if a seat RPC is already in flight,
+    // ignore the click. seatingId holds the row id of the in-flight seat
+    // — passed down to ReservationsTable which disables the seat button —
+    // but this is the second layer in case the table renders a stale
+    // disabled state during the brief setState-flush window.
+    if (seatingId) return;
     const tableId = resolveTableIdForSeating(row);
     if (!tableId) {
       toast.error("Assign a table to this reservation before marking seated.");
@@ -452,7 +464,8 @@ export default function ReservationsPage() {
   };
 
   const handleConfirmNoShow = async () => {
-    if (!noShowTarget) return;
+    if (!noShowTarget || noShowing) return;
+    setNoShowing(true);
     try {
       await updateStatus(noShowTarget.id, "no_show");
       toast.success("Marked no-show. Deposit kept.");
@@ -480,6 +493,8 @@ export default function ReservationsPage() {
         fallback: "Couldn't mark as no-show. Try again.",
         logTag: "[ReservationsPage.noShow]",
       });
+    } finally {
+      setNoShowing(false);
     }
   };
 
@@ -516,8 +531,10 @@ export default function ReservationsPage() {
     }
   };
 
+  const [markingArrived, setMarkingArrived] = useState(false);
   const handleConfirmMarkArrived = async () => {
-    if (!markArrivedTarget) return;
+    if (!markArrivedTarget || markingArrived) return;
+    setMarkingArrived(true);
     try {
       await markArrivedFromNoShow(markArrivedTarget.id);
       setMarkArrivedTarget(null);
@@ -527,6 +544,8 @@ export default function ReservationsPage() {
         fallback: "Couldn't mark as arrived. Try again.",
         logTag: "[ReservationsPage.markArrived]",
       });
+    } finally {
+      setMarkingArrived(false);
     }
   };
   const [managerEmail, setManagerEmail] = useState("");
@@ -913,8 +932,10 @@ export default function ReservationsPage() {
             </Button>
             <Button
               variant="destructive"
+              disabled={cancelling}
               onClick={async () => {
-                if (!cancelTarget || !selectedRestaurantId) return;
+                if (!cancelTarget || !selectedRestaurantId || cancelling) return;
+                setCancelling(true);
                 try {
                   const approvalToken = canCancelDirectly
                     ? undefined
@@ -933,10 +954,18 @@ export default function ReservationsPage() {
                     fallback: "Couldn't cancel that reservation. Try again.",
                     logTag: "[ReservationsPage.cancel]",
                   });
+                } finally {
+                  setCancelling(false);
                 }
               }}
             >
-              Cancel reservation
+              {cancelling ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" /> Cancelling…
+                </>
+              ) : (
+                "Cancel reservation"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -965,11 +994,21 @@ export default function ReservationsPage() {
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNoShowTarget(null)}>
+            <Button variant="outline" disabled={noShowing} onClick={() => setNoShowTarget(null)}>
               Keep reservation
             </Button>
-            <Button variant="destructive" onClick={() => void handleConfirmNoShow()}>
-              Mark as no-show
+            <Button
+              variant="destructive"
+              disabled={noShowing}
+              onClick={() => void handleConfirmNoShow()}
+            >
+              {noShowing ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" /> Marking…
+                </>
+              ) : (
+                "Mark as no-show"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1049,11 +1088,24 @@ export default function ReservationsPage() {
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMarkArrivedTarget(null)}>
+            <Button
+              variant="outline"
+              disabled={markingArrived}
+              onClick={() => setMarkArrivedTarget(null)}
+            >
               Cancel
             </Button>
-            <Button onClick={() => void handleConfirmMarkArrived()}>
-              Mark as arrived
+            <Button
+              disabled={markingArrived}
+              onClick={() => void handleConfirmMarkArrived()}
+            >
+              {markingArrived ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" /> Marking…
+                </>
+              ) : (
+                "Mark as arrived"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

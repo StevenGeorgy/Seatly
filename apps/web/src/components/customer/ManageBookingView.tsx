@@ -413,7 +413,7 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
   }, [isLoggedIn, code, email]);
 
   const handleCancel = async () => {
-    if (!reservation) return;
+    if (!reservation || busy) return;
     setBusy(true);
     try {
       // Raw fetch (not client.functions.invoke) so we can read body.error on
@@ -428,6 +428,13 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
           apikey: getSupabaseAnonKey(),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
+          // 2026-05-28: idempotency key keyed on reservation id so a
+          // browser-level network retry doesn't double-fire the cancel
+          // pipeline (and double-refund). Cancel itself is idempotent at
+          // the row level (cancel-reservation early-returns when status
+          // is already 'cancelled'), but the refund call sequence isn't
+          // — making this explicit is defense-in-depth.
+          "x-idempotency-key": `cancel_${reservation.id}`,
         },
         body: JSON.stringify({
           reservation_id: reservation.id,
@@ -484,7 +491,7 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
   };
 
   const handleModify = async () => {
-    if (!reservation || !modifyValues || !modifyValidity.canSave) return;
+    if (!reservation || !modifyValues || !modifyValidity.canSave || busy) return;
     // The edge function expects 24-hour HH:MM (it concatenates `${date}T${time}:00Z`
     // into a Date constructor). The wheel commits a display string like "5:15pm".
     const normalisedTime = to24HourTime(modifyValues.time);
@@ -507,6 +514,13 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
           apikey: getSupabaseAnonKey(),
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
+          // 2026-05-28: idempotency key keyed on (reservation, target slot)
+          // so a network retry doesn't double-fire the modify pipeline.
+          // The server already has slot-aware idempotency inside
+          // confirm-modify-payment for the party-delta payment path; this
+          // header makes the retry safety explicit at the modify-slot entry
+          // point too.
+          "x-idempotency-key": `modify_${reservation.id}_${modifyValues.date}_${normalisedTime}_${modifyValues.partySize}`,
         },
         body: JSON.stringify({
           reservation_id: reservation.id,

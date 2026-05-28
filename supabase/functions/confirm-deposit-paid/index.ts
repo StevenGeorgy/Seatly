@@ -30,6 +30,7 @@ import {
   formatReservationDate,
   sendReservationNotification,
 } from "../_shared/reservation-notifications.ts";
+import { notifyOwnerNewReservation } from "../_shared/owner-notifications.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -331,6 +332,31 @@ Deno.serve(async (req: Request) => {
             body,
           });
         }
+
+        // 2026-05-28 split-tender owner notification. For split-tender
+        // bookings, create-public-booking deliberately SKIPS the owner
+        // notification on creation (the reservation is still in
+        // pending_payment and may never actually be paid). The settle-
+        // trigger only flips status to 'confirmed' after the last RDP
+        // charges — and we just observed that status here. So this is
+        // the single right moment to notify the owner that they have a
+        // real, paid split-tender booking.
+        //
+        // Idempotency: the early-return at lines 102-107 in this fn covers
+        // retries. notifyOwnerNewReservation also has its own preference
+        // gate (notification_preferences_json.new_reservation_email) and
+        // de-dupes via restaurant_notification_log so multi-fire is safe.
+        void notifyOwnerNewReservation({
+          supabase: supabaseAdmin,
+          restaurant_id: reservation.restaurant_id,
+          reservation_id: reservation.id,
+          reserved_at: reservation.reserved_at,
+          party_size: reservation.party_size,
+          guest_full_name: reservation.guest_full_name ?? null,
+          confirmation_code: reservation.confirmation_code ?? null,
+        }).catch((err) => {
+          console.error("[confirm-deposit-paid] notifyOwnerNewReservation failed", err);
+        });
       }
     } catch (notifyErr) {
       // Post-settle notification failure must NOT roll back the deposit
