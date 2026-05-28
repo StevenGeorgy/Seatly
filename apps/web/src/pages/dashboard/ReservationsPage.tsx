@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { ReservationDepositBreakdown } from "@/components/dashboard/ReservationDepositBreakdown";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -227,11 +228,23 @@ function adaptReservation(
     confirmationCode,
     notes,
     status,
-    tag: isDinerModifiedReservation(rowData)
-      ? "Modified by diner"
-      : assignedTables.length > 1
-      ? t("dashboard.reservations.largePartyTag", { count: assignedTables.length })
-      : rowData.source === "walk_in" ? "Walk-in" : rowData.deposit_amount ? "Deposit" : undefined,
+    tag: (() => {
+      if (isDinerModifiedReservation(rowData)) return "Modified by diner";
+      if (assignedTables.length > 1) {
+        return t("dashboard.reservations.largePartyTag", { count: assignedTables.length });
+      }
+      // 2026-05-28 (PR-K): split-tender badge — count actual payer rows so
+      // owners see "Split 2/3 paid" at a glance vs the generic "Deposit".
+      const rdp = rowData.reservation_deposit_payments ?? [];
+      const active = rdp.filter((r) => (r.amount_cents ?? 0) > 0);
+      if (active.length >= 2) {
+        const paid = active.filter((r) => r.status === "charged").length;
+        return `Split ${paid}/${active.length} paid`;
+      }
+      if (rowData.source === "walk_in") return "Walk-in";
+      if (rowData.deposit_amount) return "Deposit";
+      return undefined;
+    })(),
     tableCount: assignedTables.length,
     tableCapacity: assignedTables.reduce((total, table) => total + table.capacity, 0),
     source: rowData,
@@ -1314,6 +1327,16 @@ function ReservationDetailsDialog({
               </div>
             ) : null}
             <DetailItem label={t("dashboard.reservations.guest")} value={contact || reservation.phone} />
+            {(reservation.source?.reservation_deposit_payments?.length ?? 0) > 0 ? (
+              <div className="rounded-lg border border-border bg-bg-surface px-3 py-2">
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted mb-2">
+                  Deposit
+                </p>
+                <ReservationDepositBreakdown
+                  rows={reservation.source?.reservation_deposit_payments ?? []}
+                />
+              </div>
+            ) : null}
             <DetailItem label={t("dashboard.reservations.specialRequest")} value={reservation.notes} />
             {reservation.source?.status === "no_show" ? (
               <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">

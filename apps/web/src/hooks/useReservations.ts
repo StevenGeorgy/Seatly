@@ -212,6 +212,19 @@ export type ReservationRow = {
     section: string | null;
     capacity: number;
   } | null;
+  // 2026-05-28 (PR-K): per-payer rows for split-tender display in the
+  // owner dashboard. Joined from reservation_deposit_payments; one entry
+  // per card. Solo bookings have at most 1 entry (or 0 for no-deposit).
+  reservation_deposit_payments?: Array<{
+    id: string;
+    amount_cents: number;
+    status: string;
+    payer_full_name: string | null;
+    payer_email: string | null;
+    stripe_payment_intent_id: string | null;
+    paid_at: string | null;
+    created_at: string | null;
+  }> | null;
 };
 
 export type ReservationFilters = {
@@ -266,7 +279,7 @@ export function useReservations(filters?: ReservationFilters) {
     let query = client
       .from("reservations")
       .select(
-        "*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity)), event:events(id, name, date, start_time, end_time, capacity, tickets_sold, is_active), promotion:promotions(id, title, promo_code, promo_type, discount_value, discount_unit, badge_color, is_active)",
+        "*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity)), event:events(id, name, date, start_time, end_time, capacity, tickets_sold, is_active), promotion:promotions(id, title, promo_code, promo_type, discount_value, discount_unit, badge_color, is_active), reservation_deposit_payments(id, amount_cents, status, payer_full_name, payer_email, stripe_payment_intent_id, paid_at, created_at)",
       )
       .eq("restaurant_id", selectedRestaurantId)
       .order("reserved_at", { ascending: true });

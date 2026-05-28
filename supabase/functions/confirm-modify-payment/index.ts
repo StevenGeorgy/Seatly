@@ -169,8 +169,10 @@ Deno.serve(async (req: Request) => {
     if ("response" in parsed) return parsed.response;
     const {
       reservation_id: reservationId,
-      deposit_payment_row_id: depositRowId,
-      payment_intent_id: paymentIntentId,
+      deposit_payment_row_id: legacyRowId,
+      payment_intent_id: legacyPiId,
+      deposit_payment_row_ids: multiRowIds,
+      payment_intent_ids: multiPiIds,
       change_type: changeType = "party_delta",
       date,
       time,
@@ -181,7 +183,22 @@ Deno.serve(async (req: Request) => {
     } = parsed.data;
     const isCartDelta = changeType === "cart_delta";
 
-    // Load reservation + deposit row.
+    // 2026-05-28 (PR-K): normalize legacy single-row + new multi-row shapes
+    // into uniform arrays. Schema guarantees exactly one shape is provided.
+    const rowIds: string[] = multiRowIds ?? [legacyRowId!];
+    const piIds: string[] = multiPiIds ?? [legacyPiId!];
+    if (rowIds.length !== piIds.length) {
+      return jsonRes(
+        { error: "deposit_payment_row_ids and payment_intent_ids length mismatch" },
+        400,
+      );
+    }
+    const isSplitTenderConfirm = rowIds.length >= 2;
+    // Map rowId → piId (pair-position correlation provided by client).
+    const piByRowId = new Map<string, string>();
+    for (let i = 0; i < rowIds.length; i++) piByRowId.set(rowIds[i], piIds[i]);
+
+    // Load reservation + ALL deposit rows.
     const { data: reservationRaw, error: reservationErr } = await supabaseAdmin
       .from("reservations")
       .select(
@@ -193,17 +210,38 @@ Deno.serve(async (req: Request) => {
     const reservation = reservationRaw as ReservationRow | null;
     if (!reservation) return jsonRes({ error: "Reservation not found" }, 404);
 
-    const { data: depositRowRaw } = await supabaseAdmin
+    const { data: depositRowsRaw } = await supabaseAdmin
       .from("reservation_deposit_payments")
       .select(
         "id, reservation_id, amount_cents, status, stripe_payment_intent_id, pending_cart_snapshot",
       )
-      .eq("id", depositRowId)
-      .maybeSingle();
-    const depositRow = depositRowRaw as DepositRow | null;
-    if (!depositRow) return jsonRes({ error: "Deposit row not found" }, 404);
+      .in("id", rowIds)
+      .order("created_at", { ascending: true });
+    const depositRows = (depositRowsRaw ?? []) as DepositRow[];
+    if (depositRows.length !== rowIds.length) {
+      return jsonRes(
+        { error: "One or more deposit rows not found" },
+        404,
+      );
+    }
+    for (const row of depositRows) {
+      if (row.reservation_id !== reservationId) {
+        return jsonRes(
+          { error: "Deposit row does not match reservation" },
+          400,
+        );
+      }
+    }
+    // Backwards-compat: many downstream branches reference depositRow.* as
+    // if it were a single object. Use the first row as the "representative"
+    // (all rows in a split-tender share the same cart snapshot).
+    const depositRow = depositRows[0];
+    const totalAmountCents = depositRows.reduce(
+      (s, r) => s + (r.amount_cents ?? 0),
+      0,
+    );
 
-    // For cart_delta confirms the deposit row MUST carry a snapshot
+    // For cart_delta confirms the deposit rows MUST carry a snapshot
     // (modify-reservation stamps it on insert). If absent, the caller
     // is likely confirming with the wrong change_type or against the
     // wrong row.
@@ -216,9 +254,6 @@ Deno.serve(async (req: Request) => {
         },
         400,
       );
-    }
-    if (depositRow.reservation_id !== reservationId) {
-      return jsonRes({ error: "Deposit row does not match reservation" }, 400);
     }
 
     // Auth — bearer OR confirmation_code + email. Mirrors modify-reservation.
@@ -261,30 +296,24 @@ Deno.serve(async (req: Request) => {
     // calls us. The old guard then short-circuited and returned success WITHOUT
     // applying the modify. Diner paid, modify never ran.
     //
+    // 2026-05-28 (PR-K): now scoped across ALL rows for split-tender.
     // Correct semantics: "already charged" means money moved, but the modify
     // may or may not have been applied. Only treat as truly idempotent if we
     // can prove the change was applied:
-    //   - cart_delta: pending_cart_snapshot has been cleared (see line ~440)
-    //   - party_delta: reservation.party_size already matches the request AND
-    //                  reservation.reserved_at matches (a previous successful
-    //                  call has run the modify_reservation_slot RPC).
-    // Otherwise fall through and run the modify path; the underlying RPC +
-    // cart-replay are themselves idempotent (RPC's UPDATE is a no-op when
-    // values match; cart branch errors out if snapshot is gone).
-    const depositAlreadyCharged =
-      depositRow.status === "charged" &&
-      depositRow.stripe_payment_intent_id === paymentIntentId;
+    //   - cart_delta: pending_cart_snapshot has been cleared on every row
+    //   - party_delta: reservation.party_size already matches request AND
+    //                  reservation.reserved_at matches.
+    const allAlreadyCharged = depositRows.every(
+      (r) =>
+        r.status === "charged" &&
+        r.stripe_payment_intent_id != null &&
+        r.stripe_payment_intent_id === piByRowId.get(r.id),
+    );
 
-    if (depositAlreadyCharged) {
+    if (allAlreadyCharged) {
       const cartTrulyIdempotent =
-        isCartDelta && depositRow.pending_cart_snapshot === null;
-      // For party_delta we need reserved_at in UTC ISO to compare. We don't
-      // have the restaurant timezone here yet (loaded later for the slot
-      // branch), so use a lighter pair check: party_size + the date portion
-      // of reserved_at. Good enough — the only failure mode would be
-      // "modify changes time-only with same party_size and same date" which
-      // is extremely unlikely AND would just trigger an idempotent RPC
-      // re-call (safe no-op).
+        isCartDelta &&
+        depositRows.every((r) => r.pending_cart_snapshot === null);
       const partyTrulyIdempotent =
         !isCartDelta &&
         partySize !== undefined &&
@@ -299,76 +328,110 @@ Deno.serve(async (req: Request) => {
           reservation_id: reservationId,
           reserved_at: reservation.reserved_at,
           party_size: reservation.party_size,
+          is_split_tender: isSplitTenderConfirm,
           deposit_adjustment: {
             kind: "charged",
-            amount_cents: depositRow.amount_cents,
-            payment_intent_id: paymentIntentId,
+            amount_cents: totalAmountCents,
+            payment_intent_id: piIds.length === 1 ? piIds[0] : null,
+            payment_intent_ids: piIds,
           },
         });
       }
-      // Else: webhook beat us. Fall through and apply the modify. The flip
-      // below is a no-op (status already charged); skip it to preserve
-      // the original paid_at timestamp.
+      // Else: webhook beat us. Fall through and apply the modify. The flips
+      // below are no-ops (statuses already charged); skip them to preserve
+      // the original paid_at timestamps.
     }
 
-    if (depositRow.status !== "pending" && !depositAlreadyCharged) {
-      return jsonRes(
-        { error: `Deposit row is in unexpected status: ${depositRow.status}` },
-        409,
-      );
+    for (const row of depositRows) {
+      const expectedPi = piByRowId.get(row.id);
+      const rowAlreadyCharged =
+        row.status === "charged" &&
+        row.stripe_payment_intent_id != null &&
+        row.stripe_payment_intent_id === expectedPi;
+      if (row.status !== "pending" && !rowAlreadyCharged) {
+        return jsonRes(
+          {
+            error: `Deposit row ${row.id} is in unexpected status: ${row.status}`,
+            row_id: row.id,
+          },
+          409,
+        );
+      }
     }
 
-    // Verify PI with Stripe.
+    // Verify PIs with Stripe — one per row.
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeKey) return jsonRes({ error: "Stripe is not configured" }, 500);
     const stripe = await getStripeClient(stripeKey);
 
-    const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (intent.status !== "succeeded" && intent.status !== "processing") {
-      return jsonRes(
-        { error: `PaymentIntent not paid (status: ${intent.status})` },
-        400,
-      );
-    }
-    if ((intent.amount ?? 0) < depositRow.amount_cents) {
-      return jsonRes(
-        {
-          error: `PaymentIntent amount (${intent.amount}¢) is less than deposit delta (${depositRow.amount_cents}¢)`,
-        },
-        400,
-      );
+    for (const row of depositRows) {
+      const piId = piByRowId.get(row.id)!;
+      const intent = await stripe.paymentIntents.retrieve(piId);
+      if (intent.status !== "succeeded" && intent.status !== "processing") {
+        return jsonRes(
+          {
+            error: `PaymentIntent not paid (status: ${intent.status})`,
+            row_id: row.id,
+            payment_intent_id: piId,
+          },
+          400,
+        );
+      }
+      if ((intent.amount ?? 0) < (row.amount_cents ?? 0)) {
+        return jsonRes(
+          {
+            error: `PaymentIntent amount (${intent.amount}¢) is less than deposit delta (${row.amount_cents}¢)`,
+            row_id: row.id,
+            payment_intent_id: piId,
+          },
+          400,
+        );
+      }
+      const piRestaurantId = typeof intent.metadata?.restaurant_id === "string"
+        ? intent.metadata.restaurant_id
+        : null;
+      if (!piRestaurantId || piRestaurantId !== reservation.restaurant_id) {
+        return jsonRes(
+          { error: "pi_restaurant_mismatch", row_id: row.id, payment_intent_id: piId },
+          400,
+        );
+      }
+      const stampedRaw = typeof intent.metadata?.deposit_payment_ids === "string"
+        ? intent.metadata.deposit_payment_ids
+        : "";
+      const stamped = stampedRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!stamped.includes(row.id)) {
+        return jsonRes(
+          { error: "pi_payment_id_mismatch", row_id: row.id, payment_intent_id: piId },
+          400,
+        );
+      }
     }
 
-    // Metadata binding (same hardening as confirm-deposit-paid).
-    const piRestaurantId = typeof intent.metadata?.restaurant_id === "string"
-      ? intent.metadata.restaurant_id
-      : null;
-    if (!piRestaurantId || piRestaurantId !== reservation.restaurant_id) {
-      return jsonRes({ error: "pi_restaurant_mismatch" }, 400);
-    }
-    const stampedRaw = typeof intent.metadata?.deposit_payment_ids === "string"
-      ? intent.metadata.deposit_payment_ids
-      : "";
-    const stamped = stampedRaw.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!stamped.includes(depositRowId)) {
-      return jsonRes({ error: "pi_payment_id_mismatch" }, 400);
-    }
-
-    // Flip the row to charged BEFORE applying the modify, so a crash between
-    // them leaves the diner paid + the system aware of the payment. The
-    // modify_reservation_slot call below applies the actual slot change;
-    // on failure we refund.
-    // Skip if the webhook already flipped it (preserves the original paid_at).
-    if (!depositAlreadyCharged) {
+    // Flip each pending row to charged BEFORE applying the modify, so a
+    // crash between them leaves the diner paid + the system aware of the
+    // payment. Skip rows the webhook already flipped (preserves paid_at).
+    for (const row of depositRows) {
+      const expectedPi = piByRowId.get(row.id)!;
+      const rowAlreadyCharged =
+        row.status === "charged" &&
+        row.stripe_payment_intent_id === expectedPi;
+      if (rowAlreadyCharged) continue;
       const { error: flipErr } = await supabaseAdmin
         .from("reservation_deposit_payments")
         .update({
           status: "charged",
-          stripe_payment_intent_id: paymentIntentId,
+          stripe_payment_intent_id: expectedPi,
           paid_at: new Date().toISOString(),
         })
-        .eq("id", depositRowId);
-      if (flipErr) return jsonRes({ error: flipErr.message }, 400);
+        .eq("id", row.id);
+      if (flipErr) return jsonRes({ error: flipErr.message, row_id: row.id }, 400);
+    }
+    // After flipping, update the local depositRows so downstream code that
+    // reads .status === 'charged' sees the new state.
+    for (const row of depositRows) {
+      row.status = "charged";
+      row.stripe_payment_intent_id = piByRowId.get(row.id) ?? row.stripe_payment_intent_id;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -484,10 +547,13 @@ Deno.serve(async (req: Request) => {
             updated_at: new Date().toISOString(),
           })
           .eq("id", reservationId);
+        // Clear the snapshot on EVERY row (split-tender stamps the same
+        // snapshot on N rows; clearing one would leak stale replay state
+        // and let confirm-modify-payment replay again on a retry).
         await supabaseAdmin
           .from("reservation_deposit_payments")
           .update({ pending_cart_snapshot: null })
-          .eq("id", depositRowId);
+          .in("id", rowIds);
 
         try {
           const { data: restRow } = await supabaseAdmin
@@ -516,7 +582,10 @@ Deno.serve(async (req: Request) => {
             body:
               `Your pre-order at ${restName} has been updated.` +
               itemsLine +
-              `\nDeposit charged: ${formatCents(depositRow.amount_cents)}` +
+              `\nDeposit charged: ${formatCents(totalAmountCents)}` +
+              (isSplitTenderConfirm
+                ? ` (split across ${depositRows.length} cards)`
+                : "") +
               `\nNew total: ${formatCents(snap.food_cents + snap.tax_cents)}`,
           });
         } catch (e) {
@@ -531,10 +600,12 @@ Deno.serve(async (req: Request) => {
           change_type: "cart_delta",
           reservation_id: reservationId,
           order_id: orderId,
+          is_split_tender: isSplitTenderConfirm,
           deposit_adjustment: {
             kind: "charged",
-            amount_cents: depositRow.amount_cents,
-            payment_intent_id: paymentIntentId,
+            amount_cents: totalAmountCents,
+            payment_intent_id: piIds.length === 1 ? piIds[0] : null,
+            payment_intent_ids: piIds,
           },
           new_cart_summary: {
             items: snap.items,
@@ -560,29 +631,35 @@ Deno.serve(async (req: Request) => {
     // ═══════════════════════════════════════════════════════════════════
 
     // Look up restaurant + run the same shift/capacity validation as
-    // modify-reservation. Below this point, any rejection must auto-refund.
+    // modify-reservation. Below this point, any rejection must auto-refund
+    // ALL paid PIs (one per row in split-tender). Refund + row-flip happen
+    // independently per row so a partial failure doesn't strand the others.
     const refundAndError = async (
       message: string,
       reason: string,
       status = 409,
     ): Promise<Response> => {
-      try {
-        await refundPaymentIntent(
-          stripe,
-          paymentIntentId,
-          "modify_deposit_delta_auto_refund",
-          depositRow.amount_cents,
-        );
-        // Mark the row refunded so the books reconcile.
-        await supabaseAdmin
-          .from("reservation_deposit_payments")
-          .update({ status: "refunded", amount_cents: 0 })
-          .eq("id", depositRowId);
-      } catch (refundErr) {
-        console.error(
-          "[confirm-modify-payment] auto-refund failed:",
-          refundErr instanceof Error ? refundErr.message : refundErr,
-        );
+      for (const row of depositRows) {
+        const piId = piByRowId.get(row.id)!;
+        const amount = row.amount_cents ?? 0;
+        if (amount <= 0) continue;
+        try {
+          await refundPaymentIntent(
+            stripe,
+            piId,
+            "modify_deposit_delta_auto_refund",
+            amount,
+          );
+          await supabaseAdmin
+            .from("reservation_deposit_payments")
+            .update({ status: "refunded", amount_cents: 0 })
+            .eq("id", row.id);
+        } catch (refundErr) {
+          console.error(
+            `[confirm-modify-payment] auto-refund failed for row ${row.id}:`,
+            refundErr instanceof Error ? refundErr.message : refundErr,
+          );
+        }
       }
       return jsonRes(
         { error: message, unavailable_reason: reason, refunded: true },
@@ -760,7 +837,10 @@ Deno.serve(async (req: Request) => {
       `to ${nextDateLabel} for ${slotPartySize} ${slotPartySize === 1 ? "guest" : "guests"}.` +
       codeLine + eventLine + promoLine +
       preorderLine +
-      `\nDeposit charged: ${formatCents(depositRow.amount_cents)}` +
+      `\nDeposit charged: ${formatCents(totalAmountCents)}` +
+      (isSplitTenderConfirm
+        ? ` (split across ${depositRows.length} cards)`
+        : "") +
       (restaurantPhone ? `\nNeed to reach the restaurant directly? Call ${restaurantPhone}.` : "");
     void restaurantSlug; // reserved for future manage-link inclusion in modify SMS
     await sendReservationNotification({
@@ -783,10 +863,12 @@ Deno.serve(async (req: Request) => {
       table_ids: nextTableIds,
       previous_reserved_at: previousReservedAt,
       previous_party_size: previousPartySize,
+      is_split_tender: isSplitTenderConfirm,
       deposit_adjustment: {
         kind: "charged",
-        amount_cents: depositRow.amount_cents,
-        payment_intent_id: paymentIntentId,
+        amount_cents: totalAmountCents,
+        payment_intent_id: piIds.length === 1 ? piIds[0] : null,
+        payment_intent_ids: piIds,
       },
     });
   } catch (err) {

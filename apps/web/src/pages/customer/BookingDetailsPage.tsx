@@ -39,6 +39,7 @@ import {
   type EditPreorderInitialItem,
 } from "@/components/customer/EditPreorderModal";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
+import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import { type MyReservationRow } from "@/hooks/useMyReservations";
 import { useReservationById } from "@/hooks/useReservationById";
@@ -197,7 +198,16 @@ type ModifyResult =
   | { kind: "applied"; deposit_adjustment: ModifyDepositAdjustment }
   | {
       kind: "requires_payment";
-      deposit_payment_row_id: string;
+      // 2026-05-28 (PR-K): array shape to support split-tender. The legacy
+      // single-payer flow degenerates to a 1-element array internally.
+      deposit_payment_row_ids: string[];
+      is_split_tender: boolean;
+      split_payers: Array<{
+        row_id: string;
+        amount_cents: number;
+        payer_full_name: string | null;
+        payer_email: string | null;
+      }>;
       delta_cents: number;
       restaurant_id: string;
       reservation_id: string;
@@ -258,7 +268,16 @@ async function modifyReservation(
     deposit_adjustment?: ModifyDepositAdjustment;
     delta_cents?: number;
     requires_payment?: boolean;
+    // 2026-05-28 (PR-K): server now returns BOTH single + array shapes.
     deposit_payment_row_id?: string;
+    deposit_payment_row_ids?: string[];
+    is_split_tender?: boolean;
+    split_payers?: Array<{
+      row_id: string;
+      amount_cents: number;
+      payer_full_name: string | null;
+      payer_email: string | null;
+    }>;
     restaurant_id?: string;
     reservation_id?: string;
     pending_date?: string;
@@ -272,10 +291,13 @@ async function modifyReservation(
   // the response carries requires_payment=true the caller mounts Stripe
   // Elements with the returned client params; on payment success the
   // confirmModifyPayment helper finalizes the slot change.
+  const resolvedRowIds = body.deposit_payment_row_ids
+    ?? (body.deposit_payment_row_id ? [body.deposit_payment_row_id] : null);
   if (
     res.ok &&
     body.requires_payment === true &&
-    body.deposit_payment_row_id &&
+    resolvedRowIds &&
+    resolvedRowIds.length > 0 &&
     typeof body.delta_cents === "number" &&
     body.restaurant_id &&
     body.reservation_id &&
@@ -285,7 +307,14 @@ async function modifyReservation(
   ) {
     return {
       kind: "requires_payment",
-      deposit_payment_row_id: body.deposit_payment_row_id,
+      deposit_payment_row_ids: resolvedRowIds,
+      is_split_tender: body.is_split_tender === true || resolvedRowIds.length >= 2,
+      split_payers: body.split_payers ?? resolvedRowIds.map((id) => ({
+        row_id: id,
+        amount_cents: body.delta_cents ?? 0,
+        payer_full_name: null,
+        payer_email: null,
+      })),
       delta_cents: body.delta_cents,
       restaurant_id: body.restaurant_id,
       reservation_id: body.reservation_id,
@@ -314,8 +343,10 @@ type ConfirmModifyResult = {
 
 async function confirmModifyPayment(payload: {
   reservationId: string;
-  depositPaymentRowId: string;
-  paymentIntentId: string;
+  // 2026-05-28 (PR-K): pass arrays for split-tender; single-payer uses
+  // a 1-element array. Server normalizes both shapes via the schema.
+  depositPaymentRowIds: string[];
+  paymentIntentIds: string[];
   date: string;
   time: string;
   partySize: number;
@@ -329,6 +360,10 @@ async function confirmModifyPayment(payload: {
   const client = getSupabaseBrowserClient();
   const { data: sessionData } = await client.auth.getSession();
   const token = sessionData.session?.access_token ?? null;
+  const isMulti = payload.depositPaymentRowIds.length > 1;
+  const idemKey = isMulti
+    ? `confirm_modify_${payload.reservationId}_multi_${payload.paymentIntentIds.join(",")}`
+    : `confirm_modify_${payload.reservationId}_${payload.depositPaymentRowIds[0]}_${payload.paymentIntentIds[0]}`;
   const res = await fetch(
     `${getSupabaseProjectUrl()}/functions/v1/confirm-modify-payment`,
     {
@@ -337,16 +372,23 @@ async function confirmModifyPayment(payload: {
         apikey: getSupabaseAnonKey(),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": "application/json",
-        // 2026-05-28: idempotency key keyed on (reservation, deposit row,
-        // PI). confirm-modify-payment already has slot-aware idempotency
+        // 2026-05-28: idempotency key keyed on (reservation, deposit rows,
+        // PIs). confirm-modify-payment already has slot-aware idempotency
         // server-side; this header documents intent + provides a stable
         // key for any future dedup table.
-        "x-idempotency-key": `confirm_modify_${payload.reservationId}_${payload.depositPaymentRowId}_${payload.paymentIntentId}`,
+        "x-idempotency-key": idemKey,
       },
       body: JSON.stringify({
         reservation_id: payload.reservationId,
-        deposit_payment_row_id: payload.depositPaymentRowId,
-        payment_intent_id: payload.paymentIntentId,
+        ...(isMulti
+          ? {
+              deposit_payment_row_ids: payload.depositPaymentRowIds,
+              payment_intent_ids: payload.paymentIntentIds,
+            }
+          : {
+              deposit_payment_row_id: payload.depositPaymentRowIds[0],
+              payment_intent_id: payload.paymentIntentIds[0],
+            }),
         date: payload.date,
         time: normalisedTime,
         party_size: payload.partySize,
@@ -407,7 +449,15 @@ export default function BookingDetailsPage() {
   // confirm-modify-payment to finalize.
   const [pendingPayment, setPendingPayment] = useState<{
     reservationId: string;
-    depositPaymentRowId: string;
+    // 2026-05-28 (PR-K): arrays for split-tender; single-payer is length 1.
+    depositPaymentRowIds: string[];
+    isSplitTender: boolean;
+    splitPayers: Array<{
+      row_id: string;
+      amount_cents: number;
+      payer_full_name: string | null;
+      payer_email: string | null;
+    }>;
     deltaCents: number;
     restaurantId: string;
     date: string;
@@ -603,7 +653,9 @@ export default function BookingDetailsPage() {
       if (result.kind === "requires_payment") {
         setPendingPayment({
           reservationId: result.reservation_id,
-          depositPaymentRowId: result.deposit_payment_row_id,
+          depositPaymentRowIds: result.deposit_payment_row_ids,
+          isSplitTender: result.is_split_tender,
+          splitPayers: result.split_payers,
           deltaCents: result.delta_cents,
           restaurantId: result.restaurant_id,
           date: result.pending_date,
@@ -642,14 +694,29 @@ export default function BookingDetailsPage() {
     }
   };
 
-  const handleModifyPaymentPaid = async (paymentIntentId: string) => {
+  // 2026-05-28 (PR-K): accepts either a single PI id (solo StripePaymentForm
+  // callback shape) OR an array of PI ids (split-tender path harvests them
+  // from the reservation's RDP rows after onAllPaid fires).
+  const handleModifyPaymentPaid = async (paymentIntentIds: string | string[]) => {
     if (!pendingPayment || finalizingPayment) return;
+    const piIds = Array.isArray(paymentIntentIds)
+      ? paymentIntentIds
+      : [paymentIntentIds];
+    if (piIds.length !== pendingPayment.depositPaymentRowIds.length) {
+      errorToast(
+        new Error(
+          `Payment count mismatch (got ${piIds.length}, expected ${pendingPayment.depositPaymentRowIds.length}).`,
+        ),
+        { fallback: "Couldn't finalize the modification.", logTag: "[BookingDetailsPage.confirmModifyPayment]" },
+      );
+      return;
+    }
     setFinalizingPayment(true);
     try {
       await confirmModifyPayment({
         reservationId: pendingPayment.reservationId,
-        depositPaymentRowId: pendingPayment.depositPaymentRowId,
-        paymentIntentId,
+        depositPaymentRowIds: pendingPayment.depositPaymentRowIds,
+        paymentIntentIds: piIds,
         date: pendingPayment.date,
         time: pendingPayment.time,
         partySize: pendingPayment.partySize,
@@ -1255,7 +1322,11 @@ export default function BookingDetailsPage() {
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Pay deposit to confirm changes</DialogTitle>
+            <DialogTitle>
+              {pendingPayment?.isSplitTender
+                ? "Pay deposit across all cards"
+                : "Pay deposit to confirm changes"}
+            </DialogTitle>
           </DialogHeader>
           {pendingPayment ? (
             <div className="space-y-4">
@@ -1267,17 +1338,69 @@ export default function BookingDetailsPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-xs text-text-muted">
-                  Your party size update requires a larger deposit. Pay now to
-                  confirm. We'll only charge if Stripe accepts the card.
+                  {pendingPayment.isSplitTender
+                    ? `Split-tender — the delta is divided across ${pendingPayment.depositPaymentRowIds.length} cards proportional to each payer's original share. All cards must succeed to confirm the change.`
+                    : "Your party size update requires a larger deposit. Pay now to confirm. We'll only charge if Stripe accepts the card."}
                 </p>
+                {pendingPayment.isSplitTender ? (
+                  <ul className="mt-3 space-y-1 text-xs text-text-muted">
+                    {pendingPayment.splitPayers.map((p, i) => (
+                      <li key={p.row_id} className="flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          #{i + 1} ·{" "}
+                          {(p.payer_full_name ?? "").trim() ||
+                            (p.payer_email ?? "").trim() ||
+                            `Co-payer ${i + 1}`}
+                        </span>
+                        <span className="font-mono tabular-nums">
+                          ${(p.amount_cents / 100).toFixed(2)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
-              <StripePaymentForm
-                restaurantId={pendingPayment.restaurantId}
-                amountCents={pendingPayment.deltaCents}
-                depositPaymentIds={[pendingPayment.depositPaymentRowId]}
-                onPaid={handleModifyPaymentPaid}
-                payButtonLabel={finalizingPayment ? "Finalizing…" : "Pay & confirm changes"}
-              />
+              {pendingPayment.isSplitTender ? (
+                <>
+                  <SplitTenderPaymentForm
+                    restaurantId={pendingPayment.restaurantId}
+                    foodTotalCents={pendingPayment.deltaCents}
+                    taxTotalCents={0}
+                    payerCount={pendingPayment.depositPaymentRowIds.length}
+                    holdId={null}
+                    formId="modify-split-pay-form"
+                    onPreCheckout={async () => ({
+                      reservation_id: pendingPayment.reservationId,
+                      deposit_row_ids: pendingPayment.depositPaymentRowIds,
+                    })}
+                    onAllPaid={async ({ paymentIntentIds }) => {
+                      await handleModifyPaymentPaid(paymentIntentIds);
+                    }}
+                    onError={(msg) =>
+                      errorToast(new Error(msg), {
+                        fallback: "Card couldn't be charged.",
+                        logTag: "[BookingDetailsPage.splitModify]",
+                      })
+                    }
+                  />
+                  <Button
+                    type="submit"
+                    form="modify-split-pay-form"
+                    disabled={finalizingPayment}
+                    className="h-10 w-full"
+                  >
+                    {finalizingPayment ? "Finalizing…" : "Pay & confirm changes"}
+                  </Button>
+                </>
+              ) : (
+                <StripePaymentForm
+                  restaurantId={pendingPayment.restaurantId}
+                  amountCents={pendingPayment.deltaCents}
+                  depositPaymentIds={pendingPayment.depositPaymentRowIds}
+                  onPaid={handleModifyPaymentPaid}
+                  payButtonLabel={finalizingPayment ? "Finalizing…" : "Pay & confirm changes"}
+                />
+              )}
               <Button
                 type="button"
                 variant="ghost"

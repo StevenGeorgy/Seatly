@@ -61,8 +61,18 @@ export type SplitTenderPaymentFormProps = {
    * If this throws, the form surfaces the error and aborts.
    */
   onPreCheckout: () => Promise<SplitTenderPreCheckoutResult>;
-  /** Fired after every slot has reached `'paid'`. */
-  onAllPaid: (args: { reservationId: string }) => Promise<void> | void;
+  /**
+   * Fired after every slot has reached `'paid'`. 2026-05-28 (PR-K):
+   * `paymentIntentIds` + `depositRowIds` arrays passed back in slot order
+   * so consumers like the modify-reservation flow can call
+   * `confirm-modify-payment` with the array shape. Existing callers can
+   * ignore them.
+   */
+  onAllPaid: (args: {
+    reservationId: string;
+    paymentIntentIds: string[];
+    depositRowIds: string[];
+  }) => Promise<void> | void;
   /** Fired on any unrecoverable error (network, all-slots failed). */
   onError?: (msg: string) => void;
   /**
@@ -235,8 +245,10 @@ function SplitTenderSurface({
     const reservationId = preCheckoutResultRef.current?.reservation_id ?? null;
     if (!reservationId) return;
     allPaidFiredRef.current = true;
+    const paymentIntentIds = slots.map((s) => s.paymentIntentId ?? "").filter(Boolean);
+    const depositRowIds = slots.map((s) => s.rowId ?? "").filter(Boolean);
     try {
-      const result = onAllPaid({ reservationId });
+      const result = onAllPaid({ reservationId, paymentIntentIds, depositRowIds });
       if (result && typeof (result as Promise<void>).catch === "function") {
         (result as Promise<void>).catch((err) => {
           console.error("[SplitTenderPaymentForm] post-state onAllPaid failed", err);
@@ -426,7 +438,24 @@ function SplitTenderSurface({
           resolve();
         });
         if (everyPaid) {
-          await onAllPaid({ reservationId: pre.reservation_id });
+          // 2026-05-28 (PR-K): pass PI + row id arrays back to the parent.
+          // For consumers that don't need them (initial booking flow) the
+          // extra fields are simply ignored.
+          let paymentIntentIds: string[] = [];
+          let depositRowIds: string[] = [];
+          await new Promise<void>((resolve) => {
+            setSlots((latest) => {
+              paymentIntentIds = latest.map((s) => s.paymentIntentId ?? "").filter(Boolean);
+              depositRowIds = latest.map((s) => s.rowId ?? "").filter(Boolean);
+              return latest;
+            });
+            resolve();
+          });
+          await onAllPaid({
+            reservationId: pre.reservation_id,
+            paymentIntentIds,
+            depositRowIds,
+          });
         } else if (failedCount > 0) {
           const friendly = failedCount === 1
             ? "One card couldn't be charged. Re-enter and click Place Order to retry."
