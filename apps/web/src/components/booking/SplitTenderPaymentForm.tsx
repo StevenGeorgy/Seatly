@@ -199,6 +199,34 @@ function SplitTenderSurface({
     preCheckoutResultRef.current = null;
   }, [payerCount, foodShareCents, taxShareCents]);
 
+  // 2026-05-28: late-flush safety net. If React batched the per-slot
+  // "paid" state updates and they hadn't flushed by the time the in-flight
+  // every-paid check ran in handleSubmit, we'd miss firing onAllPaid (the
+  // parent never advances to the confirmation screen even though all cards
+  // actually charged). This effect fires onAllPaid once, when ALL slots
+  // are observably "paid" in the committed React state.
+  //
+  // Guard via ref so it doesn't re-fire on every render after that point.
+  const allPaidFiredRef = useRef(false);
+  useEffect(() => {
+    if (allPaidFiredRef.current) return;
+    if (slots.length === 0) return;
+    if (!slots.every((s) => s.status === "paid")) return;
+    const reservationId = preCheckoutResultRef.current?.reservation_id ?? null;
+    if (!reservationId) return;
+    allPaidFiredRef.current = true;
+    try {
+      const result = onAllPaid({ reservationId });
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        (result as Promise<void>).catch((err) => {
+          console.error("[SplitTenderPaymentForm] post-state onAllPaid failed", err);
+        });
+      }
+    } catch (err) {
+      console.error("[SplitTenderPaymentForm] post-state onAllPaid threw", err);
+    }
+  }, [slots, onAllPaid]);
+
   const updateSlot = useCallback((idx: number, patch: Partial<SlotState>) => {
     setSlots((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   }, []);
@@ -356,25 +384,42 @@ function SplitTenderSurface({
         }
 
         // Step 3: if every slot ended in 'paid', fire onAllPaid.
-        // Re-read fresh state because updateSlot is async; use a setter
-        // callback to inspect.
+        // 2026-05-28 fix: read BOTH everyPaid AND failedCount from the
+        // setSlots-callback's `latest` snapshot. The previous code read
+        // failedCount from the closure's `slots` (captured at submission
+        // start, before any updateSlot calls) — which is stale. Result:
+        // even when all 2 cards charged successfully, if React hadn't yet
+        // flushed the "paid" updates by the time of this check, the user
+        // saw "0 cards couldn't be charged" as a misleading error.
+        // Also: if failedCount === 0 AND everyPaid is false, this is a
+        // pure timing race — log warn but don't surface a user error.
+        // The useEffect below catches the late-flush case to still fire
+        // onAllPaid.
         let everyPaid = false;
+        let failedCount = 0;
         await new Promise<void>((resolve) => {
           setSlots((latest) => {
             everyPaid = latest.every((s) => s.status === "paid");
+            failedCount = latest.filter((s) => s.status === "failed").length;
             return latest;
           });
           resolve();
         });
         if (everyPaid) {
           await onAllPaid({ reservationId: pre.reservation_id });
-        } else {
-          const failedCount = slots.filter((s) => s.status === "failed").length;
+        } else if (failedCount > 0) {
           const friendly = failedCount === 1
             ? "One card couldn't be charged. Re-enter and click Place Order to retry."
             : `${failedCount} cards couldn't be charged. Re-enter them and click Place Order to retry.`;
           setTopError(friendly);
           onError?.(friendly);
+        } else {
+          // Race: in-flight state hasn't flushed yet. Don't show an error.
+          // The post-state-update useEffect will catch all-paid and fire
+          // onAllPaid once React commits the latest slot statuses.
+          console.warn(
+            "[SplitTenderPaymentForm] post-submit race: no slot in 'paid' or 'failed' yet — relying on useEffect fallback",
+          );
         }
       } finally {
         setSubmitting(false);
