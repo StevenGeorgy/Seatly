@@ -14,6 +14,47 @@ math, and run-of-show.
 
 ---
 
+## Hard QA rules (added 2026-05-28 — do NOT skip these)
+
+These four rules are mirrored from `CLAUDE.md` so they live where the
+test session is run. Same intent: catch regressions and verification
+gaps before they ship.
+
+1. **No partial fixes.** A "partial pass" is a failure. If a test
+   surfaces ANY bug — silent refund skip, missing notification,
+   wrong amount, `paid_at` null where it should be set — the bug
+   gets fixed AND the test gets re-run end-to-end against the new
+   deployed code before moving to the next test. Do not write
+   "works mostly", "edge case is rare", or "defer to a follow-up
+   PR" in a test result.
+
+2. **Bug found → fix → retest broken test → retest ALL previous
+   tests in this session.** A shared-helper change can silently
+   break a passed test (e.g. today's `hold-conversion.ts` fix
+   landed in `confirm-hold-paid` but `stripe-webhook` still ran
+   the stale bundle until I redeployed it). After every fix,
+   re-run every test that already passed in this session before
+   moving forward.
+
+3. **Verify Stripe API directly, not just the DB row.** Every
+   charge/refund test gets two checks: (a) Supabase row reflects
+   the expected state (`orders.status='paid'`, `paid_at` set,
+   `stripe_payment_intent_id` populated, `reservation_deposit_payments.
+   status='charged'`), AND (b) Stripe API (`list_payment_intents`,
+   `list_refunds`, `retrieve`) confirms the PI/charge/refund exists
+   with the expected amount, status, and metadata. The DB row only
+   reflects what the webhook landed — a delayed/mis-routed webhook
+   can leave the DB looking correct while Stripe shows something
+   else.
+
+4. **Fan out sub-agents in parallel where possible.** When multiple
+   independent verifications exist (DB query + Stripe API + edge
+   function logs + console messages), launch them in PARALLEL via a
+   single message with multiple tool calls, not sequentially. The
+   default mistake is to chain them.
+
+---
+
 ## Pre-session setup (user does this once, before Claude starts)
 
 ### 1. Three separate browser contexts
