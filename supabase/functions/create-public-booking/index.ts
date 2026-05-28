@@ -431,27 +431,34 @@ Deno.serve(async (req: Request) => {
         // carry guest/party details in scope — query the reservation row for
         // them. Skip silently if the owner has the toggle off (the helper
         // handles preference + restaurants.email bypass internally).
-        void (async () => {
-          try {
-            const { data: r } = await supabase
-              .from("reservations")
-              .select("restaurant_id, reserved_at, party_size, guest_full_name, confirmation_code")
-              .eq("id", row.reservation_id)
-              .maybeSingle();
-            if (!r) return;
-            await notifyOwnerNewReservation({
-              supabase,
-              restaurant_id: (r as any).restaurant_id,
-              reservation_id: row.reservation_id,
-              reserved_at: (r as any).reserved_at,
-              party_size: (r as any).party_size,
-              guest_full_name: (r as any).guest_full_name ?? null,
-              confirmation_code: (r as any).confirmation_code ?? null,
-            });
-          } catch (err) {
-            console.error("[create-public-booking.hold-convert] notifyOwnerNewReservation failed", err);
-          }
-        })();
+        //
+        // 2026-05-28 split-tender gate (parity with main path at ~line 949):
+        // skip when split_tender_payers is set. The reservation is in
+        // pending_payment until the last RDP charges; the owner notification
+        // re-fires from confirm-deposit-paid after settle.
+        if (!payload.split_tender_payers) {
+          void (async () => {
+            try {
+              const { data: r } = await supabase
+                .from("reservations")
+                .select("restaurant_id, reserved_at, party_size, guest_full_name, confirmation_code")
+                .eq("id", row.reservation_id)
+                .maybeSingle();
+              if (!r) return;
+              await notifyOwnerNewReservation({
+                supabase,
+                restaurant_id: (r as any).restaurant_id,
+                reservation_id: row.reservation_id,
+                reserved_at: (r as any).reserved_at,
+                party_size: (r as any).party_size,
+                guest_full_name: (r as any).guest_full_name ?? null,
+                confirmation_code: (r as any).confirmation_code ?? null,
+              });
+            } catch (err) {
+              console.error("[create-public-booking.hold-convert] notifyOwnerNewReservation failed", err);
+            }
+          })();
+        }
       }
 
       // Deposit + split-tender on the hold-conversion path. Without this,
