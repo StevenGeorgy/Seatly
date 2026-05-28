@@ -7,6 +7,7 @@ interface ImportMetaEnv {
   readonly NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
   readonly VITE_GOOGLE_MAPS_API_KEY?: string;
   readonly VITE_MAPLIBRE_STYLE_URL?: string;
+  readonly VITE_SPLIT_TENDER_ENABLED?: string;
 }
 
 interface ImportMeta {

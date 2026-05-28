@@ -78,6 +78,25 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-28 Split-tender FEATURE-FLAGGED OFF** — Multi-card-at-booking
+  (PR-K) is disabled, not deleted. Frontend gated behind
+  `VITE_SPLIT_TENDER_ENABLED` (helper: `apps/web/src/lib/featureFlags.ts`);
+  diner never sees the "Split tender" toggle and the owner dashboard
+  never shows split badges/breakdown. Server hard-rejects any split
+  request: `create-public-booking` returns 400 `split_tender_disabled`
+  when `SPLIT_TENDER_ENABLED!=="true"`; `modify-reservation` refuses
+  (400) if a pre-flag split booking (≥2 charged RDP rows) is modified.
+  The shared `reservation_deposit_payments` table / settle trigger /
+  `convert_reservation_hold_to_reservation` RPC are UNCHANGED — solo
+  deposit bookings still write 1 RDP row there exactly as before. All
+  split-tender components, helpers (`proportional-split.ts`), and
+  branches stay compiled + dormant. **To revive:** set
+  `VITE_SPLIT_TENDER_ENABLED=true` (Amplify) + `SPLIT_TENDER_ENABLED=true`
+  (Supabase secrets), redeploy `create-public-booking` +
+  `modify-reservation`, rebuild web. **While off: any PR that EDITS
+  (vs merely compiles) split-tender branches is suspect — the feature
+  is dormant, so changes to it are almost certainly accidental.**
+
 - **2026-05-28 Preorder-only PI binding + cart-shrink refund fix** —
   Two bugs surfaced in PR-K Phase 6 cart-shrink QA, both fixed and
   re-verified live: (1) Pure preorder bookings (no deposit) had

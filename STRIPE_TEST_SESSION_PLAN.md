@@ -5,8 +5,15 @@ A guided, step-by-step Stripe QA session designed for the user (Savyo)
 present and confirming each step. NOT autonomous — Claude drives the
 browser, the user watches and confirms before moving to the next test.
 
-**Last updated:** 2026-05-28 after PR-K (split-tender parity). All
-split-tender scenarios are now in scope and MUST be tested end-to-end.
+**Last updated:** 2026-05-28.
+
+> ⚠️ **SPLIT-TENDER FEATURE-FLAGGED OFF (2026-05-28).** The entire
+> **Phase S** section below is **SKIPPED** — split-tender is disabled
+> behind `VITE_SPLIT_TENDER_ENABLED` / `SPLIT_TENDER_ENABLED` (code
+> dormant, not deleted; see `CLAUDE.md` Current state). Do NOT run any
+> S1–S24 test while the flag is off. Solo Phases 1–6 remain in scope.
+> To revive split-tender testing: re-enable both env vars, redeploy
+> `create-public-booking` + `modify-reservation`, rebuild web.
 
 Companion document to `STRIPE_QA_CHECKLIST.md` (the full test matrix
 reference). This file is the **session protocol**: setup, order,
@@ -416,7 +423,13 @@ Split-tender edge cases live in **Phase S**.
 
 ---
 
-## Phase S — Split-tender end-to-end (NEW with PR-K, 2026-05-28)
+## Phase S — Split-tender end-to-end — ⚠️ SKIPPED (FEATURE FLAGGED OFF 2026-05-28)
+
+> **Do not run any test in this section.** Split-tender is feature-flagged
+> OFF (`VITE_SPLIT_TENDER_ENABLED` / `SPLIT_TENDER_ENABLED`). The UI is
+> hidden and the server rejects split requests with 400
+> `split_tender_disabled`. Tests S1–S24 below are retained for when the
+> feature is revived. See `CLAUDE.md` Current state for the revive steps.
 
 **Everything split-tender lives here.** Booking, modify, owner ops,
 cancel, edge cases — all consolidated so you can run the entire

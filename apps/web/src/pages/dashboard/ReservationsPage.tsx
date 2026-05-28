@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { ReservationDepositBreakdown } from "@/components/dashboard/ReservationDepositBreakdown";
+import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
