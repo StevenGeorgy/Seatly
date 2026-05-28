@@ -24,6 +24,44 @@ function body from migration 20260526180000 because I didn't notice
 migration timestamp + verify against deployed bytecode before
 explaining behavior or copying code.
 
+**No partial fixes (added 2026-05-28):**
+A "partial pass" is a failure. If a test or behaviour surfaces ANY bug
+— silent refund skip, missing notification, wrong amount, anything —
+the bug gets fixed AND the test gets re-run end-to-end against the
+new deployed code BEFORE moving on. Do NOT mark something "partial
+pass / fix later", "works mostly", "this edge case is rare", or
+"defer to a follow-up PR". Every fix gets verified live (DB row +
+Stripe API + edge fn logs as applicable), not just compiled and
+deployed. The user's words: "no partial anymore fix whatevers not
+working and retest".
+
+**Bug found → fix → retest broken test → retest ALL previous tests
+in the suite BEFORE continuing (added 2026-05-28):**
+The "no partial fixes" rule covers the broken test. This rule covers
+regression risk in passed tests. When a fix lands mid-QA-pass, every
+test that was already marked PASS in this session gets re-run against
+the new deployed code before moving on to the next pending test. Why:
+the fix could have silently broken something that previously worked
+(e.g. a shared helper change touches an untested path). The cost of
+re-running is small; the cost of shipping a regression is high. Do
+NOT rationalize "test X doesn't exercise this code path, skip it" —
+verify, don't guess. The user's words: "when you encounter a issue
+or bug retest the mistake and retest all previous tests before
+continuing to the next task".
+
+**Always fan out sub-agents where possible (added 2026-05-28):**
+Use the Agent tool with the right subagent_type whenever the work
+fits — and when multiple independent investigations or actions exist,
+launch them in PARALLEL by sending a single message with multiple
+Agent tool calls (not sequentially). Examples: spawn Explore agents
+for codebase searches across different files, spawn parallel research
+agents for "what does X do" + "what does Y do" + "what does Z do",
+fan out verification agents per surface (DB schema vs RPC vs edge fn
+vs client). The default mistake is doing too much sequentially in the
+main context. Reserve the main context for synthesis + writes that
+need to happen in order; push parallelisable read/research/verify
+work to sub-agents.
+
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
 - **2026-05-28 Preorder-only PI binding + cart-shrink refund fix** —

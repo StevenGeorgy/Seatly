@@ -128,6 +128,7 @@ export async function runPostHoldConversion({
         is_preorder: true,
         order_type: "dine_in",
         status: paymentIntentId ? "paid" : "pending",
+        paid_at: paymentIntentId ? new Date().toISOString() : null,
         subtotal: hold.cart_snapshot?.subtotal ?? 0,
         tax_amount: hold.cart_snapshot?.tax_amount ?? 0,
         tip_amount: hold.cart_snapshot?.tip_amount ?? 0,
