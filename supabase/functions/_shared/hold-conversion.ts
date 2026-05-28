@@ -68,6 +68,50 @@ export async function runPostHoldConversion({
   }
   const hold = holdRow as HoldRow;
 
+  // 2026-05-27 BUG-fix: backfill guest_id when the hold didn't carry it.
+  // create-reservation-hold passes user_profile_id but not guest_id, so the
+  // hold + downstream rows (reservation, orders, deposit_payments) all end up
+  // with guest_id=NULL for logged-in diners. RLS on orders/deposit_payments
+  // checks guest_id, so the diner can't read their own bookings (we added a
+  // user_profile_id-via-reservation path as a defense-in-depth RLS, but the
+  // upstream insert should still be correct).
+  //
+  // Strategy: if hold.guest_id is null but a guests row exists for this
+  // (user_profile_id, restaurant_id) — use it. The guests row is keyed
+  // (user_profile_id, restaurant_id) so each diner has one per restaurant.
+  // If no guests row exists yet, leave guest_id null; create-public-booking
+  // creates the guests row when the upgrade flow runs.
+  let resolvedGuestId: string | null = hold.guest_id ?? null;
+  if (!resolvedGuestId) {
+    // We need user_profile_id to look up — fetch from the reservation we
+    // just created (it carries the profile id from the hold).
+    const { data: resRow } = await supabase
+      .from("reservations")
+      .select("user_profile_id")
+      .eq("id", reservationId)
+      .maybeSingle();
+    const upId = (resRow as { user_profile_id?: string | null } | null)?.user_profile_id ?? null;
+    if (upId && hold.restaurant_id) {
+      const { data: guestRow } = await supabase
+        .from("guests")
+        .select("id")
+        .eq("user_profile_id", upId)
+        .eq("restaurant_id", hold.restaurant_id)
+        .maybeSingle();
+      const guestId = (guestRow as { id?: string } | null)?.id ?? null;
+      if (guestId) {
+        resolvedGuestId = guestId;
+        // Backfill the reservation's guest_id too so future reads (including
+        // staff/analytics joins) work without the RLS workaround.
+        await supabase
+          .from("reservations")
+          .update({ guest_id: guestId })
+          .eq("id", reservationId)
+          .is("guest_id", null);
+      }
+    }
+  }
+
   // 2. If cart_snapshot has items, create an orders row from it.
   const cartItems = Array.isArray(hold.cart_snapshot?.items)
     ? (hold.cart_snapshot!.items as Array<Record<string, unknown>>)
@@ -79,7 +123,7 @@ export async function runPostHoldConversion({
       .insert({
         restaurant_id: hold.restaurant_id,
         reservation_id: reservationId,
-        guest_id: hold.guest_id,
+        guest_id: resolvedGuestId,
         is_preorder: true,
         order_type: "dine_in",
         status: paymentIntentId ? "paid" : "pending",
