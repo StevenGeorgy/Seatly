@@ -12,7 +12,76 @@ rule, renames a listed pattern, or shifts capacity/latency numbers.
 Routine bug fixes do not need an update. Detailed ship notes go to
 `WORK_LOG.md`, not here.
 
+**Per-PR discipline (added 2026-05-28 after a regression loop):**
+Every PR that ships to prod adds a 1-2 line entry under "Current state"
+(below) AND closes any matching entry in "Pending follow-ups" /
+"Known follow-ups" lower in the file. The goal: a fresh Claude session
+reading this file should see the CURRENT state, not a snapshot from
+weeks ago. Stale entries that disagree with code caused multiple
+regression bugs in the 2026-05-28 session (e.g. me copying an old
+function body from migration 20260526180000 because I didn't notice
+20260527000000 had updated it). When in doubt: grep the latest
+migration timestamp + verify against deployed bytecode before
+explaining behavior or copying code.
+
 ## Current state (one-liners; see WORK_LOG.md for detail)
+
+- **2026-05-28 Comprehensive QA session (PR-A through PR-J)** — 10 PRs
+  shipped end-to-end after a full Stripe-flow QA pass. Highlights:
+  - PR #31 (A): Fix Stripe IntegrationError that broke 100% of
+    split-tender payments (`fields.billingDetails.address.*='never'`
+    requires matching empty-strings in `confirmParams.payment_method_data`)
+  - PR #32 (B): Comprehensive — modify-reservation pending-row dedup
+    (party-delta + cart-delta), gate `notifyOwnerNewReservation` for
+    split-tender (fires post-settle from confirm-deposit-paid, not at
+    creation), add ReservationsPage staff-action double-click guards,
+    `sweep_abandoned_split_tender_reservations` cron (every 10 min,
+    cancels pending_payment > 30 min with no charged RDPs), drop
+    `restaurants.cancellation_hours` column + UX copy update
+  - PR #33 (C): Hold-conversion path also needed the owner-notif gate
+    (twin code path missed in PR-B); settle trigger now skips parents
+    in `cancelled/no_show/completed` (defensive guard against late
+    webhook racing with orphan sweep)
+  - PR #34 (D): Move owner+diner post-settle notifications into
+    stripe-webhook as well as confirm-deposit-paid (race fix — webhook
+    sometimes beats client confirm); orphan-refund safety net (if
+    parent is terminal when charge lands, refund via
+    `refundPaymentIntent('orphan_split_tender_after_sweep')`);
+    hold-conversion split-tender dedup
+  - PR #35 (E): Step8PaymentSetup `publish()` early-exit guard for
+    rapid double-click
+  - PR #36 (F): `create_reservation_hold` returns caller's own exact-
+    match active hold instead of raising diner_double_book on
+    page reload (#F12) — prevents 15-min lockout after browser refresh
+  - PR #37 (G): `sweep_abandoned_split_tender_reservations` now calls
+    `release_reservation_tables` (was leaving stale reservation_tables
+    rows that blocked re-booking the same slot via
+    reservation_tables_no_overlap exclusion)
+  - PR #38 (H): SplitTenderPaymentForm — read `failedCount` from latest
+    state instead of stale closure (was showing "0 cards couldn't be
+    charged" even when all paid); useEffect safety net fires onAllPaid
+    when slots eventually flip to "paid" (was leaving parent stuck on
+    cart screen)
+  - PR #39 (I): Restore `create_reservation_hold p_hold_minutes DEFAULT
+    15` — PR-F's rewrite accidentally reverted to 5 (copied from older
+    migration 20260526180000 instead of latest 20260527000000)
+  - PR #40 (J): SplitTenderPaymentForm now calls `onProcessingChange`
+    so outer Place Order button shows Loader2 spinner during split-
+    tender payment loop (parity with single-payment StripePaymentForm);
+    add `reservation_id` column + partial unique index to
+    `restaurant_notification_log` so owner-notification dedup is atomic
+    via INSERT-with-23505-guard instead of SELECT-then-INSERT
+    (was double-emailing Mark when confirm-deposit-paid and
+    stripe-webhook raced within ~87ms)
+
+  Net: split-tender works end-to-end; owner notifications dedupe
+  atomically; hold UX no longer breaks on page reload; orphan-sweep
+  side effects cleaned up. Outstanding follow-ups: `cancel-reservation`
+  defensive gate refuses to cancel `seated`/`completed`/`no_show` even
+  when reserved_at is still future (#F13); diner-side BookingsPage
+  shows terminal-state reservations as "Upcoming" when reserved_at is
+  future (#F14). Both rare in production (only happen when staff
+  prematurely mark a status); deferred.
 
 - **2026-05-20 Subscription lifecycle rework (full overhaul)** —
   Decoupled card-save from subscription creation. Trial clock now anchors

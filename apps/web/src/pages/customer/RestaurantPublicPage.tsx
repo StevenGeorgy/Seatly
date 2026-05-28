@@ -3400,6 +3400,7 @@ export default function RestaurantPublicPage() {
                       toast.success("All payments received — your reservation is confirmed.", { duration: 6000 });
                     }}
                     onError={(msg) => setOrderError(msg)}
+                    onProcessingChange={setPaymentProcessing}
                   />
                 ) : Math.round(totalNow * 100) > 0 && restaurant?.id ? (
                   <StripePaymentForm

@@ -42,6 +42,13 @@ export interface SendOwnerNotificationOpts {
    *  `restaurants.email` (the shared inbox) and always email the human
    *  owner directly. */
   contactOverride?: OwnerContact;
+  /** 2026-05-28: when set, dedup is atomic per-reservation via the
+   *  restaurant_notification_log unique index
+   *  (restaurant_id, notification_type, reservation_id) WHERE status='sent'.
+   *  Defeats the TOCTOU race in the time-window-only dedup that allowed two
+   *  near-simultaneous calls (e.g. confirm-deposit-paid + stripe-webhook
+   *  for the same booking) to both pass the SELECT and both INSERT. */
+  reservation_id?: string;
 }
 
 export interface SendOwnerNotificationResult {
@@ -526,20 +533,30 @@ function buildTemplate(
 export async function sendOwnerNotification(
   opts: SendOwnerNotificationOpts,
 ): Promise<SendOwnerNotificationResult> {
-  const { supabase, restaurant_id, type, context } = opts;
+  const { supabase, restaurant_id, type, context, reservation_id } = opts;
   const idempotencyWindow = opts.idempotent_within_seconds ?? DEFAULT_IDEMPOTENCY_WINDOWS[type];
 
-  // Idempotency check: skip if a 'sent' row of same type exists within window.
+  // Idempotency check. When reservation_id is set, the partial unique
+  // index on (restaurant_id, notification_type, reservation_id) WHERE
+  // status='sent' is the authoritative atomic guard — we still do this
+  // SELECT as a fast-path skip (avoids burning a Resend API call when
+  // we already know it's a dup), but the real safety net is the
+  // INSERT-with-unique-constraint at the end of the function. When no
+  // reservation_id, fall back to the legacy time-window dedup.
   try {
-    const cutoff = new Date(Date.now() - idempotencyWindow * 1000).toISOString();
-    const { data: existing, error: idemErr } = await supabase
+    let query = supabase
       .from("restaurant_notification_log")
       .select("id")
       .eq("restaurant_id", restaurant_id)
       .eq("notification_type", type)
-      .eq("status", "sent")
-      .gt("sent_at", cutoff)
-      .limit(1);
+      .eq("status", "sent");
+    if (reservation_id) {
+      query = query.eq("reservation_id", reservation_id);
+    } else {
+      const cutoff = new Date(Date.now() - idempotencyWindow * 1000).toISOString();
+      query = query.gt("sent_at", cutoff);
+    }
+    const { data: existing, error: idemErr } = await query.limit(1);
     if (!idemErr && existing && existing.length > 0) {
       return { status: "skipped", message: "idempotent_window_active" };
     }
@@ -580,6 +597,54 @@ export async function sendOwnerNotification(
   const resend = new Resend(resendKey);
   const fromAddr = Deno.env.get("RESEND_FROM_EMAIL") ?? "Cenaiva <hello@cenaiva.com>";
 
+  // 2026-05-28 INSERT-first atomic claim. Previously the order was
+  // SELECT (dedup check) → Resend send → INSERT (log). That left a race
+  // window between SELECT and INSERT where a concurrent call could pass
+  // its own SELECT-check before this call's INSERT was committed, then
+  // ALSO call Resend → 2 emails to the owner for 1 reservation.
+  //
+  // New order: INSERT (claim the dedup slot with status='sent' optimistically)
+  // → Resend send → if send fails, UPDATE row to status='failed'
+  // (frees the unique-index slot for retry, since the partial index is
+  // WHERE status='sent'). The 23505 unique_violation guard catches the
+  // race winner deterministically — only one call can hold the 'sent'
+  // claim at any time.
+  let claimedLogId: string | null = null;
+  try {
+    const insertPayload: Record<string, unknown> = {
+      restaurant_id,
+      notification_type: type,
+      sent_to_email: contact.email,
+      payload: { context, subject },
+      status: "sent",
+    };
+    if (reservation_id) {
+      insertPayload.reservation_id = reservation_id;
+    }
+    const { data: inserted, error: insertErr } = await supabase
+      .from("restaurant_notification_log")
+      .insert(insertPayload)
+      .select("id")
+      .single();
+    if (insertErr) {
+      const code = (insertErr as { code?: string }).code;
+      if (code === "23505") {
+        console.log(
+          "[owner-notifications] dedup raced — another call won the INSERT, skipping send",
+          { type, restaurant_id, reservation_id },
+        );
+        return { status: "skipped", message: "dedup_race_lost" };
+      }
+      // Other insert error — log but fall through and attempt the send
+      // (better to dup-email than miss a critical notification).
+      console.error("[owner-notifications] log insert pre-send failed", insertErr);
+    } else if (inserted) {
+      claimedLogId = (inserted as { id?: string }).id ?? null;
+    }
+  } catch (err) {
+    console.error("[owner-notifications] log insert pre-send threw", err);
+  }
+
   try {
     await resend.emails.send({
       from: fromAddr,
@@ -590,32 +655,38 @@ export async function sendOwnerNotification(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[owner-notifications] ${type} send failed`, msg);
-    try {
-      await supabase.from("restaurant_notification_log").insert({
-        restaurant_id,
-        notification_type: type,
-        sent_to_email: contact.email,
-        payload: { context, subject, body },
-        status: "failed",
-        failure_reason: msg.slice(0, 500),
-      });
-    } catch (_) {
-      // ignore
+    // Roll the claimed slot back to 'failed' so retries can re-claim.
+    // The partial unique index is WHERE status='sent', so flipping to
+    // 'failed' frees the slot atomically.
+    if (claimedLogId) {
+      try {
+        await supabase
+          .from("restaurant_notification_log")
+          .update({ status: "failed", failure_reason: msg.slice(0, 500) })
+          .eq("id", claimedLogId);
+      } catch (_) {
+        // ignore — telemetry only
+      }
+    } else {
+      // No claim was made (insert errored non-23505); log a failed row.
+      try {
+        const failedPayload: Record<string, unknown> = {
+          restaurant_id,
+          notification_type: type,
+          sent_to_email: contact.email,
+          payload: { context, subject, body },
+          status: "failed",
+          failure_reason: msg.slice(0, 500),
+        };
+        if (reservation_id) {
+          failedPayload.reservation_id = reservation_id;
+        }
+        await supabase.from("restaurant_notification_log").insert(failedPayload);
+      } catch (_) {
+        // ignore
+      }
     }
     return { status: "failed", message: msg };
-  }
-
-  try {
-    await supabase.from("restaurant_notification_log").insert({
-      restaurant_id,
-      notification_type: type,
-      sent_to_email: contact.email,
-      payload: { context, subject },
-      status: "sent",
-    });
-  } catch (err) {
-    // The email already shipped — log but don't downgrade the result.
-    console.error("[owner-notifications] log insert failed", err);
   }
 
   return { status: "sent" };
@@ -784,6 +855,10 @@ export async function notifyOwnerNewReservation(
     type: "new_reservation_owner",
     context,
     contactOverride: contact,
+    // 2026-05-28: thread reservation_id through so the per-reservation
+    // unique index can enforce atomic dedup across the confirm-deposit-paid
+    // and stripe-webhook racing call sites.
+    reservation_id: opts.reservation_id,
   });
 }
 
