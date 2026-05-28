@@ -207,7 +207,7 @@ export async function runPostHoldConversion({
     const { data: reservation } = await supabase
       .from("reservations")
       .select(
-        "id, status, guest_id, restaurant_id, party_size, reserved_at, confirmation_code, guest_full_name, guest_email, guest_phone, deposit_amount_cents",
+        "id, status, guest_id, user_profile_id, restaurant_id, party_size, reserved_at, confirmation_code, guest_full_name, guest_email, guest_phone, deposit_amount_cents",
       )
       .eq("id", reservationId)
       .maybeSingle();
@@ -230,8 +230,37 @@ export async function runPostHoldConversion({
       const reservationDateLabel = formatReservationDate(new Date(reservation.reserved_at), tz);
 
       const guestName = reservation.guest_full_name?.trim() || "there";
-      const guestEmail = reservation.guest_email || null;
-      const guestPhone = reservation.guest_phone || null;
+      // Resolve notification contact with a fallback chain. For logged-in
+      // diners the reservation/hold guest_email/guest_phone are frequently
+      // NULL (identity lives in user_profiles), which previously meant the
+      // confirmation silently skipped both SMS + email — the diner got no
+      // booking confirmation on the paid-hold preorder/deposit path. Fall
+      // back to the linked guests row, then user_profiles, so the diner
+      // always gets the confirmation. (2026-05-28 fix.)
+      let guestEmail = reservation.guest_email || null;
+      let guestPhone = reservation.guest_phone || null;
+      if ((!guestEmail || !guestPhone) && reservation.guest_id) {
+        const { data: g } = await supabase
+          .from("guests")
+          .select("email, phone")
+          .eq("id", reservation.guest_id)
+          .maybeSingle();
+        if (g) {
+          guestEmail = guestEmail || (g as { email?: string | null }).email || null;
+          guestPhone = guestPhone || (g as { phone?: string | null }).phone || null;
+        }
+      }
+      if ((!guestEmail || !guestPhone) && reservation.user_profile_id) {
+        const { data: up } = await supabase
+          .from("user_profiles")
+          .select("email, phone")
+          .eq("id", reservation.user_profile_id)
+          .maybeSingle();
+        if (up) {
+          guestEmail = guestEmail || (up as { email?: string | null }).email || null;
+          guestPhone = guestPhone || (up as { phone?: string | null }).phone || null;
+        }
+      }
 
       const manageLink = restaurantSlug && reservation.confirmation_code
         ? `https://cenaiva.com/${restaurantSlug}?confirmation=${encodeURIComponent(reservation.confirmation_code)}${guestEmail ? `&email=${encodeURIComponent(guestEmail)}` : ""}`

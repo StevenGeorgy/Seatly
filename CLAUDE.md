@@ -78,6 +78,30 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-28 Solo Stripe-QA fixes (2 bugs)** — Caught during the solo
+  (split-tender-off) Phase-1 QA pass and fixed live:
+  (1) **Missing diner confirmation on the paid-hold path.** Logged-in
+  diners' reservations/holds frequently have `guest_email`/`guest_phone`
+  NULL (identity lives in `user_profiles`), so `runPostHoldConversion`
+  in `_shared/hold-conversion.ts` skipped BOTH SMS + email → diner got
+  no booking confirmation (pure-preorder + deposit paid-hold bookings).
+  Fix: resolve notification contact with a fallback chain
+  `reservation.guest_email/phone` → `guests` row (via `guest_id`) →
+  `user_profiles` (via `user_profile_id`). Redeployed `confirm-hold-paid`,
+  `stripe-webhook`, `create-public-booking`. Verified: confirmation now
+  fires exactly once.
+  (2) **Deposit RDP row stuck `charged` after combined-booking cancel.**
+  Combined pre-order+deposit bookings share ONE PI and store the full
+  base (preorder+tax+deposit) on `orders.total_amount`; `cancel-reservation`
+  refunded the whole base via the order loop, then the deposit loop
+  re-hit the same already-refunded PI (exceeds remaining) and left the
+  RDP row `charged`. Fix: track PIs refunded by the order loop
+  (`refundedViaOrderPiIds`); for any charged deposit sharing such a PI,
+  reconcile the row to `refunded` without a second Stripe call.
+  Redeployed `cancel-reservation`. Verified: one $2.91 refund, RDP →
+  `refunded`. Money flow was always correct in both bugs; these were a
+  notification gap and a DB-state gap respectively.
+
 - **2026-05-28 Split-tender FEATURE-FLAGGED OFF** — Multi-card-at-booking
   (PR-K) is disabled, not deleted. Frontend gated behind
   `VITE_SPLIT_TENDER_ENABLED` (helper: `apps/web/src/lib/featureFlags.ts`);

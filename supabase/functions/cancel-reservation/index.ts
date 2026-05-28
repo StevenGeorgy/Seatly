@@ -512,6 +512,15 @@ Deno.serve(async (req: Request) => {
     if (stripeKey) {
       const stripe = await getStripeClient(stripeKey);
 
+      // Track PIs already refunded by the pre-order loop. Combined
+      // pre-order + deposit bookings share ONE PaymentIntent and store the
+      // FULL base (preorder + tax + deposit) on orders.total_amount, so the
+      // order refund below returns everything in one go. A subsequent deposit
+      // refund on the same PI would exceed its remaining refundable amount and
+      // error out, leaving the RDP row stuck at 'charged'. We use this set to
+      // reconcile such deposit rows to 'refunded' without a second Stripe call.
+      const refundedViaOrderPiIds = new Set<string>();
+
       // Pre-order refunds. orders.total_amount is a numeric dollar value,
       // not cents — convert at report time.
       const { data: paidOrders } = await adminClient
@@ -538,6 +547,7 @@ Deno.serve(async (req: Request) => {
           refundCents > 0 ? refundCents : undefined,
         );
         if (outcome.ok) {
+          refundedViaOrderPiIds.add(piId);
           await adminClient
             .from("orders")
             .update({ status: "refunded" })
@@ -581,6 +591,19 @@ Deno.serve(async (req: Request) => {
         const piId = row.stripe_payment_intent_id;
         const amountCents = row.amount_cents ?? 0;
         if (!piId) continue;
+        // Combined preorder+deposit booking: this deposit shares its PI with
+        // an order that the loop above already fully refunded (the order's
+        // total_amount includes the deposit, so its refund returned the whole
+        // base). Re-refunding here would exceed the PI's remaining amount and
+        // error out, leaving the row stuck at 'charged'. Reconcile the row to
+        // 'refunded' without a second Stripe call. (2026-05-28 fix.)
+        if (refundedViaOrderPiIds.has(piId)) {
+          await adminClient
+            .from("reservation_deposit_payments")
+            .update({ status: "refunded" })
+            .eq("id", row.id);
+          continue;
+        }
         // Break-even policy — see _shared/refund-math.ts.
         const { refundCents } = computeBreakEvenRefund(amountCents);
         const outcome = await refundPaymentIntent(
