@@ -508,10 +508,23 @@ function SlotInner({
           const friendly = toUserFacingError(submitErr, "Please check the card details.");
           return { ok: false, error: friendly.message };
         }
+        // 2026-05-28 fix: when PaymentElement `fields.billingDetails.address.*`
+        // is set to "never" (see the <PaymentElement> render below), Stripe
+        // requires the corresponding values in confirmParams.payment_method_data.
+        // Without these, every confirmPayment call throws IntegrationError and
+        // the split-tender flow is 100% broken. Single-payment StripePaymentForm
+        // has the same fix at ~line 685-702 — keep these two call sites in sync.
         const { paymentIntent, error: confirmErr } = await stripe.confirmPayment({
           elements,
           clientSecret,
-          confirmParams: { return_url: window.location.href },
+          confirmParams: {
+            return_url: window.location.href,
+            payment_method_data: {
+              billing_details: {
+                address: { line1: "", line2: "", city: "", state: "" },
+              },
+            },
+          },
           redirect: "if_required",
         });
         if (confirmErr) {
