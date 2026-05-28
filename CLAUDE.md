@@ -26,6 +26,38 @@ explaining behavior or copying code.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-28 PR-K Split-tender parity (all 10 gaps in one push)** —
+  Split-tender bookings now behave identically to solo bookings on
+  modify + cancel + dashboard surfaces. Server changes: `modify-reservation`
+  detects ≥2 charged RDP rows and (a) for UP deltas seeds N pending rows
+  proportional to each original payer's share, returns
+  `is_split_tender: true` + `deposit_payment_row_ids[]` + `split_payers[]`
+  (party_delta + cart_delta both); (b) for DOWN deltas distributes the
+  refund across ALL charged rows via `proportional-split.ts` largest-
+  remainder helper (was refunding ONE row only). `confirm-modify-payment`
+  schema accepts both legacy single-row shape AND new arrays — verifies
+  all N PIs succeeded + all N RDP rows charged + all metadata bindings
+  before applying `modify_reservation_slot` exactly once; auto-refunds
+  ALL N PIs on rejection. `cancel-reservation` (already refunds per-row)
+  now passes per-payer `refund_breakdown` array to
+  `notifyOwnerCancellation`; owner email body renders bullet list when
+  ≥2 cards; diner email body splits the refund line by card. Frontend:
+  `BookingDetailsPage`, `ManageBookingView`, `EditPreorderModal` all
+  detect `is_split_tender` and mount `SplitTenderPaymentForm` (vs solo
+  `StripePaymentForm`) with the N pre-seeded row IDs as `onPreCheckout`
+  result; `SplitTenderPaymentForm.onAllPaid` now passes
+  `paymentIntentIds[]` + `depositRowIds[]` back so consumers can call
+  `confirm-modify-payment` with the array shape. Owner dashboard:
+  `useReservations` joins `reservation_deposit_payments`; new
+  `ReservationDepositBreakdown` component renders per-payer status in
+  the detail dialog; list-view badge swaps "Deposit" → "Split N/M paid".
+  Gap 12 (`update_reservation_hold_diner` RDP sync) analyzed-and-skipped:
+  RDP rows for split-tender are seeded in `create-public-booking` AFTER
+  hold-update completes, so the booker's contact data can never drift
+  between hold-update and RDP creation — no migration needed.
+  Deployed: `modify-reservation`, `confirm-modify-payment`,
+  `cancel-reservation`.
+
 - **2026-05-28 Comprehensive QA session (PR-A through PR-J)** — 10 PRs
   shipped end-to-end after a full Stripe-flow QA pass. Highlights:
   - PR #31 (A): Fix Stripe IntegrationError that broke 100% of
@@ -348,8 +380,27 @@ Multi-payer deposit SMS support requires `payer_phone` column.
 - Never UPDATE `orders` from the diner-facing client. RLS restricts
   UPDATE to staff; diner calls silently fail. Use `mark-order-paid`.
 - Never insert into `reservation_deposit_payments` outside
-  `prepare-deposit`. RLS allows only service-role writes; the settle
-  trigger that flips reservations to 'confirmed' depends on it.
+  `prepare-deposit`, `create-public-booking` (split-tender path with
+  `split_tender_payers`), `convert_reservation_hold_to_reservation`
+  (single-payer path), or `modify-reservation` (delta-UP path — seeds
+  pending rows for split-tender modify; one row for solo). RLS allows
+  only service-role writes; the settle trigger that flips reservations
+  to 'confirmed' depends on it.
+- Never refund a split-tender DOWN (modify-down or cart-shrink) by
+  picking a single charged row. Always proportionally distribute
+  |delta| across ALL charged rows via
+  `proportionalSplitCents(totalCents, weights)` from
+  `_shared/proportional-split.ts` (largest-remainder method —
+  guarantees sum exactly equals total, no penny drift). `cancel-
+  reservation` is unaffected (it already loops every row independently).
+- For split-tender modify-UP, `modify-reservation` returns
+  `is_split_tender: true` + `deposit_payment_row_ids: string[]` +
+  `split_payers[]`. Clients MUST detect this and mount
+  `SplitTenderPaymentForm` (NOT the solo `StripePaymentForm`).
+  `confirm-modify-payment` accepts both legacy single-row + new array
+  shape; arrays apply the modify exactly once after verifying ALL N
+  PIs + ALL N RDP rows are charged + ALL metadata bindings hold.
+  Auto-refund on rejection refunds ALL N PIs.
 - Never call `confirm-deposit-stub` from production code paths. Use
   `confirm-deposit-paid` (re-verifies the PI with Stripe).
 - Never drop or weaken the `restaurants_publish_gate` trigger — it's

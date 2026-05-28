@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
+import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
 import {
   usePublicMenuCategories,
   usePublicMenuItems,
@@ -96,6 +97,13 @@ type CartLine = {
 // ───────────────────────────────────────────────────────────────────────
 // Network helpers
 
+type SplitPayer = {
+  row_id: string;
+  amount_cents: number;
+  payer_full_name: string | null;
+  payer_email: string | null;
+};
+
 type ModifyResponse =
   | {
       ok: true;
@@ -105,7 +113,11 @@ type ModifyResponse =
   | {
       ok: false;
       requires_payment: true;
-      deposit_payment_id: string;
+      // 2026-05-28 (PR-K): server returns either single deposit_payment_id
+      // (legacy) or an array of N row IDs (split-tender).
+      deposit_payment_row_ids: string[];
+      is_split_tender: boolean;
+      split_payers: SplitPayer[];
       food_cents: number;
       tax_cents: number;
       delta_cents?: number;
@@ -169,15 +181,21 @@ async function callModifyReservation(
     Partial<{
       requires_payment: boolean;
       deposit_payment_id: string;
+      deposit_payment_row_ids: string[];
+      is_split_tender: boolean;
+      split_payers: SplitPayer[];
       food_cents: number;
       tax_cents: number;
       refunded_cents: number;
       delta_cents: number;
     }>;
+  const resolvedRowIds = raw.deposit_payment_row_ids
+    ?? (typeof raw.deposit_payment_id === "string" ? [raw.deposit_payment_id] : null);
   if (
     res.ok &&
     raw.requires_payment === true &&
-    typeof raw.deposit_payment_id === "string" &&
+    resolvedRowIds &&
+    resolvedRowIds.length > 0 &&
     typeof raw.food_cents === "number" &&
     typeof raw.tax_cents === "number"
   ) {
@@ -186,7 +204,14 @@ async function callModifyReservation(
       data: {
         ok: false,
         requires_payment: true,
-        deposit_payment_id: raw.deposit_payment_id,
+        deposit_payment_row_ids: resolvedRowIds,
+        is_split_tender: raw.is_split_tender === true || resolvedRowIds.length >= 2,
+        split_payers: raw.split_payers ?? resolvedRowIds.map((id) => ({
+          row_id: id,
+          amount_cents: raw.delta_cents ?? 0,
+          payer_full_name: null,
+          payer_email: null,
+        })),
         food_cents: raw.food_cents,
         tax_cents: raw.tax_cents,
         delta_cents: raw.delta_cents,
@@ -214,8 +239,9 @@ type ConfirmModifyResponse = {
 
 async function callConfirmModifyPayment(
   reservationId: string,
-  depositPaymentId: string,
-  paymentIntentId: string,
+  // 2026-05-28 (PR-K): arrays for split-tender; solo uses single-entry arrays.
+  depositPaymentRowIds: string[],
+  paymentIntentIds: string[],
   auth: EditPreorderAuth,
 ): Promise<{ kind: "ok" } | { kind: "err"; message: string }> {
   if (!isSupabaseConfigured()) {
@@ -231,11 +257,19 @@ async function callConfirmModifyPayment(
     const token = sessionData.session?.access_token ?? null;
     if (token) headers.Authorization = `Bearer ${token}`;
   }
+  const isMulti = depositPaymentRowIds.length > 1;
   const body: Record<string, unknown> = {
     reservation_id: reservationId,
     change_type: "cart_delta",
-    deposit_payment_row_id: depositPaymentId,
-    payment_intent_id: paymentIntentId,
+    ...(isMulti
+      ? {
+          deposit_payment_row_ids: depositPaymentRowIds,
+          payment_intent_ids: paymentIntentIds,
+        }
+      : {
+          deposit_payment_row_id: depositPaymentRowIds[0],
+          payment_intent_id: paymentIntentIds[0],
+        }),
   };
   if (auth.kind === "guest") {
     body.confirmation_code = auth.confirmation_code;
@@ -386,7 +420,10 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pendingPayment, setPendingPayment] = useState<{
-    depositPaymentId: string;
+    // 2026-05-28 (PR-K): arrays for split-tender; solo is length 1.
+    depositPaymentRowIds: string[];
+    isSplitTender: boolean;
+    splitPayers: SplitPayer[];
     foodCents: number;
     taxCents: number;
   } | null>(null);
@@ -459,7 +496,9 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
       }
       if (result.data.requires_payment) {
         setPendingPayment({
-          depositPaymentId: result.data.deposit_payment_id,
+          depositPaymentRowIds: result.data.deposit_payment_row_ids,
+          isSplitTender: result.data.is_split_tender,
+          splitPayers: result.data.split_payers,
           foodCents: result.data.food_cents,
           taxCents: result.data.tax_cents,
         });
@@ -492,15 +531,22 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
   ]);
 
   const handlePaymentPaid = useCallback(
-    async (paymentIntentId: string) => {
+    async (paymentIntentIds: string | string[]) => {
       if (!pendingPayment || finalizingPayment) return;
+      const piIds = Array.isArray(paymentIntentIds) ? paymentIntentIds : [paymentIntentIds];
+      if (piIds.length !== pendingPayment.depositPaymentRowIds.length) {
+        setErrorMessage(
+          `Payment count mismatch (got ${piIds.length}, expected ${pendingPayment.depositPaymentRowIds.length}).`,
+        );
+        return;
+      }
       setFinalizingPayment(true);
       setErrorMessage(null);
       try {
         const result = await callConfirmModifyPayment(
           reservationId,
-          pendingPayment.depositPaymentId,
-          paymentIntentId,
+          pendingPayment.depositPaymentRowIds,
+          piIds,
           auth,
         );
         if (result.kind === "err") {
@@ -612,19 +658,65 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
                 </span>
               </div>
               <p className="mt-2 text-xs text-text-muted">
-                Pay the delta to confirm your updated pre-order. Cenaiva fee +
-                Stripe processing apply on top — final number shows in the card
-                form below.
+                {pendingPayment.isSplitTender
+                  ? `Split-tender — the upcharge is divided across ${pendingPayment.depositPaymentRowIds.length} cards proportional to each payer's original share. All cards must succeed.`
+                  : "Pay the delta to confirm your updated pre-order. Cenaiva fee + Stripe processing apply on top."}
               </p>
+              {pendingPayment.isSplitTender ? (
+                <ul className="mt-3 space-y-1 text-xs text-text-muted">
+                  {pendingPayment.splitPayers.map((p, i) => (
+                    <li key={p.row_id} className="flex items-center justify-between gap-2">
+                      <span className="truncate">
+                        #{i + 1} ·{" "}
+                        {(p.payer_full_name ?? "").trim() ||
+                          (p.payer_email ?? "").trim() ||
+                          `Co-payer ${i + 1}`}
+                      </span>
+                      <span className="font-mono tabular-nums">
+                        ${(p.amount_cents / 100).toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
-            <StripePaymentForm
-              restaurantId={restaurantId}
-              amountCents={pendingPayment.foodCents}
-              taxCents={pendingPayment.taxCents}
-              depositPaymentIds={[pendingPayment.depositPaymentId]}
-              onPaid={handlePaymentPaid}
-              payButtonLabel={finalizingPayment ? "Finalizing…" : "Pay & confirm pre-order"}
-            />
+            {pendingPayment.isSplitTender ? (
+              <>
+                <SplitTenderPaymentForm
+                  restaurantId={restaurantId}
+                  foodTotalCents={pendingPayment.foodCents}
+                  taxTotalCents={pendingPayment.taxCents}
+                  payerCount={pendingPayment.depositPaymentRowIds.length}
+                  holdId={null}
+                  formId="edit-preorder-split-pay-form"
+                  onPreCheckout={async () => ({
+                    reservation_id: reservationId,
+                    deposit_row_ids: pendingPayment.depositPaymentRowIds,
+                  })}
+                  onAllPaid={async ({ paymentIntentIds }) => {
+                    await handlePaymentPaid(paymentIntentIds);
+                  }}
+                  onError={(msg) => setErrorMessage(msg)}
+                />
+                <Button
+                  type="submit"
+                  form="edit-preorder-split-pay-form"
+                  disabled={finalizingPayment}
+                  className="h-10 w-full"
+                >
+                  {finalizingPayment ? "Finalizing…" : "Pay & confirm pre-order"}
+                </Button>
+              </>
+            ) : (
+              <StripePaymentForm
+                restaurantId={restaurantId}
+                amountCents={pendingPayment.foodCents}
+                taxCents={pendingPayment.taxCents}
+                depositPaymentIds={pendingPayment.depositPaymentRowIds}
+                onPaid={handlePaymentPaid}
+                payButtonLabel={finalizingPayment ? "Finalizing…" : "Pay & confirm pre-order"}
+              />
+            )}
             {errorMessage ? (
               <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
                 {errorMessage}

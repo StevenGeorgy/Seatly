@@ -112,11 +112,19 @@ export type CreatePublicPaymentIntentInput = z.infer<
 //     snapshot from reservation_deposit_payments.pending_cart_snapshot
 //     (JSONB) which modify-reservation stamped. date/time/party_size
 //     are not required in this branch.
+// 2026-05-28 (PR-K): split-tender modify support. The single-payer shape
+// (deposit_payment_row_id + payment_intent_id) is retained for backward
+// compatibility. For multi-payer (split-tender) modify-up flows the client
+// sends the *_ids arrays (one entry per existing payer card). The server
+// asserts each PI succeeded + each row binds via metadata before applying
+// the modify exactly once.
 export const ConfirmModifyPaymentSchema = z
   .object({
     reservation_id: Uuid,
-    deposit_payment_row_id: Uuid,
-    payment_intent_id: PaymentIntentId,
+    deposit_payment_row_id: Uuid.optional(),
+    payment_intent_id: PaymentIntentId.optional(),
+    deposit_payment_row_ids: z.array(Uuid).min(1).max(10).optional(),
+    payment_intent_ids: z.array(PaymentIntentId).min(1).max(10).optional(),
     change_type: z.enum(["party_delta", "cart_delta"]).optional(),
     date: BoundedText(20)
       .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
@@ -144,6 +152,29 @@ export const ConfirmModifyPaymentSchema = z
     {
       message: "date, time and party_size are required for party_delta",
       path: ["date"],
+    },
+  )
+  .refine(
+    (b) => {
+      // Exactly one of (single_row, multi_rows) must be provided.
+      const singleProvided =
+        b.deposit_payment_row_id !== undefined &&
+        b.payment_intent_id !== undefined;
+      const multiProvided =
+        Array.isArray(b.deposit_payment_row_ids) &&
+        Array.isArray(b.payment_intent_ids);
+      if (singleProvided === multiProvided) return false;
+      if (multiProvided) {
+        const rowIds = b.deposit_payment_row_ids!;
+        const piIds = b.payment_intent_ids!;
+        if (rowIds.length !== piIds.length) return false;
+      }
+      return true;
+    },
+    {
+      message:
+        "Provide either deposit_payment_row_id+payment_intent_id (single) OR matching deposit_payment_row_ids+payment_intent_ids arrays (multi).",
+      path: ["deposit_payment_row_ids"],
     },
   );
 export type ConfirmModifyPaymentInput = z.infer<

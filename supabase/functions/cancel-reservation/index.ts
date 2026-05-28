@@ -20,6 +20,10 @@ type RefundOutcomeReport = {
   payment_intent_id: string | null;
   amount_cents: number;
   error?: string;
+  // 2026-05-28 (PR-K): per-payer context surfaced in the cancellation
+  // notification breakdown — present on deposit rows for split-tender.
+  payer_full_name?: string | null;
+  payer_email?: string | null;
 };
 
 // Status semantics: this function permits cancelling reservations in any
@@ -372,17 +376,36 @@ Deno.serve(async (req: Request) => {
       const preorderRefundCents = successfulRefunds
         .filter((r) => r.kind === "preorder")
         .reduce((sum, r) => sum + r.amount_cents, 0);
+      // 2026-05-28 (PR-K): when the deposit was split-tender, the body
+      // breaks down per-payer so each diner sees their own refund line.
+      // Solo bookings keep the original single-line shape.
+      const depositRefunds = successfulRefunds.filter((r) => r.kind === "deposit");
+      const isSplitDeposit = depositRefunds.length >= 2;
+      const splitDepositLines = isSplitDeposit
+        ? depositRefunds
+            .map((r) => {
+              const name = (r.payer_full_name ?? "").trim() || "Co-payer";
+              return `  • ${name}: ${formatCents(r.amount_cents)}`;
+            })
+            .join("\n")
+        : "";
+
       let refundLine = "";
       if (depositRefundCents > 0 && preorderRefundCents > 0) {
         refundLine =
           `\nRefunded: ${formatCents(depositRefundCents + preorderRefundCents)}` +
           ` (deposit ${formatCents(depositRefundCents)}` +
-          ` + pre-order ${formatCents(preorderRefundCents)}) to your card.` +
-          ` Refunds typically appear within 5–10 business days.`;
+          ` + pre-order ${formatCents(preorderRefundCents)}).` +
+          (isSplitDeposit
+            ? `\nDeposit split across ${depositRefunds.length} cards:\n${splitDepositLines}`
+            : "") +
+          `\nRefunds typically appear within 5–10 business days.`;
       } else if (depositRefundCents > 0) {
-        refundLine =
-          `\nDeposit refunded: ${formatCents(depositRefundCents)} to your card.` +
-          ` Refunds typically appear within 5–10 business days.`;
+        refundLine = isSplitDeposit
+          ? `\nDeposit refunded across ${depositRefunds.length} cards (total ${formatCents(depositRefundCents)}):\n${splitDepositLines}` +
+            `\nRefunds typically appear within 5–10 business days.`
+          : `\nDeposit refunded: ${formatCents(depositRefundCents)} to your card.` +
+            ` Refunds typically appear within 5–10 business days.`;
       } else if (preorderRefundCents > 0) {
         refundLine =
           `\nPre-order refunded: ${formatCents(preorderRefundCents)} to your card.` +
@@ -441,7 +464,7 @@ Deno.serve(async (req: Request) => {
     // status='charged' filter on the real-PI query doesn't pick them back up.
     const { data: stubDeposits } = await adminClient
       .from("reservation_deposit_payments")
-      .select("id, amount_cents")
+      .select("id, amount_cents, payer_full_name, payer_email")
       .eq("reservation_id", reservationId)
       .eq("status", "charged")
       .is("stripe_payment_intent_id", null);
@@ -453,12 +476,19 @@ Deno.serve(async (req: Request) => {
         .eq("status", "charged")
         .is("stripe_payment_intent_id", null);
       for (const dep of stubDeposits) {
-        const row = dep as { id: string; amount_cents: number | null };
+        const row = dep as {
+          id: string;
+          amount_cents: number | null;
+          payer_full_name: string | null;
+          payer_email: string | null;
+        };
         refundOutcomes.push({
           kind: "deposit",
           ok: true,
           payment_intent_id: null,
           amount_cents: row.amount_cents ?? 0,
+          payer_full_name: row.payer_full_name,
+          payer_email: row.payer_email,
         });
         refundedDepositPayerIds.push(row.id);
       }
@@ -536,7 +566,7 @@ Deno.serve(async (req: Request) => {
       // Deposit refunds backed by a real Stripe PI.
       const { data: chargedDeposits } = await adminClient
         .from("reservation_deposit_payments")
-        .select("id, stripe_payment_intent_id, amount_cents")
+        .select("id, stripe_payment_intent_id, amount_cents, payer_full_name, payer_email")
         .eq("reservation_id", reservationId)
         .eq("status", "charged")
         .not("stripe_payment_intent_id", "is", null);
@@ -545,6 +575,8 @@ Deno.serve(async (req: Request) => {
           id: string;
           stripe_payment_intent_id: string | null;
           amount_cents: number | null;
+          payer_full_name: string | null;
+          payer_email: string | null;
         };
         const piId = row.stripe_payment_intent_id;
         const amountCents = row.amount_cents ?? 0;
@@ -567,6 +599,8 @@ Deno.serve(async (req: Request) => {
             ok: true,
             payment_intent_id: piId,
             amount_cents: refundCents > 0 ? refundCents : amountCents,
+            payer_full_name: row.payer_full_name,
+            payer_email: row.payer_email,
           });
           refundedDepositPayerIds.push(row.id);
         } else {
@@ -576,6 +610,8 @@ Deno.serve(async (req: Request) => {
             payment_intent_id: piId,
             amount_cents: refundCents > 0 ? refundCents : amountCents,
             error: outcome.error,
+            payer_full_name: row.payer_full_name,
+            payer_email: row.payer_email,
           });
           console.warn(
             `[cancel-reservation] deposit refund failed for payment ${row.id}:`,
@@ -667,6 +703,19 @@ Deno.serve(async (req: Request) => {
       }
     };
 
+    // 2026-05-28 (PR-K): per-payer breakdown for owner email body.
+    // Surfaces a bullet list of {payer name, amount, status} when the
+    // reservation was split-tender. Solo bookings render a single line.
+    const refundBreakdown = refundOutcomes
+      .filter((r) => r.kind === "deposit")
+      .map((r) => ({
+        payer_full_name: r.payer_full_name ?? null,
+        payer_email: r.payer_email ?? null,
+        amount_cents: r.amount_cents,
+        payment_intent_id: r.payment_intent_id,
+        ok: r.ok,
+      }));
+
     // Owner cancellation notification (fire-and-forget). Honors the
     // owner's notification_preferences_json.cancellation_email toggle
     // internally. Goes to the owner's user_profile.email, never
@@ -682,6 +731,7 @@ Deno.serve(async (req: Request) => {
           reservation.guest_full_name ?? guest?.full_name ?? null,
         confirmation_code: reservation.confirmation_code ?? null,
         actor,
+        refund_breakdown: refundBreakdown,
       }).catch((err) => {
         console.error("[cancel-reservation] notifyOwnerCancellation failed", err);
       });

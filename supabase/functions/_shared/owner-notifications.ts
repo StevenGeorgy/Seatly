@@ -319,11 +319,44 @@ function buildTemplate(
       const actor = context.actor === "owner"
         ? "You cancelled "
         : `${guestName} cancelled `;
+      // 2026-05-28 (PR-K): per-payer refund breakdown for split-tender
+      // visibility. context.refund_breakdown is an array of {payer_full_name,
+      // amount_cents, ok} entries built by cancel-reservation. When ≥2
+      // entries, render each payer + amount as a bullet list.
+      const breakdown = Array.isArray(context.refund_breakdown)
+        ? (context.refund_breakdown as Array<{
+            payer_full_name?: string | null;
+            amount_cents?: number;
+            ok?: boolean;
+          }>)
+        : [];
+      const breakdownText = (() => {
+        if (breakdown.length === 0) {
+          return `Any deposit or pre-order paid will be refunded to the diner's card.`;
+        }
+        if (breakdown.length === 1) {
+          const e = breakdown[0];
+          const amount = typeof e.amount_cents === "number"
+            ? `$${(e.amount_cents / 100).toFixed(2)}`
+            : "(amount unknown)";
+          const status = e.ok === false ? " (refund failed — manual follow-up)" : "";
+          return `Refunded ${amount} to the diner's card${status}.`;
+        }
+        const lines = breakdown.map((e) => {
+          const name = (e.payer_full_name ?? "").trim() || "Co-payer";
+          const amount = typeof e.amount_cents === "number"
+            ? `$${(e.amount_cents / 100).toFixed(2)}`
+            : "(amount unknown)";
+          const status = e.ok === false ? " — refund FAILED, manual follow-up needed" : "";
+          return `  • ${name}: ${amount}${status}`;
+        });
+        return `Split-tender refunds (${breakdown.length} cards):\n${lines.join("\n")}`;
+      })();
       return {
         subject: `Booking cancelled at ${restaurantName} — ${guestName}`,
         body:
-          `${greet} ${actor}the reservation at ${restaurantName} for ${reservedAtLabel}. ` +
-          `Any deposit or pre-order paid will be refunded to the diner's card. ` +
+          `${greet} ${actor}the reservation at ${restaurantName} for ${reservedAtLabel}.\n\n` +
+          `${breakdownText}\n\n` +
           `Manage your bookings: https://cenaiva.com/dashboard/reservations.`,
       };
     }
@@ -791,6 +824,17 @@ export interface NotifyOwnerReservationOpts {
   confirmation_code?: string | null;
   /** Cancellation only: which side initiated the cancel. */
   actor?: "diner" | "owner";
+  /**
+   * 2026-05-28 (PR-K): per-payer refund breakdown for split-tender
+   * cancellations. Surface to owner email body when ≥2 entries.
+   */
+  refund_breakdown?: Array<{
+    payer_full_name?: string | null;
+    payer_email?: string | null;
+    amount_cents?: number;
+    payment_intent_id?: string | null;
+    ok?: boolean;
+  }>;
 }
 
 async function buildReservationContext(
@@ -925,7 +969,13 @@ export async function notifyOwnerCancellation(
     return { status: "skipped", message: "owner_preference_off" };
   }
   const baseContext = await buildReservationContext(opts.supabase, opts, contact);
-  const context = { ...baseContext, actor: opts.actor ?? "diner" };
+  const context = {
+    ...baseContext,
+    actor: opts.actor ?? "diner",
+    // 2026-05-28 (PR-K): pass-through for the per-payer refund breakdown.
+    // The cancellation_owner template renders a bullet list when ≥2.
+    refund_breakdown: opts.refund_breakdown ?? [],
+  };
   return sendOwnerNotification({
     supabase: opts.supabase,
     restaurant_id: opts.restaurant_id,

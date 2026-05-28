@@ -16,6 +16,7 @@ import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ModifyReservationSchema } from "../_shared/validation/booking.ts";
 import { getStripeClient } from "../_shared/stripe-client.ts";
 import { DEFAULT_TAX_RATE_FALLBACK } from "../_shared/booking-defaults.ts";
+import { proportionalSplitCents } from "../_shared/proportional-split.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -454,22 +455,146 @@ Deno.serve(async (req: Request) => {
     //                  confirm-modify-payment finalizes the modification.
     let depositDeltaCents = 0;
     let currentChargedCents = 0;
+    let chargedRowsForSplit: Array<{
+      id: string;
+      amount_cents: number;
+      payer_email: string | null;
+      payer_full_name: string | null;
+      payer_user_profile_id: string | null;
+      stripe_payment_intent_id: string | null;
+    }> = [];
     if (slotPartySize !== reservation.party_size) {
       const { data: newExpectedRaw } = await adminClient.rpc("compute_deposit_for_party", {
         p_restaurant_id: reservation.restaurant_id,
         p_party_size: slotPartySize,
       });
       const newExpectedCents = Number(newExpectedRaw) || 0;
-      const { data: chargedSumRaw } = await adminClient
+      const { data: chargedRowsRaw } = await adminClient
         .from("reservation_deposit_payments")
-        .select("amount_cents")
+        .select("id, amount_cents, payer_email, payer_full_name, payer_user_profile_id, stripe_payment_intent_id")
         .eq("reservation_id", reservationId)
-        .eq("status", "charged");
-      currentChargedCents = ((chargedSumRaw ?? []) as Array<{ amount_cents: number }>)
+        .eq("status", "charged")
+        .order("created_at", { ascending: true });
+      chargedRowsForSplit = (chargedRowsRaw ?? []) as typeof chargedRowsForSplit;
+      currentChargedCents = chargedRowsForSplit
         .reduce((sum, r) => sum + (r.amount_cents ?? 0), 0);
       depositDeltaCents = newExpectedCents - currentChargedCents;
 
       if (depositDeltaCents > 0) {
+        // 2026-05-28 (PR-K): split-tender awareness. A solo-payer reservation
+        // continues to seed ONE pending row (legacy single-card shape). A
+        // split-tender reservation (≥2 charged rows with amount > 0) seeds
+        // N pending rows — one per existing payer — with the delta split
+        // proportionally to each payer's original contribution. The client
+        // mounts SplitTenderPaymentForm with all N rows; only after every
+        // card succeeds does confirm-modify-payment apply the slot change.
+        //
+        // The dedup-on-retry shape from the single-row path is preserved
+        // for the solo branch; for the multi-row branch we add a natural-
+        // key dedup (same reservation, same payer set, same total amount,
+        // same created-within-5min window).
+        const activeChargedRows = chargedRowsForSplit.filter(
+          (r) => (r.amount_cents ?? 0) > 0,
+        );
+        const isSplitTenderModify = activeChargedRows.length >= 2;
+        const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+
+        if (isSplitTenderModify) {
+          const weights = activeChargedRows.map((r) => r.amount_cents);
+          const perRowDelta = proportionalSplitCents(depositDeltaCents, weights);
+
+          // Natural-key dedup: if a recent (<5min) set of pending rows
+          // matches this reservation+amount, reuse them instead of seeding
+          // new ones. Same shape as the solo-payer dedup but matches the
+          // multi-row total.
+          const { data: existingPendingRows } = await adminClient
+            .from("reservation_deposit_payments")
+            .select("id, amount_cents, payer_user_profile_id, payer_email")
+            .eq("reservation_id", reservationId)
+            .eq("status", "pending")
+            .is("pending_cart_snapshot", null)
+            .gte("created_at", fiveMinAgo)
+            .order("created_at", { ascending: true });
+          const existingPending = (existingPendingRows ?? []) as Array<{
+            id: string;
+            amount_cents: number;
+            payer_user_profile_id: string | null;
+            payer_email: string | null;
+          }>;
+          const existingSum = existingPending.reduce(
+            (s, r) => s + (r.amount_cents ?? 0),
+            0,
+          );
+          let pendingRowIds: string[] = [];
+          let payerSnapshot: Array<{
+            row_id: string;
+            amount_cents: number;
+            payer_full_name: string | null;
+            payer_email: string | null;
+          }> = [];
+
+          if (
+            existingPending.length === activeChargedRows.length &&
+            existingSum === depositDeltaCents
+          ) {
+            // Reuse — match each existing pending row back to its source
+            // charged row by payer identity so per-row amounts line up.
+            pendingRowIds = existingPending.map((r) => r.id);
+            payerSnapshot = activeChargedRows.map((charged, i) => ({
+              row_id: pendingRowIds[i],
+              amount_cents: perRowDelta[i],
+              payer_full_name: charged.payer_full_name,
+              payer_email: charged.payer_email,
+            }));
+          } else {
+            // Seed N fresh pending rows, one per original payer.
+            const inserts = activeChargedRows.map((charged, i) => ({
+              reservation_id: reservationId,
+              amount_cents: perRowDelta[i],
+              status: "pending" as const,
+              payer_email: charged.payer_email,
+              payer_full_name: charged.payer_full_name,
+              payer_user_profile_id: charged.payer_user_profile_id,
+            }));
+            const { data: insertedRows, error: insertErr } = await adminClient
+              .from("reservation_deposit_payments")
+              .insert(inserts)
+              .select("id");
+            if (insertErr || !insertedRows) {
+              return json(
+                { error: insertErr?.message ?? "Could not prepare split delta payments." },
+                400,
+              );
+            }
+            pendingRowIds = (insertedRows as Array<{ id: string }>).map((r) => r.id);
+            payerSnapshot = activeChargedRows.map((charged, i) => ({
+              row_id: pendingRowIds[i],
+              amount_cents: perRowDelta[i],
+              payer_full_name: charged.payer_full_name,
+              payer_email: charged.payer_email,
+            }));
+          }
+
+          return json({
+            ok: false,
+            requires_payment: true,
+            is_split_tender: true,
+            deposit_payment_row_ids: pendingRowIds,
+            deposit_payment_row_id: pendingRowIds[0], // legacy convenience for older clients
+            delta_cents: depositDeltaCents,
+            restaurant_id: reservation.restaurant_id,
+            reservation_id: reservationId,
+            split_payers: payerSnapshot,
+            // The diner's UI uses these to remember the requested change so
+            // we can apply it post-payment via confirm-modify-payment.
+            pending_date: slotDate,
+            pending_time: slotTime,
+            pending_party_size: slotPartySize,
+            pending_special_request: specialRequest || null,
+          });
+        }
+
+        // ── Single-payer (legacy) path ─────────────────────────────────
         // Insert a pending deposit row. The client's payment flow stamps
         // its UUID on the PaymentIntent metadata (deposit_payment_ids);
         // confirm-modify-payment later asserts that binding before
@@ -484,7 +609,6 @@ Deno.serve(async (req: Request) => {
         // pending row created in the last 5 minutes that matches this
         // (reservation, amount, payer) tuple. Same shape repeats in the
         // cart-delta branch below.
-        const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
         let pendingRow: { id: string } | null = null;
         const { data: existingPending } = await adminClient
           .from("reservation_deposit_payments")
@@ -524,7 +648,9 @@ Deno.serve(async (req: Request) => {
         return json({
           ok: false,
           requires_payment: true,
+          is_split_tender: false,
           deposit_payment_row_id: (pendingRow as { id: string }).id,
+          deposit_payment_row_ids: [(pendingRow as { id: string }).id],
           delta_cents: depositDeltaCents,
           restaurant_id: reservation.restaurant_id,
           reservation_id: reservationId,
@@ -629,80 +755,180 @@ Deno.serve(async (req: Request) => {
     // back the delta minus Cenaiva's 5.5%. Above break-even (~$11.54),
     // the Stripe fee on the delta is absorbed by the restaurant; below,
     // the diner eats it.
+    // 2026-05-28 (PR-K): split-tender proportional refund. The previous
+    // code refunded ONE row only (the most-recent charged one), so a
+    // split-tender shrink left N-1 payer cards untouched. Now we distribute
+    // |delta| (break-even adjusted) proportionally across ALL charged rows.
+    // Solo bookings degenerate to the single-row path (one row gets it all).
+    type DepositAdjustmentPerRow = {
+      row_id: string;
+      payer_full_name: string | null;
+      payer_email: string | null;
+      payment_intent_id: string | null;
+      refund_cents: number;
+      ok: boolean;
+      error?: string;
+    };
     type DepositAdjustment =
       | { kind: "none" }
-      | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null }
-      | { kind: "failed"; reason: string };
+      | {
+          kind: "refunded";
+          amount_cents: number;
+          payment_intent_id: string | null;
+          per_row?: DepositAdjustmentPerRow[];
+          is_split_tender?: boolean;
+        }
+      | { kind: "failed"; reason: string; per_row?: DepositAdjustmentPerRow[] };
     let depositAdjustment: DepositAdjustment = { kind: "none" };
 
     if (depositDeltaCents < 0) {
       const deltaToRefund = -depositDeltaCents;
       const { data: chargedRowsRaw } = await adminClient
         .from("reservation_deposit_payments")
-        .select("id, amount_cents, stripe_payment_intent_id, status")
+        .select("id, amount_cents, stripe_payment_intent_id, status, payer_email, payer_full_name")
         .eq("reservation_id", reservationId)
         .eq("status", "charged")
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: true });
       const chargedRows = (chargedRowsRaw ?? []) as Array<{
         id: string;
         amount_cents: number;
         stripe_payment_intent_id: string | null;
         status: string;
+        payer_email: string | null;
+        payer_full_name: string | null;
       }>;
-      const target = chargedRows.find((r) => (r.amount_cents ?? 0) > 0);
-      if (!target) {
+      const activeRows = chargedRows.filter((r) => (r.amount_cents ?? 0) > 0);
+      if (activeRows.length === 0) {
         depositAdjustment = { kind: "none" };
       } else {
+        // Total break-even refund across all rows.
+        const cappedTotal = Math.min(
+          deltaToRefund,
+          activeRows.reduce((s, r) => s + (r.amount_cents ?? 0), 0),
+        );
+        const { refundCents: totalRefundCents } = computeBreakEvenRefund(cappedTotal);
+        const perRowRefund = proportionalSplitCents(
+          totalRefundCents,
+          activeRows.map((r) => r.amount_cents),
+        );
+        const perRowDbDeduct = proportionalSplitCents(
+          cappedTotal,
+          activeRows.map((r) => r.amount_cents),
+        );
         const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-        const applyDbAdjust = async () => {
-          const remaining = (target.amount_cents ?? 0) - deltaToRefund;
-          if (remaining <= 0) {
-            await adminClient
-              .from("reservation_deposit_payments")
-              .update({ status: "refunded", amount_cents: 0 })
-              .eq("id", target.id);
-          } else {
-            await adminClient
-              .from("reservation_deposit_payments")
-              .update({ amount_cents: remaining })
-              .eq("id", target.id);
+        const stripe = stripeKey ? await getStripeClient(stripeKey) : null;
+        const perRow: DepositAdjustmentPerRow[] = [];
+        let totalRefundedCents = 0;
+        let anyFailed = false;
+        for (let i = 0; i < activeRows.length; i++) {
+          const row = activeRows[i];
+          const refundSlice = perRowRefund[i];
+          const dbDeductSlice = perRowDbDeduct[i];
+          if (refundSlice <= 0) {
+            perRow.push({
+              row_id: row.id,
+              payer_full_name: row.payer_full_name,
+              payer_email: row.payer_email,
+              payment_intent_id: row.stripe_payment_intent_id,
+              refund_cents: 0,
+              ok: true,
+            });
+            continue;
           }
-        };
-
-        if (stripeKey && target.stripe_payment_intent_id) {
-          const stripe = await getStripeClient(stripeKey);
-          try {
-            const cappedDelta = Math.min(deltaToRefund, target.amount_cents ?? 0);
-            const { refundCents } = computeBreakEvenRefund(cappedDelta);
-            const outcome = await refundPaymentIntent(
-              stripe,
-              target.stripe_payment_intent_id,
-              "modify_deposit_delta_refund",
-              refundCents,
-            );
-            if (outcome.ok) {
-              await applyDbAdjust();
-              depositAdjustment = {
-                kind: "refunded",
-                amount_cents: refundCents,
-                payment_intent_id: target.stripe_payment_intent_id,
-              };
+          const applyDbDeduct = async () => {
+            const remaining = (row.amount_cents ?? 0) - dbDeductSlice;
+            if (remaining <= 0) {
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ status: "refunded", amount_cents: 0 })
+                .eq("id", row.id);
             } else {
-              console.warn("[modify-reservation] refund failed:", outcome.error);
-              depositAdjustment = { kind: "failed", reason: outcome.error };
+              await adminClient
+                .from("reservation_deposit_payments")
+                .update({ amount_cents: remaining })
+                .eq("id", row.id);
             }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn("[modify-reservation] refund errored:", msg);
-            depositAdjustment = { kind: "failed", reason: msg };
+          };
+          if (stripe && row.stripe_payment_intent_id) {
+            try {
+              const outcome = await refundPaymentIntent(
+                stripe,
+                row.stripe_payment_intent_id,
+                "modify_deposit_delta_refund",
+                refundSlice,
+              );
+              if (outcome.ok) {
+                await applyDbDeduct();
+                totalRefundedCents += refundSlice;
+                perRow.push({
+                  row_id: row.id,
+                  payer_full_name: row.payer_full_name,
+                  payer_email: row.payer_email,
+                  payment_intent_id: row.stripe_payment_intent_id,
+                  refund_cents: refundSlice,
+                  ok: true,
+                });
+              } else {
+                anyFailed = true;
+                console.warn(
+                  `[modify-reservation] refund failed for row ${row.id}:`,
+                  outcome.error,
+                );
+                perRow.push({
+                  row_id: row.id,
+                  payer_full_name: row.payer_full_name,
+                  payer_email: row.payer_email,
+                  payment_intent_id: row.stripe_payment_intent_id,
+                  refund_cents: refundSlice,
+                  ok: false,
+                  error: outcome.error,
+                });
+              }
+            } catch (err) {
+              anyFailed = true;
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[modify-reservation] refund errored for row ${row.id}:`,
+                msg,
+              );
+              perRow.push({
+                row_id: row.id,
+                payer_full_name: row.payer_full_name,
+                payer_email: row.payer_email,
+                payment_intent_id: row.stripe_payment_intent_id,
+                refund_cents: refundSlice,
+                ok: false,
+                error: msg,
+              });
+            }
+          } else {
+            // Stub row (no PI) — DB-only adjust.
+            await applyDbDeduct();
+            totalRefundedCents += refundSlice;
+            perRow.push({
+              row_id: row.id,
+              payer_full_name: row.payer_full_name,
+              payer_email: row.payer_email,
+              payment_intent_id: null,
+              refund_cents: refundSlice,
+              ok: true,
+            });
           }
-        } else {
-          // Stub row (no PI) — DB-only adjust.
-          await applyDbAdjust();
+        }
+        if (totalRefundedCents > 0) {
           depositAdjustment = {
             kind: "refunded",
-            amount_cents: Math.min(deltaToRefund, target.amount_cents ?? 0),
-            payment_intent_id: null,
+            amount_cents: totalRefundedCents,
+            payment_intent_id:
+              activeRows.length === 1 ? activeRows[0].stripe_payment_intent_id : null,
+            per_row: perRow,
+            is_split_tender: activeRows.length >= 2,
+          };
+        } else if (anyFailed) {
+          depositAdjustment = {
+            kind: "failed",
+            reason: "All per-row refunds failed",
+            per_row: perRow,
           };
         }
       }
@@ -1185,9 +1411,135 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
 
   // ── (5) Branch on delta ───────────────────────────────────────────
   if (deltaCents > 0) {
-    // Diner owes more money. Seed a pending deposit row with the new
-    // cart snapshot stamped on it; client must mount StripePaymentForm
-    // and then call confirm-modify-payment with change_type='cart_delta'.
+    // Diner owes more money. Seed a pending deposit row (or N rows for
+    // split-tender) with the new cart snapshot stamped on each; client
+    // mounts SplitTenderPaymentForm (or StripePaymentForm for solo) and
+    // then calls confirm-modify-payment with change_type='cart_delta'.
+    const cartSnapshotJson = {
+      items: cartSnapshotForResponse,
+      food_cents: newFoodCents,
+      tax_cents: newTaxCents,
+      discount_cents: discountCents,
+      applied_promo_code:
+        promoState.kind === "set"
+          ? promoState.code
+          : promoState.kind === "clear"
+            ? null
+            : promoState.code,
+      special_request: specialRequest || null,
+    };
+
+    // 2026-05-28 (PR-K): split-tender awareness for cart deltas. Mirror
+    // the party-delta path — if the original booking was split across N
+    // payers, the cart upcharge is also split proportionally.
+    const { data: chargedRowsForCartRaw } = await adminClient
+      .from("reservation_deposit_payments")
+      .select("id, amount_cents, payer_email, payer_full_name, payer_user_profile_id")
+      .eq("reservation_id", reservationId)
+      .eq("status", "charged")
+      .order("created_at", { ascending: true });
+    const chargedRowsForCart = (chargedRowsForCartRaw ?? []) as Array<{
+      id: string;
+      amount_cents: number;
+      payer_email: string | null;
+      payer_full_name: string | null;
+      payer_user_profile_id: string | null;
+    }>;
+    const activeChargedRowsCart = chargedRowsForCart.filter(
+      (r) => (r.amount_cents ?? 0) > 0,
+    );
+    const isSplitTenderCart = activeChargedRowsCart.length >= 2;
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+
+    if (isSplitTenderCart) {
+      const weights = activeChargedRowsCart.map((r) => r.amount_cents);
+      const perRowDelta = proportionalSplitCents(deltaCents, weights);
+
+      // Natural-key dedup mirror.
+      const { data: existingPendingRows } = await adminClient
+        .from("reservation_deposit_payments")
+        .select("id, amount_cents")
+        .eq("reservation_id", reservationId)
+        .eq("status", "pending")
+        .not("pending_cart_snapshot", "is", null)
+        .gte("created_at", fiveMinAgo)
+        .order("created_at", { ascending: true });
+      const existingPendingCart = (existingPendingRows ?? []) as Array<{
+        id: string;
+        amount_cents: number;
+      }>;
+      const existingSum = existingPendingCart.reduce(
+        (s, r) => s + (r.amount_cents ?? 0),
+        0,
+      );
+      let pendingRowIds: string[] = [];
+      let payerSnapshot: Array<{
+        row_id: string;
+        amount_cents: number;
+        payer_full_name: string | null;
+        payer_email: string | null;
+      }> = [];
+
+      if (
+        existingPendingCart.length === activeChargedRowsCart.length &&
+        existingSum === deltaCents
+      ) {
+        pendingRowIds = existingPendingCart.map((r) => r.id);
+        payerSnapshot = activeChargedRowsCart.map((charged, i) => ({
+          row_id: pendingRowIds[i],
+          amount_cents: perRowDelta[i],
+          payer_full_name: charged.payer_full_name,
+          payer_email: charged.payer_email,
+        }));
+      } else {
+        // Same snapshot stamped on EACH row (confirm-modify-payment reads
+        // it from any one — they're identical, replays exactly once).
+        const inserts = activeChargedRowsCart.map((charged, i) => ({
+          reservation_id: reservationId,
+          amount_cents: perRowDelta[i],
+          status: "pending" as const,
+          payer_email: charged.payer_email,
+          payer_full_name: charged.payer_full_name,
+          payer_user_profile_id: charged.payer_user_profile_id,
+          pending_cart_snapshot: cartSnapshotJson,
+        }));
+        const { data: insertedRows, error: insertErr } = await adminClient
+          .from("reservation_deposit_payments")
+          .insert(inserts)
+          .select("id");
+        if (insertErr || !insertedRows) {
+          return json(
+            { error: insertErr?.message ?? "Could not prepare split cart payments." },
+            400,
+          );
+        }
+        pendingRowIds = (insertedRows as Array<{ id: string }>).map((r) => r.id);
+        payerSnapshot = activeChargedRowsCart.map((charged, i) => ({
+          row_id: pendingRowIds[i],
+          amount_cents: perRowDelta[i],
+          payer_full_name: charged.payer_full_name,
+          payer_email: charged.payer_email,
+        }));
+      }
+
+      return json({
+        ok: false,
+        requires_payment: true,
+        is_split_tender: true,
+        change_type: "cart_delta",
+        deposit_payment_row_ids: pendingRowIds,
+        deposit_payment_id: pendingRowIds[0], // legacy convenience
+        restaurant_id: reservation.restaurant_id,
+        reservation_id: reservationId,
+        delta_cents: deltaCents,
+        food_cents: newFoodCents - currentFoodCents,
+        tax_cents: newTaxCents - currentTaxCents,
+        split_payers: payerSnapshot,
+        new_cart_summary: newCartSummary,
+      });
+    }
+
+    // ── Single-payer (legacy) cart-delta path ─────────────────────────
     const payerEmail =
       reservation.guest_email?.trim() || guest?.email?.trim() || null;
     const payerName =
@@ -1197,7 +1549,6 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
     // (reservation, amount, payer) tuple. The presence of
     // pending_cart_snapshot distinguishes cart-delta rows from
     // party-delta rows so the two branches don't conflate.
-    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
     let pendingRow: { id: string } | null = null;
     const { data: existingPending } = await adminClient
       .from("reservation_deposit_payments")
@@ -1223,19 +1574,7 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
           payer_email: payerEmail,
           payer_full_name: payerName,
           payer_user_profile_id: reservation.user_profile_id,
-          pending_cart_snapshot: {
-            items: cartSnapshotForResponse,
-            food_cents: newFoodCents,
-            tax_cents: newTaxCents,
-            discount_cents: discountCents,
-            applied_promo_code:
-              promoState.kind === "set"
-                ? promoState.code
-                : promoState.kind === "clear"
-                  ? null
-                  : promoState.code,
-            special_request: specialRequest || null,
-          },
+          pending_cart_snapshot: cartSnapshotJson,
         })
         .select("id")
         .single();
@@ -1259,8 +1598,10 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
     return json({
       ok: false,
       requires_payment: true,
+      is_split_tender: false,
       change_type: "cart_delta",
       deposit_payment_id: (pendingRow as { id: string }).id,
+      deposit_payment_row_ids: [(pendingRow as { id: string }).id],
       restaurant_id: reservation.restaurant_id,
       reservation_id: reservationId,
       delta_cents: deltaCents,
@@ -1351,71 +1692,158 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
   // Refund the shrink (if any). Mirrors the slot-modify shrink path:
   // find the most recent charged deposit row with a PI and partial-
   // refund |delta| via reverse_transfer.
+  // 2026-05-28 (PR-K): split-tender proportional cart-shrink refund.
+  // Mirror the party-delta DOWN branch.
+  type CartRefundPerRow = {
+    row_id: string;
+    payer_full_name: string | null;
+    payer_email: string | null;
+    payment_intent_id: string | null;
+    refund_cents: number;
+    ok: boolean;
+    error?: string;
+  };
   type CartRefundResult =
     | { kind: "none" }
-    | { kind: "refunded"; amount_cents: number; payment_intent_id: string | null; refund_id: string }
-    | { kind: "failed"; reason: string };
+    | {
+        kind: "refunded";
+        amount_cents: number;
+        payment_intent_id: string | null;
+        refund_id: string | null;
+        per_row?: CartRefundPerRow[];
+        is_split_tender?: boolean;
+      }
+    | { kind: "failed"; reason: string; per_row?: CartRefundPerRow[] };
   let cartRefund: CartRefundResult = { kind: "none" };
   if (deltaCents < 0) {
     const refundAmount = -deltaCents;
     const { data: chargedRowsRaw } = await adminClient
       .from("reservation_deposit_payments")
-      .select("id, amount_cents, stripe_payment_intent_id, status")
+      .select("id, amount_cents, stripe_payment_intent_id, status, payer_email, payer_full_name")
       .eq("reservation_id", reservationId)
       .eq("status", "charged")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: true });
     const chargedRows = (chargedRowsRaw ?? []) as Array<{
       id: string;
       amount_cents: number;
       stripe_payment_intent_id: string | null;
       status: string;
+      payer_email: string | null;
+      payer_full_name: string | null;
     }>;
-    const target = chargedRows.find(
+    const activeRows = chargedRows.filter(
       (r) => (r.amount_cents ?? 0) > 0 && r.stripe_payment_intent_id,
     );
-    if (target && target.stripe_payment_intent_id) {
+    if (activeRows.length > 0) {
       const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
       if (stripeKey) {
         const stripe = await getStripeClient(stripeKey);
-        try {
-          const cappedRefund = Math.min(refundAmount, target.amount_cents ?? 0);
-          const outcome = await refundPaymentIntent(
-            stripe,
-            target.stripe_payment_intent_id,
-            "cart_shrink",
-            cappedRefund,
-          );
-          if (outcome.ok) {
-            cartRefund = {
-              kind: "refunded",
-              amount_cents: cappedRefund,
-              payment_intent_id: target.stripe_payment_intent_id,
-              refund_id: outcome.refund_id,
-            };
-            // Reduce the deposit row's amount_cents so books reconcile.
-            const remaining = (target.amount_cents ?? 0) - cappedRefund;
-            if (remaining <= 0) {
-              await adminClient
-                .from("reservation_deposit_payments")
-                .update({ status: "refunded", amount_cents: 0 })
-                .eq("id", target.id);
-            } else {
-              await adminClient
-                .from("reservation_deposit_payments")
-                .update({ amount_cents: remaining })
-                .eq("id", target.id);
-            }
-          } else {
-            cartRefund = { kind: "failed", reason: outcome.error };
-            console.warn(
-              "[modify-reservation cart] shrink refund failed:",
-              outcome.error,
-            );
+        const cappedTotal = Math.min(
+          refundAmount,
+          activeRows.reduce((s, r) => s + (r.amount_cents ?? 0), 0),
+        );
+        const perRowAmounts = proportionalSplitCents(
+          cappedTotal,
+          activeRows.map((r) => r.amount_cents),
+        );
+        const perRow: CartRefundPerRow[] = [];
+        let totalRefunded = 0;
+        let firstRefundId: string | null = null;
+        let anyFailed = false;
+        for (let i = 0; i < activeRows.length; i++) {
+          const row = activeRows[i];
+          const slice = perRowAmounts[i];
+          if (slice <= 0) {
+            perRow.push({
+              row_id: row.id,
+              payer_full_name: row.payer_full_name,
+              payer_email: row.payer_email,
+              payment_intent_id: row.stripe_payment_intent_id,
+              refund_cents: 0,
+              ok: true,
+            });
+            continue;
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          cartRefund = { kind: "failed", reason: msg };
-          console.warn("[modify-reservation cart] shrink refund errored:", msg);
+          try {
+            const outcome = await refundPaymentIntent(
+              stripe,
+              row.stripe_payment_intent_id!,
+              "cart_shrink",
+              slice,
+            );
+            if (outcome.ok) {
+              totalRefunded += slice;
+              if (!firstRefundId) firstRefundId = outcome.refund_id;
+              const remaining = (row.amount_cents ?? 0) - slice;
+              if (remaining <= 0) {
+                await adminClient
+                  .from("reservation_deposit_payments")
+                  .update({ status: "refunded", amount_cents: 0 })
+                  .eq("id", row.id);
+              } else {
+                await adminClient
+                  .from("reservation_deposit_payments")
+                  .update({ amount_cents: remaining })
+                  .eq("id", row.id);
+              }
+              perRow.push({
+                row_id: row.id,
+                payer_full_name: row.payer_full_name,
+                payer_email: row.payer_email,
+                payment_intent_id: row.stripe_payment_intent_id,
+                refund_cents: slice,
+                ok: true,
+              });
+            } else {
+              anyFailed = true;
+              console.warn(
+                `[modify-reservation cart] shrink refund failed for row ${row.id}:`,
+                outcome.error,
+              );
+              perRow.push({
+                row_id: row.id,
+                payer_full_name: row.payer_full_name,
+                payer_email: row.payer_email,
+                payment_intent_id: row.stripe_payment_intent_id,
+                refund_cents: slice,
+                ok: false,
+                error: outcome.error,
+              });
+            }
+          } catch (err) {
+            anyFailed = true;
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[modify-reservation cart] shrink refund errored for row ${row.id}:`,
+              msg,
+            );
+            perRow.push({
+              row_id: row.id,
+              payer_full_name: row.payer_full_name,
+              payer_email: row.payer_email,
+              payment_intent_id: row.stripe_payment_intent_id,
+              refund_cents: slice,
+              ok: false,
+              error: msg,
+            });
+          }
+        }
+        if (totalRefunded > 0) {
+          cartRefund = {
+            kind: "refunded",
+            amount_cents: totalRefunded,
+            payment_intent_id:
+              activeRows.length === 1 ? activeRows[0].stripe_payment_intent_id : null,
+            refund_id: firstRefundId,
+            per_row: perRow,
+            is_split_tender: activeRows.length >= 2,
+          };
+        } else if (anyFailed) {
+          cartRefund = {
+            kind: "failed",
+            reason: "All per-row refunds failed",
+            per_row: perRow,
+          };
         }
       }
     }
