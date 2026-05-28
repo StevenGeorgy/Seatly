@@ -495,35 +495,64 @@ Deno.serve(async (req: Request) => {
           ? shareCentsOverride * n
           : holdDepositCents;
         if (totalCents > 0) {
-          const baseShare = Math.floor(totalCents / n);
-          const remainder = totalCents - baseShare * n;
-          const shares = Array.from({ length: n }, (_, i) =>
-            i === 0 ? baseShare + remainder : baseShare,
-          );
-          const payerDetails = payload.split_tender_payer_details ?? null;
-          const fallbackPayerEmail = asText(payload.guest_email) ?? null;
-          const fallbackPayerName = asText(payload.guest_name) ?? null;
-          const { data: insertedRows, error: insertErr } = await supabase
+          // 2026-05-28 dedup: convert_reservation_hold_to_reservation is
+          // idempotent at the hold layer (returns existing reservation_id
+          // on re-call), but the caller's RDP insertion below was running
+          // unconditionally — duplicating rows on retries. Mirror of the
+          // main-path dedup added in PR #32, scoped to (reservation_id +
+          // pending) since the reservation already exists here.
+          const { data: existingPendingRows } = await supabase
             .from("reservation_deposit_payments")
-            .insert(
-              shares.map((amount_cents, i) => ({
-                reservation_id: row.reservation_id,
-                amount_cents,
-                status: "pending",
-                payer_email: payerDetails?.[i]?.email ?? fallbackPayerEmail,
-                payer_full_name: payerDetails?.[i]?.full_name ?? fallbackPayerName,
-              })),
-            )
-            .select("id");
-          if (insertErr) {
-            console.error("[create-public-booking.hold-convert] split-tender insert failed", insertErr);
-          } else if (Array.isArray(insertedRows)) {
-            holdSplitTenderRowIds = insertedRows
-              .map((r) => (r as { id?: unknown }).id)
+            .select("id")
+            .eq("reservation_id", row.reservation_id)
+            .eq("status", "pending")
+            .order("created_at", { ascending: true });
+          if (
+            Array.isArray(existingPendingRows) &&
+            existingPendingRows.length === n
+          ) {
+            console.log(
+              "[create-public-booking.hold-convert] split-tender dedup hit",
+              row.reservation_id,
+              "rows=",
+              existingPendingRows.length,
+            );
+            holdSplitTenderRowIds = existingPendingRows
+              .map((r) => (r as { id?: string }).id)
               .filter((id): id is string => typeof id === "string");
+          } else {
+            const baseShare = Math.floor(totalCents / n);
+            const remainder = totalCents - baseShare * n;
+            const shares = Array.from({ length: n }, (_, i) =>
+              i === 0 ? baseShare + remainder : baseShare,
+            );
+            const payerDetails = payload.split_tender_payer_details ?? null;
+            const fallbackPayerEmail = asText(payload.guest_email) ?? null;
+            const fallbackPayerName = asText(payload.guest_name) ?? null;
+            const { data: insertedRows, error: insertErr } = await supabase
+              .from("reservation_deposit_payments")
+              .insert(
+                shares.map((amount_cents, i) => ({
+                  reservation_id: row.reservation_id,
+                  amount_cents,
+                  status: "pending",
+                  payer_email: payerDetails?.[i]?.email ?? fallbackPayerEmail,
+                  payer_full_name: payerDetails?.[i]?.full_name ?? fallbackPayerName,
+                })),
+              )
+              .select("id");
+            if (insertErr) {
+              console.error("[create-public-booking.hold-convert] split-tender insert failed", insertErr);
+            } else if (Array.isArray(insertedRows)) {
+              holdSplitTenderRowIds = insertedRows
+                .map((r) => (r as { id?: unknown }).id)
+                .filter((id): id is string => typeof id === "string");
+            }
           }
           // Flip reservation to 'pending_payment' so the diner-side settle
           // trigger drives it to 'confirmed' once every share charges.
+          // Idempotent — the UPDATE is a no-op when status is already
+          // 'pending_payment' (on the dedup-reuse path).
           await supabase
             .from("reservations")
             .update({ status: "pending_payment" })

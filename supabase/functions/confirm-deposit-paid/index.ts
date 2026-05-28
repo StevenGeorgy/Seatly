@@ -25,6 +25,7 @@ import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_share
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ConfirmDepositPaidSchema } from "../_shared/validation/payment.ts";
 import { getStripeClient } from "../_shared/stripe-client.ts";
+import { refundPaymentIntent } from "../_shared/stripe-refund.ts";
 import {
   buildConfirmationBody,
   formatReservationDate,
@@ -184,6 +185,87 @@ Deno.serve(async (req: Request) => {
     const stamped = stampedRaw.split(",").map((s) => s.trim()).filter(Boolean);
     if (!stamped.includes(paymentId)) {
       return jsonRes({ error: "pi_payment_id_mismatch" }, 400);
+    }
+
+    // 2026-05-28 orphan-refund guard: a slow diner can sit on the cart
+    // > 30 min, get their pending_payment reservation auto-cancelled by
+    // sweep_abandoned_split_tender_reservations (added 2026-05-28), then
+    // finally click Place Order using the client's cached reservation_id.
+    // Stripe charges. Without this guard, the RDP would flip to charged
+    // on a parent that's already 'cancelled' — money on the connected
+    // account with no booking. The settle trigger's cancelled guard
+    // (added 2026-05-28) prevents the DB mismatch, but the money still
+    // sits in the wrong place.
+    //
+    // Detection + recovery: fetch the parent's current status here
+    // (after all security checks). If the parent is in any terminal
+    // state, refund the PI in full (reverse_transfer=true puts the
+    // money back where it came from), mark the RDP as refunded, and
+    // return a non-error response so the client doesn't retry.
+    //
+    // The diner receives Stripe's standard refund email; we deliberately
+    // do NOT send a Seatly-side email because the diner never received a
+    // booking confirmation in the first place (split-tender's
+    // reservation_confirmation only fires post-settle, which never
+    // happened on this booking).
+    const TERMINAL_STATES = ["cancelled", "no_show", "completed"];
+    const { data: parentForOrphanCheck } = await supabaseAdmin
+      .from("reservations")
+      .select("status")
+      .eq("id", depositRow.reservation_id)
+      .maybeSingle();
+    const currentParentStatus =
+      (parentForOrphanCheck as { status?: string } | null)?.status ?? null;
+    if (currentParentStatus && TERMINAL_STATES.includes(currentParentStatus)) {
+      console.warn(
+        "[confirm-deposit-paid] orphan charge detected",
+        "reservation=", depositRow.reservation_id,
+        "parent_status=", currentParentStatus,
+        "pi=", paymentIntentId,
+      );
+      const refundOutcome = await refundPaymentIntent(
+        stripe,
+        paymentIntentId,
+        "orphan_split_tender_after_sweep",
+        // No amountCents → full refund. The reservation is cancelled,
+        // not shrunk; the diner gets the entire deposit back.
+      );
+      if (!refundOutcome.ok) {
+        // Refund failed — log loudly so ops can manually intervene.
+        // Return the diner an error so they know something went wrong
+        // (Stripe's own receipt will still show the charge).
+        console.error(
+          "[confirm-deposit-paid] orphan refund FAILED — manual intervention required",
+          "pi=", paymentIntentId,
+          "error=", refundOutcome.error,
+        );
+        return jsonRes(
+          {
+            error: "Your card was charged but your reservation was no longer active. Our team has been notified; you'll see the refund within 5-10 business days.",
+            orphan: true,
+          },
+          409,
+        );
+      }
+      // Mark the RDP as refunded so the settle trigger's refunded-branch
+      // can do its thing (which is a no-op on a cancelled parent thanks
+      // to the cancelled-guard added 2026-05-28 — clean state).
+      const nowIso = new Date().toISOString();
+      const { data: refundedRow } = await supabaseAdmin
+        .from("reservation_deposit_payments")
+        .update({
+          status: "refunded",
+          stripe_payment_intent_id: paymentIntentId,
+          paid_at: nowIso,
+        })
+        .eq("id", paymentId)
+        .select("id, reservation_id, status, amount_cents, stripe_payment_intent_id, paid_at")
+        .single();
+      return jsonRes({
+        deposit: refundedRow ?? depositRow,
+        orphan_refunded: true,
+        parent_status: currentParentStatus,
+      });
     }
 
     const { data, error } = await supabaseAdmin

@@ -748,6 +748,63 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  // 2026-05-28 orphan-refund guard (fallback path; primary is in
+  // confirm-deposit-paid). If the parent reservation has been cancelled
+  // (e.g., orphan sweep) between the client's Place Order click and the
+  // webhook arriving, refund the PI instead of marking the RDP charged.
+  // Single-payment bookings (status='pending') also covered because
+  // sweep doesn't touch them — terminal-state check is the gate.
+  const TERMINAL_STATES_WEBHOOK = ["cancelled", "no_show", "completed"];
+  const { data: parentForOrphanCheckWebhook } = await supabaseAdmin
+    .from("reservations")
+    .select("status")
+    .eq("id", reservationId)
+    .maybeSingle();
+  const parentStatusWebhook =
+    (parentForOrphanCheckWebhook as { status?: string } | null)?.status ?? null;
+  if (parentStatusWebhook && TERMINAL_STATES_WEBHOOK.includes(parentStatusWebhook)) {
+    console.warn(
+      "[stripe-webhook] orphan charge detected (terminal parent), refunding",
+      "reservation=", reservationId,
+      "parent_status=", parentStatusWebhook,
+      "pi=", pi.id,
+    );
+    try {
+      const stripeKeyForRefund = Deno.env.get("STRIPE_SECRET_KEY");
+      if (stripeKeyForRefund) {
+        const { default: StripeRefund } = await import("npm:stripe@17");
+        const { refundPaymentIntent } = await import("../_shared/stripe-refund.ts");
+        const stripeForRefund = new StripeRefund(stripeKeyForRefund, { apiVersion: "2024-11-20.acacia" });
+        const outcome = await refundPaymentIntent(
+          stripeForRefund,
+          pi.id,
+          "orphan_charge_on_terminal_parent",
+        );
+        if (!outcome.ok) {
+          console.error(
+            "[stripe-webhook] orphan refund failed — manual intervention required",
+            "pi=", pi.id,
+            "error=", outcome.error,
+          );
+        } else if (stampedDepositIds.length > 0) {
+          // Mark the rows as refunded so the audit trail is clean.
+          await supabaseAdmin
+            .from("reservation_deposit_payments")
+            .update({
+              status: "refunded",
+              stripe_payment_intent_id: pi.id,
+              paid_at: new Date().toISOString(),
+            })
+            .in("id", stampedDepositIds)
+            .eq("status", "pending");
+        }
+      }
+    } catch (refundErr) {
+      console.error("[stripe-webhook] orphan refund exception", refundErr);
+    }
+    return;
+  }
+
   if (stampedDepositIds.length > 0) {
     const { error: depErr } = await supabaseAdmin
       .from("reservation_deposit_payments")
@@ -782,6 +839,43 @@ async function handlePaymentIntentSucceeded(pi: PaymentIntentLike): Promise<void
     .update({ status: "confirmed" })
     .eq("id", reservationId)
     .in("status", ["pending", "pending_payment"]);
+
+  // 2026-05-28 notification-race fix: previously the diner-confirmation
+  // and owner-notification emails fired only from confirm-deposit-paid's
+  // post-settle block. If stripe-webhook beat confirm-deposit-paid for
+  // the last RDP, the client's call hit the idempotent early-return
+  // BEFORE reaching the notification block — owner + diner missed their
+  // emails. Now both paths fire; the notification log's 5-second window
+  // catches duplicates when both arrive close together.
+  //
+  // Wrapped in try-catch — notification failures must NOT roll back the
+  // webhook's deposit settlement (Stripe will retry the webhook if we
+  // 5xx, which would re-settle but harmlessly re-attempt notifications).
+  try {
+    const { data: confirmedReservation } = await supabaseAdmin
+      .from("reservations")
+      .select(
+        "id, status, restaurant_id, party_size, reserved_at, confirmation_code, guest_full_name, guest_email, guest_phone, guest_id",
+      )
+      .eq("id", reservationId)
+      .maybeSingle();
+    if (confirmedReservation && (confirmedReservation as { status?: string }).status === "confirmed") {
+      const { notifyOwnerNewReservation } = await import("../_shared/owner-notifications.ts");
+      void notifyOwnerNewReservation({
+        supabase: supabaseAdmin,
+        restaurant_id: (confirmedReservation as { restaurant_id: string }).restaurant_id,
+        reservation_id: (confirmedReservation as { id: string }).id,
+        reserved_at: (confirmedReservation as { reserved_at: string }).reserved_at,
+        party_size: (confirmedReservation as { party_size: number }).party_size,
+        guest_full_name: (confirmedReservation as { guest_full_name?: string | null }).guest_full_name ?? null,
+        confirmation_code: (confirmedReservation as { confirmation_code?: string | null }).confirmation_code ?? null,
+      }).catch((err) => {
+        console.error("[stripe-webhook] notifyOwnerNewReservation failed", err);
+      });
+    }
+  } catch (notifyErr) {
+    console.error("[stripe-webhook] post-settle owner notification block failed", notifyErr);
+  }
 
   // Mirror card brand/last4 onto deposit + order rows. Best-effort,
   // idempotent — safe to fire on every (including retried) webhook.
