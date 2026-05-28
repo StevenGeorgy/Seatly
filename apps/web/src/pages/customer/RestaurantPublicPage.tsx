@@ -1699,10 +1699,37 @@ export default function RestaurantPublicPage() {
   // Stripe processing fee pass-through: diner pays our 2.9% + 30¢ on top so
   // the restaurant nets the full base. Display-only; server is the source of
   // truth on the actual amount charged.
-  const dinerCharge = useMemo(
-    () => computeDinerCharge(foodOnlyCents, taxOnlyCents),
-    [foodOnlyCents, taxOnlyCents],
-  );
+  //
+  // 2026-05-28 split-tender fix: each payer is a separate Stripe transaction
+  // so the 30¢ fixed fee applies N times, not once. Computing the per-share
+  // charge with computeDinerCharge() then multiplying by N matches what
+  // SplitTenderPaymentForm will actually charge each card (it uses the same
+  // `Math.round(food / payerCount)` split). Without this, the cart total
+  // under-shows by ~(payerCount − 1) × 30¢.
+  const dinerCharge = useMemo(() => {
+    const isSplit =
+      paymentSplitMode === "split" &&
+      Number.isFinite(splitPartyCount) &&
+      splitPartyCount >= 2 &&
+      splitPartyCount <= 10;
+    if (!isSplit) {
+      return computeDinerCharge(foodOnlyCents, taxOnlyCents);
+    }
+    const n = splitPartyCount;
+    const perShareFood = Math.round(foodOnlyCents / n);
+    const perShareTax = Math.round(taxOnlyCents / n);
+    const perShare = computeDinerCharge(perShareFood, perShareTax);
+    return {
+      foodCents: perShare.foodCents * n,
+      taxCents: perShare.taxCents * n,
+      baseCents: perShare.baseCents * n,
+      cenaivaFeeCents: perShare.cenaivaFeeCents * n,
+      processingFeeCents: perShare.processingFeeCents * n,
+      dinerTotalCents: perShare.dinerTotalCents * n,
+      applicationFeeCents: perShare.applicationFeeCents * n,
+      dinerPaysFee: perShare.dinerPaysFee,
+    };
+  }, [foodOnlyCents, taxOnlyCents, paymentSplitMode, splitPartyCount]);
   const cenaivaFeeDollars = dinerCharge.cenaivaFeeCents / 100;
   const processingFeeDollars = dinerCharge.processingFeeCents / 100;
   const dinerGrandTotalDollars = dinerCharge.dinerTotalCents / 100;
