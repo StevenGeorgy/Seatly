@@ -91,6 +91,21 @@ Deno.serve(async (req: Request) => {
     if ("response" in parsed) return parsed.response;
     const payload = parsed.data;
 
+    // Split-tender (multi-card-at-booking) feature-flagged OFF 2026-05-28.
+    // Hard-reject any split request while the flag is off so the dormant
+    // path can never be reached even if a stale/forged client sends it.
+    // Revive: set SPLIT_TENDER_ENABLED=true (Supabase secrets) + redeploy.
+    const SPLIT_TENDER_ENABLED = Deno.env.get("SPLIT_TENDER_ENABLED") === "true";
+    if (!SPLIT_TENDER_ENABLED && payload.split_tender_payers) {
+      return jsonResponse(
+        {
+          error: "Split-tender payments are not currently available.",
+          unavailable_reason: "split_tender_disabled",
+        },
+        400,
+      );
+    }
+
     const restaurantId = payload.restaurant_id;
     const shiftId = payload.shift_id;
     const dateTime = payload.date_time;

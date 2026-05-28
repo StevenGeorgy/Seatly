@@ -54,6 +54,7 @@ import { HoldExpiredDialog } from "@/components/booking/HoldExpiredDialog";
 import { HoldTimerBanner } from "@/components/booking/HoldTimerBanner";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
+import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
 import { useReservationHold } from "@/hooks/useReservationHold";
 import { toUserFacingError } from "@/lib/errors";
 import { useAllActiveEvents } from "@/hooks/useEvents";
@@ -3294,6 +3295,10 @@ export default function RestaurantPublicPage() {
 
               {/* Payment */}
               <div className="mt-3 rounded-2xl border border-border bg-bg-surface p-5">
+                {/* Split-tender (multi-card-at-booking) feature-flagged OFF
+                    2026-05-28 — toggle hidden so the diner only ever sees the
+                    single-card flow. Revive via VITE_SPLIT_TENDER_ENABLED. */}
+                {SPLIT_TENDER_ENABLED && (
                 <div className="mb-4 rounded-xl border border-border bg-bg-elevated p-3">
                   <div className="mb-2 flex items-center gap-2">
                     <Split className="size-4 text-gold" />
@@ -3378,13 +3383,14 @@ export default function RestaurantPublicPage() {
                     </div>
                   )}
                 </div>
+                )}
                 <div className="mb-4 flex items-center gap-2">
                   <CreditCard className="size-4 text-gold" />
                   <p className="text-xs font-semibold uppercase tracking-widest text-text-muted">Payment</p>
                   <Lock className="ml-auto size-3 text-text-muted" />
                   <span className="text-[10px] text-text-muted">Secured</span>
                 </div>
-                {paymentSplitMode === "split" && totalNow > 0 && restaurant?.id ? (
+                {SPLIT_TENDER_ENABLED && paymentSplitMode === "split" && totalNow > 0 && restaurant?.id ? (
                   <SplitTenderPaymentForm
                     restaurantId={restaurant.id}
                     foodTotalCents={foodOnlyCents}

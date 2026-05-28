@@ -40,6 +40,7 @@ import {
 } from "@/components/customer/EditPreorderModal";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
+import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
 import { invalidateAvailabilityCache } from "@/hooks/useAvailability";
 import { type MyReservationRow } from "@/hooks/useMyReservations";
 import { useReservationById } from "@/hooks/useReservationById";
@@ -1323,7 +1324,7 @@ export default function BookingDetailsPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {pendingPayment?.isSplitTender
+              {SPLIT_TENDER_ENABLED && pendingPayment?.isSplitTender
                 ? "Pay deposit across all cards"
                 : "Pay deposit to confirm changes"}
             </DialogTitle>
@@ -1338,11 +1339,11 @@ export default function BookingDetailsPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-xs text-text-muted">
-                  {pendingPayment.isSplitTender
+                  {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender
                     ? `Split-tender — the delta is divided across ${pendingPayment.depositPaymentRowIds.length} cards proportional to each payer's original share. All cards must succeed to confirm the change.`
                     : "Your party size update requires a larger deposit. Pay now to confirm. We'll only charge if Stripe accepts the card."}
                 </p>
-                {pendingPayment.isSplitTender ? (
+                {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender ? (
                   <ul className="mt-3 space-y-1 text-xs text-text-muted">
                     {pendingPayment.splitPayers.map((p, i) => (
                       <li key={p.row_id} className="flex items-center justify-between gap-2">
@@ -1360,7 +1361,7 @@ export default function BookingDetailsPage() {
                   </ul>
                 ) : null}
               </div>
-              {pendingPayment.isSplitTender ? (
+              {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender ? (
                 <>
                   <SplitTenderPaymentForm
                     restaurantId={pendingPayment.restaurantId}

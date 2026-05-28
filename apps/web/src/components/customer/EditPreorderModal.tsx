@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { StripePaymentForm } from "@/components/booking/StripePaymentForm";
 import { SplitTenderPaymentForm } from "@/components/booking/SplitTenderPaymentForm";
+import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
 import {
   usePublicMenuCategories,
   usePublicMenuItems,
@@ -658,11 +659,11 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
                 </span>
               </div>
               <p className="mt-2 text-xs text-text-muted">
-                {pendingPayment.isSplitTender
+                {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender
                   ? `Split-tender — the upcharge is divided across ${pendingPayment.depositPaymentRowIds.length} cards proportional to each payer's original share. All cards must succeed.`
                   : "Pay the delta to confirm your updated pre-order. Cenaiva fee + Stripe processing apply on top."}
               </p>
-              {pendingPayment.isSplitTender ? (
+              {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender ? (
                 <ul className="mt-3 space-y-1 text-xs text-text-muted">
                   {pendingPayment.splitPayers.map((p, i) => (
                     <li key={p.row_id} className="flex items-center justify-between gap-2">
@@ -680,7 +681,7 @@ export function EditPreorderModal(props: EditPreorderModalProps) {
                 </ul>
               ) : null}
             </div>
-            {pendingPayment.isSplitTender ? (
+            {SPLIT_TENDER_ENABLED && pendingPayment.isSplitTender ? (
               <>
                 <SplitTenderPaymentForm
                   restaurantId={restaurantId}

@@ -88,6 +88,24 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+// Split-tender (multi-card-at-booking) feature-flagged OFF 2026-05-28. The
+// feature is dormant, not deleted; while off we refuse to modify any pre-flag
+// split booking (≥2 charged reservation_deposit_payments rows) so the dormant
+// proportional-split path is never exercised. Solo deposit modifies are
+// unaffected. Revive: set SPLIT_TENDER_ENABLED=true (Supabase secrets) +
+// redeploy.
+const SPLIT_TENDER_ENABLED = Deno.env.get("SPLIT_TENDER_ENABLED") === "true";
+
+function splitTenderDisabledResponse(): Response {
+  return json(
+    {
+      error: "Split-tender modifications are not currently available.",
+      unavailable_reason: "split_tender_disabled",
+    },
+    400,
+  );
+}
+
 function parseTimeToMinutes(value: string): number | null {
   const trimmed = value.trim();
   const meridiem = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
@@ -497,6 +515,9 @@ Deno.serve(async (req: Request) => {
           (r) => (r.amount_cents ?? 0) > 0,
         );
         const isSplitTenderModify = activeChargedRows.length >= 2;
+        if (!SPLIT_TENDER_ENABLED && isSplitTenderModify) {
+          return splitTenderDisabledResponse();
+        }
         const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 
         if (isSplitTenderModify) {
@@ -1451,6 +1472,9 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
       (r) => (r.amount_cents ?? 0) > 0,
     );
     const isSplitTenderCart = activeChargedRowsCart.length >= 2;
+    if (!SPLIT_TENDER_ENABLED && isSplitTenderCart) {
+      return splitTenderDisabledResponse();
+    }
     const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 
     if (isSplitTenderCart) {
