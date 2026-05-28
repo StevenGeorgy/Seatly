@@ -65,6 +65,15 @@ export type SplitTenderPaymentFormProps = {
   onAllPaid: (args: { reservationId: string }) => Promise<void> | void;
   /** Fired on any unrecoverable error (network, all-slots failed). */
   onError?: (msg: string) => void;
+  /**
+   * 2026-05-28: parity with StripePaymentForm — lets the parent's outer
+   * "Place Order" button reflect the in-flight state (disable + spinner).
+   * Fires `true` when handleSubmit starts and `false` when it finishes
+   * (success OR failure). Without this, the split-tender path leaves the
+   * outer button looking idle while N cards process in sequence — user
+   * has no idea anything's happening.
+   */
+  onProcessingChange?: (submitting: boolean) => void;
 };
 
 type SlotStatus = "idle" | "submitting" | "paid" | "failed";
@@ -142,6 +151,7 @@ function SplitTenderSurface({
   onPreCheckout,
   onAllPaid,
   onError,
+  onProcessingChange,
   stripePromise,
 }: SplitTenderPaymentFormProps & { stripePromise: Promise<StripeJs | null> }) {
   // Per-payer shares. Food carries 2% commission; tax passes through.
@@ -198,6 +208,16 @@ function SplitTenderSurface({
   useEffect(() => {
     preCheckoutResultRef.current = null;
   }, [payerCount, foodShareCents, taxShareCents]);
+
+  // 2026-05-28: mirror submitting → parent's onProcessingChange so the
+  // outer "Place Order" button can flip to its Loader2 spinner + "Processing
+  // payment…" copy during the per-slot charge loop. StripePaymentForm uses
+  // the same pattern for the single-payment path; this gives split-tender
+  // parity. Without this the user clicks Place Order on a 2-card split
+  // and sees nothing happen until both cards finish — no visual feedback.
+  useEffect(() => {
+    onProcessingChange?.(submitting);
+  }, [submitting, onProcessingChange]);
 
   // 2026-05-28: late-flush safety net. If React batched the per-slot
   // "paid" state updates and they hadn't flushed by the time the in-flight
