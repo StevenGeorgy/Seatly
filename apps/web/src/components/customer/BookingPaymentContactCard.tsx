@@ -47,20 +47,13 @@ export type BookingPaymentCardProps = {
   // Split-tender entries when more than 1 deposit payer. Empty for
   // single-payer or no-deposit bookings.
   splitTender: BookingPaymentCardSplitTender[];
-  // Promo / cancellation ----------------------------------------------
+  // Promo applied to the booking.
   appliedPromoCode: string | null;
-  // ISO timestamp of `reservations.reserved_at`. Cancel-by deadline is
-  // computed as `reservedAt − cancellationHours`. NULL hides the row.
-  reservedAtIso: string | null;
-  // Default 24h when null.
-  cancellationHours: number | null;
   // Optional tax surfacing (logged-in surface shows it; guest doesn't
   // strictly need to but it's harmless). Falls back to provincial
   // default when `taxRate` is null.
   taxRate: number | null;
   province: string | null;
-  // Restaurant timezone for the deadline formatter.
-  timezone: string | null;
 };
 
 function depositStatusVariant(status: string): { label: string; className: string } {
@@ -84,25 +77,6 @@ function depositStatusVariant(status: string): { label: string; className: strin
         className: "border-border bg-bg-elevated text-text-secondary",
       };
   }
-}
-
-function formatCancellationDeadline(
-  reservedAtIso: string,
-  hoursBack: number,
-  timezone: string | null,
-): string {
-  const reservedAt = new Date(reservedAtIso);
-  const deadline = new Date(reservedAt.getTime() - hoursBack * 60 * 60 * 1000);
-  const tz = timezone ?? "America/Toronto";
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).format(deadline);
 }
 
 function Row({
@@ -138,17 +112,9 @@ export function BookingPaymentContactCard(props: BookingPaymentCardProps) {
     depositTier,
     splitTender,
     appliedPromoCode,
-    reservedAtIso,
-    cancellationHours,
     taxRate,
     province,
-    timezone,
   } = props;
-
-  const effectiveHours = cancellationHours ?? 24;
-  const deadlineLabel = reservedAtIso
-    ? formatCancellationDeadline(reservedAtIso, effectiveHours, timezone)
-    : null;
 
   const resolvedTaxRate = taxRate ?? getProvincialTax(province).rate;
   const taxLabel = `${(resolvedTaxRate * 100).toFixed(taxRate ? 2 : 0).replace(/\.00$/, "")}%`;
@@ -206,17 +172,12 @@ export function BookingPaymentContactCard(props: BookingPaymentCardProps) {
           )}
         </Row>
 
-        {/* Cancellation deadline ---------------------------------- */}
-        {deadlineLabel && (
-          <Row icon={Timer} label="Cancel by">
-            <p>
-              <span className="font-medium text-white">{deadlineLabel}</span>
-              <span className="block text-xs text-text-muted">
-                Cancel by this time for a full refund.
-              </span>
-            </p>
-          </Row>
-        )}
+        {/* Cancellation policy ------------------------------------ */}
+        <Row icon={Timer} label="Cancellation policy">
+          <p className="text-text-secondary">
+            All cancellations are refunded, minus Cenaiva and Stripe processing fees.
+          </p>
+        </Row>
 
         {/* Promo code --------------------------------------------- */}
         {appliedPromoCode && (

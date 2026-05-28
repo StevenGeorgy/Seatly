@@ -1,0 +1,21 @@
+-- Drop restaurants.cancellation_hours.
+--
+-- This column powered a "Cancel by X for full refund" deadline UI, but
+-- the cancellation policy changed on 2026-05-15: every cancel before
+-- the reservation now fully refunds (within the new keep-fee policy),
+-- so the per-restaurant cutoff is no longer meaningful. The deadline
+-- copy was misleading — it implied a cutoff that didn't actually
+-- gate anything.
+--
+-- Pre-flight done in the same PR:
+--   * apps/web — all SELECTs and component props removed
+--   * supabase/functions/signup-restaurant-owner — stopped writing
+--   * supabase/functions/_shared/restaurant-snapshot — stopped reading
+--   * supabase/functions/_shared/validation/restaurant.ts — Zod field removed
+--
+-- DEPLOY ORDER: apply this migration ONLY after the frontend (Amplify)
+-- has finished deploying the changes that stop reading the column.
+-- Applying out of order will break diner-facing pages for the ~5 min
+-- window between migration and deploy.
+
+ALTER TABLE restaurants DROP COLUMN IF EXISTS cancellation_hours;

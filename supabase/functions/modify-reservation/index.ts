@@ -478,23 +478,48 @@ Deno.serve(async (req: Request) => {
           reservation.guest_email?.trim() || guest?.email?.trim() || null;
         const payerName =
           reservation.guest_full_name?.trim() || guest?.full_name?.trim() || null;
-        const { data: pendingRow, error: pendingErr } = await adminClient
+        // 2026-05-27 dedup: if the diner double-clicks "Save changes"
+        // or the network retries the modify call, we'd otherwise create
+        // a second pending row with the same delta. Reuse any
+        // pending row created in the last 5 minutes that matches this
+        // (reservation, amount, payer) tuple. Same shape repeats in the
+        // cart-delta branch below.
+        const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+        let pendingRow: { id: string } | null = null;
+        const { data: existingPending } = await adminClient
           .from("reservation_deposit_payments")
-          .insert({
-            reservation_id: reservationId,
-            amount_cents: depositDeltaCents,
-            status: "pending",
-            payer_email: payerEmail,
-            payer_full_name: payerName,
-            payer_user_profile_id: reservation.user_profile_id,
-          })
           .select("id")
-          .single();
-        if (pendingErr || !pendingRow) {
-          return json(
-            { error: pendingErr?.message ?? "Could not prepare delta payment." },
-            400,
-          );
+          .eq("reservation_id", reservationId)
+          .eq("amount_cents", depositDeltaCents)
+          .eq("status", "pending")
+          .eq("payer_user_profile_id", reservation.user_profile_id ?? "")
+          .is("pending_cart_snapshot", null)
+          .gte("created_at", fiveMinAgo)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (existingPending) {
+          pendingRow = existingPending as { id: string };
+        } else {
+          const { data: newRow, error: pendingErr } = await adminClient
+            .from("reservation_deposit_payments")
+            .insert({
+              reservation_id: reservationId,
+              amount_cents: depositDeltaCents,
+              status: "pending",
+              payer_email: payerEmail,
+              payer_full_name: payerName,
+              payer_user_profile_id: reservation.user_profile_id,
+            })
+            .select("id")
+            .single();
+          if (pendingErr || !newRow) {
+            return json(
+              { error: pendingErr?.message ?? "Could not prepare delta payment." },
+              400,
+            );
+          }
+          pendingRow = newRow as { id: string };
         }
         return json({
           ok: false,
@@ -1167,36 +1192,60 @@ async function handleCartModify(args: HandleCartModifyArgs): Promise<Response> {
       reservation.guest_email?.trim() || guest?.email?.trim() || null;
     const payerName =
       reservation.guest_full_name?.trim() || guest?.full_name?.trim() || null;
-    const { data: pendingRow, error: pendingErr } = await adminClient
+    // 2026-05-27 dedup: mirror the party-delta branch above. On retry,
+    // reuse a pending row from the last 5 minutes that targets the same
+    // (reservation, amount, payer) tuple. The presence of
+    // pending_cart_snapshot distinguishes cart-delta rows from
+    // party-delta rows so the two branches don't conflate.
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    let pendingRow: { id: string } | null = null;
+    const { data: existingPending } = await adminClient
       .from("reservation_deposit_payments")
-      .insert({
-        reservation_id: reservationId,
-        amount_cents: deltaCents,
-        status: "pending",
-        payer_email: payerEmail,
-        payer_full_name: payerName,
-        payer_user_profile_id: reservation.user_profile_id,
-        pending_cart_snapshot: {
-          items: cartSnapshotForResponse,
-          food_cents: newFoodCents,
-          tax_cents: newTaxCents,
-          discount_cents: discountCents,
-          applied_promo_code:
-            promoState.kind === "set"
-              ? promoState.code
-              : promoState.kind === "clear"
-                ? null
-                : promoState.code,
-          special_request: specialRequest || null,
-        },
-      })
       .select("id")
-      .single();
-    if (pendingErr || !pendingRow) {
-      return json(
-        { error: pendingErr?.message ?? "Could not prepare cart payment." },
-        400,
-      );
+      .eq("reservation_id", reservationId)
+      .eq("amount_cents", deltaCents)
+      .eq("status", "pending")
+      .eq("payer_user_profile_id", reservation.user_profile_id ?? "")
+      .not("pending_cart_snapshot", "is", null)
+      .gte("created_at", fiveMinAgo)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingPending) {
+      pendingRow = existingPending as { id: string };
+    } else {
+      const { data: newRow, error: pendingErr } = await adminClient
+        .from("reservation_deposit_payments")
+        .insert({
+          reservation_id: reservationId,
+          amount_cents: deltaCents,
+          status: "pending",
+          payer_email: payerEmail,
+          payer_full_name: payerName,
+          payer_user_profile_id: reservation.user_profile_id,
+          pending_cart_snapshot: {
+            items: cartSnapshotForResponse,
+            food_cents: newFoodCents,
+            tax_cents: newTaxCents,
+            discount_cents: discountCents,
+            applied_promo_code:
+              promoState.kind === "set"
+                ? promoState.code
+                : promoState.kind === "clear"
+                  ? null
+                  : promoState.code,
+            special_request: specialRequest || null,
+          },
+        })
+        .select("id")
+        .single();
+      if (pendingErr || !newRow) {
+        return json(
+          { error: pendingErr?.message ?? "Could not prepare cart payment." },
+          400,
+        );
+      }
+      pendingRow = newRow as { id: string };
     }
     // 2026-05-27 BUG-fix: the client mounts StripePaymentForm with
     // amountCents=food_cents + taxCents=tax_cents to compute the diner

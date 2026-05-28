@@ -17,7 +17,7 @@ const RESTAURANT_PUBLIC_SELECT =
   "phone,email," +
   "hours_json,settings_json,deposit_tiers,deposit_policy_json," +
   "loyalty_config_json,currency,tax_rate," +
-  "cancellation_hours,no_show_fee,booking_advance_days," +
+  "no_show_fee,booking_advance_days," +
   "accepts_walkins,has_bar," +
   "avg_rating,total_reviews,bookings_last_30d," +
   "is_active,is_published,created_at";
@@ -62,7 +62,6 @@ export type Restaurant = {
   total_reviews: number | null;
   price_range: number | null;
   booking_advance_days: number;
-  cancellation_hours: number;
   no_show_fee: number | null;
   accepts_walkins: boolean | null;
   business_type: string | null;

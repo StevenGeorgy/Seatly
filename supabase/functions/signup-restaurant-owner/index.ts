@@ -299,7 +299,6 @@ Deno.serve(async (req: Request) => {
         hours_json: body.hours_json ?? null,
         accepts_walkins: body.accepts_walkins ?? true,
         no_show_fee: body.no_show_fee ?? null,
-        cancellation_hours: body.cancellation_hours ?? 24,
         deposit_policy_json: depositPolicyJson,
         loyalty_config_json: loyaltyConfigJson,
         settings_json: settingsJson,

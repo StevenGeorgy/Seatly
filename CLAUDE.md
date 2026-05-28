@@ -142,13 +142,17 @@ Routine bug fixes do not need an update. Detailed ship notes go to
   Product ID, not a Price ID. Subscriptions API requires a Price ID
   (`price_…`). Local `.env` had the correct Price ID
   (`price_1TTc0YJABKj4FeJXsR18YzVw`) but the Supabase secret store
-  was never updated to match. Mark updating the secret manually via
-  `supabase secrets set` (or dashboard) — pending verification.
-  (E) `RACE_CONDITION_AUDIT.md` documents 3 known Stripe-adjacent
-  race conditions (create-subscription duplicate, stripe-charge-order
-  no idempotency key, modify-reservation duplicate deposit rows).
-  Deferred to partner pickup. **Do not bundle the 3 fixes in one
-  deploy** — stagger them per the audit doc's recommendation.
+  was never updated to match. Mark updated the secret. **Verified
+  2026-05-27:** active Nova subscription uses
+  `price_1TYgOeJABKj4FeJXcwrIHG5f` ($199.99 CAD) — secret is now a
+  valid Price ID.
+  (E) `RACE_CONDITION_AUDIT.md` — **CLOSED 2026-05-23.** All three
+  race conditions shipped (create-subscription 410-gated,
+  publish-restaurant has `idempotencyKey:
+  publish_${restaurantId}_${ymd()}_tax_v1`, stripe-charge-order has
+  `idempotencyKey: charge_order_${order_id}_${foodCents}_${taxCents}`
+  + paid_at/PI pre-checks, modify-reservation refund path is dedupe
+  -safe). See audit doc for the full resolution table.
 - **2026-05-17 ROUND 4 (Hey Cenaiva polish)** — All 5 deterministic
   upstream layers shipped to `cenaiva-orchestrate`:
   (P1) direction-change reset + mid-flow restaurant pivot + exclusion
@@ -497,12 +501,12 @@ Multi-payer deposit SMS support requires `payer_phone` column.
 - `SPEED_PLAN.md` — per-user latency phases (1–9), frontend perf.
 - `PERFORMANCE_PATTERNS.md` — portable patterns for future projects.
 - `STRIPE_SETUP.md` — Stripe dashboard + env var setup checklist.
-- `RACE_CONDITION_AUDIT.md` — 3 open Stripe-adjacent race conditions
-  (create-subscription duplicate sub, stripe-charge-order double-charge
-  diner, modify-reservation duplicate deposit rows). Includes per-fix
-  shape, risk assessment, and recommended stagger order. **Partner
-  pickup task as of 2026-05-19**; do not bundle the 3 fixes into one
-  deploy.
+- `RACE_CONDITION_AUDIT.md` — **CLOSED 2026-05-23.** Historical
+  audit of the 3 Stripe-adjacent race conditions (create-subscription
+  duplicate sub, stripe-charge-order double-charge diner,
+  modify-reservation duplicate deposit rows). All three resolved per
+  the doc's resolution table. Read for context on the idempotency
+  patterns used (idempotencyKey shapes, paid_at/PI pre-checks).
 - `MOBILE_STRIPE_GUIDE.md` — mobile-client Stripe integration guide
   (account deletion, business-side Connect, post-meal pay-the-bill,
   cancellation policy with $100 examples).

@@ -58,11 +58,6 @@ export type ReservationContactSnapshot = {
 export type ReservationRestaurantSnapshot = {
   tax_rate: number | null;
   province: string | null;
-  // DB column name is `cancellation_hours`. The current policy is "any
-  // cancel before the reservation gets a full refund" but we still
-  // surface the configured window as the cutoff for full refund.
-  // Defaults to 24h when NULL.
-  cancellation_hours: number | null;
 };
 
 export type ReservationPayments = {
@@ -114,7 +109,7 @@ export function useReservationPayments(reservationId: string | null) {
       client
         .from("reservations")
         .select(
-          "guest_email, guest_phone, applied_promo_code, reserved_at, party_size, deposit_amount_cents, deposit_status, restaurant:restaurants(tax_rate, province, cancellation_hours)",
+          "guest_email, guest_phone, applied_promo_code, reserved_at, party_size, deposit_amount_cents, deposit_status, restaurant:restaurants(tax_rate, province)",
         )
         .eq("id", reservationId)
         .maybeSingle(),
@@ -160,7 +155,6 @@ export function useReservationPayments(reservationId: string | null) {
       return {
         tax_rate: r.tax_rate ?? null,
         province: r.province ?? null,
-        cancellation_hours: r.cancellation_hours ?? null,
       };
     })();
 

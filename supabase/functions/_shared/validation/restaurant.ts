@@ -78,7 +78,6 @@ export const SignupRestaurantOwnerSchema = RestaurantOnboardingSchema.extend({
   currency: BoundedText(8).nullish(),
   accepts_walkins: z.boolean().nullish(),
   no_show_fee: z.number().finite().nonnegative().max(10_000).nullish(),
-  cancellation_hours: z.number().int().nonnegative().max(720).nullish(),
   requires_deposit: z.boolean().nullish(),
   deposit_amount: z.number().finite().nonnegative().max(10_000).nullish(),
   loyalty_enabled: z.boolean().nullish(),
