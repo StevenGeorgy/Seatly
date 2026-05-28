@@ -516,6 +516,14 @@ export function Step8PaymentSetup({
   );
 
   const publish = async () => {
+    // 2026-05-28 early-exit guard. The button has disabled={publishing}
+    // but React's state-flush window can let a rapid double-click bypass
+    // it (both clicks see publishing=false before setPublishing(true)
+    // flushes). publish-restaurant creates a Stripe subscription — if
+    // fired twice, we'd potentially get 2 subscriptions on the same
+    // customer. Idempotency at publish-restaurant level catches this
+    // server-side, but explicit early-exit here is cheap defense.
+    if (publishing) return;
     if (!isSupabaseConfigured()) {
       toast.error("Supabase is not configured.");
       return;
