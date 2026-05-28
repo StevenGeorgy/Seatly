@@ -21,6 +21,7 @@ import {
   formatReservationDate,
   sendReservationNotification,
 } from "./reservation-notifications.ts";
+import { notifyOwnerNewReservation } from "./owner-notifications.ts";
 
 export interface RunPostHoldConversionArgs {
   supabase: SupabaseClient;
@@ -277,6 +278,27 @@ export async function runPostHoldConversion({
           ? `Your reservation at ${restaurantName} is confirmed`
           : `Your reservation at ${restaurantName}`,
         body,
+      });
+
+      // 2026-05-28: owner notification (single source of truth for the
+      // hold-conversion path). Previously confirm-hold-paid did not fire
+      // any owner notification, so solo + deposit + hold bookings never
+      // emailed the owner (free bookings did, because create-public-booking
+      // fires directly when no payment is needed; split-tender did,
+      // because confirm-deposit-paid fires from the multi-card path).
+      // The dedup is atomic via restaurant_notification_log's per-
+      // reservation partial unique index (PR-J 2026-05-28), so even if
+      // stripe-webhook also races in, only one email goes out.
+      void notifyOwnerNewReservation({
+        supabase,
+        restaurant_id: reservation.restaurant_id,
+        reservation_id: reservation.id,
+        reserved_at: reservation.reserved_at,
+        party_size: reservation.party_size,
+        guest_full_name: reservation.guest_full_name ?? null,
+        confirmation_code: reservation.confirmation_code ?? null,
+      }).catch((err) => {
+        console.error("runPostHoldConversion: owner notify failed", err);
       });
     }
   } catch (notifyErr) {
