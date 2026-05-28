@@ -880,16 +880,8 @@ export default function BookingDetailsPage() {
                       reservation.applied_promo_code ??
                       null
                     }
-                    reservedAtIso={
-                      paymentData.reservation?.reserved_at ??
-                      reservation.reserved_at
-                    }
-                    cancellationHours={
-                      paymentData.restaurant?.cancellation_hours ?? null
-                    }
                     taxRate={paymentData.restaurant?.tax_rate ?? null}
                     province={paymentData.restaurant?.province ?? null}
-                    timezone={reservation.restaurant?.timezone ?? null}
                   />
                 )}
 

@@ -37,7 +37,6 @@ export interface RestaurantSnapshot {
   has_bar: boolean | null;
   booking_advance_days: number | null;
   // Policies
-  cancellation_hours: number | null;
   no_show_fee: number | null;
   deposit_tiers: Array<{ min_party_size: number; amount_per_person_cents: number }> | null;
   // settings_json optional fields — null when not populated
@@ -124,7 +123,7 @@ export async function getRestaurantSnapshot(
       avg_rating, total_reviews, address, city, province, country, timezone,
       lat, lng, phone, email, website, hours_json, settings_json,
       accepts_walkins, has_bar, booking_advance_days,
-      cancellation_hours, no_show_fee, deposit_tiers, is_published, is_active
+      no_show_fee, deposit_tiers, is_published, is_active
     `,
     )
     .eq("id", restaurantId)
@@ -207,7 +206,6 @@ export async function getRestaurantSnapshot(
     accepts_walkins: r.accepts_walkins ?? null,
     has_bar: r.has_bar ?? null,
     booking_advance_days: r.booking_advance_days ?? null,
-    cancellation_hours: r.cancellation_hours ?? null,
     no_show_fee: r.no_show_fee ?? null,
     deposit_tiers: (r.deposit_tiers as RestaurantSnapshot["deposit_tiers"]) ?? null,
     dietary_tags: readSettingsField<string[]>(r.settings_json, "dietaryTags"),

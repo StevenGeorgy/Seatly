@@ -705,11 +705,8 @@ export function ManageBookingView({ slug, code, email, backHref }: Props) {
                   : []
               }
               appliedPromoCode={details.reservation.applied_promo_code}
-              reservedAtIso={details.reservation.reserved_at}
-              cancellationHours={null}
               taxRate={details.restaurant.tax_rate}
               province={details.restaurant.province}
-              timezone={details.restaurant.timezone}
             />
           )}
 
