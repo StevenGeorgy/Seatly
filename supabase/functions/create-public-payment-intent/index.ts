@@ -415,12 +415,30 @@ Deno.serve(async (req: Request) => {
           } | null;
           if (profile) {
             saveCardCustomerId = profile.stripe_customer_id;
-            // Lazy-create the Stripe customer the first time the diner
-            // saves a card. Mirrors stripe-attach-payment-method's pattern.
-            if (!saveCardCustomerId) {
-              const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-              if (stripeKey) {
-                const stripe = await getStripeClient(stripeKey);
+            const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+            if (stripeKey) {
+              const stripe = await getStripeClient(stripeKey);
+              // Recreate the Stripe customer when it's missing — either never
+              // created (null) OR the stored id no longer exists in this
+              // Stripe account (stale/deleted ref, e.g. after a test→live key
+              // switch or customer churn). Without this, a dangling
+              // stripe_customer_id makes paymentIntents.create 500 with "No
+              // such customer" and bricks checkout for the logged-in diner.
+              // (2026-05-28 fix.)
+              let customerValid = false;
+              if (saveCardCustomerId) {
+                try {
+                  const existing = await stripe.customers.retrieve(saveCardCustomerId);
+                  customerValid = !(existing as { deleted?: boolean }).deleted;
+                } catch (custErr) {
+                  if ((custErr as { code?: string }).code === "resource_missing") {
+                    customerValid = false;
+                  } else {
+                    throw custErr;
+                  }
+                }
+              }
+              if (!customerValid) {
                 const customer = await stripe.customers.create({
                   email: profile.email || undefined,
                   name: profile.full_name || undefined,

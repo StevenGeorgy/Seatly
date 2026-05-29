@@ -59,6 +59,31 @@ Deno.serve(async (req: Request) => {
       return jsonRes({ methods: [], mode: "live" });
     }
 
+    // Verify the stored Stripe customer still exists in this account before
+    // listing its cards. A stale / deleted ref (e.g. after a test→live key
+    // switch or customer churn) would otherwise make paymentMethods.list throw
+    // "No such customer" → 500 the whole picker. Treat missing as "no saved
+    // cards" and clear the dangling ref so the next save-card flow re-creates
+    // a valid customer. (2026-05-28 fix.)
+    let customerMissing = false;
+    try {
+      const cust = await stripe.customers.retrieve(profile.stripe_customer_id);
+      customerMissing = !!(cust as { deleted?: boolean }).deleted;
+    } catch (custErr) {
+      if ((custErr as { code?: string }).code === "resource_missing") {
+        customerMissing = true;
+      } else {
+        throw custErr;
+      }
+    }
+    if (customerMissing) {
+      await supabaseAdmin
+        .from("user_profiles")
+        .update({ stripe_customer_id: null })
+        .eq("id", profile.id);
+      return jsonRes({ methods: [], mode: "live" });
+    }
+
     const pmList = await stripe.paymentMethods.list({
       customer: profile.stripe_customer_id,
       type: "card",
