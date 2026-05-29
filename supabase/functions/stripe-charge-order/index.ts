@@ -94,18 +94,9 @@ Deno.serve(async (req: Request) => {
         }, 409);
       }
     }
-    // Belt-and-suspenders: if an earlier call stamped a PI on this order
-    // but never reached the success-path UPDATE, the order may still have
-    // paid_at=null AND stripe_payment_intent_id set. The Stripe-side
-    // idempotency key (below) makes the second create idempotent, but
-    // bailing here saves the round-trip + clone.
-    if ((order as { stripe_payment_intent_id?: string | null }).stripe_payment_intent_id) {
-      return jsonRes({
-        ok: false,
-        error: "Order charge already in flight. Please refresh and try again.",
-        already_in_flight: true,
-      }, 409);
-    }
+    // (The concurrent-charge guard is now an atomic DB claim just before the
+    // Stripe charge — see CHARGING_SENTINEL below. The old SELECT-then-act
+    // in-flight check here was TOCTOU.)
 
     // Verify ownership: user's guest must match this order's guest
     const { data: guest } = await supabaseAdmin
@@ -136,6 +127,10 @@ Deno.serve(async (req: Request) => {
     // total as before — but this means Cenaiva's 5.5% commission base
     // includes the tip. Revisit when we formalize tip routing.
     let foodCents = Math.round(foodAfterDiscount * 100);
+    // Tip-independent base for the idempotency key (foodCents below gets the
+    // tip folded in; keying on the tip would let two concurrent requests with
+    // different tips mint two PIs — security #6).
+    const foodExclTipCents = foodCents;
     const taxCents = Math.round(taxOnly * 100);
     if (tipAmount > 0) {
       console.warn(
@@ -237,6 +232,36 @@ Deno.serve(async (req: Request) => {
     const processingFeeCents = charge.processingFeeCents;
     const applicationFeeCents = charge.applicationFeeCents;
 
+    // Atomic claim (2026-05-29 security #6): move the order from
+    // (paid_at NULL, stripe_payment_intent_id NULL) to a 'charging' sentinel
+    // in ONE UPDATE so two concurrent requests can't both reach the Stripe
+    // charge (the prior paid_at / in-flight checks were SELECT-then-act
+    // TOCTOU). Only the request that wins the claim charges; the loser 409s.
+    const CHARGING_SENTINEL = "__charging__";
+    const { data: claimRows } = await supabaseAdmin
+      .from("orders")
+      .update({ stripe_payment_intent_id: CHARGING_SENTINEL })
+      .eq("id", order_id)
+      .is("paid_at", null)
+      .is("stripe_payment_intent_id", null)
+      .select("id");
+    if (!claimRows || claimRows.length === 0) {
+      return jsonRes({
+        ok: false,
+        error: "Order charge already in flight or paid. Please refresh and try again.",
+        already_in_flight: true,
+      }, 409);
+    }
+    // Release the claim (back to NULL) if we bail before a successful charge,
+    // so a legitimate retry can re-claim. Only clears our own sentinel.
+    const releaseClaim = async () => {
+      await supabaseAdmin
+        .from("orders")
+        .update({ stripe_payment_intent_id: null })
+        .eq("id", order_id)
+        .eq("stripe_payment_intent_id", CHARGING_SENTINEL);
+    };
+
     let paymentIntent: any;
     let clonedPmId: string | null = null;
     try {
@@ -283,10 +308,11 @@ Deno.serve(async (req: Request) => {
         },
         {
           stripeAccount: stripeAccountId,
-          idempotencyKey: `charge_order_${order_id}_${foodCents}_${taxCents}`,
+          idempotencyKey: `charge_order_${order_id}_${foodExclTipCents}_${taxCents}`,
         },
       );
     } catch (stripeErr: any) {
+      await releaseClaim();
       const code = stripeErr?.code as string | undefined;
       if (code === "authentication_required") {
         return jsonRes({
@@ -302,6 +328,9 @@ Deno.serve(async (req: Request) => {
     // If the PI returns requires_action (3D Secure / SCA), the
     // frontend needs the client_secret to call handleNextAction.
     if (paymentIntent.status === "requires_action") {
+      // PI exists but needs SCA on the checkout page; don't leave the order
+      // stuck on the sentinel — release so it can be re-attempted there.
+      await releaseClaim();
       return jsonRes({
         ok: false,
         requires_action: true,
@@ -313,27 +342,49 @@ Deno.serve(async (req: Request) => {
 
     // orders.total_amount tracks the BASE the restaurant + Cenaiva net.
     // The grossed-up diner charge is recoverable from the PI / metadata.
-    await supabaseAdmin.from("orders").update({
-      tip_amount: tipAmount,
-      total_amount: baseTotal,
-      payment_method: "stripe",
-      status: "paid",
-      paid_at: paidAt,
-      billed_at: paidAt,
-      stripe_payment_intent_id: paymentIntent.id,
-    }).eq("id", order_id);
-
-    await supabaseAdmin.from("payments").insert({
-      order_id,
-      restaurant_id: order.restaurant_id,
-      user_profile_id: profile.id,
-      stripe_payment_intent_id: paymentIntent.id,
-      stripe_charge_id: paymentIntent.latest_charge as string || null,
-      amount: baseTotal,
-      currency,
-      status: "succeeded",
-      payment_type: "stripe",
-    });
+    // The charge ALREADY succeeded at Stripe; if recording it fails we must
+    // release the '__charging__' sentinel so a retry can re-confirm (the
+    // tip-independent idempotency key returns the SAME PI -> no double charge)
+    // and finish the bookkeeping. Otherwise the order is stuck uncharge-able.
+    let recordErr: unknown = null;
+    try {
+      const { error: orderUpdateErr } = await supabaseAdmin.from("orders").update({
+        tip_amount: tipAmount,
+        total_amount: baseTotal,
+        payment_method: "stripe",
+        status: "paid",
+        paid_at: paidAt,
+        billed_at: paidAt,
+        stripe_payment_intent_id: paymentIntent.id,
+      }).eq("id", order_id);
+      if (orderUpdateErr) {
+        recordErr = orderUpdateErr;
+      } else {
+        const { error: paymentInsertErr } = await supabaseAdmin.from("payments").insert({
+          order_id,
+          restaurant_id: order.restaurant_id,
+          user_profile_id: profile.id,
+          stripe_payment_intent_id: paymentIntent.id,
+          stripe_charge_id: paymentIntent.latest_charge as string || null,
+          amount: baseTotal,
+          currency,
+          status: "succeeded",
+          payment_type: "stripe",
+        });
+        if (paymentInsertErr) recordErr = paymentInsertErr;
+      }
+    } catch (e) {
+      recordErr = e;
+    }
+    if (recordErr) {
+      await releaseClaim();
+      console.error("[stripe-charge-order] charge succeeded but recording failed", recordErr);
+      return jsonRes({
+        ok: false,
+        error: "Payment went through but we couldn't record it. Please retry; you won't be charged twice.",
+        recording_failed: true,
+      }, 500);
+    }
 
     return jsonRes({
       ok: true,
