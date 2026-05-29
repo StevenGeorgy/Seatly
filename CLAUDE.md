@@ -90,10 +90,17 @@ work to sub-agents.
   handles solo). NOT a split-tender revival — the server still rejects
   split bookings, so only solo 1-row deposits exist; this just un-hides a
   deposit the diner already paid. (2) Pre-order: `useReservations`
-  `.select` now embeds `orders(... order_items(...))` (FKs +
-  `orders_select_staff`/`order_items_select_staff` RLS already allow the
-  owner read — no RPC/RLS/migration needed; `order_items.name` is
-  denormalized so no `menu_items` join). New `ReservationPreorderSummary`
+  `.select` now embeds `orders!orders_reservation_id_fkey(... order_items(...))`
+  (FKs + `orders_select_staff`/`order_items_select_staff` RLS already allow
+  the owner read — no RPC/RLS/migration needed; `order_items.name` is
+  denormalized so no `menu_items` join). **The `!orders_reservation_id_fkey`
+  disambiguation is REQUIRED:** `reservations` relates to `orders` via TWO
+  FKs — `orders.reservation_id` (one-to-many, what we want) AND
+  `reservations.preorder_order_id` (many-to-one). A bare `orders(...)` embed
+  returns PGRST201 ("more than one relationship found") and fails the whole
+  reservations fetch → empty owner list. Hotfixed in f2f96e6 after the bare
+  embed shipped in aa677a2. Lesson: when embedding `orders` from
+  `reservations`, always pin the FK. New `ReservationPreorderSummary`
   lists `qty × name — line_total`, a food subtotal (sum of `line_total`,
   NOT `orders.total_amount` which bundles the deposit on combined PIs),
   tax if any, and a Paid/Refunded/Pending badge. Both sections render
