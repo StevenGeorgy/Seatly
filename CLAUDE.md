@@ -78,6 +78,34 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-29 Stripe security + correctness batch (10 fixes from a read-only
+  multi-agent audit; each doc-checked + reviewed + verified live)** — Tier 1
+  (critical/high, exploitable): (1) `refund-payment-intent` was anon + refunded
+  ANY pi_ → now requires `metadata.restaurant_id` + (anon) orphan-only (no
+  charged deposit / paid order / materialized reservation bound) + <60min
+  freshness; internal service-role caller bypasses. (2) `request-refund`
+  auto-refund now requires caller-owns-reservation + PI bound to it + a genuine
+  duplicate (≥2 charged PIs). (3) `confirm-deposit-stub` default-OFF + UNDEPLOYED
+  from prod (was anon + default-ON payment-bypass; prod uses
+  `confirm-deposit-paid`). (4) `close-bill` now `checkAuth` + staff-role +
+  restaurant-scoped + rate-limited + idempotent (was anon $0-close + tip
+  injection; added `[functions.close-bill] verify_jwt=false`). (5) migration
+  `20260529130000` revokes diner/anon UPDATE on trust-boundary `reservations`
+  columns (status/deposit_*/timestamps/reserved_at/party_size) — re-grants only
+  `shift_id/table_id/duration_minutes` to authenticated; dropped
+  `reservations_update_own`. (6) `stripe-charge-order` atomic claim
+  (`__charging__` sentinel) + tip-free idempotency key + release-on-failure.
+  Tier 2 (medium): bill-booking-fees idempotency key + skip paused/deleted;
+  confirm-modify-payment refunds the delta on cart-replay failure; mark-order-paid
+  also binds via reservation_id (deferred pre-order PIs); stripe-webhook
+  retry-on-throw (delete dedup row + 500) + split recovery republish from the
+  status mirror. Tier 3 (latent, NOT yet done): post-meal Connect charge-model +
+  `card_payments` capability, dispute clawback on destination charges,
+  `charge.refund.updated` async-failure handling, refund-deposit-on-arrival
+  idempotency. **Doc reconciliation:** corrected the fee-model in this file —
+  live model is **Option B (2% of food)**, not the older 5.5%/94.5% (see the
+  Stripe hard rules above; historical entries below are stale on this point).
+
 - **2026-05-29 Owner dashboard: surface deposit + pre-order in the
   reservation detail dialog (`ReservationsPage.tsx` + `useReservations.ts`
   + new `ReservationPreorderSummary.tsx`)** — The detail dialog
@@ -570,19 +598,28 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   "Cancelled by restaurant"`.
 
 ### Stripe / payments
+- **FEE MODEL = Option B (2% of FOOD, visible fees) — live since the 2026-05
+  pricing work; verified in `_shared/stripe-fee.ts` (its header is
+  doc-verified).** The diner pays `food + tax + cenaivaFee + processingFee`.
+  `cenaivaFee = max(round(food × 0.02), 1)` (2% of FOOD only, not tax/tip).
+  Restaurant nets **food + tax (100%)**; Cenaiva nets exactly `cenaivaFee`;
+  Stripe's fee is covered by the gross-up. `application_fee_amount =
+  cenaivaFee + processingFee` (NOT 5.5% of base — that 5.5% was an EARLIER
+  model; older entries below still say 5.5%/94.5% and are stale history).
+  Refunds return `food + tax` (the visible platform + processing fees are
+  non-refundable per the checkout disclosure); `refund_application_fee:false`.
 - Never compute the diner's PaymentIntent amount as the raw base
   (deposit/preorder/order total). Always run the base through
-  `computeDinerCharge(baseCents)` from `_shared/stripe-fee.ts` to
-  gross up for Stripe's 2.9% + 30¢ fee. Use `dinerTotalCents` as
-  `amount` and `applicationFeeCents` (5.5% of BASE, not the
-  grossed-up total) as `application_fee_amount`. Mirror on the
+  `computeDinerCharge(foodCents, taxCents)` from `_shared/stripe-fee.ts`.
+  Use `dinerTotalCents` as `amount` and `applicationFeeCents`
+  (`cenaivaFee + processingFee`) as `application_fee_amount`. Mirror on the
   client lives at `apps/web/src/lib/stripe-fee.ts` for cart display.
 - Never charge a diner via `stripe-charge-order` (post-meal pay-the-
   bill) without the Connect-aware path: clone the platform-account PM
   to the restaurant's `stripe_account_id`, then PI on the connected
-  account with `application_fee_amount = 5.5%` of **base** (not the
-  grossed-up diner total). The pre-Phase-9 platform-only path was a
-  silent bug.
+  account with `application_fee_amount = cenaivaFee + processingFee`
+  (from `computeDinerCharge`, NOT a flat % of base). The pre-Phase-9
+  platform-only path was a silent bug.
 - Never insert into `restaurant_booking_fees` outside the
   `seed_booking_fee_on_confirm` trigger. The trigger is the single
   source of truth for "this reservation owes a $1 fee." Bulk
@@ -755,8 +792,11 @@ Multi-payer deposit SMS support requires `payer_phone` column.
   amountCents)`. The shared helper sets `reverse_transfer: true` so
   destination-charge refunds debit the connected restaurant (NOT
   Cenaiva's platform balance) and keeps `refund_application_fee:
-  false` so the 5.5% commission stays with Cenaiva. Restaurant nets
-  $0, Cenaiva keeps fee, diner gets `base` back.
+  false` so the platform fee stays with Cenaiva (Option B: Cenaiva keeps its
+  2% `cenaivaFee` + the processing-fee portion; NOT a 5.5% commission).
+  Restaurant nets $0, Cenaiva keeps its fee, diner gets `base` (food + tax)
+  back — the visible platform + processing fees are non-refundable per the
+  checkout disclosure.
 - **Owner publish gate:** four conditions in lock-step — client-side
   check in `Step8PaymentSetup.tsx` AND server-side
   `restaurants_publish_gate` trigger (is_active + stripe_charges_enabled
