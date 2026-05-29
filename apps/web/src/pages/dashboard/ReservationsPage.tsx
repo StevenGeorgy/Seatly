@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
 import { ReservationDepositBreakdown } from "@/components/dashboard/ReservationDepositBreakdown";
+import { ReservationPreorderSummary } from "@/components/dashboard/ReservationPreorderSummary";
 import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -1336,8 +1337,7 @@ function ReservationDetailsDialog({
               </div>
             ) : null}
             <DetailItem label={t("dashboard.reservations.guest")} value={contact || reservation.phone} />
-            {SPLIT_TENDER_ENABLED &&
-            (reservation.source?.reservation_deposit_payments?.length ?? 0) > 0 ? (
+            {(reservation.source?.reservation_deposit_payments?.length ?? 0) > 0 ? (
               <div className="rounded-lg border border-border bg-bg-surface px-3 py-2">
                 <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted mb-2">
                   Deposit
@@ -1345,6 +1345,16 @@ function ReservationDetailsDialog({
                 <ReservationDepositBreakdown
                   rows={reservation.source?.reservation_deposit_payments ?? []}
                 />
+              </div>
+            ) : null}
+            {(reservation.source?.orders?.some(
+              (o) => (o.order_items?.length ?? 0) > 0,
+            ) ?? false) ? (
+              <div className="rounded-lg border border-border bg-bg-surface px-3 py-2">
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted mb-2">
+                  Pre-order
+                </p>
+                <ReservationPreorderSummary orders={reservation.source?.orders ?? []} />
               </div>
             ) : null}
             <DetailItem label={t("dashboard.reservations.specialRequest")} value={reservation.notes} />

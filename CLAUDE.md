@@ -78,6 +78,30 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-29 Owner dashboard: surface deposit + pre-order in the
+  reservation detail dialog (`ReservationsPage.tsx` + `useReservations.ts`
+  + new `ReservationPreorderSummary.tsx`)** — The detail dialog
+  (`ReservationDetailsDialog`) now shows what the diner paid at booking.
+  (1) Deposit: the deposit section was wrongly gated behind
+  `SPLIT_TENDER_ENABLED` (off in prod) so solo deposits rendered nothing;
+  dropped the flag from the condition so any booking with a
+  `reservation_deposit_payments` row shows amount + status via the
+  existing `ReservationDepositBreakdown` (its 1-row branch already
+  handles solo). NOT a split-tender revival — the server still rejects
+  split bookings, so only solo 1-row deposits exist; this just un-hides a
+  deposit the diner already paid. (2) Pre-order: `useReservations`
+  `.select` now embeds `orders(... order_items(...))` (FKs +
+  `orders_select_staff`/`order_items_select_staff` RLS already allow the
+  owner read — no RPC/RLS/migration needed; `order_items.name` is
+  denormalized so no `menu_items` join). New `ReservationPreorderSummary`
+  lists `qty × name — line_total`, a food subtotal (sum of `line_total`,
+  NOT `orders.total_amount` which bundles the deposit on combined PIs),
+  tax if any, and a Paid/Refunded/Pending badge. Both sections render
+  only when data exists (no empty boxes). Display-only — no
+  payment/booking logic touched. tsc + minified build clean; data layer
+  verified (986BCC4D shows $1.50 deposit; pre-ordered bookings carry
+  order_items).
+
 - **2026-05-29 Block no-show before reservation time + soft cancel
   message (`update_staff_reservation_status` RPC + `useReservations.ts`
   + `ReservationsPage.tsx` + `cancel-reservation`)** — A no-show is now
