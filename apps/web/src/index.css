@@ -175,6 +175,18 @@
     }
 }
 
+@layer utilities {
+    /* Scrollable, but no scrollbar reserving layout space — keeps the
+       collapsed sidebar's icons centered in the rail (the 6px webkit
+       scrollbar above otherwise shifts mx-auto content left). */
+    .no-scrollbar {
+        scrollbar-width: none;
+    }
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+}
+
 /* Google Places Autocomplete dropdown */
 .pac-container {
     margin-top: 2px;

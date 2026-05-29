@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -28,10 +28,13 @@ import {
   LogOut,
   Store,
   UserPlus,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { RestaurantPreviewModal, type RestaurantPreviewSummary } from "@/components/customer/RestaurantPreviewModal";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
 import { usePublicRestaurants } from "@/hooks/useRestaurant";
@@ -47,6 +50,8 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCompactTimeLabel } from "@/lib/utils/time";
 import type { StaffRole } from "@/types/auth";
+
+const SIDEBAR_COLLAPSED_KEY = "cenaiva.sidebarCollapsed";
 
 function RestaurantLogoBadge({
   logoUrl,
@@ -66,6 +71,24 @@ function RestaurantLogoBadge({
     >
       {logoUrl ? <img src={logoUrl} alt="" className="size-full object-cover" /> : fallback}
     </span>
+  );
+}
+
+/**
+ * Wraps a sidebar row in a Radix tooltip when the rail is collapsed (icon-only),
+ * so hovering an icon reveals its label. When expanded the label is already
+ * visible, so the node is returned untouched (no Tooltip → no Provider needed
+ * on the mobile drawer, which always renders expanded).
+ */
+function withTooltip(collapsed: boolean, label: string, node: ReactNode): ReactNode {
+  if (!collapsed) return node;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{node}</TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -103,6 +126,38 @@ export function DashboardSidebar() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewFavorite, setPreviewFavorite] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  // Persist the collapsed preference so it survives reloads (mirrors the
+  // localStorage pattern used for the selected restaurant scope).
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      /* ignore quota / privacy-mode failures */
+    }
+  }, [collapsed]);
+
+  // Cmd/Ctrl+B — the universal sidebar-toggle shortcut. Ignored while typing
+  // so it doesn't fight rich-text "bold".
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "b") return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      e.preventDefault();
+      setCollapsed((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const roleSet = useMemo((): Set<StaffRole> => {
     if (!selectedRestaurantId) return new Set();
@@ -123,6 +178,17 @@ export function DashboardSidebar() {
 
   const settingsItem = visibleItems.find((i) => i.path === "/dashboard/settings");
   const mainItems = visibleItems.filter((i) => i.path !== "/dashboard/settings");
+
+  // Compute NavLink active state ourselves. We can't rely on NavLink's
+  // `className={({isActive}) => ...}` render-prop here: when collapsed, each
+  // NavLink is wrapped in <TooltipTrigger asChild> (Radix Slot), which
+  // string-joins className and coerces the function to its source text — so
+  // the real utility classes never apply. A plain string className survives.
+  const isNavActive = (path: string, end = false) => {
+    const cur = pathname.replace(/\/+$/, "") || "/";
+    const target = path.replace(/\/+$/, "") || "/";
+    return end ? cur === target : cur === target || cur.startsWith(`${target}/`);
+  };
 
   const selectedRestaurant = restaurants.find((r) => r.id === selectedRestaurantId) ?? restaurants[0];
   const publicRestaurant =
@@ -184,44 +250,86 @@ export function DashboardSidebar() {
       } satisfies RestaurantPreviewSummary)
     : null;
 
-  const sidebarContent = (
+  const renderContent = ({
+    collapsed,
+    showToggle,
+  }: {
+    collapsed: boolean;
+    showToggle: boolean;
+  }) => (
     <div className="flex h-full flex-col">
-      {/* Brand */}
-      <div className="flex h-14 shrink-0 items-center px-5">
-        <span className="text-sm font-bold tracking-[0.25em] text-gold">CENAIVA</span>
+      {/* Brand + collapse toggle */}
+      <div
+        className={cn(
+          "flex h-14 shrink-0 items-center",
+          collapsed ? "justify-center px-2" : "px-5",
+        )}
+      >
+        {!collapsed && (
+          <span className="text-sm font-bold tracking-[0.25em] text-gold">CENAIVA</span>
+        )}
+        {showToggle && (
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"}
+            className={cn(
+              "flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-text-primary",
+              !collapsed && "ml-auto",
+            )}
+          >
+            {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+          </button>
+        )}
       </div>
 
       {/* Restaurant switcher card */}
-      <div className="px-4 pb-2 pt-1">
+      <div className={cn("pb-2 pt-1", collapsed ? "px-2" : "px-4")}>
         <Popover open={workspaceOpen} onOpenChange={setWorkspaceOpen}>
           <PopoverTrigger asChild>
-            <button
-              type="button"
-              aria-label={t("dashboard.shell.switchRestaurant")}
-              className="relative w-full rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 text-left transition-colors hover:border-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
-            >
-              <div className="flex items-center gap-3">
+            {collapsed ? (
+              <button
+                type="button"
+                aria-label={t("dashboard.shell.switchRestaurant")}
+                title={selectedRestaurant?.name ?? selectedRestaurant?.slug ?? undefined}
+                className="flex w-full items-center justify-center rounded-xl py-1 transition-colors hover:bg-bg-elevated/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+              >
                 <RestaurantLogoBadge
                   logoUrl={selectedRestaurant?.logo_url}
                   fallback={restaurantInitials}
-                  className="size-10 border-gold/40 text-xs"
+                  className="size-10 border-gold/40 text-[11px]"
                 />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-text-primary">
-                    {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
-                  </p>
-                  {roleLabel && (
-                    <p className="truncate text-xs text-text-muted">{roleLabel}</p>
-                  )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label={t("dashboard.shell.switchRestaurant")}
+                className="relative w-full rounded-xl border border-border bg-bg-elevated/60 px-3 py-2.5 text-left transition-colors hover:border-gold/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+              >
+                <div className="flex items-center gap-3">
+                  <RestaurantLogoBadge
+                    logoUrl={selectedRestaurant?.logo_url}
+                    fallback={restaurantInitials}
+                    className="size-10 border-gold/40 text-xs"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-text-primary">
+                      {selectedRestaurant?.name ?? selectedRestaurant?.slug ?? "—"}
+                    </p>
+                    {roleLabel && (
+                      <p className="truncate text-xs text-text-muted">{roleLabel}</p>
+                    )}
+                  </div>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 shrink-0 text-text-muted transition-transform",
+                      workspaceOpen && "rotate-180 text-gold",
+                    )}
+                  />
                 </div>
-                <ChevronDown
-                  className={cn(
-                    "size-4 shrink-0 text-text-muted transition-transform",
-                    workspaceOpen && "rotate-180 text-gold",
-                  )}
-                />
-              </div>
-            </button>
+              </button>
+            )}
           </PopoverTrigger>
           <PopoverContent align="start" side="right" sideOffset={10} className="w-72 p-0">
             <div className="border-b border-border px-4 py-3">
@@ -315,74 +423,93 @@ export function DashboardSidebar() {
       </div>
 
       {/* Navigation */}
-      <p className="px-5 pb-2 pt-3 font-mono text-[10px] uppercase tracking-[0.22em] text-gold">
-        Tonight
-      </p>
-      <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-1 scrollbar-thin" aria-label={t("dashboard.shell.navLabel")}>
+      {!collapsed && (
+        <p className="px-5 pb-2 pt-3 font-mono text-[10px] uppercase tracking-[0.22em] text-gold">
+          Tonight
+        </p>
+      )}
+      <nav
+        className={cn(
+          "flex flex-1 flex-col gap-0.5 overflow-y-auto py-1",
+          collapsed ? "px-2 pt-3 no-scrollbar" : "px-3 scrollbar-thin",
+        )}
+        aria-label={t("dashboard.shell.navLabel")}
+      >
         {mainItems.map((item, i) => {
           const Icon = ICONS[item.path] ?? LayoutDashboard;
+          const label =
+            item.path === "/dashboard/orders" ? t("dashboard.orders.preordersTitle") : t(item.labelKey);
+          const active = isNavActive(item.path, item.path === "/dashboard");
           return (
             <motion.div
               key={item.path}
-              initial={{ opacity: 0, x: -6 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ duration: 0.2, delay: i * 0.012, ease: "easeOut" }}
             >
-              <NavLink
-                to={item.path}
-                end={item.path === "/dashboard"}
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  cn(
-                    "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
-                    isActive
-                      ? "bg-gold/8 text-gold"
+              {withTooltip(
+                collapsed,
+                label,
+                <NavLink
+                  to={item.path}
+                  end={item.path === "/dashboard"}
+                  onClick={() => setMobileOpen(false)}
+                  className={cn(
+                    "group relative flex items-center rounded-lg text-sm font-medium transition-all duration-150",
+                    collapsed ? "mx-auto size-10 justify-center" : "gap-3 px-3 py-2",
+                    active
+                      ? collapsed
+                        ? "bg-gold/15 text-gold"
+                        : "bg-gold/8 text-gold"
                       : "text-text-muted hover:bg-white/[0.03] hover:text-text-secondary",
-                  )
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    {isActive && (
-                      <motion.div
-                        layoutId="sidebar-indicator"
-                        className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-gold"
-                        transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                      />
-                    )}
-                    <Icon
-                      className={cn(
-                        "size-[18px] shrink-0 transition-colors duration-150",
-                        isActive ? "text-gold" : "text-text-muted group-hover:text-text-secondary",
-                      )}
+                  )}
+                >
+                  {active && !collapsed && (
+                    <motion.div
+                      layoutId="sidebar-indicator"
+                      className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-gold"
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
                     />
-                    <span className="truncate">
-                      {item.path === "/dashboard/orders" ? t("dashboard.orders.preordersTitle") : t(item.labelKey)}
-                    </span>
-                  </>
-                )}
-              </NavLink>
+                  )}
+                  <Icon
+                    className={cn(
+                      "size-[18px] shrink-0 transition-colors duration-150",
+                      active ? "text-gold" : "text-text-muted group-hover:text-text-secondary",
+                    )}
+                  />
+                  {!collapsed && <span className="truncate">{label}</span>}
+                </NavLink>,
+              )}
             </motion.div>
           );
         })}
       </nav>
 
       {/* Account actions pinned at bottom */}
-      <div className="border-t border-border px-3 py-2">
-        <div className="mb-2 flex items-center gap-2 border-b border-border px-2 pb-2 pt-2">
-          <span className="flex min-w-0 flex-1 items-center">
-            <button
-              type="button"
-              className="flex size-9 items-center justify-center rounded-full bg-gold/15 font-mono text-xs font-semibold text-gold transition-colors hover:bg-gold/25"
-              aria-label={t("routes.account.title")}
-              title={profileLabel}
-              onClick={() => {
-                void navigate("/account");
-                setMobileOpen(false);
-              }}
-            >
-              {profileInitials || <User className="size-4" />}
-            </button>
+      <div className={cn("border-t border-border py-2", collapsed ? "px-2" : "px-3")}>
+        <div
+          className={cn(
+            "mb-2 flex border-b border-border pb-2 pt-2",
+            collapsed ? "flex-col items-center gap-2" : "items-center gap-2 px-2",
+          )}
+        >
+          <span className={cn("flex items-center", !collapsed && "min-w-0 flex-1")}>
+            {withTooltip(
+              collapsed,
+              profileLabel,
+              <button
+                type="button"
+                className="flex size-9 items-center justify-center rounded-full bg-gold/15 font-mono text-xs font-semibold text-gold transition-colors hover:bg-gold/25"
+                aria-label={t("routes.account.title")}
+                title={profileLabel}
+                onClick={() => {
+                  void navigate("/account");
+                  setMobileOpen(false);
+                }}
+              >
+                {profileInitials || <User className="size-4" />}
+              </button>,
+            )}
           </span>
           <Popover>
             <PopoverTrigger asChild>
@@ -390,6 +517,7 @@ export function DashboardSidebar() {
                 type="button"
                 className="relative flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-text-primary"
                 aria-label="Notifications"
+                title="Notifications"
               >
                 <Bell className="size-4" />
                 {unreadCount > 0 && (
@@ -443,60 +571,81 @@ export function DashboardSidebar() {
               </div>
             </PopoverContent>
           </Popover>
-          <span className="h-4 w-px bg-border" />
-          <button
-            type="button"
-            onClick={() => void signOut()}
-            className="flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-danger"
-            aria-label="Sign out"
-          >
-            <LogOut className="size-4" />
-          </button>
+          {!collapsed && <span className="h-4 w-px bg-border" />}
+          {withTooltip(
+            collapsed,
+            "Sign out",
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="flex size-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-bg-elevated/60 hover:text-danger"
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut className="size-4" />
+            </button>,
+          )}
         </div>
 
-        {canUseCustomerView && (
-          <button
-            type="button"
-            onClick={() => {
-              switchToCustomerView();
-              void navigate("/discover");
-              setMobileOpen(false);
-            }}
-            className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
-          >
-            <User className="size-[18px] shrink-0 text-gold" />
-            <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
-          </button>
-        )}
-
-        {settingsItem && (
-          <>
-          {(selectedRestaurant?.slug ?? selectedRestaurant?.id) && (
+        {canUseCustomerView &&
+          withTooltip(
+            collapsed,
+            t("dashboard.shell.switchToCustomerView"),
             <button
               type="button"
               onClick={() => {
-                setPreviewOpen(true);
+                switchToCustomerView();
+                void navigate("/discover");
                 setMobileOpen(false);
               }}
-              className="group relative mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10"
+              className={cn(
+                "group relative mb-1 flex items-center rounded-lg text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10",
+                collapsed ? "mx-auto size-10 justify-center" : "w-full gap-3 px-3 py-2",
+              )}
             >
-              <Eye className="size-[18px] shrink-0 text-gold" />
-              <span className="truncate">{t("dashboard.shell.previewRestaurant")}</span>
-            </button>
+              <User className="size-[18px] shrink-0 text-gold" />
+              {!collapsed && (
+                <span className="truncate">{t("dashboard.shell.switchToCustomerView")}</span>
+              )}
+            </button>,
           )}
-          <NavLink
-            to={settingsItem.path}
-            onClick={() => setMobileOpen(false)}
-            className={({ isActive }) =>
-              cn(
-                "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10",
-                isActive && "bg-gold/10",
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                {isActive && (
+
+        {settingsItem && (
+          <>
+            {(selectedRestaurant?.slug ?? selectedRestaurant?.id) &&
+              withTooltip(
+                collapsed,
+                t("dashboard.shell.previewRestaurant"),
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewOpen(true);
+                    setMobileOpen(false);
+                  }}
+                  className={cn(
+                    "group relative mb-1 flex items-center rounded-lg text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10",
+                    collapsed ? "mx-auto size-10 justify-center" : "w-full gap-3 px-3 py-2",
+                  )}
+                >
+                  <Eye className="size-[18px] shrink-0 text-gold" />
+                  {!collapsed && (
+                    <span className="truncate">{t("dashboard.shell.previewRestaurant")}</span>
+                  )}
+                </button>,
+              )}
+            {withTooltip(
+              collapsed,
+              t(settingsItem.labelKey),
+              <NavLink
+                to={settingsItem.path}
+                onClick={() => setMobileOpen(false)}
+                className={cn(
+                  "group relative flex items-center rounded-lg text-sm font-medium text-gold transition-all duration-150 hover:bg-gold/10",
+                  collapsed ? "mx-auto size-10 justify-center" : "w-full gap-3 px-3 py-2",
+                  isNavActive(settingsItem.path) && "bg-gold/10",
+                )}
+              >
+                {isNavActive(settingsItem.path) && !collapsed && (
                   <motion.div
                     layoutId="sidebar-indicator"
                     className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-gold"
@@ -504,10 +653,11 @@ export function DashboardSidebar() {
                   />
                 )}
                 <Settings className="size-[18px] shrink-0 text-gold" />
-                <span className="truncate">{t(settingsItem.labelKey)}</span>
-              </>
+                {!collapsed && (
+                  <span className="truncate">{t(settingsItem.labelKey)}</span>
+                )}
+              </NavLink>,
             )}
-          </NavLink>
           </>
         )}
       </div>
@@ -543,7 +693,7 @@ export function DashboardSidebar() {
         )}
       </AnimatePresence>
 
-      {/* Mobile sidebar */}
+      {/* Mobile sidebar — always full-width/expanded; the drawer is the toggle */}
       <AnimatePresence>
         {mobileOpen && (
           <motion.aside
@@ -553,17 +703,23 @@ export function DashboardSidebar() {
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             className="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border bg-bg-base sm:hidden"
           >
-            {sidebarContent}
+            {renderContent({ collapsed: false, showToggle: false })}
           </motion.aside>
         )}
       </AnimatePresence>
 
-      {/* Desktop sidebar */}
-      <aside
-        className="hidden w-56 shrink-0 flex-col border-r border-border bg-bg-base sm:flex"
-      >
-        {sidebarContent}
-      </aside>
+      {/* Desktop sidebar — collapsible icon rail. Content reflows via the
+          layout's flex-1 main column; no layout change needed there. */}
+      <TooltipProvider delayDuration={150}>
+        <aside
+          className={cn(
+            "hidden shrink-0 flex-col border-r border-border bg-bg-base transition-[width] duration-200 ease-in-out sm:flex",
+            collapsed ? "w-20" : "w-56",
+          )}
+        >
+          {renderContent({ collapsed, showToggle: true })}
+        </aside>
+      </TooltipProvider>
       <RestaurantPreviewModal
         restaurant={previewOpen ? previewRestaurant : null}
         favorite={previewFavorite}
