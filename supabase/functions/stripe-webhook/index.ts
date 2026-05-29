@@ -154,6 +154,13 @@ type DisputeLike = {
   evidence_details?: { due_by?: number | null } | null;
 };
 
+type RefundLike = {
+  id?: string;
+  payment_intent?: string | null;
+  status?: string | null;
+  failure_reason?: string | null;
+};
+
 async function handleAccountUpdated(account: AccountLike): Promise<void> {
   if (!account.id) return;
   // Derive requirements_due / requirements_processing per Stripe's recommended
@@ -1049,6 +1056,50 @@ async function handleChargeDispute(eventType: string, dispute: DisputeLike): Pro
     const status = dispute.status ?? "warning_closed";
     const outcome: "won" | "lost" | "warning_closed" =
       status === "won" || status === "lost" ? status : "warning_closed";
+
+    // Tier3 dispute clawback. For destination charges Stripe debits CENAIVA's
+    // platform balance (+ a $15 fee) and does NOT auto-reverse the transfer to
+    // the restaurant (Stripe Connect disputes doc). On a LOST dispute, recover
+    // the restaurant's transferred slice by reversing the transfer. We reverse
+    // on LOST (not created) so a restaurant that WINS keeps its funds; the $15
+    // fee + the platform/processing fee portion stay with (are eaten by)
+    // Cenaiva — only the transfer (food+tax) is recoverable.
+    // POLICY (adjust here if desired): this debits the connected restaurant for
+    // chargebacks on their bookings — standard marketplace behavior. Change to
+    // reverse-on-created for stronger recovery, or remove to have Cenaiva
+    // absorb disputes.
+    if (outcome === "lost") {
+      try {
+        const latestCharge = (pi as { latest_charge?: { transfer?: string | null } | null })
+          .latest_charge;
+        const transferId = latestCharge && typeof latestCharge.transfer === "string"
+          ? latestCharge.transfer
+          : null;
+        if (transferId) {
+          await stripe.transfers.createReversal(
+            transferId,
+            { metadata: { cenaiva_reason: "dispute_lost_clawback", dispute_id: dispute.id } },
+            { idempotencyKey: `dispute_clawback_${dispute.id}` },
+          );
+          console.log(
+            `[stripe-webhook] dispute ${dispute.id} LOST — reversed transfer ${transferId} to recover the restaurant's slice`,
+          );
+        } else {
+          console.warn(
+            `[stripe-webhook] dispute ${dispute.id} lost but no transfer on charge (PI ${pi.id}) — nothing to claw back`,
+          );
+        }
+      } catch (revErr) {
+        // Already reversed (e.g. the booking was refunded with reverse_transfer
+        // before the dispute closed) or the connected balance is short — log
+        // for manual follow-up; Cenaiva absorbs the shortfall.
+        console.error(
+          `[stripe-webhook] dispute clawback reversal failed for ${dispute.id}:`,
+          revErr instanceof Error ? revErr.message : revErr,
+        );
+      }
+    }
+
     await dispatchOwnerNotification(restaurantId, "charge_dispute_closed", {
       amount: amountDollars,
       reservation_code: confirmationCode,
@@ -1056,6 +1107,41 @@ async function handleChargeDispute(eventType: string, dispute: DisputeLike): Pro
       payment_intent_id: pi.id,
     });
   }
+}
+
+async function handleRefundFailed(refund: RefundLike): Promise<void> {
+  const piId = typeof refund.payment_intent === "string" ? refund.payment_intent : null;
+  if (!piId) {
+    console.warn("[stripe-webhook] refund-failed event without payment_intent", { id: refund.id });
+    return;
+  }
+  // Tier3: a failed refund means the money was NOT returned to the diner —
+  // Stripe credited it back to OUR balance (Stripe refunds doc). DB rows we
+  // optimistically flipped to 'refunded' for this PI are now wrong; reconcile
+  // them back so state reflects reality and an operator can arrange an
+  // alternative refund per Stripe's guidance.
+  console.error(
+    `[stripe-webhook] refund ${refund.id} FAILED for PI ${piId} (reason: ${refund.failure_reason ?? "unknown"}) — money NOT returned; reconciling rows from 'refunded'`,
+  );
+  const { data: depRows, error: depErr } = await supabaseAdmin
+    .from("reservation_deposit_payments")
+    .update({ status: "charged" })
+    .eq("stripe_payment_intent_id", piId)
+    .eq("status", "refunded")
+    .select("id");
+  if (depErr) console.error("[stripe-webhook] refund-failed deposit reconcile error", depErr);
+  const { data: ordRows, error: ordErr } = await supabaseAdmin
+    .from("orders")
+    .update({ status: "paid" })
+    .eq("stripe_payment_intent_id", piId)
+    .eq("status", "refunded")
+    .select("id");
+  if (ordErr) console.error("[stripe-webhook] refund-failed order reconcile error", ordErr);
+  console.error("[stripe-webhook] refund-failed reconciled", {
+    pi: piId,
+    deposits: depRows?.length ?? 0,
+    orders: ordRows?.length ?? 0,
+  });
 }
 
 async function handleSubscriptionDeleted(sub: SubscriptionLike): Promise<void> {
@@ -1183,6 +1269,21 @@ Deno.serve(async (req: Request) => {
       case "charge.dispute.updated":
         console.log(`[stripe-webhook] charge.dispute.updated (${event.id}) — logged, no action`);
         break;
+      case "refund.failed":
+        await handleRefundFailed(event.data.object as RefundLike);
+        break;
+      case "refund.updated": {
+        // refund.updated supersedes the deprecated charge.refund.updated. Most
+        // updates (metadata, ARN) are no-ops; only a terminal 'failed' status
+        // needs reconciliation.
+        const r = event.data.object as RefundLike;
+        if (r.status === "failed") {
+          await handleRefundFailed(r);
+        } else {
+          console.log(`[stripe-webhook] refund.updated ${r.id} status=${r.status} — no action`);
+        }
+        break;
+      }
       default:
         console.log(`[stripe-webhook] unhandled event ${event.type} (${event.id})`);
     }
