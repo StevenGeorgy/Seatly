@@ -434,6 +434,44 @@ Deno.serve(async (req: Request) => {
       row.stripe_payment_intent_id = piByRowId.get(row.id) ?? row.stripe_payment_intent_id;
     }
 
+    // Refund-all-charged-rows helper, used by BOTH the cart-delta replay below
+    // and the party_delta slot-validation path. If anything AFTER the delta
+    // charge fails, the diner's just-charged delta is auto-refunded so they're
+    // never charged for a modify that didn't apply. (Tier2: the cart-replay
+    // failures previously returned an error WITHOUT refunding.)
+    const refundAndError = async (
+      message: string,
+      reason: string,
+      status = 409,
+    ): Promise<Response> => {
+      for (const row of depositRows) {
+        const piId = piByRowId.get(row.id)!;
+        const amount = row.amount_cents ?? 0;
+        if (amount <= 0) continue;
+        try {
+          await refundPaymentIntent(
+            stripe,
+            piId,
+            "modify_deposit_delta_auto_refund",
+            amount,
+          );
+          await supabaseAdmin
+            .from("reservation_deposit_payments")
+            .update({ status: "refunded", amount_cents: 0 })
+            .eq("id", row.id);
+        } catch (refundErr) {
+          console.error(
+            `[confirm-modify-payment] auto-refund failed for row ${row.id}:`,
+            refundErr instanceof Error ? refundErr.message : refundErr,
+          );
+        }
+      }
+      return jsonRes(
+        { error: message, unavailable_reason: reason, refunded: true },
+        status,
+      );
+    };
+
     // ═══════════════════════════════════════════════════════════════════
     // CART-DELTA BRANCH (2026-05-27)
     // ═══════════════════════════════════════════════════════════════════
@@ -493,8 +531,9 @@ Deno.serve(async (req: Request) => {
               "[confirm-modify-payment cart] order insert failed:",
               orderErr,
             );
-            return jsonRes(
-              { error: orderErr?.message ?? "order_insert_failed" },
+            return await refundAndError(
+              "We couldn't record your updated pre-order, so your payment was refunded. Please try again.",
+              "order_insert_failed",
               400,
             );
           }
@@ -535,7 +574,11 @@ Deno.serve(async (req: Request) => {
               "[confirm-modify-payment cart] items insert failed:",
               itemsErr,
             );
-            return jsonRes({ error: itemsErr.message }, 400);
+            return await refundAndError(
+              "We couldn't record your updated pre-order items, so your payment was refunded. Please try again.",
+              "items_insert_failed",
+              400,
+            );
           }
         }
         await supabaseAdmin
@@ -619,11 +662,9 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[confirm-modify-payment cart] replay failed:", msg);
-        return jsonRes(
-          {
-            error: "Cart replay failed — please contact support.",
-            details: msg,
-          },
+        return await refundAndError(
+          "Updating your pre-order failed, so your payment was refunded. Please try again or contact support.",
+          "cart_replay_failed",
           500,
         );
       }
@@ -634,39 +675,6 @@ Deno.serve(async (req: Request) => {
     // modify-reservation. Below this point, any rejection must auto-refund
     // ALL paid PIs (one per row in split-tender). Refund + row-flip happen
     // independently per row so a partial failure doesn't strand the others.
-    const refundAndError = async (
-      message: string,
-      reason: string,
-      status = 409,
-    ): Promise<Response> => {
-      for (const row of depositRows) {
-        const piId = piByRowId.get(row.id)!;
-        const amount = row.amount_cents ?? 0;
-        if (amount <= 0) continue;
-        try {
-          await refundPaymentIntent(
-            stripe,
-            piId,
-            "modify_deposit_delta_auto_refund",
-            amount,
-          );
-          await supabaseAdmin
-            .from("reservation_deposit_payments")
-            .update({ status: "refunded", amount_cents: 0 })
-            .eq("id", row.id);
-        } catch (refundErr) {
-          console.error(
-            `[confirm-modify-payment] auto-refund failed for row ${row.id}:`,
-            refundErr instanceof Error ? refundErr.message : refundErr,
-          );
-        }
-      }
-      return jsonRes(
-        { error: message, unavailable_reason: reason, refunded: true },
-        status,
-      );
-    };
-
     // Slot-modify (party_delta) path. Schema enforces date/time/party_size
     // are present when change_type != 'cart_delta', so the non-null asserts
     // below are safe.
