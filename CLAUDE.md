@@ -78,6 +78,40 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-29 Block no-show before reservation time + soft cancel
+  message (`update_staff_reservation_status` RPC + `useReservations.ts`
+  + `ReservationsPage.tsx` + `cancel-reservation`)** — A no-show is now
+  hard-rejected when `now() < reserved_at`, raised as `P0022`
+  (`no_show_before_reservation`). This applies to EVERYONE incl.
+  owner/manager **force** — force now only relaxes the LATE (+24h)
+  bound, never reaches back before the booked time. The old "1 hour
+  before" non-force grace for no-show is removed (the seat RPC is
+  unchanged — early seating still allowed). Dashboard maps `P0022`
+  to a dedicated friendly toast (no force dialog, since force can't
+  bypass it). Separately, `cancel-reservation`'s terminal-status
+  rejection message softened from "already started or completed" to
+  "This reservation can no longer be changed online — please contact
+  the restaurant." Root cause of the #F13/#F14 surface: staff could
+  mark a still-future booking no-show, which then showed to the diner
+  as a stuck "Upcoming" booking they couldn't cancel. That trigger is
+  now closed at the source. Deployed: migration applied live + RPC
+  verified (`pg_get_functiondef` contains the P0022 block, old
+  1h-grace gone, gate fires for the future booking that prompted this);
+  `cancel-reservation` redeployed; frontend on `main` (Amplify).
+
+- **2026-05-29 Checkout 500 from stale `stripe_customer_id`
+  (`create-public-payment-intent` + `stripe-list-methods`)** — A
+  profile whose `user_profiles.stripe_customer_id` points at a Stripe
+  customer that no longer exists in the live account (test→live key
+  drift, or a churned/deleted customer) 500'd the whole checkout:
+  `paymentMethods.list` / save-card threw "No such customer". Both fns
+  now verify the stored customer via `customers.retrieve` and, on
+  `resource_missing` or `deleted`, self-heal — `stripe-list-methods`
+  nulls the dangling ref and returns `{ methods: [] }`;
+  `create-public-payment-intent` nulls it and creates a fresh customer
+  for the save-card path. Verified live: fresh customer minted, card
+  saved, PIs succeeded. Both fns redeployed.
+
 - **2026-05-28 Booking-time desync fix (`RestaurantPublicPage.tsx` +
   `useAvailability.ts`)** — A diner could confirm one slot at checkout
   but be booked into a different one. Repro: change party size (or date)
@@ -271,8 +305,13 @@ work to sub-agents.
   defensive gate refuses to cancel `seated`/`completed`/`no_show` even
   when reserved_at is still future (#F13); diner-side BookingsPage
   shows terminal-state reservations as "Upcoming" when reserved_at is
-  future (#F14). Both rare in production (only happen when staff
-  prematurely mark a status); deferred.
+  future (#F14). **Update 2026-05-29:** the dominant trigger — staff
+  marking a *future* booking `no_show` — is now blocked at the RPC
+  (see the 2026-05-29 entry above), and #F13's message is softened.
+  The defensive gate + #F14 bucketing are intentionally KEPT: a
+  future-but-`seated` booking (early seating) can still reach this
+  state, so the gate stays as a backstop. Remaining surface is now
+  much rarer; still deferred.
 
 - **2026-05-20 Subscription lifecycle rework (full overhaul)** —
   Decoupled card-save from subscription creation. Trial clock now anchors
