@@ -78,6 +78,25 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-28 Booking-time desync fix (`RestaurantPublicPage.tsx`)** —
+  A diner could confirm one slot at checkout but be booked into a
+  different one. Repro: change party size (or date) on a no-availability
+  date, then tap the "Try <next day>" fallback WITHOUT tapping a time
+  pill. The page snapped `dineIn.time` to the day's FIRST slot (e.g.
+  11am) via the time-reset effect, while `AvailabilityPanel` still
+  displayed/confirmed the auto-selected closest-to-now slot (e.g. 8:30pm).
+  The hold + booking resolved the slot from `dineIn.time`
+  (`dineInTimeMatch`), NOT the displayed pick (`pickedAvailabilitySlot`),
+  so the diner paid for 8:30pm and got 11am. Fix (2 edits): (1) the
+  booked slot now prefers `pickedAvailabilitySlot` (the displayed pick),
+  falling back to the `display_time` match only when nothing is picked —
+  the URL-pin / voice deep-link branch keeps its existing `isoSlotMatch`
+  guard untouched; (2) the time-reset effect re-checks the LATEST
+  `dineIn.time` inside its functional `setDineIn` so a pick that lands
+  after the effect is scheduled isn't clobbered back to the first slot.
+  Verified live (local dev build against prod backend): identical repro
+  now holds 8:30pm where it previously held 11am.
+
 - **2026-05-28 Solo Stripe-QA fixes (2 bugs)** — Caught during the solo
   (split-tender-off) Phase-1 QA pass and fixed live:
   (1) **Missing diner confirmation on the paid-hold path.** Logged-in

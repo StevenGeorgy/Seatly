@@ -1542,7 +1542,15 @@ export default function RestaurantPublicPage() {
     // ?slot=, leave dineIn.time alone — the URL is authoritative.
     if (requestedBookingTime) return;
     void Promise.resolve().then(() => {
-      setDineIn((details) => ({ ...details, time: availableTimeOptions[0] ?? "" }));
+      // Re-check against the LATEST time inside the functional update. The guard
+      // above reads `dineIn.time` from a stale render closure, so a panel pick
+      // (onSelectSlot) that landed after this effect was scheduled must not be
+      // clobbered back to the first slot of the day.
+      setDineIn((details) =>
+        availableTimeOptions.includes(details.time)
+          ? details
+          : { ...details, time: availableTimeOptions[0] ?? "" },
+      );
     });
   }, [
     availability.loading,
@@ -1782,9 +1790,21 @@ export default function RestaurantPublicPage() {
   const dineInTimeMatch = filteredAvailabilitySlots.find(
     (slot) => formatCompactTimeLabel(slot.display_time) === dineIn.time,
   );
+  // The slot the diner sees selected in the AvailabilityPanel is authoritative
+  // for what gets booked. `dineIn.time` can transiently diverge from that pick:
+  // a party-size/date change clears `pickedAvailabilitySlot` and the time-reset
+  // effect (search availableTimeOptions[0]) snaps `dineIn.time` to the FIRST
+  // slot of the day (e.g. 11am) before the panel's onSelectSlot lands — so a
+  // diner who saw and confirmed "8:30 PM" could otherwise be booked into the
+  // 11 AM slot. Prefer the explicit pick; fall back to the display_time match
+  // only when nothing is picked. (URL-pin / voice deep-link path is left
+  // unchanged — it has its own isoSlotMatch protection.)
+  const pickedSlotMatch = pickedAvailabilitySlot
+    ? filteredAvailabilitySlots.find((slot) => slot.date_time === pickedAvailabilitySlot.date_time)
+    : undefined;
   const selectedAvailabilitySlot = requestedIsoSlot
     ? (isoSlotMatch ?? (dineIn.time && dineIn.time !== initialBookingTime ? dineInTimeMatch : undefined))
-    : dineInTimeMatch;
+    : (pickedSlotMatch ?? dineInTimeMatch);
   const selectedPreviewSlot =
     lockedPreviewSlotAvailable && requestedIsoSlot && requestedShiftId && dineIn.time
       ? {
