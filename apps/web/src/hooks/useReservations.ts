@@ -311,7 +311,7 @@ export function useReservations(filters?: ReservationFilters) {
     let query = client
       .from("reservations")
       .select(
-        "*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity)), event:events(id, name, date, start_time, end_time, capacity, tickets_sold, is_active), promotion:promotions(id, title, promo_code, promo_type, discount_value, discount_unit, badge_color, is_active), reservation_deposit_payments(id, amount_cents, status, payer_full_name, payer_email, stripe_payment_intent_id, paid_at, created_at), orders(id, status, is_preorder, subtotal, tax_amount, total_amount, paid_at, stripe_payment_intent_id, card_brand, card_last4, order_items(id, name, quantity, unit_price, line_total, status))",
+        "*, guests(full_name, email, phone), tables(id, table_number, label, section, capacity), reservation_tables(table_id, is_primary, released_at, tables(id, table_number, label, section, capacity)), event:events(id, name, date, start_time, end_time, capacity, tickets_sold, is_active), promotion:promotions(id, title, promo_code, promo_type, discount_value, discount_unit, badge_color, is_active), reservation_deposit_payments(id, amount_cents, status, payer_full_name, payer_email, stripe_payment_intent_id, paid_at, created_at), orders!orders_reservation_id_fkey(id, status, is_preorder, subtotal, tax_amount, total_amount, paid_at, stripe_payment_intent_id, card_brand, card_last4, order_items(id, name, quantity, unit_price, line_total, status))",
       )
       .eq("restaurant_id", selectedRestaurantId)
       .order("reserved_at", { ascending: true });
