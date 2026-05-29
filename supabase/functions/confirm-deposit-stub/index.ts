@@ -58,7 +58,13 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   });
 }
 
-const STUB_MODE = (Deno.env.get("DEPOSIT_STRIPE_STUB_MODE") ?? "true").toLowerCase() !== "false";
+// 2026-05-29 security #3: default OFF. This is a local-dev TEST stub that
+// flips a deposit row to 'charged' with a fake stub_ PI and NO Stripe
+// verification — a payment-bypass primitive if ever live. Production settles
+// deposits via confirm-deposit-paid (which re-verifies the PI with Stripe).
+// Safe state is the default now; it only enables when explicitly opted in.
+// It is also UNDEPLOYED from prod; this guard is belt-and-suspenders.
+const STUB_MODE = (Deno.env.get("DEPOSIT_STRIPE_STUB_MODE") ?? "false").toLowerCase() === "true";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
