@@ -81,13 +81,30 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // ── Security check: PI must have been created for THIS order.
-    // stripe-charge-order stamps `order_id` on the PI metadata at creation
-    // (line 269), so a real PI created via our producer will have it.
-    // Without this check, any succeeded PI (even $1 on an unrelated
-    // account) could flip ANY order to paid via order-id enumeration.
-    // Audit finding 2026-05-20 (Vuln 3).
-    if (intent.metadata?.order_id !== orderId) {
+    // Fetch the order so we can bind via its reservation when the PI carries
+    // reservation_id instead of order_id.
+    const { data: orderRow } = await supabaseAdmin
+      .from("orders")
+      .select("id, reservation_id")
+      .eq("id", orderId)
+      .maybeSingle();
+    if (!orderRow) return jsonRes({ error: "Order not found" }, 404);
+
+    // ── Security check: the PI must have been created BY US for THIS order —
+    // either stamped with the exact order_id (stripe-charge-order, line 269)
+    // OR with the order's reservation_id (deferred deposit / pre-order PIs from
+    // create-public-payment-intent stamp reservation_id + deposit_payment_ids,
+    // NOT order_id — without this branch those orders stayed 'pending' after a
+    // real charge: voice/deep-link pre-orders). Both ids are stamped only by
+    // our producers on our platform account, so an attacker's unrelated PI has
+    // neither — still closing the id-enumeration hole (Vuln 3, 2026-05-20).
+    const piOrderId = typeof intent.metadata?.order_id === "string" ? intent.metadata.order_id : null;
+    const piReservationId = typeof intent.metadata?.reservation_id === "string" ? intent.metadata.reservation_id : null;
+    const boundByOrder = piOrderId === orderId;
+    const boundByReservation = !!piReservationId &&
+      !!orderRow.reservation_id &&
+      piReservationId === orderRow.reservation_id;
+    if (!boundByOrder && !boundByReservation) {
       return jsonRes({ error: "pi_mismatch" }, 400);
     }
     // Defense-in-depth: amount must cover the order total. Stripe-charge-
