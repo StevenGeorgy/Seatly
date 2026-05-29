@@ -92,6 +92,11 @@ verify_jwt = false
 [functions.confirm-deposit-paid]
 verify_jwt = false
 
+# close-bill gates on in-function checkAuth (ES256) + a staff-role check, so
+# the gateway must let the request through (the gateway can't verify ES256).
+[functions.close-bill]
+verify_jwt = false
+
 [functions.confirm-modify-payment]
 verify_jwt = false
 
