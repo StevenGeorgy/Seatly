@@ -35,6 +35,7 @@ export async function refundPaymentIntent(
   paymentIntentId: string,
   reason: string,
   amountCents?: number,
+  idempotencyKey?: string,
 ): Promise<RefundOutcome> {
   try {
     const refundParams: Record<string, unknown> = {
@@ -51,7 +52,14 @@ export async function refundPaymentIntent(
     if (typeof amountCents === "number" && amountCents > 0) {
       refundParams.amount = amountCents;
     }
-    const refund = await stripe.refunds.create(refundParams);
+    // Optional idempotency key: two concurrent callers (e.g. the owner
+    // "Seated" click racing the auto-complete cron) issuing the SAME logical
+    // refund share the key, so Stripe returns the one refund instead of two
+    // partial refunds. (charge_already_refunded only backstops a FULL refund.)
+    const refund = await stripe.refunds.create(
+      refundParams,
+      idempotencyKey ? { idempotencyKey } : undefined,
+    );
     return {
       ok: true,
       refund_id: refund.id,

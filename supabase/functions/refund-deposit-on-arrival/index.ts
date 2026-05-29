@@ -271,18 +271,23 @@ Deno.serve(async (req: Request) => {
       // Always issue a partial refund for refundCents — even when it equals
       // the row amount. Stripe's default (no amount) refunds the FULL pi.amount
       // which would over-refund and bypass Cenaiva's 5.5% cut.
+      // Per-row idempotency key: the owner "Seated" click and the
+      // auto-complete cron can fire concurrently; the shared key makes Stripe
+      // return ONE refund instead of two partial refunds for this row.
       const outcome = await refundPaymentIntent(
         stripeClient,
         piId,
         "deposit_refund_on_arrival",
         refundCents,
+        `refund_deposit_${row.id}`,
       );
 
       if (outcome.ok) {
         const { error: updateErr } = await adminClient
           .from("reservation_deposit_payments")
           .update({ status: "refunded" })
-          .eq("id", row.id);
+          .eq("id", row.id)
+          .eq("status", "charged");
         if (updateErr) {
           // Stripe refund succeeded but DB flip failed — log loudly. The
           // backstop is `charge_already_refunded` on the next call. Treat
