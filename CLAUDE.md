@@ -78,24 +78,37 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
-- **2026-05-28 Booking-time desync fix (`RestaurantPublicPage.tsx`)** —
-  A diner could confirm one slot at checkout but be booked into a
-  different one. Repro: change party size (or date) on a no-availability
-  date, then tap the "Try <next day>" fallback WITHOUT tapping a time
-  pill. The page snapped `dineIn.time` to the day's FIRST slot (e.g.
-  11am) via the time-reset effect, while `AvailabilityPanel` still
-  displayed/confirmed the auto-selected closest-to-now slot (e.g. 8:30pm).
-  The hold + booking resolved the slot from `dineIn.time`
-  (`dineInTimeMatch`), NOT the displayed pick (`pickedAvailabilitySlot`),
-  so the diner paid for 8:30pm and got 11am. Fix (2 edits): (1) the
-  booked slot now prefers `pickedAvailabilitySlot` (the displayed pick),
-  falling back to the `display_time` match only when nothing is picked —
-  the URL-pin / voice deep-link branch keeps its existing `isoSlotMatch`
-  guard untouched; (2) the time-reset effect re-checks the LATEST
-  `dineIn.time` inside its functional `setDineIn` so a pick that lands
-  after the effect is scheduled isn't clobbered back to the first slot.
-  Verified live (local dev build against prod backend): identical repro
-  now holds 8:30pm where it previously held 11am.
+- **2026-05-28 Booking-time desync fix (`RestaurantPublicPage.tsx` +
+  `useAvailability.ts`)** — A diner could confirm one slot at checkout
+  but be booked into a different one. Repro: change party size (or date)
+  on a no-availability date, then tap the "Try <next day>" fallback
+  WITHOUT tapping a time pill. The time-reset effect snapped `dineIn.time`
+  to the day's FIRST slot (`availableTimeOptions[0]`, e.g. 11am) while
+  `AvailabilityPanel` displayed/confirmed the auto-selected closest-to-now
+  slot (e.g. 8:30pm). The reservation HOLD auto-creates from
+  `selectedBookingSlot.date_time` the instant it's valid; if `dineIn.time`
+  is 11am at that moment, the hold is created at 11am, and the booking
+  converts that hold — so the diner paid for 8:30pm and got 11am.
+  **Root cause = the reset defaulting to the first slot, NOT a
+  resolution-layer issue.** It's a cross-component effect-ordering race
+  (page reset vs `AvailabilityPanel` onSelectSlot), so it's INTERMITTENT
+  and does NOT reproduce on the unminified dev server — it only surfaces
+  on minified prod builds. The real fix: the reset now defaults
+  `dineIn.time` to the CLOSEST-TO-NOW slot — the exact slot the panel
+  shows — via new `closestSlotToNow()` (refactored out of
+  `closestSlotTimeToNow`), so the hold can never capture 11am regardless
+  of effect ordering. Belt-and-suspenders kept: `selectedAvailabilitySlot`
+  also prefers `pickedAvailabilitySlot` (displayed pick) over the
+  `display_time` match; reset re-checks the latest `dineIn.time` inside
+  its functional `setDineIn`. URL-pin / voice deep-link branch left on its
+  `isoSlotMatch` guard. **Verification lesson:** an earlier patch that
+  only changed the resolution layer (`pickedAvailabilitySlot` preference)
+  was wrongly declared fixed after a dev-server test — the dev server
+  gave a FALSE POSITIVE because the race didn't reproduce there. Verify
+  timing-sensitive frontend fixes against a `vite preview` MINIFIED build,
+  not `npm run dev`. This fix was verified by: (a) building the unfixed
+  version → minified preview reproduced 11am, then (b) building the fix →
+  3/3 independent fresh holds (party 3/4/5) all landed at 8:30pm.
 
 - **2026-05-28 Solo Stripe-QA fixes (2 bugs)** — Caught during the solo
   (split-tender-off) Phase-1 QA pass and fixed live:

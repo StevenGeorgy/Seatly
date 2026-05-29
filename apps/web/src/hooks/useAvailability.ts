@@ -339,10 +339,10 @@ export async function fetchNextAvailableDate(args: {
  * "Now" is treated as wall-clock in the restaurant's tz, rounded to the
  * nearest 15 min — matches OpenTable's default behavior.
  */
-export function closestSlotTimeToNow(
+export function closestSlotToNow(
   slots: AvailabilitySlot[],
   timezone: string,
-): string | null {
+): AvailabilitySlot | null {
   if (slots.length === 0) return null;
   // Compute "now" as minutes-since-midnight in the restaurant's tz, rounded
   // to nearest 15. Intl gives us hour/minute strings; parse and combine.
@@ -373,14 +373,22 @@ export function closestSlotTimeToNow(
       best = { slot, distance };
     }
   }
-  if (!best) return null;
+  return best ? best.slot : null;
+}
+
+export function closestSlotTimeToNow(
+  slots: AvailabilitySlot[],
+  timezone: string,
+): string | null {
+  const slot = closestSlotToNow(slots, timezone);
+  if (!slot) return null;
   // Re-render the chosen slot's hour/minute as HH:MM.
   const partsFmt = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone || "UTC",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).formatToParts(new Date(best.slot.date_time));
+  }).formatToParts(new Date(slot.date_time));
   const h = partsFmt.find((p) => p.type === "hour")?.value ?? "00";
   const m = partsFmt.find((p) => p.type === "minute")?.value ?? "00";
   return `${h.padStart(2, "0")}:${m.padStart(2, "0")}`;

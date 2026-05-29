@@ -42,6 +42,7 @@ import { RestaurantPriceMeter } from "@/components/customer/RestaurantPriceMeter
 import { RestaurantSocialLinks } from "@/components/restaurant/RestaurantSocialLinks";
 import {
   fetchAvailabilitySlots,
+  closestSlotToNow,
   filterSlotsByConflicts,
   invalidateAvailabilityCache,
   useAvailability,
@@ -1541,21 +1542,39 @@ export default function RestaurantPublicPage() {
     // 2026-05-16 fix: when Cenaiva voice deep-links here with ?time= but no
     // ?slot=, leave dineIn.time alone — the URL is authoritative.
     if (requestedBookingTime) return;
+    // Default to the slot CLOSEST TO NOW — the exact slot AvailabilityPanel
+    // auto-selects and shows highlighted — NOT availableTimeOptions[0] (the
+    // day's FIRST slot, e.g. 11am). Picking the first slot caused a
+    // booking-time desync: the page displayed/auto-selected 8:30pm while the
+    // hold + booking resolved from dineIn.time = 11am, so a diner who saw and
+    // confirmed 8:30pm got booked at 11am. Matching the panel's closest-to-now
+    // choice keeps the displayed time and the booked time in lockstep
+    // regardless of cross-component effect ordering. (closestSlotToNow is the
+    // same helper AvailabilityPanel uses via closestSlotTimeToNow.)
+    const closest = closestSlotToNow(
+      filteredAvailabilitySlots,
+      restaurant?.timezone || "America/Toronto",
+    );
+    const defaultResetTime = closest
+      ? formatCompactTimeLabel(closest.display_time)
+      : (availableTimeOptions[0] ?? "");
     void Promise.resolve().then(() => {
       // Re-check against the LATEST time inside the functional update. The guard
       // above reads `dineIn.time` from a stale render closure, so a panel pick
       // (onSelectSlot) that landed after this effect was scheduled must not be
-      // clobbered back to the first slot of the day.
+      // clobbered back to the default.
       setDineIn((details) =>
         availableTimeOptions.includes(details.time)
           ? details
-          : { ...details, time: availableTimeOptions[0] ?? "" },
+          : { ...details, time: defaultResetTime },
       );
     });
   }, [
     availability.loading,
     availability.slots.length,
     availableTimeOptions,
+    filteredAvailabilitySlots,
+    restaurant?.timezone,
     bookingLockedFromPreview,
     dineIn.date,
     dineIn.time,
