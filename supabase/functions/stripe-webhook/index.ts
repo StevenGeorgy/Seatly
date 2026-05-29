@@ -500,19 +500,23 @@ async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
   let firedPaymentFailed = false;
   let firedPaymentRecovered = false;
 
+  let attemptRepublish = false;
+
   if (status === "unpaid" || status === "canceled") {
+    // Unpublishing is never blocked by restaurants_publish_gate, so it's safe
+    // to bundle into the single mirror UPDATE below.
     update.is_published = false;
     update.paused_reason = "payment_failed";
     if (!wasPaymentFailed) firedPaymentFailed = true;
-  } else if (status === "trialing" || status === "active") {
-    if (wasPaymentFailed) {
-      // Recovery path. The publish-gate trigger will reject if other
-      // conditions (KYC, cover photo) aren't met — that's fine; the row's
-      // is_published stays false and the owner gets a notification anyway.
-      update.is_published = true;
-      update.paused_reason = null;
-      firedPaymentRecovered = true;
-    }
+  } else if ((status === "trialing" || status === "active") && wasPaymentFailed) {
+    // Recovery: clear the failed state in the mirror (this ALWAYS applies) and
+    // attempt the republish SEPARATELY below. Bundling is_published=true here
+    // would let the publish-gate trigger (KYC / cover photo / active sub) abort
+    // the WHOLE update and silently drop the subscription_status/trial/paused
+    // mirror — Tier2 fix; the previous comment's assumption was wrong.
+    update.paused_reason = null;
+    attemptRepublish = true;
+    firedPaymentRecovered = true;
   }
   // 'past_due' / 'incomplete': leave publish flags alone — Stripe is still
   // retrying. We only react to terminal-ish states.
@@ -521,7 +525,23 @@ async function handleSubscriptionUpsert(sub: SubscriptionLike): Promise<void> {
     .from("restaurants")
     .update(update)
     .eq("stripe_customer_id", sub.customer);
-  if (error) console.error("[stripe-webhook] subscription upsert failed", error);
+  if (error) console.error("[stripe-webhook] subscription status mirror failed", error);
+
+  if (attemptRepublish) {
+    // Separate, gate-able republish. If the publish-gate rejects (setup
+    // incomplete), the status mirror above is already saved and the owner is
+    // notified to finish setup.
+    const { error: pubErr } = await supabaseAdmin
+      .from("restaurants")
+      .update({ is_published: true })
+      .eq("stripe_customer_id", sub.customer);
+    if (pubErr) {
+      console.log(
+        "[stripe-webhook] recovery republish blocked by publish gate (setup incomplete?):",
+        pubErr.message,
+      );
+    }
+  }
 
   // Fire owner-notification emails on the transitions we care about.
   if (firedPaymentFailed && row.email) {
@@ -1169,9 +1189,17 @@ Deno.serve(async (req: Request) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[stripe-webhook] handler error for ${event.type}:`, msg);
-    // Still return 200 — Stripe will retry on non-2xx, but the handler is
-    // best-effort. The next account.updated / subscription.updated event
-    // will re-sync state.
+    // Tier2: the handler threw, so its side effect did NOT complete. Release
+    // the dedup claim (delete the row rememberEvent inserted) and return 500
+    // so Stripe RETRIES the delivery — otherwise the event was marked
+    // processed + 200'd, permanently losing the side effect. Handlers carry
+    // their own idempotency guards (expense-row pre-check, hold-conversion
+    // dedup, INSERT-23505 on notifications), so a retry is safe.
+    await supabaseAdmin
+      .from("stripe_webhook_events")
+      .delete()
+      .eq("event_id", event.id);
+    return jsonRes({ error: "handler_failed", event_type: event.type }, 500);
   }
 
   return jsonRes({ received: true });
