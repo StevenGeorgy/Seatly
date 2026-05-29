@@ -21,7 +21,8 @@ import { localDayBoundsUtcIso } from "@/lib/utils/time";
  */
 export type SeatingWindowErrorCode =
   | "outside_seating_window"
-  | "force_requires_owner_or_manager";
+  | "force_requires_owner_or_manager"
+  | "no_show_before_reservation";
 
 export class SeatingWindowError extends Error {
   readonly code: SeatingWindowErrorCode;
@@ -52,6 +53,13 @@ function mapSeatingWindowError(
     return new SeatingWindowError(
       "force_requires_owner_or_manager",
       "Only owners or managers can override the seating window.",
+      reservedAt,
+    );
+  }
+  if (code === "P0022" || message.includes("no_show_before_reservation")) {
+    return new SeatingWindowError(
+      "no_show_before_reservation",
+      "A no-show can only be marked once the reservation time has arrived.",
       reservedAt,
     );
   }

@@ -490,7 +490,13 @@ export default function ReservationsPage() {
       if (error instanceof SeatingWindowError) {
         const row = noShowTarget;
         setNoShowTarget(null);
-        if (error.code === "outside_seating_window") {
+        if (error.code === "no_show_before_reservation") {
+          // Hard block (not force-overridable): the booking time hasn't
+          // arrived yet, so there's nothing to no-show. Don't offer force.
+          toast.error(
+            "You can't mark a no-show before the reservation time. Wait until the booking time has passed.",
+          );
+        } else if (error.code === "outside_seating_window") {
           if (canManageRiskyActions) {
             setForcePrompt({ action: "no_show", row });
           } else {

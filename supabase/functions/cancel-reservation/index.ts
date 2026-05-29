@@ -268,7 +268,7 @@ Deno.serve(async (req: Request) => {
     const finalStatuses = new Set(["seated", "completed", "no_show"]);
     if (reservation.status && finalStatuses.has(reservation.status)) {
       return json({
-        error: "This reservation has already started or completed and can no longer be cancelled.",
+        error: "This reservation can no longer be changed online — please contact the restaurant.",
       }, 400);
     }
 
