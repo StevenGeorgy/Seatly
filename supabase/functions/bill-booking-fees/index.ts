@@ -44,6 +44,16 @@ function verifyCronSecret(req) {
   return req.headers.get("x-cron-secret") === secret;
 }
 
+// Stable hash of the fee-id set for a Stripe idempotency key. Two cron runs
+// (e.g. a retry) that aggregate the SAME pending set produce the same key, so
+// Stripe dedups the invoice item instead of double-billing the restaurant.
+function hashFeeIds(ids: string[]): string {
+  const s = [...ids].sort().join(",");
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: buildCorsHeaders(req) });
   if (req.method !== "POST") return jsonRes(req, { error: "POST only" }, 405);
@@ -72,14 +82,14 @@ Deno.serve(async (req) => {
     const restaurantIds = Array.from(new Set(pending.map((p) => p.restaurant_id)));
     const { data: restaurantsRaw, error: restErr } = await supabaseAdmin
       .from("restaurants")
-      .select("id, stripe_customer_id, subscription_status")
+      .select("id, stripe_customer_id, subscription_status, subscription_paused_at, deleted_at")
       .in("id", restaurantIds);
     if (restErr) {
       console.error("[bill-booking-fees] restaurants lookup error", restErr);
       return jsonRes(req, { error: restErr.message }, 500);
     }
     const restaurantMap = new Map(
-      (restaurantsRaw ?? []).map((r) => [r.id, { stripe_customer_id: r.stripe_customer_id, subscription_status: r.subscription_status }]),
+      (restaurantsRaw ?? []).map((r) => [r.id, { stripe_customer_id: r.stripe_customer_id, subscription_status: r.subscription_status, subscription_paused_at: r.subscription_paused_at, deleted_at: r.deleted_at }]),
     );
 
     const { default: Stripe } = await import("npm:stripe@17");
@@ -114,6 +124,16 @@ Deno.serve(async (req) => {
       // picks it up once the customer record gets attached (e.g. when
       // the owner finishes onboarding).
       if (!customerId) { skipped += 1; continue; }
+
+      // Paused subscription (owner-unpublished or payment-failure auto-pause)
+      // or soft-deleted restaurant — don't add invoice items that won't be
+      // collected / would surprise-bill on resume. Leave pending; the fee
+      // bills on a later sweep once the sub resumes. (security #2 medium:
+      // a pause_collection pause keeps subscription_status='active', so the
+      // status check below would NOT catch it — key off subscription_paused_at.)
+      if (restaurant?.subscription_paused_at || restaurant?.deleted_at) {
+        skipped += 1; continue;
+      }
 
       // Free-trial bookings: mark as terminal 'trial_skipped' so the
       // sweeper doesn't retry, and so the analytics row stays around
@@ -187,6 +207,13 @@ Deno.serve(async (req) => {
             period_start: bucket.earliestCreatedAt,
             period_end: bucket.latestCreatedAt,
           },
+        }, {
+          // Dedup a same-set retry/overlapping run so the restaurant is never
+          // double-billed for the same fees (security #2 medium). Keyed on the
+          // exact fee-id set; a differing set (a fee added between runs) is the
+          // remaining narrow window — the post-Stripe status='pending' flip
+          // guard below keeps the DB consistent.
+          idempotencyKey: `bookingfee_${bucket.restaurantId}_${bucket.currency}_${hashFeeIds(bucket.feeIds)}`,
         });
 
         const billedAt = new Date().toISOString();
