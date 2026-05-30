@@ -1057,17 +1057,21 @@ async function handleChargeDispute(eventType: string, dispute: DisputeLike): Pro
     const outcome: "won" | "lost" | "warning_closed" =
       status === "won" || status === "lost" ? status : "warning_closed";
 
-    // Tier3 dispute clawback. For destination charges Stripe debits CENAIVA's
-    // platform balance (+ a $15 fee) and does NOT auto-reverse the transfer to
-    // the restaurant (Stripe Connect disputes doc). On a LOST dispute, recover
-    // the restaurant's transferred slice by reversing the transfer. We reverse
-    // on LOST (not created) so a restaurant that WINS keeps its funds; the $15
-    // fee + the platform/processing fee portion stay with (are eaten by)
-    // Cenaiva — only the transfer (food+tax) is recoverable.
-    // POLICY (adjust here if desired): this debits the connected restaurant for
-    // chargebacks on their bookings — standard marketplace behavior. Change to
-    // reverse-on-created for stronger recovery, or remove to have Cenaiva
-    // absorb disputes.
+    // Tier3 dispute clawback + fee recovery (Partner Agreement §5.7). For
+    // destination charges Stripe debits CENAIVA's platform balance for BOTH the
+    // disputed amount AND a flat $15 dispute fee, and does NOT touch the
+    // connected account (confirmed against Stripe's Connect "Disputes" doc:
+    // "Stripe debits dispute amounts and fees from your platform account").
+    // On a LOST dispute we recover from the restaurant in two pieces:
+    //   1) the food+tax slice — via a transfer reversal (Stripe's recommended
+    //      mechanism), immediately below;
+    //   2) the flat $15 fee — billed to the restaurant's subscription as a
+    //      one-off invoice item (further below), since a transfer reversal can
+    //      only recover up to the transferred amount, not this separate fee.
+    // We act on LOST (not created) so a restaurant that WINS keeps its funds.
+    // POLICY: lost dispute = restaurant-fault default (standard marketplace
+    // behavior, disclosed in §5.7). A verified Cenaiva-fault dispute is credited
+    // back manually.
     if (outcome === "lost") {
       try {
         const latestCharge = (pi as { latest_charge?: { transfer?: string | null } | null })
@@ -1096,6 +1100,63 @@ async function handleChargeDispute(eventType: string, dispute: DisputeLike): Pro
         console.error(
           `[stripe-webhook] dispute clawback reversal failed for ${dispute.id}:`,
           revErr instanceof Error ? revErr.message : revErr,
+        );
+      }
+
+      // Recover the flat $15 dispute fee (Partner Agreement §5.7). The transfer
+      // reversal above only recovers food+tax; this fee is separate, so bill it
+      // to the restaurant's subscription as a one-off invoice item (same
+      // plumbing as the $1 per-booking fee — it rides the next monthly invoice).
+      // The idempotency key keyed on the dispute id makes webhook retries safe.
+      const disputeFeeCents = 1500; // CAD $15.00 — Stripe's per-dispute fee (matches the §5.7 disclosed amount).
+      try {
+        const { data: restRow } = await supabaseAdmin
+          .from("restaurants")
+          .select("stripe_customer_id, subscription_paused_at, deleted_at")
+          .eq("id", restaurantId)
+          .maybeSingle();
+        const rest = restRow as
+          | {
+              stripe_customer_id?: string | null;
+              subscription_paused_at?: string | null;
+              deleted_at?: string | null;
+            }
+          | null;
+        const customerId = rest?.stripe_customer_id ?? null;
+        if (!customerId) {
+          console.warn(
+            `[stripe-webhook] dispute ${dispute.id} LOST — restaurant ${restaurantId} has no stripe_customer_id; $15 fee NOT recovered (manual follow-up)`,
+          );
+        } else if (rest?.subscription_paused_at || rest?.deleted_at) {
+          console.warn(
+            `[stripe-webhook] dispute ${dispute.id} LOST — restaurant ${restaurantId} paused/deleted; $15 fee NOT auto-billed (manual follow-up)`,
+          );
+        } else {
+          await stripe.invoiceItems.create(
+            {
+              customer: customerId,
+              amount: disputeFeeCents,
+              currency: "cad",
+              description: "Chargeback dispute fee (lost dispute)",
+              tax_behavior: "exclusive",
+              metadata: {
+                restaurant_id: restaurantId,
+                dispute_id: dispute.id,
+                reservation_id: reservationId ?? "",
+                cenaiva_reason: "dispute_fee_recovery",
+              },
+            },
+            { idempotencyKey: `dispute_fee_${dispute.id}` },
+          );
+          console.log(
+            `[stripe-webhook] dispute ${dispute.id} LOST — billed CAD $${(disputeFeeCents / 100).toFixed(2)} dispute fee to restaurant ${restaurantId} (next invoice)`,
+          );
+        }
+      } catch (feeErr) {
+        // Never fail the webhook over fee recovery — log for manual follow-up.
+        console.error(
+          `[stripe-webhook] dispute ${dispute.id} fee-recovery invoice item failed:`,
+          feeErr instanceof Error ? feeErr.message : feeErr,
         );
       }
     }

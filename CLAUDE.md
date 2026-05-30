@@ -78,6 +78,22 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-29 Dispute-fee recovery on lost chargebacks (`stripe-webhook`
+  `handleChargeDispute`)** — On `charge.dispute.closed` + `lost`, in addition to
+  the existing food+tax transfer-reversal clawback, Cenaiva now recovers the flat
+  CAD $15 Stripe dispute fee from the restaurant via a one-off
+  `stripe.invoiceItems.create` on its subscription customer (idempotent on
+  `dispute_fee_${dispute.id}`, `tax_behavior:"exclusive"`, rides the next monthly
+  invoice — same plumbing as the $1 booking fee). Skips + logs when no
+  `stripe_customer_id` / paused / soft-deleted. Rationale (Stripe-doc-confirmed):
+  destination-charge dispute amounts AND fees are debited from Cenaiva's platform
+  balance and are NOT auto-routed to the connected account, and a transfer
+  reversal can only recover up to the transferred amount — so the flat fee needs
+  its own invoice item. Implements Partner Agreement §5.7 (previously unenforced —
+  Cenaiva absorbed the $15). Not a Stripe-dashboard setting. Deployed
+  `stripe-webhook`. (Legal-doc redline for the broader 2026-05-29 audit is staged
+  in `LEGAL_REDLINE.md`, pending review — not yet applied.)
+
 - **2026-05-29 Stripe security + correctness batch (10 fixes from a read-only
   multi-agent audit; each doc-checked + reviewed + verified live)** — Tier 1
   (critical/high, exploitable): (1) `refund-payment-intent` was anon + refunded
