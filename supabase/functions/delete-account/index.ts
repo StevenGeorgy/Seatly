@@ -12,18 +12,21 @@
 //      via /dashboard/settings (Danger zone) where the delete-restaurant flow
 //      lives. Auto-deleting a business is a footgun we won't ship.
 //   5. Auto-cancel every upcoming reservation by invoking the existing
-//      cancel-reservation edge fn (all cancels fully refund). Reservations
-//      currently in 'seated' or 'arriving' status are NOT auto-cancelled —
-//      the diner is mid-meal or on the way, so the restaurant handles the
-//      close-out normally. Those rows get their user_profile_id nulled so
-//      they survive the user_profiles cascade.
-//   6. Detach + delete Stripe payment methods.
-//   7. Delete the Stripe Customer itself.
-//   8. Delete loyalty_waitlist row (no FK cascade from user_profiles).
-//   9. Delete user_profiles row (cascades through FK chains).
-//   10. Delete auth.users via admin API.
-//   11. Best-effort delete the avatar storage object.
-//   12. Return refund summary so the client can surface a friendly toast.
+//      cancel-reservation edge fn (all cancels fully refund). Reservations in
+//      'seated'/'arriving' are left for the restaurant to close out; the RPC
+//      scrubs their diner PII and the user_profiles cascade nulls their link.
+//   6. delete_diner_account(profile_id) RPC — ONE atomic transaction that
+//      scrubs all denormalized diner PII (reservations/holds/deposits/guests),
+//      de-identifies legally-retained consent + payment records, hard-deletes
+//      legacy AI/loyalty rows, then deletes the user_profiles row (cascading
+//      chat/notifications/reviews/cards). A partial failure rolls back — no
+//      half-deleted account.
+//   7. Delete auth.users via admin API (cascades auth.* + auth-keyed children).
+//   8. Best-effort delete the diner's storage objects (avatar, visit photos,
+//      receipts, data exports).
+//   9. Best-effort delete the Stripe Customer LAST (detaches its cards). Done
+//      after the DB is the source of truth so a DB failure can't orphan Stripe.
+//   10. Return refund summary so the client can surface a friendly toast.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -44,11 +47,6 @@ type ReservationRow = {
   reserved_at: string;
 };
 
-type SavedCardRow = {
-  id: string;
-  stripe_payment_method_id: string | null;
-};
-
 type CancelReservationResult = {
   ok?: boolean;
   refunds?: Array<{ amount_cents?: number }>;
@@ -64,6 +62,8 @@ function json(body: unknown, status = 200): Response {
 }
 
 const AVATAR_BUCKET = "user-avatars";
+// Buckets that store objects under a `${authUserId}/…` prefix. Cleaned best-effort.
+const DINER_OBJECT_BUCKETS = ["visit-photos", "receipts", "user-data-exports"];
 
 function pathFromPublicUrl(url: string | null): string | null {
   if (!url) return null;
@@ -82,6 +82,24 @@ const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
+
+// Best-effort removal of every storage object under `${authUserId}/` in a bucket.
+async function purgeUserObjects(bucket: string, authUserId: string): Promise<void> {
+  try {
+    const { data: objects, error } = await supabaseAdmin.storage
+      .from(bucket)
+      .list(authUserId, { limit: 1000 });
+    if (error || !objects || objects.length === 0) return;
+    const paths = objects
+      .filter((o) => o.name && o.id !== null) // skip pseudo-folder entries
+      .map((o) => `${authUserId}/${o.name}`);
+    if (paths.length > 0) {
+      await supabaseAdmin.storage.from(bucket).remove(paths);
+    }
+  } catch (err) {
+    console.warn(`[delete-account] storage purge failed for ${bucket}:`, err);
+  }
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -147,11 +165,10 @@ Deno.serve(async (req: Request) => {
       }, 409);
     }
 
-    // 5. Auto-cancel upcoming reservations via cancel-reservation edge fn.
-    // Skip 'seated' and 'arriving' — those reservations represent meals
-    // in progress (or imminently so) and shouldn't be auto-cancelled
-    // mid-bite. We null their user_profile_id below so they survive the
-    // cascade and the restaurant can close them out manually.
+    // 5. Auto-cancel upcoming reservations via cancel-reservation edge fn
+    // (refunds). Done BEFORE any deletion so a refund failure aborts cleanly
+    // with nothing erased. Seated/arriving meals are left for the restaurant;
+    // the RPC scrubs their PII and the cascade nulls the link.
     const nowIso = new Date().toISOString();
     const { data: upcomingRows, error: upcomingError } = await supabaseAdmin
       .from("reservations")
@@ -174,105 +191,80 @@ Deno.serve(async (req: Request) => {
         },
         body: JSON.stringify({ reservation_id: row.id, actor: "diner" }),
       });
-      let parsed: CancelReservationResult = {};
+      let cancelParsed: CancelReservationResult = {};
       try {
-        parsed = (await res.json()) as CancelReservationResult;
+        cancelParsed = (await res.json()) as CancelReservationResult;
       } catch {
-        parsed = {};
+        cancelParsed = {};
       }
-      if (!res.ok || parsed.error) {
+      if (!res.ok || cancelParsed.error) {
         // Abort — don't half-delete. Surface what we got so the diner can retry.
         return json({
-          error: `Couldn't cancel reservation ${row.id}: ${parsed.error ?? `HTTP ${res.status}`}. No data has been deleted yet — please try again.`,
+          error: `Couldn't cancel reservation ${row.id}: ${cancelParsed.error ?? `HTTP ${res.status}`}. No data has been deleted yet — please try again.`,
         }, 502);
       }
       cancelledIds.push(row.id);
-      if (typeof parsed.refund_total_cents === "number") {
-        totalRefundCents += parsed.refund_total_cents;
-      } else if (Array.isArray(parsed.refunds)) {
-        for (const r of parsed.refunds) {
+      if (typeof cancelParsed.refund_total_cents === "number") {
+        totalRefundCents += cancelParsed.refund_total_cents;
+      } else if (Array.isArray(cancelParsed.refunds)) {
+        for (const r of cancelParsed.refunds) {
           if (typeof r?.amount_cents === "number") totalRefundCents += r.amount_cents;
         }
       }
     }
 
-    // Stripe setup for steps 6 + 7. Best-effort across the board.
-    const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-    let stripe: import("npm:stripe@17").Stripe | null = null;
-    if (stripeKey) {
-      stripe = await getStripeClient(stripeKey);
-    }
-
-    // 6. Detach saved cards.
-    const { data: savedCards } = await supabaseAdmin
-      .from("saved_cards")
-      .select("id, stripe_payment_method_id")
-      .eq("user_id", profileRow.id);
-    if (stripe && savedCards) {
-      for (const card of savedCards as SavedCardRow[]) {
-        if (!card.stripe_payment_method_id) continue;
-        try {
-          await stripe.paymentMethods.detach(card.stripe_payment_method_id);
-        } catch (err) {
-          console.warn(`[delete-account] failed to detach PM ${card.stripe_payment_method_id}:`, err);
-        }
-      }
-    }
-
-    // 7. Delete the Stripe Customer.
-    if (stripe && profileRow.stripe_customer_id) {
-      try {
-        await stripe.customers.del(profileRow.stripe_customer_id);
-      } catch (err) {
-        console.warn(`[delete-account] failed to delete Stripe customer ${profileRow.stripe_customer_id}:`, err);
-      }
-    }
-
-    // 8. Delete loyalty_waitlist row (no FK cascade).
-    await supabaseAdmin
-      .from("loyalty_waitlist")
-      .delete()
-      .eq("user_id", profileRow.id);
-
-    // 8b. Detach in-progress reservations (seated / arriving) so they
-    // survive the user_profiles cascade. The restaurant still needs to
-    // close them out — we just remove the diner's identity from the row.
-    await supabaseAdmin
-      .from("reservations")
-      .update({ user_profile_id: null })
-      .eq("user_profile_id", profileRow.id)
-      .in("status", ["seated", "arriving"]);
-
-    // 9. Delete user_profiles row.
-    const { error: profileDeleteError } = await supabaseAdmin
-      .from("user_profiles")
-      .delete()
-      .eq("id", profileRow.id);
-    if (profileDeleteError) {
+    // 6. Atomic erasure: scrub all PII, de-identify retained records, delete the
+    // profile row. One transaction — a failure rolls back, so this can never
+    // leave a half-deleted account, and it no longer throws on the FK blockers
+    // (consent log / payments / waitlist / ai_conversations) that used to make
+    // deletion fail for every diner.
+    const { error: rpcError } = await supabaseAdmin.rpc("delete_diner_account", {
+      p_user_profile_id: profileRow.id,
+    });
+    if (rpcError) {
       return json({
-        error: `Couldn't delete profile row: ${profileDeleteError.message}. Cancelled reservations are still cancelled; nothing else has been deleted.`,
+        error: `Couldn't delete your account data: ${rpcError.message}. Nothing was deleted (the operation rolled back); any cancelled reservations are still cancelled. Please try again or contact help@cenaiva.com.`,
         cancelled_reservation_ids: cancelledIds,
         refund_total_cents: totalRefundCents,
       }, 500);
     }
 
-    // 10. Delete auth.users via admin API.
+    // 7. Delete auth.users via admin API (cascades auth.* + auth-keyed children
+    // like visit_photos rows, refund_requests). The profile + PII are already
+    // gone at this point, so a failure here only leaves a dangling auth row.
     const { error: authDeleteError } = await supabaseAdmin.auth.admin.deleteUser(user.id);
     if (authDeleteError) {
+      console.error(`[delete-account] auth delete failed for ${user.id}:`, authDeleteError);
       return json({
-        error: `Couldn't delete auth user: ${authDeleteError.message}. The profile row is already gone — please contact support to finish the cleanup.`,
+        error: `Your personal data was deleted, but we couldn't fully close the login. Please contact help@cenaiva.com to finish the cleanup.`,
         cancelled_reservation_ids: cancelledIds,
         refund_total_cents: totalRefundCents,
       }, 500);
     }
 
-    // 11. Best-effort avatar object cleanup.
+    // 8. Best-effort storage cleanup: avatar + visit photos + receipts + exports.
     const avatarPath = pathFromPublicUrl(profileRow.avatar_url);
     if (avatarPath) {
       try {
         await supabaseAdmin.storage.from(AVATAR_BUCKET).remove([avatarPath]);
       } catch (err) {
         console.warn(`[delete-account] failed to remove avatar object:`, err);
+      }
+    }
+    for (const bucket of DINER_OBJECT_BUCKETS) {
+      await purgeUserObjects(bucket, user.id);
+    }
+
+    // 9. Delete the Stripe Customer LAST (this also detaches its saved cards).
+    if (profileRow.stripe_customer_id) {
+      const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
+      if (stripeKey) {
+        try {
+          const stripe = await getStripeClient(stripeKey);
+          await stripe.customers.del(profileRow.stripe_customer_id);
+        } catch (err) {
+          console.warn(`[delete-account] failed to delete Stripe customer ${profileRow.stripe_customer_id}:`, err);
+        }
       }
     }
 

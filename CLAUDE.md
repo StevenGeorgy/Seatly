@@ -78,6 +78,32 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-30 Diner account-deletion hardened — succeeds + erases all PII
+  (`delete-account` + migration `20260530000000_diner_account_deletion`)** — Two
+  bugs fixed. (1) Deletion FAILED for real diners: non-cascade FKs into
+  `user_profiles` (`diner_consent_log`=RESTRICT, written at every signup; plus
+  `payments`/`waitlist`/`subscription_consent_log`/`ai_conversations`=NO ACTION)
+  made the `user_profiles` DELETE throw — after the fn had already cancelled/
+  refunded reservations + deleted the Stripe customer (no rollback). (2) Residual
+  PII survived: denormalized `reservations`/`reservation_holds`/
+  `reservation_deposit_payments` contact fields, the `guests` CRM row, and
+  visit-photo/receipt/export storage blobs. Fix: new SECURITY DEFINER RPC
+  `delete_diner_account(uuid)` (service_role only) runs the whole erasure in ONE
+  transaction — scrubs all denormalized PII, **de-identifies** legally-retained
+  records (consent logs keep proof-of-consent but null user_profile_id/ip/ua;
+  `payments` unlink; CRA/Law-25 retention), hard-deletes legacy AI + loyalty
+  rows, then deletes `user_profiles` (cascading chat/notifications/reviews/
+  cards). `delete-account` now calls the RPC (atomic → no half-delete), purges
+  the diner's storage objects (`visit-photos`/`receipts`/`user-data-exports` +
+  avatar), and deletes the Stripe customer LAST. Only nullability change needed
+  was `diner_consent_log.user_profile_id` (others already nullable). Verified
+  live on a synthetic test diner: deletion succeeded (was the failing path),
+  consent retained+de-identified, guest PII nulled, chat cascade-deleted; test
+  rows cleaned up. Deploy note: zod-using fns must deploy with
+  `--import-map supabase/functions/deno.json` (the CLI doesn't auto-upload it).
+  Remaining edge case (rare): a non-owner staff member who is also a diner could
+  still hit a staff-table NO ACTION FK; owners are already blocked from self-delete.
+
 - **2026-05-29 Dispute-fee recovery on lost chargebacks (`stripe-webhook`
   `handleChargeDispute`)** — On `charge.dispute.closed` + `lost`, in addition to
   the existing food+tax transfer-reversal clawback, Cenaiva now recovers the flat
