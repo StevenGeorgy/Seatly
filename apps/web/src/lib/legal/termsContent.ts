@@ -9,37 +9,37 @@ export type TermsSection = {
   body: string;
 };
 
-export const TERMS_VERSION = "2026-05-21";
+export const TERMS_VERSION = "2026-05-30";
 export const TERMS_EFFECTIVE_DATE = "May 10, 2026";
-export const TERMS_LAST_UPDATED = "May 21, 2026";
+export const TERMS_LAST_UPDATED = "May 30, 2026";
 
 export const TERMS_INTRO =
-  "Welcome to Cenaiva. These Terms of Service (\"Terms\") govern your access to and use of the Cenaiva mobile application and related services (\"Services\") as a consumer or diner. Restaurant partners and operators are subject to a separate Restaurant Partner Agreement. By creating an account or using the Services, you agree to be bound by these Terms. If you do not agree, you must stop using the Services immediately.";
+  "Welcome to Cenaiva. These Terms of Service (\"Terms\") govern your access to and use of the Cenaiva mobile application, the Cenaiva website, and related services (\"Services\") as a consumer or diner. Restaurant partners and operators are subject to a separate Restaurant Partner Agreement. By creating an account or using the Services, you agree to be bound by these Terms. If you do not agree, you must stop using the Services immediately.";
 
 export const TERMS_SECTIONS: TermsSection[] = [
   {
     id: "eligibility",
     number: "1",
     title: "Eligibility",
-    body: "You must be at least 16 years old to use Cenaiva. If you are between 16 and 18 years of age, you confirm that you have obtained consent from a parent or legal guardian, and that your parent or guardian agrees to these Terms on your behalf.\n\nUsers who make payments, use wallet features, redeem rewards with monetary value, or purchase event tickets must be at least 18 years old, or have express parental authorization to do so.\n\nBy using the Services, you confirm that you meet the applicable eligibility requirements and that you are not prohibited from using the Services under the laws of any applicable jurisdiction.",
+    body: "You must be at least 16 years old to use Cenaiva. If you are between 16 and 18 years of age, you confirm that you have obtained consent from a parent or legal guardian, and that your parent or guardian agrees to these Terms on your behalf.\n\nUsers who make payments must be at least 18 years old, or have express parental authorization to do so.\n\nBy using the Services, you confirm that you meet the applicable eligibility requirements and that you are not prohibited from using the Services under the laws of any applicable jurisdiction.",
   },
   {
     id: "account-registration",
     number: "2",
     title: "Account Registration",
-    body: "To access certain features, you must create an account. You agree to:\n\n- Provide accurate, complete, and up-to-date information, including your name, email address, and phone number where requested\n- Keep your login credentials confidential and secure\n- Be solely responsible for all activity that occurs under your account\n- Notify us immediately at help@cenaiva.com if you suspect unauthorized access to your account\n\nWe reserve the right to suspend or terminate accounts that provide false information, violate these Terms, or have been inactive for an extended period.\n\nYou may sign in using email/password, phone number (OTP), or Google OAuth. By using a third-party sign-in method, you authorize us to access and use certain information from that provider in accordance with our Privacy Policy.\n\nIf you have previously created an account using a different sign-in method (for example, once with email and once with a phone number), Cenaiva may detect and offer to merge duplicate accounts associated with the same identity. An audit record of any account merge is retained for fraud prevention and support purposes. You may contact us at help@cenaiva.com if you believe an account merge occurred in error.",
+    body: "To access certain features, you must create an account. You agree to:\n\n- Provide accurate, complete, and up-to-date information, including your name, email address, and phone number where requested\n- Keep your login credentials confidential and secure\n- Be solely responsible for all activity that occurs under your account\n- Notify us immediately at help@cenaiva.com if you suspect unauthorized access to your account\n\nWe reserve the right to suspend or terminate accounts that provide false information, violate these Terms, or have been inactive for an extended period.\n\nYou may sign in using email/password, phone number (one-time passcode), Google, or Apple. By using a third-party sign-in method, you authorize us to access and use certain information from that provider in accordance with our Privacy Policy.\n\nIf you have previously created an account using a different sign-in method (for example, once with email and once with a phone number), Cenaiva may detect and offer to merge duplicate accounts associated with the same identity. An audit record of any account merge is retained for fraud prevention and support purposes. You may contact us at help@cenaiva.com if you believe an account merge occurred in error.",
   },
   {
     id: "account-deletion",
     number: "3",
     title: "Account Deletion",
-    body: "You may delete your Cenaiva account at any time directly within the app — on mobile, navigate to Profile → Privacy → Delete Account; on web, navigate to Account → Preferences → Privacy → Delete my account. You may also request account deletion by contacting us at help@cenaiva.com.\n\nUpon deletion:\n\n- Your account and personal profile information will be permanently removed from our active systems\n- Any unused wallet balance will be handled in accordance with applicable law and Section 11.3 (Refunds and Cancellations) prior to deletion — we recommend withdrawing or using any remaining balance before initiating deletion\n- Any unredeemed rewards, loyalty points, or Snap rewards are forfeited upon deletion and cannot be recovered\n- Saved payment methods (tokenized references stored by Stripe) will be detached from your account\n- Account deletion is irreversible. Once deleted, your account, booking history, conversation history, and associated data cannot be restored\n\nCertain data may be retained for a limited period following deletion where required by law, including for tax, financial record-keeping, fraud prevention, or legal compliance purposes. Such retained data will not be used for any other purpose and will be deleted once the applicable retention period expires. Anonymized or aggregated data derived from your usage may be retained indefinitely as it cannot be used to identify you.",
+    body: "You may delete your Cenaiva account at any time directly within the app — on mobile, navigate to Profile → Privacy → Delete Account; on web, navigate to Account → Preferences → Privacy → Delete my account. You may also request account deletion by contacting us at help@cenaiva.com.\n\nUpon deletion:\n\n- Your account and personal profile information will be permanently removed from our active systems\n- Any unredeemed rewards, loyalty points, or Snap rewards are forfeited upon deletion and cannot be recovered\n- Saved payment methods (tokenized references stored by Stripe) will be detached from your account\n- Account deletion is irreversible. Once deleted, your account, booking history, conversation history, and associated data cannot be restored\n\nCertain data may be retained for a limited period following deletion where required by law, including for tax, financial record-keeping, fraud prevention, or legal compliance purposes. Such retained data will not be used for any other purpose and will be deleted once the applicable retention period expires. Anonymized or aggregated data derived from your usage may be retained indefinitely as it cannot be used to identify you.",
   },
   {
     id: "bookings-how-it-works",
     number: "4.1",
     title: "How Bookings Work",
-    body: "Cenaiva allows users to browse restaurants and make reservation requests through the platform. Reservations are requests and are subject to confirmation by the restaurant. You are responsible for arriving on time and honouring your reservation. Repeated no-shows or cancellations without reasonable notice may result in account restrictions or suspension.\n\nCenaiva is a technology platform connecting diners with restaurants and is not a party to any agreement between you and a restaurant. Restaurants listed on Cenaiva operate independently under their own Restaurant Partner Agreement. Any disputes regarding dining experiences, service, or food quality should be directed to the restaurant directly.",
+    body: "Cenaiva allows users to browse restaurants and make reservations through the platform. When you complete a booking — including any required deposit or pre-order payment — your reservation is confirmed immediately; it is not held for separate approval by the restaurant. You are responsible for arriving on time and honouring your reservation. Repeated no-shows or cancellations without reasonable notice may result in account restrictions or suspension.\n\nCenaiva is a technology platform connecting diners with restaurants and is not a party to any agreement between you and a restaurant. Restaurants listed on Cenaiva operate independently under their own Restaurant Partner Agreement. Any disputes regarding dining experiences, service, or food quality should be directed to the restaurant directly.",
   },
   {
     id: "reservation-holds",
@@ -51,19 +51,19 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "availability-alerts",
     number: "4.3",
     title: "Availability Alerts",
-    body: "Cenaiva allows you to sign up for availability alerts for specific restaurants, dates, party sizes, or time windows. If availability opens that matches your criteria, we will notify you via push notification. Availability alerts expire automatically once the requested date has passed, do not guarantee that availability will open, and can be cancelled at any time in the app.",
+    body: "Cenaiva allows you to sign up for availability alerts for specific restaurants, dates, party sizes, or time windows. If availability opens that matches your criteria, we will notify you — by push notification on the mobile app, and by SMS and an in-app alert on the website. Availability alerts expire automatically once the requested date has passed, do not guarantee that availability will open, and can be cancelled at any time in the app.",
   },
   {
     id: "group-deposit-invitations",
     number: "4.4",
     title: "Group Deposit Invitations",
-    body: "For certain bookings requiring a deposit, Cenaiva may allow the booking organizer to invite other members of their party to contribute to the deposit payment. When deposit invitations are sent:\n\n- Invited guests receive a secure link to contribute their portion of the deposit\n- Each participant's contribution is processed independently through Stripe\n- You are responsible for ensuring that any phone numbers or email addresses you provide for invitations belong to the intended recipients\n- Cenaiva is not responsible for uncollected deposit contributions from invited guests",
+    body: "For certain bookings requiring a deposit, and where this feature is available, a booking party may split the deposit across more than one payment card. When this option is offered:\n\n- Each contributor enters their own card during checkout on the booking device — there is no separate invitation link sent to other guests\n- Each contributor's portion of the deposit is processed independently through Stripe\n- The booking is confirmed once all required contributions have been collected\n- This option is not enabled on all bookings; where it is unavailable, the booking organizer is responsible for the full deposit",
   },
   {
     id: "ai-risk-scoring",
     number: "4.5",
     title: "AI-Assisted Risk Scoring",
-    body: "Cenaiva uses automated systems to calculate a no-show risk score for reservations based on your historical booking behaviour on the platform. This score is visible to restaurant partners and may be used by them to make decisions about your reservation, including whether to require a deposit. Cenaiva does not use this score to deny access to the platform. If you believe your score is inaccurate, you may contact us at privacy@cenaiva.com.",
+    body: "Cenaiva uses automated systems to calculate a no-show risk score for reservations based on your historical booking behaviour on the platform. Where available, this score may be made available to restaurant partners to help them manage reservations, including whether to require a deposit. Cenaiva does not use this score to deny access to the platform. If you believe your score is inaccurate, you may contact us at privacy@cenaiva.com.",
   },
   {
     id: "restaurant-responsibility",
@@ -75,7 +75,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "cenaiva-ai-how",
     number: "6.1",
     title: "Cenaiva AI — How It Works",
-    body: "Cenaiva offers an AI-powered assistant (\"Cenaiva AI\") that allows you to discover restaurants, make reservations, join waitlists, and interact with the platform through natural voice conversation and text chat. Cenaiva AI uses third-party artificial intelligence and voice services, including OpenAI (language processing), ElevenLabs (text-to-speech), and Deepgram (speech-to-text), or your device's built-in speech recognition processed by Apple or Google in accordance with their respective privacy policies.\n\nWhen you use Cenaiva AI:\n\n- Your voice input is captured via your device's microphone\n- Your speech is transcribed to text and sent to our AI processing services\n- Voice recordings, transcripts, and chat messages are stored while your account is active so you can review past conversations; up to 90 days of additional safety review applies for sampled material, after which it is deleted or anonymized. All voice and chat data is deleted upon account deletion or upon your verified request\n- Responses are generated by AI and delivered as synthesized voice or text\n- Some AI providers process your data outside Canada, including in the United States — see Section 18 for details\n\nBy using voice features, you consent to the capture, transcription, processing, and storage of your voice interactions as described above. An in-app notice will be displayed before your first voice interaction confirming this consent. You may select your preferred AI voice in app settings. Users may change their preferred language in app settings.",
+    body: "Cenaiva offers an AI-powered assistant (\"Cenaiva AI\") that allows you to discover restaurants, make reservations, join waitlists, and interact with the platform through natural voice conversation and text chat. Cenaiva AI uses third-party artificial intelligence and voice services, including OpenAI (language processing), ElevenLabs (text-to-speech), and Deepgram (speech-to-text), or your device's built-in speech recognition processed by Apple or Google in accordance with their respective privacy policies.\n\nWhen you use Cenaiva AI:\n\n- Your voice input is captured via your device's microphone\n- Your speech is transcribed to text and sent to our AI processing services\n- We do not store raw audio of your voice. We do store the text transcript of your voice and chat conversations with Cenaiva AI while your account is active, so you can review past conversations; sampled material may be kept for up to an additional 90 days for safety and quality review, after which it is deleted or anonymized. All voice and chat data is deleted upon account deletion or upon your verified request\n- Responses are generated by AI and delivered as synthesized voice or text\n- Some AI providers process your data outside Canada, including in the United States — see Section 18 for details\n\nBy using voice features, you consent to the capture, transcription, processing, and storage of your voice interactions as described above. On the mobile app, a notice is shown before your first voice interaction confirming this consent; you can disable voice in settings. You may select your preferred AI voice in app settings. Users may change their preferred language in app settings.",
   },
   {
     id: "ai-accuracy",
@@ -93,7 +93,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "ai-auto-tagging",
     number: "6.4",
     title: "AI Auto-Tagging and Guest Profiling",
-    body: "Cenaiva uses automated AI systems to analyse your booking history, preferences, and behaviour to generate guest tags and a lifetime value score. These are used to personalize your experience and are visible to restaurant partners when you make a reservation at their venue. Tags reflect general behavioural categories only (for example, \"frequent diner\") and do not include sensitive personal characteristics. You may contact us at privacy@cenaiva.com to request a review or correction of automated profiling associated with your account.",
+    body: "Cenaiva uses automated systems to analyse your booking history, preferences, and behaviour to generate guest tags and a lifetime-value estimate. Tags are shared with a restaurant when you book or visit their venue and are used to personalize your experience. Lifetime-value and no-show-risk signals are computed and may be made available to restaurant partners as these features roll out. Tags reflect general behavioural categories only (for example, \"frequent diner\") and do not include sensitive personal characteristics. You may contact us at privacy@cenaiva.com to request a review or correction of automated profiling associated with your account.",
   },
   {
     id: "voice-data-deletion",
@@ -102,16 +102,10 @@ export const TERMS_SECTIONS: TermsSection[] = [
     body: "You may request deletion of your stored voice recordings and transcripts at any time by contacting us at privacy@cenaiva.com. Requests will be processed within 30 days. Deletion of voice data does not delete your account or booking history.",
   },
   {
-    id: "receipt-photo-scanning",
-    number: "6.6",
-    title: "Receipt and Photo Scanning",
-    body: "Cenaiva may allow you to scan receipts or photos using your device camera. Images submitted for scanning are processed via AI vision services. By submitting an image, you confirm you have the right to share it and consent to its processing.",
-  },
-  {
     id: "post-visit-photo-prompts",
     number: "7.1",
     title: "Post-Visit Photo Prompts",
-    body: "After a completed dining session, Cenaiva may send you a push notification or in-app prompt inviting you to share a photo or review from your visit. These prompts are optional and can be disabled in your notification settings.",
+    body: "After a completed dining session, Cenaiva may send you a notification — push on the mobile app, and in-app on the website — inviting you to share a review, and where available a photo, from your visit. These prompts are optional and can be disabled in your notification settings.",
   },
   {
     id: "visit-photos",
@@ -159,7 +153,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "loyalty-tiers",
     number: "9.1",
     title: "Loyalty Tiers",
-    body: "Cenaiva offers a loyalty program with tiered benefits based on activity. Tier status, benefits, and qualification criteria are set by Cenaiva and may be updated from time to time with reasonable notice. Tier status is non-transferable and has no monetary value.",
+    body: "Cenaiva may offer a loyalty program with tiered benefits based on activity. This program is not generally available yet; where it is not yet available to your account, you can join the waitlist (see Section 9.2). Tier status, benefits, and qualification criteria are set by Cenaiva and may be updated from time to time with reasonable notice. Tier status is non-transferable and has no monetary value.",
   },
   {
     id: "loyalty-waitlist",
@@ -171,13 +165,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "referrals",
     number: "9.3",
     title: "Referrals",
-    body: "Cenaiva may offer referral incentives for inviting new users. Both the referring user and the referred user must meet eligibility requirements. Referred users must be genuinely new to the platform. Referral abuse — including the creation of fake accounts or self-referrals — will result in forfeiture of rewards and may result in account termination. Cenaiva reserves the right to modify or discontinue the referral program at any time.",
-  },
-  {
-    id: "wallet",
-    number: "10",
-    title: "Wallet (Prepaid Balance)",
-    body: "Cenaiva may offer a digital wallet feature that allows you to maintain a prepaid balance for use within the platform. Wallet balances:\n\n- May be loaded via Stripe-processed payments\n- Are non-transferable between accounts\n- Are not redeemable for cash unless required by applicable law\n- Do not expire and are handled in accordance with applicable provincial gift-card and prepaid balance legislation, including the laws of Ontario, British Columbia, and Quebec where applicable\n\nIf your account is terminated for a violation of these Terms, we may restrict access to wallet features while we investigate. If your account is terminated by Cenaiva without cause, we will make reasonable efforts to refund any unused prepaid balance. We are not responsible for unauthorized use of your wallet balance where your account credentials are compromised due to your own negligence.",
+    body: "Cenaiva may offer referral incentives for inviting new users. This is not currently offered to diners. Both the referring user and the referred user must meet eligibility requirements. Referred users must be genuinely new to the platform. Referral abuse — including the creation of fake accounts or self-referrals — will result in forfeiture of rewards and may result in account termination. Cenaiva reserves the right to modify or discontinue the referral program at any time.",
   },
   {
     id: "pricing-transparency",
@@ -195,19 +183,13 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "refunds-cancellations",
     number: "11.3",
     title: "Refunds and Cancellations",
-    body: "Refunds for restaurant-specific charges (deposits, pre-orders, event tickets) are subject to that restaurant's refund policy, which will be displayed at the time of booking where applicable. Cenaiva platform fees are non-refundable except where required by applicable law or where the booking failure is due to a verified technical error on our part. In the event of a restaurant cancellation, Cenaiva will make reasonable efforts to facilitate a refund of any pre-paid amounts processed through the platform. For duplicate charges or verified failed transactions, contact help@cenaiva.com and we will investigate and resolve within 5 business days. Wallet top-ups are non-refundable except as required by applicable law.",
-  },
-  {
-    id: "gift-cards",
-    number: "11.4",
-    title: "Gift Cards",
-    body: "Cenaiva may offer digital gift cards for use within the platform. Gift cards are issued with a set initial value and can be applied at checkout. They are non-transferable, cannot be redeemed for cash unless required by applicable law, and cannot be replaced if lost or stolen — treat gift card codes as you would cash. Gift cards may have expiry dates as indicated at the time of purchase.",
+    body: "Deposits and pre-orders are fully refundable (the food amount plus applicable tax) when you cancel before you are seated and before the reservation reaches a final status, when the restaurant marks you seated, or when the restaurant cancels on you. Platform and processing fees are non-refundable, as disclosed at checkout. The full refund policy is available at cenaiva.com/refund-policy. Cenaiva platform fees are non-refundable except where required by applicable law or where the booking failure is due to a verified technical error on our part. In the event of a restaurant cancellation, Cenaiva will make reasonable efforts to facilitate a refund of any pre-paid amounts processed through the platform. For duplicate charges or verified failed transactions, contact help@cenaiva.com and we will investigate and resolve within 5 business days.",
   },
   {
     id: "events-ticketing",
     number: "11.5",
     title: "Events and Ticketing",
-    body: "Cenaiva may allow restaurants to list events and sell tickets through the platform. When you purchase an event ticket:\n\n- Payment is processed through Stripe and subject to the event's specific refund and cancellation policy, displayed at checkout\n- Tickets are linked to your Cenaiva account and cannot be transferred unless the event specifically permits it\n- Cenaiva is not responsible for event cancellation, changes to event details, or failure by the restaurant to deliver the event as described — such disputes must be directed to the restaurant directly\n- Cenaiva will make reasonable efforts to facilitate refunds where an event is cancelled by the restaurant",
+    body: "Cenaiva may allow restaurants to list events. Where an event is bookable, you reserve a spot in the same way as a standard reservation, subject to availability and any required deposit. Paid ticketing is not currently offered through the platform.\n\n- Any required deposit is processed through Stripe and is subject to the same refund terms as a standard reservation\n- Cenaiva is not responsible for event cancellation, changes to event details, or failure by the restaurant to deliver the event as described — such disputes must be directed to the restaurant directly\n- Cenaiva will make reasonable efforts to facilitate refunds where an event is cancelled by the restaurant",
   },
   {
     id: "chargebacks",
@@ -225,19 +207,19 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "user-conduct",
     number: "13",
     title: "User Conduct",
-    body: "You agree not to use the Services to:\n\n- Engage in unlawful, fraudulent, or deceptive activity\n- Interfere with or disrupt the security or operation of the Services\n- Abuse, harass, threaten, or harm other users or restaurant partners\n- Post false, misleading, defamatory, or infringing content, including reviews\n- Submit fabricated Snaps, fake bookings, or manipulate rewards or referral systems\n- Interact with Cenaiva AI in a manner intended to manipulate, deceive, or extract harmful outputs from the system\n- Attempt to gain unauthorized access to any part of the platform, servers, or databases\n- Scrape, copy, or reverse-engineer any part of the Services\n- Use automated tools, bots, or scripts to interact with the platform\n- Impersonate any person or entity or misrepresent your affiliation with any person or entity\n- Manipulate the reservation hold system to block availability without genuine intent to book\n\nViolation of these conduct standards may result in immediate account suspension or termination without notice, forfeiture of earned rewards, and restriction of wallet access while we investigate. Any unused wallet balance will be handled in accordance with applicable law and Section 11.3.",
+    body: "You agree not to use the Services to:\n\n- Engage in unlawful, fraudulent, or deceptive activity\n- Interfere with or disrupt the security or operation of the Services\n- Abuse, harass, threaten, or harm other users or restaurant partners\n- Post false, misleading, defamatory, or infringing content, including reviews\n- Submit fabricated Snaps, fake bookings, or manipulate rewards or referral systems\n- Interact with Cenaiva AI in a manner intended to manipulate, deceive, or extract harmful outputs from the system\n- Attempt to gain unauthorized access to any part of the platform, servers, or databases\n- Scrape, copy, or reverse-engineer any part of the Services\n- Use automated tools, bots, or scripts to interact with the platform\n- Impersonate any person or entity or misrepresent your affiliation with any person or entity\n- Manipulate the reservation hold system to block availability without genuine intent to book\n\nViolation of these conduct standards may result in immediate account suspension or termination without notice and forfeiture of earned rewards.",
   },
   {
     id: "account-security",
     number: "14",
     title: "Account Security and Device Monitoring",
-    body: "To protect you from unauthorized access, Cenaiva:\n\n- Records sign-in events including device fingerprint, platform, app version, and sign-in time\n- Sends a security alert via push notification or email when we detect a sign-in from a new or unrecognized device\n- May temporarily lock your account following multiple failed sign-in attempts\n\nYou are responsible for maintaining the security of your credentials. If you receive a new device sign-in alert that you do not recognize, contact us immediately at help@cenaiva.com.\n\nCenaiva maintains a comprehensive audit log of actions taken within the platform for security, fraud prevention, and compliance purposes. This log is not used for any purpose beyond security and legal compliance.\n\nVulnerability disclosure. If you believe you have discovered a security vulnerability in the Services, please report it in good faith to security@cenaiva.com. Cenaiva will not pursue legal action against good-faith security researchers who report vulnerabilities responsibly and do not access or modify other users' data.",
+    body: "To protect you from unauthorized access, Cenaiva:\n\n- Records sign-in events including device fingerprint, platform, app version, and sign-in time\n- Sends a security alert when we detect a sign-in from a new or unrecognized device — by push or email on the mobile app, and as an in-app alert on the website\n- Our authentication provider may rate-limit or lock sign-in after repeated failed attempts\n\nYou are responsible for maintaining the security of your credentials. If you receive a new device sign-in alert that you do not recognize, contact us immediately at help@cenaiva.com.\n\nCenaiva maintains a comprehensive audit log of actions taken within the platform for security, fraud prevention, and compliance purposes. This log is not used for any purpose beyond security and legal compliance.\n\nVulnerability disclosure. If you believe you have discovered a security vulnerability in the Services, please report it in good faith to security@cenaiva.com. Cenaiva will not pursue legal action against good-faith security researchers who report vulnerabilities responsibly and do not access or modify other users' data.",
   },
   {
     id: "device-permissions",
     number: "15",
     title: "Device Permissions and Data Collection",
-    body: "To provide the full Cenaiva experience, the app may request access to:\n\n- Microphone and Speech Recognition — required for the Cenaiva AI voice agent\n- Camera and Photo Library — required for Snaps, visit photos, and receipt scanning\n- Location (when-in-use only) — used to surface nearby restaurants and provide mapping features. Cenaiva does not access your location in the background\n- Push Notifications — used to send booking confirmations, reminders, availability alerts, security alerts, and post-visit prompts. You may disable these at any time in your device settings\n\nYou may revoke any permission at any time through your device settings. Revoking certain permissions may limit the functionality of the Services.\n\nCenaiva also collects crash and error data — including device platform, app version, current screen, and error details — to diagnose and fix technical issues. This data is associated with your user account where available and handled in accordance with our Privacy Policy.",
+    body: "To provide the full Cenaiva experience, the app may request access to:\n\n- Microphone and Speech Recognition — required for the Cenaiva AI voice agent\n- Camera and Photo Library — required for Snaps and visit photos\n- Location (when-in-use only) — used to surface nearby restaurants and provide mapping features. Cenaiva does not access your location in the background\n- Push Notifications — used to send booking confirmations, reminders, availability alerts, security alerts, and post-visit prompts. You may disable these at any time in your device settings\n\nOn the website, voice features use your browser's microphone permission; maps use your approximate location with your permission; and notifications are delivered by SMS and shown as in-app alerts rather than as push notifications.\n\nYou may revoke any permission at any time through your device or browser settings. Revoking certain permissions may limit the functionality of the Services.\n\nCenaiva also collects crash and error data — including device platform, app version, current screen, and error details — to diagnose and fix technical issues. This data is associated with your user account where available and handled in accordance with our Privacy Policy.",
   },
   {
     id: "sms-communications",
@@ -249,13 +231,13 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "push-notifications",
     number: "17",
     title: "Push Notifications",
-    body: "Cenaiva uses Expo Notifications to deliver push notifications to your device. By enabling notifications, you consent to receiving alerts related to your bookings, rewards, availability alerts, platform activity, post-visit prompts, and account security. You may disable push notifications at any time through your device settings or in-app notification preferences, though this may affect your ability to receive time-sensitive booking updates and security alerts.",
+    body: "On the mobile app, Cenaiva uses Expo Notifications to deliver push notifications to your device. On the website, Cenaiva does not send push notifications; time-sensitive updates are delivered by SMS and shown as in-app alerts. By enabling notifications, you consent to receiving alerts related to your bookings, rewards, availability alerts, platform activity, post-visit prompts, and account security. You may disable push notifications at any time through your device settings or in-app notification preferences, though this may affect your ability to receive time-sensitive booking updates and security alerts.",
   },
   {
     id: "cross-border-data",
     number: "18",
     title: "Cross-Border Data Transfers",
-    body: "Some third-party providers used by Cenaiva process personal data outside of Canada, including in the United States. This includes OpenAI, ElevenLabs, Deepgram, Stripe, PostHog, Sentry, and Amazon Web Services. By using the Services — and in particular the AI voice and chat features — you consent to the transfer of your data to these jurisdictions. Data transferred outside Canada may be subject to the laws of the receiving country, which may differ from Canadian privacy law. We require all third-party providers to maintain appropriate safeguards for your personal information.",
+    body: "Some third-party providers used by Cenaiva process personal data outside of Canada, including in the United States. This includes OpenAI, ElevenLabs, Deepgram, Stripe, Twilio, Resend, PostHog, Sentry, Amazon Web Services, Google, and Apple. By using the Services — and in particular the AI voice and chat features — you consent to the transfer of your data to these jurisdictions. Data transferred outside Canada may be subject to the laws of the receiving country, which may differ from Canadian privacy law. We require all third-party providers to maintain appropriate safeguards for your personal information.",
   },
   {
     id: "data-rights",
@@ -339,7 +321,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
     id: "termination",
     number: "32",
     title: "Termination",
-    body: "We may suspend or terminate your access to Cenaiva at any time, with or without notice, if you violate any provision of these Terms, misuse the platform, harm other users or restaurant partners, or engage in conduct that exposes Cenaiva to legal risk or reputational harm. Upon termination, your right to use the Services ceases immediately. Wallet balances following termination are handled as described in Section 11.3. The following sections survive termination: 3, 8.1, 10, 11.3, 13, 17, 18, 19, 24, 25, 27, 28, 29, 30, 33–39.",
+    body: "We may suspend or terminate your access to Cenaiva at any time, with or without notice, if you violate any provision of these Terms, misuse the platform, harm other users or restaurant partners, or engage in conduct that exposes Cenaiva to legal risk or reputational harm. Upon termination, your right to use the Services ceases immediately. The following sections survive termination: 3, 8.1, 11.3, 13, 17, 18, 19, 24, 25, 27, 28, 29, 30, 33–39.",
   },
   {
     id: "changes-to-terms",

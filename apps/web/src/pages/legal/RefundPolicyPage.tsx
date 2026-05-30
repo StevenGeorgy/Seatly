@@ -88,9 +88,9 @@ export default function RefundPolicyPage() {
               2. What gets refunded
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-text-secondary sm:text-base">
-              The deposit (or order base) is fully refundable when the
-              restaurant marks you seated, when you cancel under the
-              restaurant's policy, or when the restaurant cancels on you.
+              The deposit (or order base) is fully refundable when you cancel
+              before you're seated, when the restaurant marks you seated, or
+              when the restaurant cancels on you.
               Platform and processing fees are non-refundable — both are
               disclosed before you pay, in exchange for full transparency on
               the deposit side.
@@ -109,7 +109,10 @@ export default function RefundPolicyPage() {
                 </p>
                 <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm text-text-secondary marker:text-success/60">
                   <li>The restaurant marks you seated on arrival</li>
-                  <li>You cancel within the restaurant's refund window</li>
+                  <li>
+                    You cancel before you're seated (or before the
+                    reservation reaches a final status)
+                  </li>
                   <li>
                     A staff member undoes a "Mark Arrived" within the grace
                     window

@@ -7,7 +7,7 @@
 // information in a materially new way.
 
 export const SUB_PROCESSORS_NOTICE_DAYS = 30;
-export const SUB_PROCESSORS_LAST_REVIEWED = "May 21, 2026";
+export const SUB_PROCESSORS_LAST_REVIEWED = "May 30, 2026";
 
 export type SubProcessor = {
   name: string;
