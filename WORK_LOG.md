@@ -1576,3 +1576,542 @@ _The following entries lived in CLAUDE.md's "Headline state" sections during act
 - Tests: `npm --prefix apps/web run test:run` (Vitest, CI-friendly with `--passWithNoTests`). `npm --prefix apps/web test` for watch mode. 98 cenaiva tests under `apps/web/src/lib/cenaiva/__tests__/`.
 - Playwright is available locally via `npm install --no-save @playwright/test` + `npx playwright install chromium`. Smoke specs live in `tmp-e2e/`; the existing `speed-phase5-smoke.spec.cjs` and `concurrent-booking.mjs` are kept around but the latter is destructive at Nano tier (see Incident note).
 - Test login: `cenaiva.e2e.customer@test.local` / `TestPassword123!`. Visible-slot test restaurant: `Cenaiva Reservation Capacity Test`.
+
+
+---
+
+## Archived CLAUDE.md current-state entries (moved 2026-05-30 to keep CLAUDE.md under the context-size limit)
+
+- **2026-05-30 Diner account-deletion hardened — succeeds + erases all PII
+  (`delete-account` + migration `20260530000000_diner_account_deletion`)** — Two
+  bugs fixed. (1) Deletion FAILED for real diners: non-cascade FKs into
+  `user_profiles` (`diner_consent_log`=RESTRICT, written at every signup; plus
+  `payments`/`waitlist`/`subscription_consent_log`/`ai_conversations`=NO ACTION)
+  made the `user_profiles` DELETE throw — after the fn had already cancelled/
+  refunded reservations + deleted the Stripe customer (no rollback). (2) Residual
+  PII survived: denormalized `reservations`/`reservation_holds`/
+  `reservation_deposit_payments` contact fields, the `guests` CRM row, and
+  visit-photo/receipt/export storage blobs. Fix: new SECURITY DEFINER RPC
+  `delete_diner_account(uuid)` (service_role only) runs the whole erasure in ONE
+  transaction — scrubs all denormalized PII, **de-identifies** legally-retained
+  records (consent logs keep proof-of-consent but null user_profile_id/ip/ua;
+  `payments` unlink; CRA/Law-25 retention), hard-deletes legacy AI + loyalty
+  rows, then deletes `user_profiles` (cascading chat/notifications/reviews/
+  cards). `delete-account` now calls the RPC (atomic → no half-delete), purges
+  the diner's storage objects (`visit-photos`/`receipts`/`user-data-exports` +
+  avatar), and deletes the Stripe customer LAST. Only nullability change needed
+  was `diner_consent_log.user_profile_id` (others already nullable). Verified
+  live on a synthetic test diner: deletion succeeded (was the failing path),
+  consent retained+de-identified, guest PII nulled, chat cascade-deleted; test
+  rows cleaned up. Deploy note: zod-using fns must deploy with
+  `--import-map supabase/functions/deno.json` (the CLI doesn't auto-upload it).
+  Remaining edge case (rare): a non-owner staff member who is also a diner could
+  still hit a staff-table NO ACTION FK; owners are already blocked from self-delete.
+
+- **2026-05-29 Dispute-fee recovery on lost chargebacks (`stripe-webhook`
+  `handleChargeDispute`)** — On `charge.dispute.closed` + `lost`, in addition to
+  the existing food+tax transfer-reversal clawback, Cenaiva now recovers the flat
+  CAD $15 Stripe dispute fee from the restaurant via a one-off
+  `stripe.invoiceItems.create` on its subscription customer (idempotent on
+  `dispute_fee_${dispute.id}`, `tax_behavior:"exclusive"`, rides the next monthly
+  invoice — same plumbing as the $1 booking fee). Skips + logs when no
+  `stripe_customer_id` / paused / soft-deleted. Rationale (Stripe-doc-confirmed):
+  destination-charge dispute amounts AND fees are debited from Cenaiva's platform
+  balance and are NOT auto-routed to the connected account, and a transfer
+  reversal can only recover up to the transferred amount — so the flat fee needs
+  its own invoice item. Implements Partner Agreement §5.7 (previously unenforced —
+  Cenaiva absorbed the $15). Not a Stripe-dashboard setting. Deployed
+  `stripe-webhook`. (Legal-doc redline for the broader 2026-05-29 audit is staged
+  in `LEGAL_REDLINE.md`, pending review — not yet applied.)
+
+- **2026-05-29 Stripe security + correctness batch (10 fixes from a read-only
+  multi-agent audit; each doc-checked + reviewed + verified live)** — Tier 1
+  (critical/high, exploitable): (1) `refund-payment-intent` was anon + refunded
+  ANY pi_ → now requires `metadata.restaurant_id` + (anon) orphan-only (no
+  charged deposit / paid order / materialized reservation bound) + <60min
+  freshness; internal service-role caller bypasses. (2) `request-refund`
+  auto-refund now requires caller-owns-reservation + PI bound to it + a genuine
+  duplicate (≥2 charged PIs). (3) `confirm-deposit-stub` default-OFF + UNDEPLOYED
+  from prod (was anon + default-ON payment-bypass; prod uses
+  `confirm-deposit-paid`). (4) `close-bill` now `checkAuth` + staff-role +
+  restaurant-scoped + rate-limited + idempotent (was anon $0-close + tip
+  injection; added `[functions.close-bill] verify_jwt=false`). (5) migration
+  `20260529130000` revokes diner/anon UPDATE on trust-boundary `reservations`
+  columns (status/deposit_*/timestamps/reserved_at/party_size) — re-grants only
+  `shift_id/table_id/duration_minutes` to authenticated; dropped
+  `reservations_update_own`. (6) `stripe-charge-order` atomic claim
+  (`__charging__` sentinel) + tip-free idempotency key + release-on-failure.
+  Tier 2 (medium): bill-booking-fees idempotency key + skip paused/deleted;
+  confirm-modify-payment refunds the delta on cart-replay failure; mark-order-paid
+  also binds via reservation_id (deferred pre-order PIs); stripe-webhook
+  retry-on-throw (delete dedup row + 500) + split recovery republish from the
+  status mirror. Tier 3 (latent, NOT yet done): post-meal Connect charge-model +
+  `card_payments` capability, dispute clawback on destination charges,
+  `charge.refund.updated` async-failure handling, refund-deposit-on-arrival
+  idempotency. **Doc reconciliation:** corrected the fee-model in this file —
+  live model is **Option B (2% of food)**, not the older 5.5%/94.5% (see the
+  Stripe hard rules above; historical entries below are stale on this point).
+
+- **2026-05-29 Owner dashboard: surface deposit + pre-order in the
+  reservation detail dialog (`ReservationsPage.tsx` + `useReservations.ts`
+  + new `ReservationPreorderSummary.tsx`)** — The detail dialog
+  (`ReservationDetailsDialog`) now shows what the diner paid at booking.
+  (1) Deposit: the deposit section was wrongly gated behind
+  `SPLIT_TENDER_ENABLED` (off in prod) so solo deposits rendered nothing;
+  dropped the flag from the condition so any booking with a
+  `reservation_deposit_payments` row shows amount + status via the
+  existing `ReservationDepositBreakdown` (its 1-row branch already
+  handles solo). NOT a split-tender revival — the server still rejects
+  split bookings, so only solo 1-row deposits exist; this just un-hides a
+  deposit the diner already paid. (2) Pre-order: `useReservations`
+  `.select` now embeds `orders!orders_reservation_id_fkey(... order_items(...))`
+  (FKs + `orders_select_staff`/`order_items_select_staff` RLS already allow
+  the owner read — no RPC/RLS/migration needed; `order_items.name` is
+  denormalized so no `menu_items` join). **The `!orders_reservation_id_fkey`
+  disambiguation is REQUIRED:** `reservations` relates to `orders` via TWO
+  FKs — `orders.reservation_id` (one-to-many, what we want) AND
+  `reservations.preorder_order_id` (many-to-one). A bare `orders(...)` embed
+  returns PGRST201 ("more than one relationship found") and fails the whole
+  reservations fetch → empty owner list. Hotfixed in f2f96e6 after the bare
+  embed shipped in aa677a2. Lesson: when embedding `orders` from
+  `reservations`, always pin the FK. New `ReservationPreorderSummary`
+  lists `qty × name — line_total`, a food subtotal (sum of `line_total`,
+  NOT `orders.total_amount` which bundles the deposit on combined PIs),
+  tax if any, and a Paid/Refunded/Pending badge. Both sections render
+  only when data exists (no empty boxes). Display-only — no
+  payment/booking logic touched. tsc + minified build clean; data layer
+  verified (986BCC4D shows $1.50 deposit; pre-ordered bookings carry
+  order_items).
+
+- **2026-05-29 Block no-show before reservation time + soft cancel
+  message (`update_staff_reservation_status` RPC + `useReservations.ts`
+  + `ReservationsPage.tsx` + `cancel-reservation`)** — A no-show is now
+  hard-rejected when `now() < reserved_at`, raised as `P0022`
+  (`no_show_before_reservation`). This applies to EVERYONE incl.
+  owner/manager **force** — force now only relaxes the LATE (+24h)
+  bound, never reaches back before the booked time. The old "1 hour
+  before" non-force grace for no-show is removed (the seat RPC is
+  unchanged — early seating still allowed). Dashboard maps `P0022`
+  to a dedicated friendly toast (no force dialog, since force can't
+  bypass it). Separately, `cancel-reservation`'s terminal-status
+  rejection message softened from "already started or completed" to
+  "This reservation can no longer be changed online — please contact
+  the restaurant." Root cause of the #F13/#F14 surface: staff could
+  mark a still-future booking no-show, which then showed to the diner
+  as a stuck "Upcoming" booking they couldn't cancel. That trigger is
+  now closed at the source. Deployed: migration applied live + RPC
+  verified (`pg_get_functiondef` contains the P0022 block, old
+  1h-grace gone, gate fires for the future booking that prompted this);
+  `cancel-reservation` redeployed; frontend on `main` (Amplify).
+
+- **2026-05-29 Checkout 500 from stale `stripe_customer_id`
+  (`create-public-payment-intent` + `stripe-list-methods`)** — A
+  profile whose `user_profiles.stripe_customer_id` points at a Stripe
+  customer that no longer exists in the live account (test→live key
+  drift, or a churned/deleted customer) 500'd the whole checkout:
+  `paymentMethods.list` / save-card threw "No such customer". Both fns
+  now verify the stored customer via `customers.retrieve` and, on
+  `resource_missing` or `deleted`, self-heal — `stripe-list-methods`
+  nulls the dangling ref and returns `{ methods: [] }`;
+  `create-public-payment-intent` nulls it and creates a fresh customer
+  for the save-card path. Verified live: fresh customer minted, card
+  saved, PIs succeeded. Both fns redeployed.
+
+- **2026-05-28 Booking-time desync fix (`RestaurantPublicPage.tsx` +
+  `useAvailability.ts`)** — A diner could confirm one slot at checkout
+  but be booked into a different one. Repro: change party size (or date)
+  on a no-availability date, then tap the "Try <next day>" fallback
+  WITHOUT tapping a time pill. The time-reset effect snapped `dineIn.time`
+  to the day's FIRST slot (`availableTimeOptions[0]`, e.g. 11am) while
+  `AvailabilityPanel` displayed/confirmed the auto-selected closest-to-now
+  slot (e.g. 8:30pm). The reservation HOLD auto-creates from
+  `selectedBookingSlot.date_time` the instant it's valid; if `dineIn.time`
+  is 11am at that moment, the hold is created at 11am, and the booking
+  converts that hold — so the diner paid for 8:30pm and got 11am.
+  **Root cause = the reset defaulting to the first slot, NOT a
+  resolution-layer issue.** It's a cross-component effect-ordering race
+  (page reset vs `AvailabilityPanel` onSelectSlot), so it's INTERMITTENT
+  and does NOT reproduce on the unminified dev server — it only surfaces
+  on minified prod builds. The real fix: the reset now defaults
+  `dineIn.time` to the CLOSEST-TO-NOW slot — the exact slot the panel
+  shows — via new `closestSlotToNow()` (refactored out of
+  `closestSlotTimeToNow`), so the hold can never capture 11am regardless
+  of effect ordering. Belt-and-suspenders kept: `selectedAvailabilitySlot`
+  also prefers `pickedAvailabilitySlot` (displayed pick) over the
+  `display_time` match; reset re-checks the latest `dineIn.time` inside
+  its functional `setDineIn`. URL-pin / voice deep-link branch left on its
+  `isoSlotMatch` guard. **Verification lesson:** an earlier patch that
+  only changed the resolution layer (`pickedAvailabilitySlot` preference)
+  was wrongly declared fixed after a dev-server test — the dev server
+  gave a FALSE POSITIVE because the race didn't reproduce there. Verify
+  timing-sensitive frontend fixes against a `vite preview` MINIFIED build,
+  not `npm run dev`. This fix was verified by: (a) building the unfixed
+  version → minified preview reproduced 11am, then (b) building the fix →
+  3/3 independent fresh holds (party 3/4/5) all landed at 8:30pm.
+
+- **2026-05-28 Solo Stripe-QA fixes (2 bugs)** — Caught during the solo
+  (split-tender-off) Phase-1 QA pass and fixed live:
+  (1) **Missing diner confirmation on the paid-hold path.** Logged-in
+  diners' reservations/holds frequently have `guest_email`/`guest_phone`
+  NULL (identity lives in `user_profiles`), so `runPostHoldConversion`
+  in `_shared/hold-conversion.ts` skipped BOTH SMS + email → diner got
+  no booking confirmation (pure-preorder + deposit paid-hold bookings).
+  Fix: resolve notification contact with a fallback chain
+  `reservation.guest_email/phone` → `guests` row (via `guest_id`) →
+  `user_profiles` (via `user_profile_id`). Redeployed `confirm-hold-paid`,
+  `stripe-webhook`, `create-public-booking`. Verified: confirmation now
+  fires exactly once.
+  (2) **Deposit RDP row stuck `charged` after combined-booking cancel.**
+  Combined pre-order+deposit bookings share ONE PI and store the full
+  base (preorder+tax+deposit) on `orders.total_amount`; `cancel-reservation`
+  refunded the whole base via the order loop, then the deposit loop
+  re-hit the same already-refunded PI (exceeds remaining) and left the
+  RDP row `charged`. Fix: track PIs refunded by the order loop
+  (`refundedViaOrderPiIds`); for any charged deposit sharing such a PI,
+  reconcile the row to `refunded` without a second Stripe call.
+  Redeployed `cancel-reservation`. Verified: one $2.91 refund, RDP →
+  `refunded`. Money flow was always correct in both bugs; these were a
+  notification gap and a DB-state gap respectively.
+
+- **2026-05-28 Split-tender FEATURE-FLAGGED OFF** — Multi-card-at-booking
+  (PR-K) is disabled, not deleted. Frontend gated behind
+  `VITE_SPLIT_TENDER_ENABLED` (helper: `apps/web/src/lib/featureFlags.ts`);
+  diner never sees the "Split tender" toggle and the owner dashboard
+  never shows split badges/breakdown. Server hard-rejects any split
+  request: `create-public-booking` returns 400 `split_tender_disabled`
+  when `SPLIT_TENDER_ENABLED!=="true"`; `modify-reservation` refuses
+  (400) if a pre-flag split booking (≥2 charged RDP rows) is modified.
+  The shared `reservation_deposit_payments` table / settle trigger /
+  `convert_reservation_hold_to_reservation` RPC are UNCHANGED — solo
+  deposit bookings still write 1 RDP row there exactly as before. All
+  split-tender components, helpers (`proportional-split.ts`), and
+  branches stay compiled + dormant. **To revive:** set
+  `VITE_SPLIT_TENDER_ENABLED=true` (Amplify) + `SPLIT_TENDER_ENABLED=true`
+  (Supabase secrets), redeploy `create-public-booking` +
+  `modify-reservation`, rebuild web. **While off: any PR that EDITS
+  (vs merely compiles) split-tender branches is suspect — the feature
+  is dormant, so changes to it are almost certainly accidental.**
+
+- **2026-05-28 Preorder-only PI binding + cart-shrink refund fix** —
+  Two bugs surfaced in PR-K Phase 6 cart-shrink QA, both fixed and
+  re-verified live: (1) Pure preorder bookings (no deposit) had
+  `orders.stripe_payment_intent_id = NULL` because `create-public-
+  booking` never accepted the PI ID from the client — Mode B PI (saved
+  card, no hold) doesn't put `reservation_id` on PI metadata so
+  stripe-webhook can't back-fill. Fix: `BookingInputSchema` gained
+  optional `payment_intent_id` field; `create-public-booking` stamps
+  it onto `orders.stripe_payment_intent_id` + sets `status='paid'` /
+  `paid_at=now()` when present; `RestaurantPublicPage.tsx` passes
+  the succeeded PI ID alongside booking payload. (2) Even with PI
+  binding present, cart-shrink silently skipped the refund because
+  the in-place order wipe at lines 1654-1663 flipped `status='paid'
+  → pending` and `total_amount → $0` BEFORE the refund logic ran;
+  the fallback query at line 1745+ then filtered by `status='paid'`
+  (zero matches) and `total_amount > 0` (zero matches). Fix: capture
+  `existingOrder.stripe_payment_intent_id` + `total_amount` snapshot
+  in section (4) BEFORE the wipe; refund-path fallback uses the
+  snapshot directly (no re-query). Verified: refund
+  `re_3Tc1s4JABKj4FeJX0hTH8cKp` posted for $1.41 with
+  `metadata.cenaiva_reason='cart_shrink'` after a Nova sushi-only
+  booking → add → shrink test. Deployed: `create-public-booking` +
+  `modify-reservation` v137 + `apps/web` (RestaurantPublicPage).
+
+- **2026-05-28 confirm-hold-paid owner notification gap** —
+  Solo deposit+hold bookings were never emailing the restaurant
+  owner because `confirm-hold-paid` calls `runPostHoldConversion`
+  which fired diner email but NOT owner email. Fix:
+  `_shared/hold-conversion.ts` imports `notifyOwnerNewReservation`
+  and calls it after `sendReservationNotification`. Idempotent via
+  `restaurant_notification_log` partial unique index.
+
+- **2026-05-28 PR-K Split-tender parity (all 10 gaps in one push)** —
+  Split-tender bookings now behave identically to solo bookings on
+  modify + cancel + dashboard surfaces. Server changes: `modify-reservation`
+  detects ≥2 charged RDP rows and (a) for UP deltas seeds N pending rows
+  proportional to each original payer's share, returns
+  `is_split_tender: true` + `deposit_payment_row_ids[]` + `split_payers[]`
+  (party_delta + cart_delta both); (b) for DOWN deltas distributes the
+  refund across ALL charged rows via `proportional-split.ts` largest-
+  remainder helper (was refunding ONE row only). `confirm-modify-payment`
+  schema accepts both legacy single-row shape AND new arrays — verifies
+  all N PIs succeeded + all N RDP rows charged + all metadata bindings
+  before applying `modify_reservation_slot` exactly once; auto-refunds
+  ALL N PIs on rejection. `cancel-reservation` (already refunds per-row)
+  now passes per-payer `refund_breakdown` array to
+  `notifyOwnerCancellation`; owner email body renders bullet list when
+  ≥2 cards; diner email body splits the refund line by card. Frontend:
+  `BookingDetailsPage`, `ManageBookingView`, `EditPreorderModal` all
+  detect `is_split_tender` and mount `SplitTenderPaymentForm` (vs solo
+  `StripePaymentForm`) with the N pre-seeded row IDs as `onPreCheckout`
+  result; `SplitTenderPaymentForm.onAllPaid` now passes
+  `paymentIntentIds[]` + `depositRowIds[]` back so consumers can call
+  `confirm-modify-payment` with the array shape. Owner dashboard:
+  `useReservations` joins `reservation_deposit_payments`; new
+  `ReservationDepositBreakdown` component renders per-payer status in
+  the detail dialog; list-view badge swaps "Deposit" → "Split N/M paid".
+  Gap 12 (`update_reservation_hold_diner` RDP sync) analyzed-and-skipped:
+  RDP rows for split-tender are seeded in `create-public-booking` AFTER
+  hold-update completes, so the booker's contact data can never drift
+  between hold-update and RDP creation — no migration needed.
+  Deployed: `modify-reservation`, `confirm-modify-payment`,
+  `cancel-reservation`.
+
+- **2026-05-28 Comprehensive QA session (PR-A through PR-J)** — 10 PRs
+  shipped end-to-end after a full Stripe-flow QA pass. Highlights:
+  - PR #31 (A): Fix Stripe IntegrationError that broke 100% of
+    split-tender payments (`fields.billingDetails.address.*='never'`
+    requires matching empty-strings in `confirmParams.payment_method_data`)
+  - PR #32 (B): Comprehensive — modify-reservation pending-row dedup
+    (party-delta + cart-delta), gate `notifyOwnerNewReservation` for
+    split-tender (fires post-settle from confirm-deposit-paid, not at
+    creation), add ReservationsPage staff-action double-click guards,
+    `sweep_abandoned_split_tender_reservations` cron (every 10 min,
+    cancels pending_payment > 30 min with no charged RDPs), drop
+    `restaurants.cancellation_hours` column + UX copy update
+  - PR #33 (C): Hold-conversion path also needed the owner-notif gate
+    (twin code path missed in PR-B); settle trigger now skips parents
+    in `cancelled/no_show/completed` (defensive guard against late
+    webhook racing with orphan sweep)
+  - PR #34 (D): Move owner+diner post-settle notifications into
+    stripe-webhook as well as confirm-deposit-paid (race fix — webhook
+    sometimes beats client confirm); orphan-refund safety net (if
+    parent is terminal when charge lands, refund via
+    `refundPaymentIntent('orphan_split_tender_after_sweep')`);
+    hold-conversion split-tender dedup
+  - PR #35 (E): Step8PaymentSetup `publish()` early-exit guard for
+    rapid double-click
+  - PR #36 (F): `create_reservation_hold` returns caller's own exact-
+    match active hold instead of raising diner_double_book on
+    page reload (#F12) — prevents 15-min lockout after browser refresh
+  - PR #37 (G): `sweep_abandoned_split_tender_reservations` now calls
+    `release_reservation_tables` (was leaving stale reservation_tables
+    rows that blocked re-booking the same slot via
+    reservation_tables_no_overlap exclusion)
+  - PR #38 (H): SplitTenderPaymentForm — read `failedCount` from latest
+    state instead of stale closure (was showing "0 cards couldn't be
+    charged" even when all paid); useEffect safety net fires onAllPaid
+    when slots eventually flip to "paid" (was leaving parent stuck on
+    cart screen)
+  - PR #39 (I): Restore `create_reservation_hold p_hold_minutes DEFAULT
+    15` — PR-F's rewrite accidentally reverted to 5 (copied from older
+    migration 20260526180000 instead of latest 20260527000000)
+  - PR #40 (J): SplitTenderPaymentForm now calls `onProcessingChange`
+    so outer Place Order button shows Loader2 spinner during split-
+    tender payment loop (parity with single-payment StripePaymentForm);
+    add `reservation_id` column + partial unique index to
+    `restaurant_notification_log` so owner-notification dedup is atomic
+    via INSERT-with-23505-guard instead of SELECT-then-INSERT
+    (was double-emailing Mark when confirm-deposit-paid and
+    stripe-webhook raced within ~87ms)
+
+  Net: split-tender works end-to-end; owner notifications dedupe
+  atomically; hold UX no longer breaks on page reload; orphan-sweep
+  side effects cleaned up. Outstanding follow-ups: `cancel-reservation`
+  defensive gate refuses to cancel `seated`/`completed`/`no_show` even
+  when reserved_at is still future (#F13); diner-side BookingsPage
+  shows terminal-state reservations as "Upcoming" when reserved_at is
+  future (#F14). **Update 2026-05-29:** the dominant trigger — staff
+  marking a *future* booking `no_show` — is now blocked at the RPC
+  (see the 2026-05-29 entry above), and #F13's message is softened.
+  The defensive gate + #F14 bucketing are intentionally KEPT: a
+  future-but-`seated` booking (early seating) can still reach this
+  state, so the gate stays as a backstop. Remaining surface is now
+  much rarer; still deferred.
+
+- **2026-05-20 Subscription lifecycle rework (full overhaul)** —
+  Decoupled card-save from subscription creation. Trial clock now anchors
+  to publish day, not card capture. Plus: payment-failure auto-pause,
+  30-day soft-delete grace, CRA-compliant anonymization, referral
+  program, Canadian consent audit log, email notifications.
+  - **New flow:** wizard `save-subscription-payment-method` saves card
+    only (no sub); `publish-restaurant` atomically creates the sub +
+    flips `is_published=true` (with `restaurant_live` email). Modal
+    confirms "Your 90-day trial starts now" before publish.
+  - **New publish-gate trigger** at the DB level (`restaurants_publish_gate`).
+    Accepts both old-world (`subscription_status` in trialing/active —
+    grandfathered) and new-world (`payment_method_attached_at IS NOT
+    NULL`) paths. Blocks publishing soft-deleted restaurants.
+  - **`create-subscription` deprecated.** Returns 410 by default;
+    `ALLOW_LEGACY_CREATE_SUBSCRIPTION=true` env flips it back on for
+    emergency operator use.
+  - **Payment failure:** `stripe-webhook` `handleSubscriptionUpsert`
+    now drives `is_published`. On `unpaid`/`canceled` → unpublish +
+    `paused_reason='payment_failed'` + `payment_failed` email. On
+    recovery to `trialing`/`active` while previously failed → republish +
+    `payment_recovered` email. Skips entirely if `deleted_at IS NOT
+    NULL` (deletion state protected).
+  - **Restaurant deletion:** `delete-restaurant` rewritten — soft-delete
+    + `cancel_at_period_end=true` on Stripe sub. 30-day grace with
+    `deleted_at` + `scheduled_purge_at`. `recover-restaurant` undoes
+    within grace. `purge-deleted-restaurants` cron (daily 5am UTC)
+    anonymizes PII while keeping payment FKs intact for CRA 7-year
+    retention.
+  - **Referral program:** every published restaurant gets a unique
+    `referral_code` (auto-generated on first publish). New restaurants
+    pass `referral_code` at signup. `apply-referral-credit` fires from
+    `publish-restaurant` — creates a $199.99 CAD Stripe coupon applied
+    to BOTH subscriptions (`max_redemptions=2`). `referral_credits`
+    audit table. `validate-referral-code` for live wizard validation.
+  - **Canadian consent:** every card-save + publish-confirm writes to
+    `subscription_consent_log` capturing disclosure text + IP + UA.
+    Inline disclosure rendered above the Save card button.
+  - **Owner notifications:** `_shared/owner-notifications.ts` helper
+    (Resend-based, mirrors reservation-notifications). 6 templates:
+    restaurant_live, restaurant_deletion_scheduled, restaurant_restored,
+    payment_failed, payment_recovered, trial_ending_soon.
+    `restaurant_notification_log` table for idempotency + audit.
+    `notify-trial-ending` cron (daily 9am UTC) emails 7 days before
+    trial end.
+  - **Stale-card cleanup:** `cleanup-stale-onboarding-cards` cron
+    (daily 4am UTC) detaches saved cards from unpublished restaurants
+    after 90 days. First-attach timestamp wins (re-saving doesn't
+    reset the clock).
+  - **Diner delete-card bug fixed.** New `stripe-detach-method` edge
+    fn. PaymentMethodsSection reorder: Stripe detach first, then DB
+    delete (recoverable on transient Stripe errors).
+  - **Existing trialing restaurants untouched.** Mark Testing +
+    Onboarding Test Pizza continue on their old-world subs. Publish
+    gate accepts them via the OR clause.
+- **2026-05-19 Pricing overhaul (in same day, after the debug session)** —
+  (A) Subscription bumped **$199 → $199.99 CAD/mo** across marketing
+  pages (HomePage, RestaurantsPage, BookDemoPage), onboarding wizard
+  (Step8PaymentSetup), `SettingsPage` PLAN_PRICE_CENTS (now 19999),
+  and `create-subscription` header. Marketing $200 typo fixed.
+  STRIPE_SUBSCRIPTION_PRICE_ID still points at the old $199 Price —
+  Mark must create a new $199.99 CAD Price under the existing product
+  + swap the secret. Existing trials/subs stay on old Price until
+  renewal unless manually migrated per-customer.
+  (B) **Diner pays Stripe processing fee on top** (~2.9% + 30¢).
+  New `_shared/stripe-fee.ts` helper `computeDinerCharge(baseCents)`
+  returns `{ baseCents, dinerTotalCents, processingFeeCents,
+  applicationFeeCents }` via gross-up formula `ceil((base + 30) /
+  0.971)`. Applied in `create-public-payment-intent` (Mode A + Mode
+  B + hold path), `stripe-charge-order` (post-meal pay), and
+  `modify-reservation` (party-size deposit delta). PI metadata
+  carries `base_amount_cents` + `processing_fee_cents` for
+  reconciliation. `application_fee_amount` stays 5.5% of BASE (we
+  don't take commission on the pass-through Stripe fee). Restaurant
+  nets 94.5% of base after Stripe's fee and our 5.5%. Client mirror
+  at `apps/web/src/lib/stripe-fee.ts` powers the cart "Processing
+  fee" line on `RestaurantPublicPage` + `DepositPayPage`.
+  (C) **$1 per-confirmed-booking fee** to restaurants. New
+  `restaurant_booking_fees` table (one row per reservation,
+  idempotent on `reservation_id`). Triggers seed 'pending' rows on
+  reservation INSERT/UPDATE where status='confirmed', and flip
+  'pending' → 'cancelled' on cancellation. New edge fn
+  `bill-booking-fees` (cron-driven hourly via pg_cron job
+  `cenaiva_bill_booking_fees`) sweeps pending rows into Stripe
+  `invoiceItems.create` on the restaurant's subscription customer;
+  rolls into next monthly subscription invoice. Already-billed rows
+  are NOT auto-credited on later cancellation (manual refund only).
+  Restaurants without an active subscription are skipped (status
+  must be in `trialing|active|past_due|incomplete`). 500-row batch
+  per run; failures flip to 'failed' with `failure_reason` and
+  require manual intervention. RLS: owners can SELECT their own
+  fee rows; writes are service-role only.
+  Operational TODOs (Mark): see STRIPE_SETUP.md §10. Must (a) create
+  $199.99 Price, (b) swap STRIPE_SUBSCRIPTION_PRICE_ID secret, (c)
+  set CRON_SECRET, (d) `supabase db push`, (e) deploy
+  `bill-booking-fees`, (f) re-deploy the 3 modified edge fns.
+- **2026-05-19 Stripe wire-up debugging + handoff state** —
+  (A) SetupIntent customer-mismatch fix shipped to `stripe-setup-intent`
+  v68: function now accepts `restaurant_id` and creates the SetupIntent
+  on the **restaurant's** Stripe customer (Branch A) vs the diner's
+  user_profiles customer (Branch B, original saved-card flow). Stripe
+  blocks moving a PaymentMethod between customers; before this fix the
+  wizard's PM ended up on the wrong customer and `create-subscription`
+  failed silently. `Step8PaymentSetup.tsx` updated to pass
+  `restaurant_id` + recovery path for SetupIntent already-succeeded
+  state (when create-subscription fails downstream and user retries
+  without refresh).
+  (B) **`create-subscription` resolved 2026-05-23.** Function is now
+  deprecation-gated to HTTP 410 by default (v76 deployed). Production
+  publish flow runs through `publish-restaurant` instead, which keeps
+  the enhanced Stripe error surface (`stripe_code` / `stripe_type` /
+  `stripe_param` / `attempted_price_id` / `attempted_customer_id`) —
+  these only reach the authenticated owner about their own restaurant,
+  and `Step8PaymentSetup.tsx` maps them through `toUserFacingError`
+  before any toast surface so users never see raw Stripe text. The
+  legacy create-subscription escape hatch is gated by
+  `ALLOW_LEGACY_CREATE_SUBSCRIPTION=true`; leave OFF in prod.
+  (C) `Step7DepositPolicy.tsx` — removed the "Cancellation window"
+  UI section (`cancellation_hours` field + state + validation + save).
+  Consistent with 2026-05-15 policy that all cancels fully refund.
+  Column `restaurants.cancellation_hours` still exists in DB but is
+  no longer read or written by the wizard. Safe to drop in a future
+  migration; don't drop without verifying no other code path reads
+  it.
+  (D) **Operational discovery: `STRIPE_SUBSCRIPTION_PRICE_ID` in
+  Supabase secrets was set to `prod_USX4rqMU6E7f4V`** — a Stripe
+  Product ID, not a Price ID. Subscriptions API requires a Price ID
+  (`price_…`). Local `.env` had the correct Price ID
+  (`price_1TTc0YJABKj4FeJXsR18YzVw`) but the Supabase secret store
+  was never updated to match. Mark updated the secret. **Verified
+  2026-05-27:** active Nova subscription uses
+  `price_1TYgOeJABKj4FeJXcwrIHG5f` ($199.99 CAD) — secret is now a
+  valid Price ID.
+  (E) `RACE_CONDITION_AUDIT.md` — **CLOSED 2026-05-23.** All three
+  race conditions shipped (create-subscription 410-gated,
+  publish-restaurant has `idempotencyKey:
+  publish_${restaurantId}_${ymd()}_tax_v1`, stripe-charge-order has
+  `idempotencyKey: charge_order_${order_id}_${foodCents}_${taxCents}`
+  + paid_at/PI pre-checks, modify-reservation refund path is dedupe
+  -safe). See audit doc for the full resolution table.
+- **2026-05-17 ROUND 4 (Hey Cenaiva polish)** — All 5 deterministic
+  upstream layers shipped to `cenaiva-orchestrate`:
+  (P1) direction-change reset + mid-flow restaurant pivot + exclusion
+  memory + `soft_reset` UI action;
+  (P2) info-query soft-deflect (parking, dress code, accessibility,
+  kid-friendly, payment) + robot-date fix on modify path;
+  (P3) pronoun resolution via `discovery.last_offered_restaurant_ids`
+  + multi-intent + vibe honest deflect;
+  (P4) profile + session dietary auto-apply to search_restaurants;
+  (P5) frustration recovery + talk-to-human + joke counter (3-pool +
+  refuse-after-2) + off-topic acks + misleading-fallback rewrite in
+  `searchFallback.ts`. AssistantMemory extensions: `excluded`,
+  `last_offered_restaurant_ids`, `session_dietary`,
+  `conversation_state.{joke_count,frustration_count}` — all optional
+  with sensible defaults. Schema mirrored in `@cenaiva/assistant`.
+  Client `mergeAssistantMemory` made identity-stable to prevent a
+  Phase-1 useEffect loop (`AssistantStore.tsx`). Prompt net growth
+  vs Phase 0 baseline: +2 lines / +62 words / +786 chars (see
+  PROMPT_SIZE_LOG.md). Full 85-test Chrome E2E (Phase 6) NOT yet
+  run — assistant FAB-open path in Chrome MCP context blocked on
+  mic permission flow; Mark to verify in real browser.
+- **2026-05-16** — Pricing overhaul: platform fee 5%→5.5% on pre-orders
+  & deposits; subscription $200→$199 CAD/mo (later bumped to $199.99
+  on 2026-05-19); cancellation refunds only the restaurant's 94.5%
+  slice (Cenaiva keeps the 5.5% commission). Voice
+  hand-off destination-page fixes (time URL param, deposit banner,
+  step=menu) on `RestaurantPublicPage.tsx`.
+- **2026-05-16 OPERATIONAL (Mark)** — Create new $199 CAD/mo recurring
+  Stripe Price + update `STRIPE_SUBSCRIPTION_PRICE_ID` env var in
+  Supabase. Until then new subscriptions will charge $200.
+- **2026-05-17 OPERATIONAL (Mark)** — ZERO restaurants currently have
+  `stripe_charges_enabled = true`. Onboard at least one through the
+  Connect Embedded flow so Phase 6 Section O (Stripe + payments) can
+  run end-to-end. Without this, deposit + post-meal pay flows can be
+  developed but not E2E-verified.
+- **2026-05-15** — Cancellation policy: 24h forfeit cliff REMOVED, all
+  cancels fully refund (within new keep-fee policy). New page
+  `/find-reservation`. Phone+email both required everywhere. Diner
+  auth Phases 1/3/4/5/6/7/8/9 shipped (auto user_profiles trigger,
+  onboarding page, saved-card picker, cross-device account linking,
+  owner-cancel routes through `cancel-reservation` with `actor:"owner"`,
+  multi-payer deposit split, modify-reservation deposit recalc,
+  `stripe-charge-order` Connect-aware). Apple Sign-In + Phone OTP
+  (SMS/WhatsApp). Onboarding wizard polish + drafts as a product
+  surface (`/drafts`, server-side publish gate trigger).
+  Reservation-after-payment fix (deferred PI mode, reservation created
+  only after Stripe succeeds).
+- **2026-05-14** — Phase D Stripe wire-up: Connect Embedded + $199
+  CAD/mo subscription with 90-day trial. Edge fns
+  `create-stripe-account`, `create-account-session`,
+  `create-subscription`, `stripe-webhook`. KYC publish gate.
+- **2026-05-13** — 17-capability /goal verification pass (orchestrator
+  v304–v309). Voice modify cross-session fixed. Dangerous
+  `harness_cleanup_test_user` RPC dropped; replaced with scoped
+  `harness_cancel_by_ids`.
+- **2026-05-12** — Casual handler single-utterance slot resolution.
+  Colloquial party-size words. Event-theme filter. Deals routing.
+  Hours-question handler reads `hours_json`. Harness 280/281 (99.6%).
