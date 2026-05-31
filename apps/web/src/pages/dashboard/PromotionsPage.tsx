@@ -428,7 +428,7 @@ function PromotionCardView({
     >
       <div aria-hidden className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,var(--gold),transparent_58%)] opacity-10" />
       {imageUrl && (
-        <div className="relative -mx-5 -mt-5 mb-6 h-36 overflow-hidden border-b border-border bg-bg-elevated">
+        <div className="relative -mx-5 -mt-5 mb-4 h-24 overflow-hidden border-b border-border bg-bg-elevated sm:mb-6 sm:h-36">
           <img src={imageUrl} alt="" className="size-full object-cover" />
         </div>
       )}
@@ -445,7 +445,7 @@ function PromotionCardView({
         <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
           {promotion.promo_code ? promotion.promo_code : promotion.applies_to.replace("_", " ")}
         </p>
-        <h3 className="mt-4 line-clamp-2 break-words font-serif text-3xl leading-tight text-white">{promotion.title}</h3>
+        <h3 className="mt-4 line-clamp-2 break-words font-serif text-xl leading-tight text-white sm:text-3xl">{promotion.title}</h3>
         {promotion.description && (
           <p className="mt-4 line-clamp-2 break-words text-sm leading-6 text-text-secondary">
             {promotion.description}
@@ -1764,13 +1764,13 @@ export default function PromotionsPage() {
       </div>
 
       {loading ? (
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-72 rounded-2xl" />
           ))}
         </section>
       ) : (
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
           {visiblePromotions.map((promotion) => (
             <PromotionCardView
               key={promotion.id}

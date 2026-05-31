@@ -136,6 +136,22 @@ casual book path for parties 8+, pre-order hand-off, LLM-branch date
 phrasing ("2026-05-16 at 21:00" vs "Saturday May 16 at 9 PM").
 Multi-payer deposit SMS support requires `payer_phone` column.
 
+**Known failing tests (pre-existing on `main`, found 2026-05-31; NOT caused by
+the mobile-responsive work — confirmed failing on the clean tree). `npm run
+test:run` from `apps/web` = 3 failed / 189 passed / 1 skipped. All in the
+Cenaiva voice/booking-intent helpers (`lib/cenaiva`), none touched by recent UI
+work:**
+1. `lib/cenaiva/__tests__/sessionPivotIntent.test.ts:69` — "non-pivot small talk
+   … rejects 'do you have a girlfriend'": `isCenaivaProcessPrompt` returns `true`
+   (false positive) where the test expects `false`.
+2. `lib/cenaiva/__tests__/localBookingCollector.test.ts:168` — "collects party
+   size locally after a restaurant is selected".
+3. `lib/cenaiva/__tests__/localBookingCollector.test.ts:191` — "treats large
+   numeric guest replies as party size, not a small prompt".
+Likely an intent-classifier drift (the helper logic changed without updating the
+expectations, or vice-versa). Fix the classifier OR the test fixtures, then
+re-run the full suite before relying on green CI.
+
 ## Hard rules — never violate
 
 ### Reservation writes

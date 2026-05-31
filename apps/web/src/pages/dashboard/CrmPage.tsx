@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { z } from "zod";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DataCardRow } from "@/components/dashboard/DataCard";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -468,7 +469,8 @@ export default function CrmPage() {
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[960px] text-left">
             <thead>
               <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
@@ -537,6 +539,67 @@ export default function CrmPage() {
             </tbody>
           </table>
           </div>
+
+          {/* Mobile: same guests as the table above, rendered as cards (md:hidden) */}
+          <div className="divide-y divide-border/50 md:hidden">
+            {visible.map((row) => (
+              <button
+                key={row.source.id}
+                type="button"
+                onClick={() => setSelectedGuest(row.source)}
+                className="block w-full px-4 py-4 text-left transition-colors hover:bg-bg-elevated/30"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={cn(
+                        "flex size-9 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold",
+                        AVATAR_CLASSES[row.segment],
+                      )}
+                    >
+                      {row.initials}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-text-primary">{row.name}</p>
+                      <p className="truncate text-xs text-text-muted">{row.contact}</p>
+                    </div>
+                  </div>
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider",
+                      SEGMENT_CLASSES[row.segment],
+                    )}
+                  >
+                    {row.segmentLabel}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <DataCardRow label={t("dashboard.crm.visits")}>{row.visits}</DataCardRow>
+                  <DataCardRow label={t("dashboard.crm.lastVisit")}>{row.lastVisit}</DataCardRow>
+                  <DataCardRow label={t("dashboard.crm.totalSpend")}>
+                    {formatCurrency(row.lifetime, currency)}
+                  </DataCardRow>
+                  <DataCardRow label={t("dashboard.crm.avgTicket")}>
+                    {formatCurrency(row.avgTicket, currency)}
+                  </DataCardRow>
+                  <DataCardRow label={t("dashboard.crm.loyaltyPoints")}>{row.points}</DataCardRow>
+                </div>
+                {row.notes.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {row.notes.slice(0, 3).map((note) => (
+                      <span
+                        key={note}
+                        className="rounded-md border border-border bg-bg-elevated/60 px-2 py-0.5 text-[11px] text-text-secondary"
+                      >
+                        {note}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+          </>
         )}
       </section>
 

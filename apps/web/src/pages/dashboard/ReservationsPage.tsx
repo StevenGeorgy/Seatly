@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DataCardRow } from "@/components/dashboard/DataCard";
 import { ReservationDepositBreakdown } from "@/components/dashboard/ReservationDepositBreakdown";
 import { ReservationPreorderSummary } from "@/components/dashboard/ReservationPreorderSummary";
 import { SPLIT_TENDER_ENABLED } from "@/lib/featureFlags";
@@ -1573,7 +1574,8 @@ function ReservationsTable({
       ) : rows.length === 0 ? (
         <EmptyReservationsState />
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[980px] text-left">
             <thead>
               <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
@@ -1716,6 +1718,84 @@ function ReservationsTable({
             </tbody>
           </table>
         </div>
+
+        {/* Mobile: same reservations as the table above, as cards (md:hidden) */}
+        <div className="divide-y divide-border/60 md:hidden">
+          {groupedRows.flatMap((group) => [
+            ...(group.label
+              ? [
+                  <div
+                    key={`${group.key}-label`}
+                    className="bg-bg-elevated/40 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-gold"
+                  >
+                    {group.label} · {group.rows.length}
+                  </div>,
+                ]
+              : []),
+            ...group.rows.map((reservation) => (
+              <article key={reservation.id} className="px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => onOpen(reservation)}
+                      className="block max-w-full truncate text-left font-medium text-white transition-colors hover:text-gold"
+                    >
+                      {reservation.guest}
+                    </button>
+                    <p className="mt-0.5 text-xs text-text-muted">{reservation.phone}</p>
+                    {reservation.confirmationCode ? (
+                      <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-gold/80">
+                        {reservation.confirmationCode}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <span className="font-mono text-sm text-white">{reservation.time}</span>
+                    <StatusBadge status={reservation.status} label={statusBadgeLabel(reservation.status, t)} />
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <DataCardRow label="Party">
+                    {reservation.party}
+                    {reservation.tableCount > 1
+                      ? ` · ${t("dashboard.reservations.largePartyTag", { count: reservation.tableCount })}`
+                      : ""}
+                  </DataCardRow>
+                  <DataCardRow label="Table">{reservation.table}</DataCardRow>
+                  <DataCardRow label={t("dashboard.reservations.duration")}>{reservation.duration}</DataCardRow>
+                  {reservation.notes ? <DataCardRow label="Notes">{reservation.notes}</DataCardRow> : null}
+                </div>
+                {reservation.source && isDinerModifiedReservation(reservation.source) ? (
+                  <span className="mt-2 inline-block rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
+                    Modified by diner
+                  </span>
+                ) : null}
+                {reservation.status === "upcoming" ||
+                reservation.status === "current" ||
+                reservation.status === "past" ? (
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <Button
+                      size="sm"
+                      className="h-9 text-xs"
+                      onClick={() => onSeated(reservation)}
+                      disabled={seatingId === reservation.id}
+                    >
+                      {seatingId === reservation.id ? "Seating..." : "Seated"}
+                    </Button>
+                    <Button size="sm" variant="destructive" className="h-9 text-xs" onClick={() => onNoShow(reservation)}>
+                      No-show
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-9 text-xs" onClick={() => onCancel(reservation)}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : null}
+              </article>
+            )),
+          ])}
+        </div>
+        </>
       )}
     </section>
   );

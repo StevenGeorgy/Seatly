@@ -968,7 +968,7 @@ function EventCardView({
         <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-gold">
           {formatShortDate(event.date)} · {formatShortTime(event.start_time)}
         </p>
-        <h3 className="mt-2 line-clamp-2 break-words font-serif text-2xl leading-tight text-white">{event.name}</h3>
+        <h3 className="mt-2 line-clamp-2 break-words font-serif text-lg leading-tight text-white sm:text-2xl">{event.name}</h3>
         {event.description && (
           <p className="mt-2 line-clamp-2 break-words text-xs text-text-secondary">
             {event.description}
@@ -1277,7 +1277,7 @@ export default function EventsPage() {
       </div>
 
       {loading ? (
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="h-72 rounded-2xl" />
           ))}
@@ -1285,7 +1285,7 @@ export default function EventsPage() {
       ) : view === "calendar" ? (
         <CalendarView events={visibleEvents} />
       ) : (
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
           {visibleEvents.map((event) => (
             <EventCardView
               key={event.id}

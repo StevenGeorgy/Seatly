@@ -125,7 +125,11 @@ export function DashboardSidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewFavorite, setPreviewFavorite] = useState(false);
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // Separate switcher state per rendered instance (mobile drawer vs desktop
+  // sidebar). They both mount on mobile; a shared controlled state opened both
+  // Popovers at once and their dismiss layers fought → the click "flicker".
+  const [workspaceOpenMobile, setWorkspaceOpenMobile] = useState(false);
+  const [workspaceOpenDesktop, setWorkspaceOpenDesktop] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
@@ -253,9 +257,13 @@ export function DashboardSidebar() {
   const renderContent = ({
     collapsed,
     showToggle,
+    workspaceOpen,
+    setWorkspaceOpen,
   }: {
     collapsed: boolean;
     showToggle: boolean;
+    workspaceOpen: boolean;
+    setWorkspaceOpen: (open: boolean) => void;
   }) => (
     <div className="flex h-full flex-col">
       {/* Brand + collapse toggle */}
@@ -703,7 +711,12 @@ export function DashboardSidebar() {
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
             className="fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-border bg-bg-base sm:hidden"
           >
-            {renderContent({ collapsed: false, showToggle: false })}
+            {renderContent({
+              collapsed: false,
+              showToggle: false,
+              workspaceOpen: workspaceOpenMobile,
+              setWorkspaceOpen: setWorkspaceOpenMobile,
+            })}
           </motion.aside>
         )}
       </AnimatePresence>
@@ -717,7 +730,12 @@ export function DashboardSidebar() {
             collapsed ? "w-20" : "w-56",
           )}
         >
-          {renderContent({ collapsed, showToggle: true })}
+          {renderContent({
+            collapsed,
+            showToggle: true,
+            workspaceOpen: workspaceOpenDesktop,
+            setWorkspaceOpen: setWorkspaceOpenDesktop,
+          })}
         </aside>
       </TooltipProvider>
       <RestaurantPreviewModal

@@ -13,6 +13,7 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DataCardRow } from "@/components/dashboard/DataCard";
 import { EventAttendeesDialog } from "@/components/dashboard/EventAttendeesDialog";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -416,7 +417,8 @@ function ReservationsTable({ rows, title }: { rows: ServiceReservation[]; title:
       </div>
 
       {rows.length > 0 ? (
-        <div className="mt-5 overflow-x-auto">
+        <>
+        <div className="mt-5 hidden overflow-x-auto md:block">
           <table className="w-full min-w-[720px] text-left">
             <thead>
               <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.16em] text-text-muted">
@@ -444,6 +446,27 @@ function ReservationsTable({ rows, title }: { rows: ServiceReservation[]; title:
             </tbody>
           </table>
         </div>
+
+        {/* Mobile: same rows as the table above, as cards (md:hidden) */}
+        <div className="mt-5 divide-y divide-border/60 md:hidden">
+          {rows.map((row) => (
+            <article key={row.id} className="py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-mono text-gold">{row.time}</p>
+                  <p className="mt-0.5 text-white">{row.guest}</p>
+                </div>
+                <StatusBadge status={row.status} label={t(reservationDisplayStatusKey(row.status))} />
+              </div>
+              <div className="mt-2 space-y-1.5">
+                <DataCardRow label="Party">{row.party}</DataCardRow>
+                <DataCardRow label="Table">{row.table}</DataCardRow>
+                {row.notes ? <DataCardRow label="Notes">{row.notes}</DataCardRow> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+        </>
       ) : (
         <div className="mt-5 rounded-xl border border-dashed border-border/70 bg-bg-elevated/30 p-6 text-sm text-text-muted">
           No reservations in the next two hours.

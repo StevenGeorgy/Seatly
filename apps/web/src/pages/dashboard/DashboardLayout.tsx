@@ -150,7 +150,9 @@ function DashboardShell() {
             className={cn(
               isFloorPlanRoute
                 ? "flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-background"
-                : "w-full p-5 sm:p-6 lg:p-8",
+                // Extra top padding on mobile so page titles clear the fixed
+                // hamburger button (top-left, sm:hidden). Reset to normal at sm+.
+                : "w-full px-5 pb-5 pt-16 sm:p-6 lg:p-8",
             )}
           >
             {/* Suspense here keeps the shell (sidebar + topbar) visible while

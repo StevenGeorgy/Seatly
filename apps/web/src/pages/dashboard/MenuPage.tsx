@@ -582,7 +582,7 @@ export default function MenuPage() {
         )}
 
         {loading ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
             {Array.from({ length: 4 }).map((_, index) => (
               <Skeleton key={index} className="h-[292px] rounded-xl" />
             ))}
@@ -594,7 +594,7 @@ export default function MenuPage() {
             action={<Button onClick={openAddItem}>New item</Button>}
           />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
             <AnimatePresence mode="popLayout">
               {displayItems.map((item, index) => (
                 <MenuCard
@@ -984,7 +984,7 @@ const MenuCard = forwardRef<HTMLElement, MenuCardProps>(function MenuCard(
           ) : null}
         </div>
 
-        <div className="mt-5 grid grid-cols-2 gap-2">
+        <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <Button
             type="button"
             variant="outline"

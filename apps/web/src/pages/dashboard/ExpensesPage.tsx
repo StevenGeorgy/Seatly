@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DataCardRow } from "@/components/dashboard/DataCard";
 import { ReceiptsLibrary } from "@/components/dashboard/ReceiptsLibrary";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -714,15 +715,15 @@ export default function ExpensesPage() {
             Log money going out and money coming in by category, status, and recurring cycle.
           </p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <div className="flex items-center rounded-lg border border-border bg-bg-elevated/40 p-1">
+        <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+          <div className="grid w-full grid-cols-3 gap-1 rounded-lg border border-border bg-bg-elevated/40 p-1 sm:flex sm:w-auto sm:items-center sm:gap-0">
             {RANGES.map((key) => (
               <button
                 key={key}
                 type="button"
                 onClick={() => setRange(key)}
                 className={cn(
-                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  "rounded-md px-3 py-1.5 text-center text-xs font-medium transition-colors",
                   range === key ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
                 )}
               >
@@ -757,12 +758,12 @@ export default function ExpensesPage() {
               </div>
             </div>
           )}
-          <div className="flex items-center rounded-lg border border-border bg-bg-elevated/40 p-1">
+          <div className="flex w-full items-center rounded-lg border border-border bg-bg-elevated/40 p-1 sm:w-auto">
             <button
               type="button"
               onClick={() => setView("entries")}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors sm:flex-none",
                 view === "entries" ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
               )}
             >
@@ -773,7 +774,7 @@ export default function ExpensesPage() {
               type="button"
               onClick={() => setView("receipts")}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                "inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors sm:flex-none",
                 view === "receipts" ? "bg-gold/15 text-gold" : "text-text-muted hover:text-text-secondary",
               )}
             >
@@ -781,7 +782,7 @@ export default function ExpensesPage() {
               Receipts
             </button>
           </div>
-          <Button size="default" className="gap-2" onClick={openCreateForm}>
+          <Button size="default" className="w-full gap-2 sm:w-auto" onClick={openCreateForm}>
             <Plus className="size-4" />
             Log entry
           </Button>
@@ -838,7 +839,7 @@ export default function ExpensesPage() {
               Export CSV
             </Button>
           </div>
-          <div className="overflow-x-auto">
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[820px] text-left">
               <thead>
                 <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
@@ -951,6 +952,86 @@ export default function ExpensesPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* Mobile: same ledger as the table above, as cards (md:hidden) */}
+          <div className="divide-y divide-border/50 md:hidden">
+            {(loading || autoIncomeLoading) && ledgerRows.length === 0 && (
+              <p className="px-5 py-8 text-sm text-text-muted">Loading finance entries...</p>
+            )}
+            {!loading && !autoIncomeLoading && ledgerRows.length === 0 && (
+              <p className="px-5 py-8 text-sm text-text-muted">
+                No income, expenses, or recurring rules saved for this range.
+              </p>
+            )}
+            {ledgerRows.map((row) => (
+              <article key={`m-${row.kind}-${row.id}`} className="px-5 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-text-primary">{row.vendor}</span>
+                      {(row.kind === "expense" && row.expense.source === "auto:cenaiva") ||
+                      row.kind === "auto-income" ? (
+                        <span className="inline-flex items-center rounded-full border border-gold/30 bg-gold/10 px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-gold">
+                          Auto
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                      {shortDate(row.date)} · {row.kind === "recurring" ? `Recurring ${row.type}` : typeLabel(row.type)}
+                    </p>
+                  </div>
+                  <div
+                    className={cn(
+                      "shrink-0 text-right",
+                      row.type === "income" ? "text-success" : "text-text-primary",
+                    )}
+                  >
+                    {row.type === "income" ? "+" : "-"}
+                    {formatCurrency(row.amount, row.currency)}
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <DataCardRow label="Category">{categoryLabel(row.category)}</DataCardRow>
+                  {row.description ? <DataCardRow label="Description">{row.description}</DataCardRow> : null}
+                  <DataCardRow label="Status">
+                    {row.kind === "recurring" ? "Recurring" : statusLabel(row.status, row.type)}
+                  </DataCardRow>
+                </div>
+                {row.kind === "auto-income" ? (
+                  <p className="mt-2 text-xs text-text-muted">From payments</p>
+                ) : row.kind === "expense" && row.expense.source === "auto:cenaiva" ? (
+                  <p className="mt-2 text-xs text-text-muted">Managed by Cenaiva</p>
+                ) : (
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 flex-1 gap-1.5 text-xs"
+                      onClick={() => {
+                        if (row.kind === "expense") openEditForm(row.expense);
+                        else if (row.kind === "recurring") openEditRecurringForm(row.rule);
+                      }}
+                    >
+                      <Pencil className="size-3.5" /> Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 flex-1 gap-1.5 text-xs text-danger"
+                      onClick={() => {
+                        if (row.kind === "expense") setDeleteTarget({ kind: "expense", expense: row.expense });
+                        else if (row.kind === "recurring") setDeleteTarget({ kind: "recurring", rule: row.rule });
+                      }}
+                    >
+                      <Trash2 className="size-3.5" /> Delete
+                    </Button>
+                  </div>
+                )}
+              </article>
+            ))}
           </div>
         </article>
       </section>
