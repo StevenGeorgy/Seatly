@@ -87,8 +87,11 @@ work to sub-agents.
   owner **Orders** table→cards (`DataCard`); compact `AvailabilityPanel`;
   preview reserve-first + menu/event 2-up grids; `CustomerBellDropdown` shows the
   unread count; safe-area utils + `viewport-fit=cover`; `dialog.tsx` height cap.
-  Still pending: CRM/Reservations/Overview/Expenses table→cards, touch FloorPlan +
-  reservations timeline, and the Capacitor app shell (consult before building).
+  owner table→cards extended to CRM/Reservations/Overview/Expenses; **touch Floor
+  Plan** (mobile canvas/reservations toggle + two-finger pinch-zoom + larger wall
+  drag handles + touch hint) and **Reservations timeline** (phone defaults to the
+  card list; taller tappable timeline bars). Still pending: the Capacitor app
+  shell (consult before building).
 - **2026-05-30 Diner account deletion hardened** — atomic
   `delete_diner_account(uuid)` RPC (migration `20260530000000`): clears the
   non-cascade FK blockers so deletion no longer FAILS, scrubs + de-identifies

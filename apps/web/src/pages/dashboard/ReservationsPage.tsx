@@ -357,7 +357,13 @@ function buildTimelineRows(rows: ReservationBoardRow[]): TimelineTableRow[] {
 export default function ReservationsPage() {
   const { t } = useTranslation();
   const { errorToast } = useErrorToast();
-  const [viewMode, setViewMode] = useState<ViewMode>("day");
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    // Default to the card list on phones — the wide day-timeline scrolls
+    // sideways there; desktop keeps the at-a-glance timeline.
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+      ? "list"
+      : "day",
+  );
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1465,7 +1471,7 @@ function FloorTimeline({
                         type="button"
                         onClick={() => onOpen(booking)}
                         className={cn(
-                          "absolute top-4 h-9 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20 transition-all duration-150 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-gold/10 focus-visible:-translate-y-0.5 focus-visible:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/45",
+                          "absolute top-4 h-10 overflow-hidden rounded-lg border px-3 text-left text-xs font-semibold shadow-lg shadow-black/20 transition-all duration-150 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-gold/10 focus-visible:-translate-y-0.5 focus-visible:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/45 sm:h-9",
                           blockClasses(booking.status),
                         )}
                         style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}

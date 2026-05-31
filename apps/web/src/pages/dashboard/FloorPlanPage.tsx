@@ -843,6 +843,8 @@ function WallNode({
       />
       {selected && editing && (
         <>
+          {/* Visible handle (r=6) kept; a transparent r=16 circle on top enlarges
+              the touch/click target without changing the look. */}
           <circle
             cx={w.x1}
             cy={w.y1}
@@ -850,6 +852,14 @@ function WallNode({
             fill="#0E0E0F"
             stroke="var(--gold)"
             strokeWidth="1.5"
+            style={{ pointerEvents: "none" }}
+          />
+          <circle
+            cx={w.x1}
+            cy={w.y1}
+            r="16"
+            fill="transparent"
+            pointerEvents="all"
             style={{ cursor: "crosshair" }}
             onPointerDown={(e) => onEndpointDrag(e, w, "start")}
           />
@@ -860,6 +870,14 @@ function WallNode({
             fill="#0E0E0F"
             stroke="var(--gold)"
             strokeWidth="1.5"
+            style={{ pointerEvents: "none" }}
+          />
+          <circle
+            cx={w.x2}
+            cy={w.y2}
+            r="16"
+            fill="transparent"
+            pointerEvents="all"
             style={{ cursor: "crosshair" }}
             onPointerDown={(e) => onEndpointDrag(e, w, "end")}
           />
@@ -2503,6 +2521,9 @@ export default function FloorPlanPage() {
   const [timelineDate, setTimelineDate] = useState(() => dateInputValue(new Date()));
   const [timelineFilter, setTimelineFilter] = useState<FloorReservationFilter>("all");
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection>(null);
+  // Mobile-only (<lg): toggle between the canvas and the reservations rail so each
+  // gets the full width. At lg+ both render side-by-side as before.
+  const [mobileFloorView, setMobileFloorView] = useState<"plan" | "reservations">("plan");
   const [reservationSearch, setReservationSearch] = useState("");
   const turnTimeMinutes = restaurantTurnTimeMinutes(selectedRestaurant?.settings_json);
 
@@ -2520,6 +2541,18 @@ export default function FloorPlanPage() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // Touch pinch-zoom: track every active pointer on the canvas background so two
+  // fingers can drive a zoom. `pinchRef` snapshots the gesture's starting state so
+  // each move recomputes zoom+pan from the start (no drift from rapid events).
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{
+    startDist: number;
+    startZoom: number;
+    startPanX: number;
+    startPanY: number;
+    cx: number;
+    cy: number;
+  } | null>(null);
   const canEditLayout = useMemo(
     () =>
       selectedRestaurantId
@@ -3522,9 +3555,26 @@ export default function FloorPlanPage() {
   const onCanvasPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     const target = e.target as Element;
     if (target.tagName !== "svg" && !target.classList?.contains("fp-bg")) return;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    if (pointersRef.current.size >= 2) {
+      // Second finger down on the canvas → start a pinch; cancel any one-finger pan.
+      panRef.current = null;
+      setIsPanning(false);
+      const [a, b] = [...pointersRef.current.values()];
+      const rect = svgRef.current?.getBoundingClientRect();
+      pinchRef.current = {
+        startDist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+        startZoom: zoom,
+        startPanX: pan.x,
+        startPanY: pan.y,
+        cx: (a.x + b.x) / 2 - (rect?.left ?? 0),
+        cy: (a.y + b.y) / 2 - (rect?.top ?? 0),
+      };
+      return;
+    }
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y };
     setIsPanning(true);
-    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
   const svgPoint = (e: ReactPointerEvent<SVGElement>) => {
@@ -3597,6 +3647,21 @@ export default function FloorPlanPage() {
   };
 
   const onMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    // Two-finger pinch on the canvas → zoom about the gesture midpoint. Recompute
+    // from the start snapshot so rapid pointer events don't compound drift.
+    if (pinchRef.current && pointersRef.current.size >= 2) {
+      const [a, b] = [...pointersRef.current.values()];
+      const dist = Math.hypot(b.x - a.x, b.y - a.y);
+      const { startDist, startZoom, startPanX, startPanY, cx, cy } = pinchRef.current;
+      const newZoom = Math.max(0.4, Math.min(3, startZoom * (dist / startDist)));
+      const ratio = newZoom / startZoom;
+      setZoom(newZoom);
+      setPan({ x: cx - (cx - startPanX) * ratio, y: cy - (cy - startPanY) * ratio });
+      return;
+    }
     if (panRef.current) {
       const dx = e.clientX - panRef.current.sx;
       const dy = e.clientY - panRef.current.sy;
@@ -3640,7 +3705,11 @@ export default function FloorPlanPage() {
       updateEntrance({ pos: Math.round(newPos / 10) * 10 }, true);
     }
   };
-  const onUp = () => {
+  const onUp = (e: ReactPointerEvent<SVGSVGElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) {
+      pinchRef.current = null;
+    }
     dragRef.current = null;
     panRef.current = null;
     setIsPanning(false);
@@ -4008,10 +4077,37 @@ export default function FloorPlanPage() {
         </div>
       </div>
 
+      {/* Mobile: toggle between the canvas and the reservations rail; lg+ shows both. */}
+      <div className="mx-4 mb-4 flex gap-1 rounded-xl border border-border bg-bg-elevated/40 p-1 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileFloorView("plan")}
+          className={cn(
+            "flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+            mobileFloorView === "plan" ? "bg-gold text-black" : "text-text-secondary hover:text-white",
+          )}
+        >
+          Floor plan
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileFloorView("reservations")}
+          className={cn(
+            "flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+            mobileFloorView === "reservations" ? "bg-gold text-black" : "text-text-secondary hover:text-white",
+          )}
+        >
+          Reservations
+        </button>
+      </div>
+
       {/* Canvas + side rail */}
-      <div className="grid gap-6 px-10 pb-10" style={{ gridTemplateColumns: "1fr 340px" }}>
+      <div className="grid gap-6 px-4 pb-10 lg:grid-cols-[1fr_340px] lg:px-10">
         <div
-          className="relative overflow-hidden rounded-xl"
+          className={cn(
+            "relative overflow-hidden rounded-xl",
+            mobileFloorView === "reservations" && "hidden lg:block",
+          )}
           style={{
             background:
               "radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--bg-elevated) 70%, transparent) 0%, var(--background) 62%, color-mix(in srgb, var(--background) 92%, black) 100%)",
@@ -4061,7 +4157,7 @@ export default function FloorPlanPage() {
               className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-text-muted"
               style={{ background: "rgba(14,14,15,0.7)", border: `1px solid ${BORDER_SOFT}` }}
             >
-              Hold ⌘ + scroll to zoom · drag empty space to pan
+              Pinch or ⌘ + scroll to zoom · drag to pan
             </div>
           )}
 
@@ -4076,6 +4172,7 @@ export default function FloorPlanPage() {
             }}
             onPointerMove={onMove}
             onPointerUp={onUp}
+            onPointerCancel={onUp}
             onPointerDown={onCanvasPointerDown}
             onClick={() => setSel(null)}
           >
@@ -4219,7 +4316,7 @@ export default function FloorPlanPage() {
           )}
         </div>
 
-        <div className="space-y-4">
+        <div className={cn("space-y-4", mobileFloorView === "plan" && "hidden lg:block")}>
           {!editing && hostQuickOpen ? (
             <HostQuickPanel
               date={hostQuickDate}
