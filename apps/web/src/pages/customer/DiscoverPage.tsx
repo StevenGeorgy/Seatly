@@ -283,7 +283,7 @@ function RestaurantCardImage({
 
 function BadgeChip({ label }: { label: string }) {
   return (
-    <span className="rounded-md border border-border bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
+    <span className="block min-w-0 truncate rounded-md border border-border bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
       {label}
     </span>
   );
@@ -383,7 +383,7 @@ function AvailableTimes({
         // On phones show a single row of 3 slots (hide the 2nd row) so cards
         // stay short enough to see more than one; full 6 on sm+.
         "grid grid-cols-3 [&>*:nth-child(n+4)]:hidden sm:[&>*:nth-child(n+4)]:flex",
-        size === "lg" ? "gap-2.5" : "gap-2",
+        size === "lg" ? "gap-2.5" : "gap-1 sm:gap-2",
       )}
     >
       {visibleSlots.map((slot) => (
@@ -399,7 +399,9 @@ function AvailableTimes({
             "flex items-center justify-center rounded-md border border-gold/25 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20",
             size === "lg"
               ? "min-h-12 px-3 text-base"
-              : "min-h-10 px-1 text-xs sm:min-h-11 sm:px-2 sm:text-sm",
+              // Phones: 3 chips share a half-width card, so shrink text + padding
+              // so "12:30pm" stays inside its box. sm+ keeps the comfortable size.
+              : "min-h-10 px-0.5 text-[10px] tracking-tight sm:min-h-11 sm:px-2 sm:text-sm sm:tracking-normal",
           )}
         >
           {formatCompactTimeLabel(slot.display_time)}
@@ -460,20 +462,22 @@ function GridCard({
     >
       <div className="relative">
         <RestaurantCardImage restaurant={r} className="aspect-auto h-28 sm:h-48 xl:h-52" />
-        {r.badge ? (
-          <div className="absolute left-3 top-3">
-            <BadgeChip label={r.badge} />
+        {/* Badge + actions share one top row so the badge shrinks (truncates)
+            instead of sliding under the heart on a narrow phone card. */}
+        <div className="absolute inset-x-3 top-3 flex items-start justify-between gap-2">
+          {r.badge ? <BadgeChip label={r.badge} /> : <span aria-hidden className="block" />}
+          <div className="flex shrink-0 items-center gap-2">
+            <FavoriteButton active={favorite} onToggle={onToggleFav} icon="heart" label="Favorite restaurant" />
+            <FavoriteButton active={saved} onToggle={onToggleSave} icon="bookmark" label="Save restaurant" />
           </div>
-        ) : null}
+        </div>
+        {/* Diet tags sit on the photo at sm+; on phones the photo is short, so
+            they'd overlap the badge — we render them in the card body instead. */}
         {r.dietaryTags.length > 0 ? (
-          <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5">
+          <div className="absolute bottom-3 left-3 right-3 hidden flex-wrap gap-1.5 sm:flex">
             {r.dietaryTags.slice(0, 3).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
           </div>
         ) : null}
-        <div className="absolute right-3 top-3 flex items-center gap-2">
-          <FavoriteButton active={favorite} onToggle={onToggleFav} icon="heart" label="Favorite restaurant" />
-          <FavoriteButton active={saved} onToggle={onToggleSave} icon="bookmark" label="Save restaurant" />
-        </div>
       </div>
       <div className="flex flex-1 flex-col gap-2.5 p-4 sm:gap-3 sm:p-5">
         <div>
@@ -484,6 +488,12 @@ function GridCard({
           {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
           {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
         </div>
+        {/* Phone-only: diet tags moved off the short photo to here (see above). */}
+        {r.dietaryTags.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5 sm:hidden">
+            {r.dietaryTags.slice(0, 3).map((tag) => <DietaryTagChip key={tag} tag={tag} />)}
+          </div>
+        ) : null}
         {r.availableSlots.length > 0 ? (
           <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
         ) : (
