@@ -16,6 +16,7 @@ import { AppRoutes } from "@/routes/AppRoutes";
 import { useUser } from "@/hooks/useUser";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { ReservationReviewPrompt } from "@/components/customer/ReservationReviewPrompt";
+import { DinerBottomNav } from "@/components/customer/DinerBottomNav";
 
 const PUBLIC_PATHS = new Set(["/", "/features", "/about", "/login", "/register", "/forgot-password", "/reset-password", "/hey-cenaiva", "/loyalty", "/restaurants", "/book-a-demo"]);
 const CenaivaVoiceShell = lazy(() =>
@@ -44,6 +45,31 @@ function AuthedCenaivaUI() {
       <Suspense fallback={null}>
         <CenaivaVoiceShell initialGreeting />
       </Suspense>
+    </>
+  );
+}
+
+// The diner bottom tab bar shows for ALL users (logged in or out) on the
+// app/diner surfaces — unlike the voice FAB above, which is logged-in only.
+// Hidden on marketing, auth, owner-dashboard, and the owner-onboarding wizard.
+function DinerBottomNavMount() {
+  const { pathname } = useLocation();
+  if (
+    PUBLIC_PATHS.has(pathname) ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/setup") ||
+    pathname.startsWith("/drafts")
+  ) {
+    return null;
+  }
+  return (
+    <>
+      <DinerBottomNav />
+      {/* Reserve space at the bottom of the document so the fixed mobile tab
+          bar never covers the last of the page content. Mobile only — the bar
+          (and this spacer) are md:hidden. Height matches DinerBottomNav. */}
+      <div aria-hidden className="h-[calc(3.5rem+env(safe-area-inset-bottom))] md:hidden" />
     </>
   );
 }
@@ -77,7 +103,7 @@ function CustomerVoiceOrbFAB() {
   if (state.isOpen) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-40">
+    <div className="fixed right-6 z-40 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] md:bottom-6">
       <VoiceOrb
         status={state.voiceStatus}
         onClick={() => assistant?.open(undefined, undefined, { autoListen: true })}
@@ -108,6 +134,7 @@ export default function App() {
                   <DevSupabaseBanner />
                   <AppRoutes />
                   <AuthedCenaivaUI />
+                  <DinerBottomNavMount />
                   <AuthedReservationReviewPrompt />
                   <CookieConsentBanner />
                   <NewDeviceAlertBanner />

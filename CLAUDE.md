@@ -78,6 +78,17 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-05-31 Mobile-responsive web pass (Track A, partial)** — makes the web app
+  usable phone-width; all gated `sm:`/`md:` so desktop is preserved. New diner
+  **bottom tab bar** (`DinerBottomNav` + shared `useDinerNavLinks`, mounted once in
+  `App.tsx` for all users; mic FAB lifted above it); responsive heading/padding
+  sweeps + map-defaults-to-list across diner/marketing/owner; **Account menu→detail**
+  flow in `AccountShell` (grey card fills, Sign-out red, clickable profile);
+  owner **Orders** table→cards (`DataCard`); compact `AvailabilityPanel`;
+  preview reserve-first + menu/event 2-up grids; `CustomerBellDropdown` shows the
+  unread count; safe-area utils + `viewport-fit=cover`; `dialog.tsx` height cap.
+  Still pending: CRM/Reservations/Overview/Expenses table→cards, touch FloorPlan +
+  reservations timeline, and the Capacitor app shell (consult before building).
 - **2026-05-30 Diner account deletion hardened** — atomic
   `delete_diner_account(uuid)` RPC (migration `20260530000000`): clears the
   non-cascade FK blockers so deletion no longer FAILS, scrubs + de-identifies

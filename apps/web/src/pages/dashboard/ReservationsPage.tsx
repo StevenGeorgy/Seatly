@@ -706,7 +706,7 @@ export default function ReservationsPage() {
           <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
             {serviceLabel}
           </p>
-          <h1 className="mt-2 font-serif text-5xl leading-none text-white">Reservations</h1>
+          <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-5xl sm:leading-none">Reservations</h1>
         </div>
         <div className="flex items-center gap-2">
           <button

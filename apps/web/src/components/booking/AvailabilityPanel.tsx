@@ -446,16 +446,11 @@ export function AvailabilityPanel({
             <button
               type="button"
               disabled={isCold}
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-bg-elevated px-3 py-2.5 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <CalendarDays className="size-4 text-gold" />
-              <span>
-                <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
-                  Date
-                </p>
-                <p className="mt-1 text-sm text-white">
-                  {isCold ? "Loading…" : previewDateLabel}
-                </p>
+              <CalendarDays className="size-4 shrink-0 text-gold" />
+              <span className="truncate text-sm text-white">
+                {isCold ? "Loading…" : previewDateLabel}
               </span>
             </button>
           </PopoverTrigger>
@@ -484,16 +479,11 @@ export function AvailabilityPanel({
             <button
               type="button"
               disabled={isCold}
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-bg-elevated px-3 py-2.5 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Clock className="size-4 text-gold" />
-              <span>
-                <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
-                  Time
-                </p>
-                <p className="mt-1 text-sm text-white">
-                  {isCold ? "Loading…" : time ? formatTwelveHour(time) : "Pick a time"}
-                </p>
+              <Clock className="size-4 shrink-0 text-gold" />
+              <span className="truncate text-sm text-white">
+                {isCold ? "Loading…" : time ? formatTwelveHour(time) : "Pick a time"}
               </span>
             </button>
           </PopoverTrigger>
@@ -520,16 +510,11 @@ export function AvailabilityPanel({
             <button
               type="button"
               disabled={isCold}
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-bg-elevated p-3 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center gap-2.5 rounded-xl border border-border bg-bg-elevated px-3 py-2.5 text-left transition-colors hover:bg-bg-elevated/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Users className="size-4 text-gold" />
-              <span>
-                <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
-                  Party
-                </p>
-                <p className="mt-1 text-sm text-white">
-                  {isCold ? "Loading…" : `${partySize} guest${partySize === 1 ? "" : "s"}`}
-                </p>
+              <Users className="size-4 shrink-0 text-gold" />
+              <span className="truncate text-sm text-white">
+                {isCold ? "Loading…" : `${partySize} guest${partySize === 1 ? "" : "s"}`}
               </span>
             </button>
           </PopoverTrigger>

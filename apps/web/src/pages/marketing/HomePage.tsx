@@ -240,7 +240,7 @@ export default function HomePage() {
       {/* ── HERO ───────────────────────────────────────────────── */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_15%_10%,rgba(201,168,76,0.10)_0%,transparent_55%)]" />
-        <div className="relative grid w-full items-center gap-16 px-12 py-24 sm:px-16 sm:py-28 md:px-20 lg:grid-cols-[auto_1fr] lg:gap-24 lg:py-32 xl:gap-28 xl:px-32 2xl:px-40">
+        <div className="relative grid w-full items-center gap-16 px-4 py-16 sm:px-6 sm:py-28 md:px-20 lg:grid-cols-[auto_1fr] lg:gap-24 lg:py-32 xl:gap-28 xl:px-32 2xl:px-40">
           <div className="flex min-w-0 max-w-[720px] flex-col">
             <motion.span
               initial={{ opacity: 0, y: 12 }}
@@ -256,7 +256,7 @@ export default function HomePage() {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.05, ease }}
-              className="mt-10 font-serif text-6xl font-medium leading-[1.05] tracking-tight text-white sm:text-7xl lg:text-8xl"
+              className="mt-10 font-serif text-5xl font-medium leading-[1.05] tracking-tight text-white sm:text-7xl lg:text-8xl"
             >
               Dinner, planned
               <br />
@@ -279,19 +279,19 @@ export default function HomePage() {
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.2, ease }}
-              className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]"
+              className="mt-10 grid grid-cols-3 gap-2 sm:mt-12 sm:grid-cols-[1fr_1fr_1fr_auto] sm:gap-3"
             >
               <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
                 <PopoverTrigger asChild>
                   <button
                     type="button"
-                    className="flex h-14 items-center justify-between rounded-xl border border-border bg-bg-surface/70 px-5 text-left text-base text-white transition-colors hover:border-gold/40"
+                    className="flex h-12 items-center justify-center gap-2 rounded-xl border border-border bg-bg-surface/70 px-3 text-sm text-white transition-colors hover:border-gold/40 sm:h-14 sm:justify-between sm:px-5 sm:text-base"
                   >
                     <span className="flex items-center gap-2.5">
                       <CalendarIcon className="size-5 text-text-muted" />
                       {dateLabel}
                     </span>
-                    <ChevronDown className="size-5 text-text-muted" />
+                    <ChevronDown className="size-4 text-text-muted sm:size-5" />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="start" className="w-auto p-0">
@@ -308,7 +308,7 @@ export default function HomePage() {
               </Popover>
 
               <Select value={time} onValueChange={setTime}>
-                <SelectTrigger className="!h-14 rounded-xl border-border bg-bg-surface/70 px-5 text-base">
+                <SelectTrigger className="!h-12 w-full justify-center rounded-xl border-border bg-bg-surface/70 px-3 text-sm sm:!h-14 sm:w-fit sm:justify-between sm:px-5 sm:text-base">
                   <span className="flex items-center gap-2.5">
                     <Clock className="size-5 text-text-muted" />
                     <SelectValue />
@@ -324,7 +324,7 @@ export default function HomePage() {
               </Select>
 
               <Select value={people} onValueChange={setPeople}>
-                <SelectTrigger className="!h-14 rounded-xl border-border bg-bg-surface/70 px-5 text-base">
+                <SelectTrigger className="!h-12 w-full justify-center rounded-xl border-border bg-bg-surface/70 px-3 text-sm sm:!h-14 sm:w-fit sm:justify-between sm:px-5 sm:text-base">
                   <span className="flex items-center gap-2.5">
                     <Users className="size-5 text-text-muted" />
                     <SelectValue />
@@ -341,7 +341,7 @@ export default function HomePage() {
 
               <Button
                 onClick={() => goToDiscover()}
-                className="h-14 rounded-xl px-8 text-base font-semibold"
+                className="hidden h-14 rounded-xl px-8 text-base font-semibold sm:inline-flex"
               >
                 Let's go
                 <ArrowRight className="ml-1.5 size-5" />
@@ -367,6 +367,16 @@ export default function HomePage() {
               />
             </motion.form>
 
+            {/* Mobile: Let's go sits under the search bar (it's inline in the
+                controls row on sm+). */}
+            <Button
+              onClick={() => goToDiscover()}
+              className="mt-3 flex h-12 w-full rounded-xl text-base font-semibold sm:hidden"
+            >
+              Let's go
+              <ArrowRight className="ml-1.5 size-5" />
+            </Button>
+
             <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-text-muted">
               <span>It looks like you're in Toronto. Not correct?</span>
               <button
@@ -379,26 +389,28 @@ export default function HomePage() {
               </button>
             </div>
 
-            <div className="mt-8 flex flex-nowrap items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <span className="shrink-0 font-mono text-xs uppercase tracking-[0.18em] text-text-muted sm:text-[13px]">
+            <div className="mt-8">
+              <span className="font-mono text-xs uppercase tracking-[0.18em] text-text-muted sm:text-[13px]">
                 Try Hey Cenaiva:
               </span>
-              {QUICK_PROMPTS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => {
-                    setQuery(p.replace(/^"|"$/g, ""));
-                    goToDiscover({ q: p.replace(/^"|"$/g, "") });
-                  }}
-                  className="shrink-0 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
-                >
-                  {p}
-                </button>
-              ))}
+              <div className="mt-2 grid grid-cols-3 gap-2 sm:mt-3 sm:flex sm:flex-nowrap sm:items-center sm:gap-3 sm:overflow-x-auto sm:whitespace-nowrap sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
+                {QUICK_PROMPTS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => {
+                      setQuery(p.replace(/^"|"$/g, ""));
+                      goToDiscover({ q: p.replace(/^"|"$/g, "") });
+                    }}
+                    className="rounded-full border border-border bg-bg-surface/70 px-2.5 py-2 text-center text-xs text-text-secondary transition-colors hover:border-gold/40 hover:text-white sm:shrink-0 sm:px-4 sm:text-sm"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="mt-20 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-12 sm:gap-10 lg:gap-14">
+            <div className="mt-20 grid w-full grid-cols-3 gap-6 border-t border-border/50 pt-12 text-center sm:gap-10 lg:gap-14">
               <div>
                 <p className="font-serif text-4xl text-white lg:text-5xl">Free</p>
                 <p className="mt-2 text-sm text-text-muted">forever for diners</p>

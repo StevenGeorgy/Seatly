@@ -378,7 +378,14 @@ function AvailableTimes({
   const visibleSlots = slots.slice(0, 6);
   if (visibleSlots.length === 0) return null;
   return (
-    <div className={cn("grid grid-cols-3", size === "lg" ? "gap-2.5" : "gap-2")}>
+    <div
+      className={cn(
+        // On phones show a single row of 3 slots (hide the 2nd row) so cards
+        // stay short enough to see more than one; full 6 on sm+.
+        "grid grid-cols-3 [&>*:nth-child(n+4)]:hidden sm:[&>*:nth-child(n+4)]:flex",
+        size === "lg" ? "gap-2.5" : "gap-2",
+      )}
+    >
       {visibleSlots.map((slot) => (
         <button
           key={`${slot.shift_id}-${slot.date_time}`}
@@ -392,7 +399,7 @@ function AvailableTimes({
             "flex items-center justify-center rounded-md border border-gold/25 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20",
             size === "lg"
               ? "min-h-12 px-3 text-base"
-              : "min-h-11 px-2 text-sm",
+              : "min-h-10 px-1 text-xs sm:min-h-11 sm:px-2 sm:text-sm",
           )}
         >
           {formatCompactTimeLabel(slot.display_time)}
@@ -452,7 +459,7 @@ function GridCard({
       className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface transition-colors hover:border-gold/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
     >
       <div className="relative">
-        <RestaurantCardImage restaurant={r} className="aspect-auto h-44 sm:h-48 xl:h-52" />
+        <RestaurantCardImage restaurant={r} className="aspect-auto h-28 sm:h-48 xl:h-52" />
         {r.badge ? (
           <div className="absolute left-3 top-3">
             <BadgeChip label={r.badge} />
@@ -468,9 +475,9 @@ function GridCard({
           <FavoriteButton active={saved} onToggle={onToggleSave} icon="bookmark" label="Save restaurant" />
         </div>
       </div>
-      <div className="flex flex-1 flex-col gap-3 p-5">
+      <div className="flex flex-1 flex-col gap-2.5 p-4 sm:gap-3 sm:p-5">
         <div>
-          <p className="font-serif text-2xl leading-tight tracking-tight text-white sm:text-3xl">{r.name}</p>
+          <p className="font-serif text-xl leading-tight tracking-tight text-white sm:text-3xl">{r.name}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
@@ -1116,7 +1123,12 @@ export default function DiscoverPage() {
     );
   }, [user, assistant, searchParams, navigate]);
 
-  const [view, setView] = useState<"grid" | "map">("map");
+  const [view, setView] = useState<"grid" | "map">(() =>
+    // Default to the list on phones so the tall map doesn't bury restaurants.
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+      ? "grid"
+      : "map",
+  );
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [customDate, setCustomDate] = useState<Date | undefined>(undefined);
@@ -1776,7 +1788,30 @@ export default function DiscoverPage() {
 
           <CustomerNav />
 
-          <div className="ml-auto flex shrink-0 items-center gap-4">
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-4">
+            {/* Mobile view toggle beside the bell (sm+ uses the inline toggle under the search) */}
+            <div className="inline-flex shrink-0 items-center rounded-full border border-border bg-bg-surface/70 p-0.5 sm:hidden">
+              <button
+                type="button"
+                onClick={() => setView("map")}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+                  view === "map" ? "bg-gold text-black" : "text-text-secondary",
+                )}
+              >
+                <MapIcon className="size-4" /> Map
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("grid")}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+                  view === "grid" ? "bg-gold text-black" : "text-text-secondary",
+                )}
+              >
+                <LayoutGrid className="size-4" /> Grid
+              </button>
+            </div>
             <Popover>
               <PopoverTrigger asChild>
                 <button
@@ -1849,7 +1884,7 @@ export default function DiscoverPage() {
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
+                    className="hidden rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40 md:inline-flex"
                     aria-label={t("routes.account.title")}
                   >
                     <Avatar className="size-11">
@@ -1887,7 +1922,7 @@ export default function DiscoverPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="hidden items-center gap-2 md:flex">
                 <button
                   type="button"
                   onClick={() => void navigate("/login?from=/discover")}
@@ -1909,20 +1944,20 @@ export default function DiscoverPage() {
         </div>
       </header>
 
-      <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
+      <main className="w-full px-4 py-5 sm:px-6 sm:py-8 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         <DiscoverReviewBanner />
         <div className="text-center">
         <SectionEyebrow>{headerEyebrow}</SectionEyebrow>
-        <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+        <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-4xl sm:leading-tight">
           Good evening, <span className="capitalize">{greetingName}</span>.
         </h1>
-        <p className="mt-3 text-base text-text-secondary">
+        <p className="mt-1 text-sm text-text-secondary sm:text-base">
           {filteredAll.length} restaurant{filteredAll.length === 1 ? "" : "s"} on Cenaiva.
         </p>
         </div>
 
-        {/* Search bar + view toggle */}
-        <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+        {/* Search bar + filter icon (view toggle lives in the header on mobile) */}
+        <div className="mt-4 flex items-center gap-2 sm:mt-8 sm:gap-3">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-5 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
             <input
@@ -1930,31 +1965,32 @@ export default function DiscoverPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search restaurants, cuisines, neighbourhoods, or dishes…"
-              className="h-14 w-full rounded-2xl border border-border bg-bg-surface/70 pl-12 pr-20 text-sm text-white placeholder:text-text-muted focus:border-gold/50 focus:outline-none"
+              className="h-14 w-full rounded-2xl border border-border bg-bg-surface/70 pl-12 pr-4 text-sm text-white placeholder:text-text-muted focus:border-gold/50 focus:outline-none sm:pr-20"
             />
-            <kbd className="absolute right-5 top-1/2 -translate-y-1/2 rounded-md border border-border bg-bg-elevated px-2 py-0.5 font-mono text-[11px] text-text-muted">
+            <kbd className="absolute right-5 top-1/2 hidden -translate-y-1/2 rounded-md border border-border bg-bg-elevated px-2 py-0.5 font-mono text-[11px] text-text-muted sm:block">
               ⌘K
             </kbd>
           </div>
           <button
             type="button"
             onClick={() => setFiltersOpen((v) => !v)}
+            aria-label="Filters"
             className={cn(
-              "inline-flex h-14 shrink-0 items-center gap-2 rounded-2xl px-5 text-sm font-semibold transition-colors",
+              "inline-flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-colors sm:px-5",
               activeFilterCount > 0
                 ? "bg-gold text-black hover:opacity-90"
                 : "border border-border bg-bg-surface/70 text-white hover:border-gold/40",
             )}
           >
             <SlidersHorizontal className="size-4" />
-            Filters
+            <span className="hidden sm:inline">Filters</span>
             {activeFilterCount > 0 && (
               <span className="ml-1 inline-flex size-5 items-center justify-center rounded-md bg-black/15 font-mono text-xs">
                 {activeFilterCount}
               </span>
             )}
           </button>
-          <div className="inline-flex h-14 shrink-0 items-center gap-1 rounded-2xl border border-border bg-bg-surface/70 p-1">
+          <div className="hidden h-14 shrink-0 items-center gap-1 rounded-2xl border border-border bg-bg-surface/70 p-1 sm:inline-flex">
             <button
               type="button"
               onClick={() => setView("map")}
@@ -2317,7 +2353,7 @@ export default function DiscoverPage() {
 
         {/* Loading */}
         {listingLoading && (
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="mt-10 grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 xl:grid-cols-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <div
                 key={i}
@@ -2381,7 +2417,7 @@ export default function DiscoverPage() {
                     <div className="flex items-end justify-between gap-6">
                       <div>
                         <SectionEyebrow>{row.eyebrow}</SectionEyebrow>
-                        <h2 className="mt-3 font-serif text-3xl text-white sm:text-4xl">
+                        <h2 className="mt-2 font-serif text-2xl text-white sm:mt-3 sm:text-4xl">
                           {row.title}
                         </h2>
                       </div>
@@ -2399,7 +2435,7 @@ export default function DiscoverPage() {
                         </button>
                       )}
                     </div>
-                    <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 xl:grid-cols-4">
                       {items.map((r) => (
                         <GridCard
                           key={r.id + row.title}

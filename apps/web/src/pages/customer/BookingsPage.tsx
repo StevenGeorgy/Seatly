@@ -709,7 +709,7 @@ export default function BookingsPage() {
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
+                  className="hidden rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40 md:inline-flex"
                   aria-label={t("routes.account.title")}
                 >
                   <Avatar className="size-11">
@@ -750,14 +750,14 @@ export default function BookingsPage() {
         </div>
       </header>
 
-      <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
+      <main className="w-full px-4 py-5 sm:px-6 sm:py-8 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         {/* Header row */}
-        <div className="border-b border-border/40 pb-10">
+        <div className="border-b border-border/40 pb-6 sm:pb-10">
           <div className="text-center">
             <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
               <span className="inline-block h-px w-3 bg-gold/60" /> Your reservations
             </span>
-            <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+            <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-4xl sm:leading-tight">
               Bookings
             </h1>
             <p className="mx-auto mt-3 max-w-xl text-base text-text-secondary">
@@ -844,7 +844,7 @@ export default function BookingsPage() {
                     cta={{ label: "Find a table", to: "/discover" }}
                   />
                 ) : (
-                  <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="mt-6 grid grid-cols-2 gap-3 sm:gap-5 xl:grid-cols-3">
                     {upcomingFiltered.map((b) => {
                       // The cancel-reservation edge fn rejects any reservation
                       // whose `reserved_at` is already in the past with a 400
@@ -886,7 +886,7 @@ export default function BookingsPage() {
                     sub="Once you've dined, your history shows up here."
                   />
                 ) : (
-                  <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="mt-6 grid grid-cols-2 gap-3 sm:gap-5 xl:grid-cols-3">
                     {pastFiltered.map((b) => (
                       <BookingCardView
                         key={b.id}
@@ -915,7 +915,7 @@ export default function BookingsPage() {
                     sub="Cancellations show up here."
                   />
                 ) : (
-                  <div className="mt-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="mt-6 grid grid-cols-2 gap-3 sm:gap-5 xl:grid-cols-3">
                     {cancelledFiltered.map((b) => (
                       <BookingCardView
                         key={b.id}

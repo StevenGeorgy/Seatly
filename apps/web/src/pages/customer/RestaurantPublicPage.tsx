@@ -3190,8 +3190,9 @@ export default function RestaurantPublicPage() {
                 )}
               </div>
 
-              {/* Continue button — skips straight to confirmation when cart is empty */}
-              <div className="sticky bottom-4 mt-5">
+              {/* Continue button — skips straight to confirmation when cart is empty.
+                  On phones it sits above the fixed bottom tab bar (md:bottom-4 on desktop). */}
+              <div className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] mt-5 md:bottom-4">
                 <Button
                   className="h-12 w-full text-base font-semibold shadow-xl"
                   disabled={placing}

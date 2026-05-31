@@ -616,7 +616,7 @@ export function RestaurantPreviewModal({
               </section>
 
               <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_440px]">
-                <div>
+                <div className="order-2 lg:order-1">
                   <div className="flex rounded-xl border border-border bg-bg-surface p-1">
                     {TABS.map((tab) => (
                       <button
@@ -653,7 +653,7 @@ export function RestaurantPreviewModal({
                             </p>
                           </div>
                           {menuHighlights.length > 0 ? (
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                               {menuHighlights.map((item) => (
                               <article
                                 key={item.id}
@@ -997,7 +997,7 @@ export function RestaurantPreviewModal({
                   </div>
                 </div>
 
-                <aside className="lg:sticky lg:top-6 lg:self-start">
+                <aside className="order-1 lg:order-2 lg:sticky lg:top-6 lg:self-start">
                   <div className="rounded-2xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/30">
                     <h3 className="font-serif text-xl text-white">Reserve a table</h3>
                     <div className="mt-4">

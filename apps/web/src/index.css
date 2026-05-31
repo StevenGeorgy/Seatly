@@ -187,6 +187,21 @@
     }
 }
 
+/* Safe-area inset utilities for the notch / home-indicator (iOS, Capacitor).
+   They resolve to 0px on devices without insets (including every desktop), so
+   they are no-ops everywhere except notched phones. Requires the
+   `viewport-fit=cover` viewport meta (set in index.html). */
+@utility pt-safe {
+    padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+}
+@utility px-safe {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+}
+
 /* Google Places Autocomplete dropdown */
 .pac-container {
     margin-top: 2px;

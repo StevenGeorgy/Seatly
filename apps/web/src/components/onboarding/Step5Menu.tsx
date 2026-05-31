@@ -430,7 +430,7 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
           {categories.map((cat) => (
             <div
               key={cat.key}
-              className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-xl border border-border bg-bg-elevated/40 p-3"
+              className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-bg-elevated/40 p-3 sm:grid-cols-[1fr_auto_auto] sm:items-center"
             >
               <Input
                 value={cat.name}
@@ -492,7 +492,7 @@ export function Step5Menu({ restaurantId, onComplete, onBusyChange }: Step5MenuP
               tierItems.map((item) => (
                 <div
                   key={item.key}
-                  className="grid grid-cols-[1fr_140px_auto] items-center gap-2 rounded-xl border border-border bg-bg-elevated/40 p-3"
+                  className="grid grid-cols-1 gap-2 rounded-xl border border-border bg-bg-elevated/40 p-3 sm:grid-cols-[1fr_140px_auto] sm:items-center"
                 >
                   <div className="flex flex-col gap-1">
                     <Label htmlFor={`item-name-${item.key}`} className="sr-only">

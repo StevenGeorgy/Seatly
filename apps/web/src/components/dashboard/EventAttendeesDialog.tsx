@@ -151,7 +151,7 @@ export function EventAttendeesDialog({
           </div>
         </DialogHeader>
 
-        <div className="max-h-[60vh] overflow-y-auto">
+        <div className="max-h-[60vh] overflow-auto">
           {loading ? (
             <div className="space-y-2 p-5">
               {Array.from({ length: 4 }).map((_, index) => (

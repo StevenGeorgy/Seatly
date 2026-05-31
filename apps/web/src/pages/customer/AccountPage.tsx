@@ -164,13 +164,13 @@ function BookingRow({ booking }: { booking: BookingPreview }) {
           </Button>
         </div>
       </div>
-      <div className="hidden shrink-0 text-right sm:block">
+      <div className="shrink-0 text-right">
         <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-text-muted">
           Confirmation
         </p>
         <p className="mt-1 font-mono text-xs text-gold">{booking.confirmationCode}</p>
         {booking.status !== "cancelled" && (
-          <button type="button" className="mt-8 text-[11px] text-text-muted hover:text-danger">
+          <button type="button" className="mt-4 text-[11px] text-text-muted hover:text-danger sm:mt-8">
             Cancel
           </button>
         )}
@@ -399,7 +399,7 @@ export default function AccountPage() {
             <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-gold">
               <span className="h-px w-3 bg-gold/60" /> My Account
             </span>
-            <h1 className="mt-2 font-serif text-5xl leading-none text-white">Bookings</h1>
+            <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-4xl sm:leading-tight">Bookings</h1>
             <p className="mt-2 text-sm text-text-secondary">
               Manage upcoming reservations, revisit past meals.
             </p>

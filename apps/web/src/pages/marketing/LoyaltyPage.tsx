@@ -91,7 +91,7 @@ export default function LoyaltyPage() {
             className="mx-auto max-w-3xl text-center"
           >
             <SectionEyebrow>Coming Soon</SectionEyebrow>
-            <h1 className="mt-6 font-serif text-5xl leading-[1.04] text-white sm:text-6xl lg:text-7xl">
+            <h1 className="mt-6 font-serif text-3xl leading-tight text-white sm:text-6xl sm:leading-[1.04] lg:text-7xl">
               Loyalty points, coming to your{" "}
               <span className="italic text-gold">favourite restaurants</span>.
             </h1>

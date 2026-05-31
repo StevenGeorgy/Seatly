@@ -575,7 +575,7 @@ export default function OverviewPage() {
           <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-gold">
             {format(now, "EEEE")} · {format(now, "MMM d")} · {pluralize(totalCovers, "cover")} booked
           </p>
-          <h1 className="mt-2 font-serif text-5xl leading-none text-white">Service tonight</h1>
+          <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-5xl sm:leading-none">Service tonight</h1>
         </div>
         <div className="flex items-center gap-2">
           <button

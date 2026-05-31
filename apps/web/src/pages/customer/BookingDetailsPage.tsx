@@ -805,7 +805,7 @@ export default function BookingDetailsPage() {
                   >
                     {t(reservationDisplayStatusKey(status))}
                   </span>
-                  <p className="mt-4 font-serif text-5xl leading-tight text-white">
+                  <p className="mt-4 font-serif text-3xl leading-tight text-white sm:text-5xl">
                     {restaurantName}
                   </p>
                   {cuisineLine && (

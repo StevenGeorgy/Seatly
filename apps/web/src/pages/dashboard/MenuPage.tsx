@@ -465,7 +465,7 @@ export default function MenuPage() {
             <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-gold/70">
               Spring 2026 · {displayCategories.length} categories · {displayItems.length} items
             </p>
-            <h1 className="mt-2 font-serif text-4xl leading-none text-white">Menu</h1>
+            <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-4xl sm:leading-none">Menu</h1>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -489,7 +489,7 @@ export default function MenuPage() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted">Section</p>
-            <h2 className="mt-2 font-serif text-5xl leading-none text-white">{activeCategory?.name ?? "Menu"}</h2>
+            <h2 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-5xl sm:leading-none">{activeCategory?.name ?? "Menu"}</h2>
             <p className="mt-2 text-xs text-text-muted">
               {displayItems.length} items · {availableCount} available
             </p>

@@ -394,7 +394,7 @@ export default function DraftsPage() {
               return (
                 <Card
                   key={draft.id}
-                  className={`!flex-row items-center gap-4 px-4 py-3 transition-colors ${
+                  className={`flex-col items-stretch gap-3 px-4 py-3 transition-colors sm:!flex-row sm:items-center sm:gap-4 ${
                     isSelected ? "border-gold/50 bg-gold/5" : ""
                   }`}
                 >

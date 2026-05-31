@@ -238,33 +238,33 @@ export function EventPromotionDetailCard({
             </p>
           )}
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl border border-border bg-bg-elevated/60 p-4">
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-border bg-bg-elevated/60 p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Date</p>
-              <p className="mt-2 inline-flex items-center gap-2 text-sm text-white">
-                <CalendarDays className="size-4 text-gold" />
-                {item.dateLabel}
+              <p className="mt-2 flex items-start gap-2 text-sm text-white">
+                <CalendarDays className="mt-0.5 size-4 shrink-0 text-gold" />
+                <span className="min-w-0">{item.dateLabel}</span>
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-bg-elevated/60 p-4">
+            <div className="rounded-xl border border-border bg-bg-elevated/60 p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Time</p>
-              <p className="mt-2 inline-flex items-center gap-2 text-sm text-white">
-                <Clock className="size-4 text-gold" />
-                {item.timeLabel}
+              <p className="mt-2 flex items-start gap-2 text-sm text-white">
+                <Clock className="mt-0.5 size-4 shrink-0 text-gold" />
+                <span className="min-w-0">{item.timeLabel}</span>
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-bg-elevated/60 p-4">
+            <div className="rounded-xl border border-border bg-bg-elevated/60 p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Price</p>
-              <p className="mt-2 inline-flex items-center gap-2 text-sm text-white">
-                <Tag className="size-4 text-gold" />
-                {item.priceLabel}
+              <p className="mt-2 flex items-start gap-2 text-sm text-white">
+                <Tag className="mt-0.5 size-4 shrink-0 text-gold" />
+                <span className="min-w-0">{item.priceLabel}</span>
               </p>
             </div>
-            <div className="rounded-xl border border-border bg-bg-elevated/60 p-4">
+            <div className="rounded-xl border border-border bg-bg-elevated/60 p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">Availability</p>
-              <p className="mt-2 inline-flex items-center gap-2 text-sm text-white">
-                <Users className="size-4 text-gold" />
-                {item.seatsLabel ?? item.availabilityLabel}
+              <p className="mt-2 flex items-start gap-2 text-sm text-white">
+                <Users className="mt-0.5 size-4 shrink-0 text-gold" />
+                <span className="min-w-0">{item.seatsLabel ?? item.availabilityLabel}</span>
               </p>
             </div>
             {item.mediaType === "pdf" && item.mediaUrl && (

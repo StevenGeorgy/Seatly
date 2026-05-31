@@ -9,11 +9,17 @@
 // since voice / connected-accounts / privacy / my-data / sign-in-
 // history all live under it.
 //
+// On phones (< md) the account area is a two-level list → detail flow,
+// like the iOS Settings app: the menu shows first; tapping a section
+// opens it full-screen with a Back button. Desktop (md+) always shows
+// the sidebar + content side by side and ignores this.
+//
 // Keep this in lock-step with AccountPage's ACCOUNT_NAV — both must
 // list the same sections in the same order.
 
+import { useState } from "react";
 import { format } from "date-fns";
-import { type LucideIcon, ArrowLeft, CalendarDays, ChevronLeft, CreditCard, LogOut, MessageCircle, Settings, ShoppingBag, Star } from "lucide-react";
+import { type LucideIcon, ArrowLeft, CalendarDays, ChevronLeft, CreditCard, LogOut, MessageCircle, Settings, ShoppingBag, Sparkles, Star } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -59,6 +65,11 @@ export function AccountShell({
   // tab they came from (the big Back button still exits Account).
   const isSubPage = location.pathname !== "/account";
 
+  // Phone-only list → detail state. Sub-pages are already detail views, so
+  // they start "open" (content shown). On the main page we start on the menu.
+  const [mobileSectionOpen, setMobileSectionOpen] = useState(isSubPage);
+  const showContentOnMobile = isSubPage || mobileSectionOpen;
+
   const initials = (profile?.full_name ?? profile?.email ?? "SK")
     .split(" ")
     .map((part) => part[0])
@@ -79,6 +90,8 @@ export function AccountShell({
   };
 
   const handleSectionClick = (section: AccountSection) => {
+    // Phone: open the section full-screen. Desktop ignores this flag.
+    setMobileSectionOpen(true);
     if (onSectionChange) {
       onSectionChange(section);
       return;
@@ -87,13 +100,25 @@ export function AccountShell({
   };
 
   return (
-    <div className="min-h-screen bg-bg-base text-text-primary">
-      <main className="mx-auto w-full max-w-[1500px] px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="min-h-[calc(100dvh-3.5rem-env(safe-area-inset-bottom))] bg-bg-base text-text-primary md:min-h-screen">
+      <main className="mx-auto w-full max-w-[1500px] px-5 pb-0 pt-6 sm:px-8 md:py-6 lg:px-12 lg:py-10">
+        {/* Phone-only: Back to the account menu when a section is open. */}
+        {mobileSectionOpen && !isSubPage && (
+          <button
+            type="button"
+            onClick={() => setMobileSectionOpen(false)}
+            className="mb-4 inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white md:hidden"
+          >
+            <ArrowLeft className="size-4 text-gold" />
+            Back
+          </button>
+        )}
+
+        <div className={cn("flex-wrap items-center gap-3", isSubPage ? "flex" : "hidden md:flex")}>
           <button
             type="button"
             onClick={handleBack}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white"
+            className="hidden items-center gap-2 rounded-full border border-border bg-bg-surface/70 px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-gold/40 hover:text-white md:inline-flex"
           >
             <ArrowLeft className="size-4 text-gold" />
             Back
@@ -110,9 +135,22 @@ export function AccountShell({
         </div>
 
         <div className="mt-6 grid w-full gap-10 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="lg:sticky lg:top-10 lg:self-start">
-            <div className="rounded-3xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/20">
-              <div className="flex items-center gap-4 p-2">
+          <aside
+            className={cn(
+              "lg:sticky lg:top-10 lg:self-start",
+              showContentOnMobile ? "hidden md:block" : "block",
+            )}
+          >
+            {/* Grey card on all sizes (consistent with desktop). On phones it
+                stretches to fill the viewport so there's no empty space below
+                the menu; desktop hugs its content (md:min-h-0). */}
+            <div className="mb-12 min-h-[calc(100dvh-9.5rem-env(safe-area-inset-bottom))] rounded-3xl border border-border bg-bg-surface p-5 shadow-2xl shadow-black/20 md:mb-0 md:min-h-0">
+              <button
+                type="button"
+                onClick={() => handleSectionClick("preferences")}
+                className="flex w-full items-center gap-4 rounded-2xl p-2 text-left transition-colors hover:bg-bg-elevated"
+                aria-label="Account settings"
+              >
                 <Avatar className="size-14 border border-gold/30">
                   <AvatarImage src={profile?.avatar_url ?? undefined} />
                   <AvatarFallback className="bg-gold/10 text-gold">{initials}</AvatarFallback>
@@ -121,7 +159,7 @@ export function AccountShell({
                   <p className="truncate text-base font-semibold text-white">{displayName}</p>
                   <p className="text-xs text-text-muted">{memberSince}</p>
                 </div>
-              </div>
+              </button>
 
               <nav className="mt-6 space-y-2" aria-label="Account">
                 {ACCOUNT_NAV.map((item) => {
@@ -133,10 +171,11 @@ export function AccountShell({
                       type="button"
                       onClick={() => handleSectionClick(item.id)}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition-colors",
-                        active
-                          ? "border border-gold/25 bg-gold/15 text-gold"
-                          : "text-text-secondary hover:bg-bg-elevated hover:text-white",
+                        "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-white",
+                        // Active highlight only from md up — on the phone menu nothing
+                        // is pre-selected (tapping a row opens it full-screen instead).
+                        active &&
+                          "md:border md:border-gold/25 md:bg-gold/15 md:text-gold md:hover:bg-gold/15 md:hover:text-gold",
                       )}
                     >
                       <Icon className="size-4" />
@@ -144,10 +183,17 @@ export function AccountShell({
                     </button>
                   );
                 })}
+                <Link
+                  to="/loyalty"
+                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-white"
+                >
+                  <Sparkles className="size-4" />
+                  Loyalty
+                </Link>
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-white"
+                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-danger transition-colors hover:bg-danger/10"
                 >
                   <LogOut className="size-4" />
                   Sign out
@@ -156,7 +202,14 @@ export function AccountShell({
             </div>
           </aside>
 
-          <section className="min-w-0 max-w-5xl">{children}</section>
+          <section
+            className={cn(
+              "min-w-0 max-w-5xl",
+              showContentOnMobile ? "block" : "hidden md:block",
+            )}
+          >
+            {children}
+          </section>
         </div>
       </main>
     </div>

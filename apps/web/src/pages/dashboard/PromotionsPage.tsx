@@ -1744,7 +1744,7 @@ export default function PromotionsPage() {
         ))}
       </section>
 
-      <div className="flex items-center gap-1 self-start rounded-lg border border-border bg-bg-elevated/40 p-1">
+      <div className="flex flex-wrap items-center gap-1 self-start rounded-lg border border-border bg-bg-elevated/40 p-1">
         {(["active", "scheduled", "paused", "expired", "recurring", "draft"] as const).map((key) => (
           <button
             key={key}

@@ -52,7 +52,7 @@ export function MarketingShell({ children }: MarketingShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="flex h-20 w-full items-center px-12 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 md:h-24">
+        <div className="flex h-20 w-full items-center px-4 sm:px-6 md:px-20 lg:px-24 xl:px-32 2xl:px-40 md:h-24">
           <Link to="/" className="flex shrink-0 items-center" aria-label="Cenaiva home">
             <CenaivaWordmark className="h-[4.5rem] md:h-[5.5rem]" />
           </Link>

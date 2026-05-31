@@ -107,7 +107,7 @@ export function TablesListEditor({ value, onChange, minTables = 1 }: TablesListE
                       }`}
                     >
                       <Icon className="size-3.5" />
-                      <span className="hidden md:inline">{shape.label}</span>
+                      <span className="inline">{shape.label}</span>
                     </button>
                   );
                 })}

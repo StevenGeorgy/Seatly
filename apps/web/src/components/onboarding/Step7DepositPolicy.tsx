@@ -271,7 +271,7 @@ export function Step7DepositPolicy({ restaurantId, onComplete, onBusyChange }: S
                 <span className="sr-only">Remove</span>
               </div>
               {draft.map((row) => (
-                <div key={row.key} className="grid grid-cols-[1fr_1fr_auto] items-center gap-3">
+                <div key={row.key} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
                   <div className="relative">
                     <Input
                       type="number"

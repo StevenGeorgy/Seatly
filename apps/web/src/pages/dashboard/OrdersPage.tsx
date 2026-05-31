@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/dashboard/AnimatedPage";
+import { DataCard, DataCardRow } from "@/components/dashboard/DataCard";
 import { Button } from "@/components/ui/button";
 import { useOrders, type OrderRow } from "@/hooks/useOrders";
 import { useRestaurantScope } from "@/contexts/restaurant-scope-context";
@@ -204,7 +205,7 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[960px] text-left">
             <thead>
               <tr className="border-b border-border/60 font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
@@ -297,6 +298,70 @@ export default function OrdersPage() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile: same data as the table above, rendered as cards (md:hidden) */}
+        <div className="divide-y divide-border/50 md:hidden">
+          {loading && (
+            <p className="px-4 py-12 text-center text-sm text-text-muted">
+              {t("dashboard.orders.loading")}
+            </p>
+          )}
+          {!loading && error && (
+            <p className="px-4 py-12 text-center text-sm text-danger">
+              {t("dashboard.orders.loadFailed")}
+            </p>
+          )}
+          {!loading && !error && visible.length === 0 && (
+            <div className="px-4 py-12 text-center">
+              <p className="font-serif text-xl text-white">{t("dashboard.orders.emptyTitle")}</p>
+              <p className="mt-2 text-sm text-text-muted">{t("dashboard.orders.emptyDesc")}</p>
+            </div>
+          )}
+          {!loading && !error && visible.map((row) => (
+            <DataCard key={row.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-serif text-base text-gold">{row.reservationTime}</div>
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+                    {row.orderId}
+                  </div>
+                </div>
+                <span className="inline-flex shrink-0 items-center gap-1.5 text-xs">
+                  <span className={cn("size-1.5 rounded-full", statusDotClass(row.tabStatus))} />
+                  <span className={statusTextClass(row.tabStatus)}>
+                    {t(`dashboard.orders.statuses.${row.tabStatus}`)}
+                  </span>
+                </span>
+              </div>
+              <div className="mt-3 space-y-1.5">
+                <DataCardRow label={t("dashboard.orders.guest")}>
+                  <span className="text-text-primary">{row.guest}</span>
+                  {row.contact ? ` · ${row.contact}` : null}
+                </DataCardRow>
+                <DataCardRow label={t("dashboard.orders.table")}>{row.table}</DataCardRow>
+                <DataCardRow label={t("dashboard.orders.items")}>
+                  {row.items} · {t("dashboard.orders.itemCount", { count: row.itemCount })}
+                </DataCardRow>
+                <DataCardRow label={t("dashboard.orders.preorderTotal")}>
+                  {formatCurrency(row.total, currency)}
+                </DataCardRow>
+              </div>
+              {row.tabStatus !== "served" && (
+                <Button
+                  size="lg"
+                  variant={row.tabStatus === "ready" ? "default" : "outline"}
+                  disabled={updatingId === row.id}
+                  onClick={() => void handleStatusClick(row)}
+                  className="mt-3 w-full"
+                >
+                  {row.tabStatus === "ready"
+                    ? t("dashboard.orders.markServed")
+                    : t("dashboard.orders.markReady")}
+                </Button>
+              )}
+            </DataCard>
+          ))}
         </div>
       </section>
     </AnimatedPage>

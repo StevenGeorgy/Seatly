@@ -90,7 +90,7 @@ export function WizardShell({
         {children}
       </main>
 
-      <footer className="sticky bottom-0 border-t border-border bg-bg-surface/95 backdrop-blur-md">
+      <footer className="sticky bottom-0 border-t border-border bg-bg-surface/95 pb-safe backdrop-blur-md">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3 sm:px-6 sm:py-4">
           <Button
             type="button"

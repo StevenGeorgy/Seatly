@@ -30,7 +30,9 @@ export function CustomerBellDropdown({ className }: { className?: string }) {
         >
           <Bell className="size-4" />
           {unreadCount > 0 && (
-            <span className="absolute right-0.5 top-0.5 flex size-2 items-center justify-center rounded-full bg-gold" />
+            <span className="absolute -right-0.5 -top-0.5 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 font-mono text-[11px] font-bold text-black">
+              {Math.min(unreadCount, 9)}
+            </span>
           )}
         </Button>
       </PopoverTrigger>

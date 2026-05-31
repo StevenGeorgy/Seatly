@@ -869,7 +869,7 @@ function EventCard({
       className="group flex flex-col overflow-hidden rounded-2xl border border-border bg-bg-surface transition-colors hover:border-gold/40"
     >
       <div className="relative">
-        <StripePlaceholder label={e.initials} imageUrl={e.imageUrl} className="aspect-auto h-44 sm:h-48 xl:h-52" />
+        <StripePlaceholder label={e.initials} imageUrl={e.imageUrl} className="aspect-auto h-28 sm:h-48 xl:h-52" />
         <div className="absolute left-3 top-3 flex items-center gap-2">
           <span className="rounded-md border border-gold/40 bg-black/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-gold backdrop-blur">
             {TYPE_BADGE_LABEL[e.type]}
@@ -1008,7 +1008,7 @@ function ListEventCard({
         highlighted ? "border-gold/70 bg-gold/5 shadow-lg shadow-gold/10" : "border-border hover:border-gold/30 hover:bg-bg-surface/70",
       )}
     >
-      <div className="relative w-44 shrink-0 overflow-hidden rounded-xl">
+      <div className="relative w-28 shrink-0 overflow-hidden rounded-xl sm:w-44">
         <StripePlaceholder label={e.initials} imageUrl={e.imageUrl} className="aspect-square" />
         <span className="absolute left-2 top-2 rounded-md border border-gold/40 bg-black/70 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-gold">
           {TYPE_BADGE_LABEL[e.type]}
@@ -1098,7 +1098,12 @@ export default function DealsPage() {
   const { promotions, loading: promotionsLoading } = useAllActivePromotions();
   const { events: activeEvents, loading: eventsLoading } = useAllActiveEvents();
 
-  const [view, setView] = useState<"grid" | "map">("map");
+  const [view, setView] = useState<"grid" | "map">(() =>
+    // Default to the list on phones so the tall map doesn't bury restaurants.
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+      ? "grid"
+      : "map",
+  );
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<"tonight" | "weekend" | "week" | "expiring" | "sold-out" | null>(null);
   const [search, setSearch] = useState("");
@@ -1612,14 +1617,37 @@ export default function DealsPage() {
 
           <CustomerNav />
 
-          <div className="ml-auto flex shrink-0 items-center gap-4">
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-4">
+            {/* Mobile view toggle beside the bell (sm+ uses the inline toggle under the search) */}
+            <div className="inline-flex shrink-0 items-center rounded-full border border-border bg-bg-surface/70 p-0.5 sm:hidden">
+              <button
+                type="button"
+                onClick={() => setView("map")}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+                  view === "map" ? "bg-gold text-black" : "text-text-secondary",
+                )}
+              >
+                <MapIcon className="size-4" /> Map
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("grid")}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+                  view === "grid" ? "bg-gold text-black" : "text-text-secondary",
+                )}
+              >
+                <LayoutGrid className="size-4" /> Grid
+              </button>
+            </div>
             <CustomerBellDropdown className="size-11 rounded-full border border-border bg-bg-surface/70 hover:border-gold/40" />
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40"
+                  className="hidden rounded-full outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-gold/40 md:inline-flex"
                   aria-label={t("routes.account.title")}
                 >
                   <Avatar className="size-11">
@@ -1656,12 +1684,12 @@ export default function DealsPage() {
         </div>
       </header>
 
-      <main className="w-full px-12 py-10 sm:px-16 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
+      <main className="w-full px-4 py-5 sm:px-6 sm:py-8 md:px-20 lg:px-24 xl:px-32 2xl:px-40 lg:py-12">
         <div className="text-center">
           <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.2em] text-gold">
             <span className="inline-block h-px w-3 bg-gold/60" /> LIMITED · THIS WEEK IN TORONTO
           </span>
-          <h1 className="mt-4 font-serif text-5xl leading-[1.05] text-white sm:text-6xl">
+          <h1 className="mt-2 font-serif text-3xl leading-tight text-white sm:text-4xl sm:leading-tight">
             Promotions <span className="italic text-gold">&amp;</span> Events
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-base text-text-secondary">
@@ -1670,8 +1698,8 @@ export default function DealsPage() {
           </p>
         </div>
 
-        {/* Search + Filters + view toggle */}
-        <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+        {/* Search bar + filter icon (view toggle lives in the header on mobile) */}
+        <div className="mt-6 flex items-center gap-2 sm:mt-10 sm:gap-3">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-5 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
             <input
@@ -1684,22 +1712,23 @@ export default function DealsPage() {
           <button
             type="button"
             onClick={() => setFiltersOpen((v) => !v)}
+            aria-label="Filters"
             className={cn(
-              "inline-flex h-14 shrink-0 items-center gap-2 rounded-2xl px-5 text-sm font-semibold transition-colors",
+              "inline-flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-semibold transition-colors sm:px-5",
               activeFilterCount > 0
                 ? "bg-gold text-black hover:opacity-90"
                 : "border border-border bg-bg-surface/70 text-white hover:border-gold/40",
             )}
           >
             <SlidersHorizontal className="size-4" />
-            Filters
+            <span className="hidden sm:inline">Filters</span>
             {activeFilterCount > 0 && (
               <span className="ml-1 inline-flex size-5 items-center justify-center rounded-md bg-black/15 font-mono text-xs">
                 {activeFilterCount}
               </span>
             )}
           </button>
-          <div className="inline-flex h-14 shrink-0 items-center gap-1 rounded-2xl border border-border bg-bg-surface/70 p-1">
+          <div className="hidden h-14 shrink-0 items-center gap-1 rounded-2xl border border-border bg-bg-surface/70 p-1 sm:inline-flex">
             <button
               type="button"
               onClick={() => setView("map")}
@@ -2016,7 +2045,7 @@ export default function DealsPage() {
 
         {/* Loading */}
         {listingLoading && (
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="mt-10 grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 xl:grid-cols-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <div
                 key={i}
@@ -2130,7 +2159,7 @@ export default function DealsPage() {
                         </button>
                       )}
                     </div>
-                    <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-3 xl:grid-cols-4">
                       {items.map((e) => (
                         <EventCard
                           key={e.id}

@@ -165,7 +165,7 @@ export default function RestaurantsPage() {
       <section className="relative overflow-hidden border-b border-border/40">
         <div className="pointer-events-none absolute inset-0 opacity-25 [background-image:radial-gradient(ellipse_at_28%_0%,var(--gold)_0%,transparent_52%)]" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.07] [background-image:linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] [background-size:64px_64px]" />
-        <div className="relative w-full px-12 py-24 sm:px-16 md:px-20 lg:px-24 lg:py-32 xl:px-32 2xl:px-40">
+        <div className="relative w-full px-4 py-16 sm:px-6 md:px-20 lg:px-24 lg:py-32 xl:px-32 2xl:px-40">
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -173,7 +173,7 @@ export default function RestaurantsPage() {
             className="max-w-5xl"
           >
             <SectionEyebrow>For restaurants</SectionEyebrow>
-            <h1 className="mt-6 max-w-5xl font-serif text-5xl leading-[1.02] text-white sm:text-6xl lg:text-7xl">
+            <h1 className="mt-6 max-w-5xl font-serif text-3xl leading-tight text-white sm:text-6xl sm:leading-[1.02] lg:text-7xl">
               The operating system{" "}
               <span className="italic text-gold">
                 for the modern dining room.
