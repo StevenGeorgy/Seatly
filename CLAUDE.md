@@ -489,6 +489,22 @@ re-run the full suite before relying on green CI.
 - `step2-source-handoff.md` — verbatim mobile source for ported
   helpers (`recommendationIntent`, `filterRestaurants`,
   `localBookingCollector`).
+- **`APP_STORE_COMPLIANCE.md`** — Apple + Google store-acceptance
+  requirements (review policies, IAP vs Stripe verdicts, Sign in with
+  Apple, privacy manifest, UGC rules, store-listing/support fields, org
+  enrollment + D-U-N-S), sourced verbatim from the official docs.
+- **`MOBILE_APP_DEBRIEF.md`** — locked mobile-app architecture
+  decisions (Capacitor wraps the web app — NOT Expo/React Native; two
+  apps / one codebase; diner + owner; backend reuse; "feel like an app",
+  drop marketing pages).
+
+> **MOBILE-APP RULE (added 2026-05-31):** Before doing ANYTHING toward
+> the native iOS/Android apps — Capacitor setup, app-only screens, the
+> diner "snapshot" feature, store submission, app permissions, or any
+> in-app payment decision — you MUST read **`APP_STORE_COMPLIANCE.md`**
+> and **`MOBILE_APP_DEBRIEF.md`** first. They hold the official
+> Apple/Google rules and the locked architecture choices; never infer a
+> mobile decision without them.
 
 ## Security lessons (2026-05-20/21 hardening batch + split-tender)
 
