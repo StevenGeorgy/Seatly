@@ -5,9 +5,21 @@ import { jsonRes } from "../_shared/json-response.ts";
 import { enforceRateLimit, rateLimitIdentifier, RateLimitError } from "../_shared/rate-limit.ts";
 import { parseJsonBody } from "../_shared/validation/parse.ts";
 import { ElevenLabsTtsSchema } from "../_shared/validation/chat.ts";
+import {
+  ELEVENLABS_BASE,
+  DEFAULT_VOICE_ID as SHARED_DEFAULT_VOICE_ID,
+  ELEVENLABS_MODEL,
+  DEFAULT_VOICE_SETTINGS,
+  DEFAULT_OUTPUT_FORMAT,
+} from "../_shared/elevenlabs.ts";
 
-const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1";
-const DEFAULT_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "EXAVITQu4vr4xnSDxMaL";
+// Consume the SHARED config so this fn can't drift from `cenaiva-small-prompt`
+// or the web IDB cache key (`flash25-mp3-44100-128-v1`). Previously this fn
+// hardcoded `eleven_turbo_v2_5` with no `output_format`, which fed a variable
+// codec into the client's single reused <audio> element → stalls + the
+// "voice randomly changes" reports. Env overrides mirror the sibling fn.
+const DEFAULT_VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID") ?? SHARED_DEFAULT_VOICE_ID;
+const TTS_OUTPUT_FORMAT = Deno.env.get("ELEVENLABS_OUTPUT_FORMAT") ?? DEFAULT_OUTPUT_FORMAT;
 
 // Reuse same pronunciation map as useCenaivaSpeech.ts
 function applyPronunciation(text: string): string {
@@ -78,7 +90,7 @@ Deno.serve(async (req) => {
     // inconsistency reported by users. Stability bumped to 0.5 for more
     // consistent prosody across turns.
     const callEleven = () =>
-      fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}/stream`, {
+      fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}/stream?output_format=${TTS_OUTPUT_FORMAT}`, {
         method: "POST",
         headers: {
           "xi-api-key": apiKey,
@@ -87,8 +99,8 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           text,
-          model_id: "eleven_turbo_v2_5",
-          voice_settings: { stability: 0.5, similarity_boost: 0.8, speed: 1.1 },
+          model_id: ELEVENLABS_MODEL,
+          voice_settings: DEFAULT_VOICE_SETTINGS,
         }),
       });
 

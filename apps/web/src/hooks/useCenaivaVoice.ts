@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useCenaivaSpeech } from "@/hooks/useCenaivaSpeech";
 import { useDeepgramTranscription } from "@/hooks/useDeepgramTranscription";
-import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { useElevenLabsTTS, getLastTtsHttpStatus } from "@/hooks/useElevenLabsTTS";
 import { useAssistantStore } from "@/components/cenaiva/AssistantStore";
 import { useCenaivaVoicePreference } from "@/hooks/useCenaivaVoicePreference";
 
@@ -33,11 +33,12 @@ export function useCenaivaVoice() {
   // render (no Date.now() / ref read at render time). The cooldown
   // self-heals — a setTimeout flips it back enabled after ELEVEN_COOLDOWN_MS.
   //
-  // Reduced from 60 s → 15 s on 2026-05-10 because the longer window made the
-  // voice feel "stuck on Web Speech" any time the user accidentally
-  // double-fired a turn (e.g. wake-greeting StrictMode remount in dev).
-  // 15 s is enough to dodge sustained quota / outage but recovers fast on
-  // transient blips.
+  // Reduced from 60 s → 5 s because the longer window made the voice feel
+  // "stuck on Web Speech" any time the user accidentally double-fired a turn
+  // (e.g. wake-greeting StrictMode remount in dev). 5 s is enough to dodge a
+  // sustained quota / outage but recovers fast on transient blips — and after
+  // the TTS model/format-consistency fix, genuine ElevenLabs blips are rare,
+  // so entries into this cooldown should be infrequent.
   const [elevenAvailable, setElevenAvailable] = useState(true);
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ELEVEN_COOLDOWN_MS = 5_000;
@@ -223,8 +224,13 @@ export function useCenaivaVoice() {
           // (15 s as of 2026-05-10) and route this turn through Web Speech.
           // The cooldown self-heals.
           if (!played) {
+            // Surface the actual HTTP status that triggered the fallback (prod
+            // too, not just DEV) — the bare `played` boolean can't carry the
+            // reason. status=0 → network/DNS throw; null → no status recorded
+            // (e.g. no bearer token / playback watchdog rather than a fetch).
+            const ttsStatus = getLastTtsHttpStatus();
             console.warn(
-              `[Cenaiva TTS] ElevenLabs failed twice — falling back to Web Speech for ${ELEVEN_COOLDOWN_MS / 1000}s`,
+              `[Cenaiva TTS] ElevenLabs failed twice (last status=${ttsStatus ?? "n/a"}) — falling back to Web Speech for ${ELEVEN_COOLDOWN_MS / 1000}s`,
             );
             setElevenAvailable(false);
             if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);

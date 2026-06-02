@@ -143,6 +143,29 @@ function invalidateDeepgramTokenCache() {
   cachedTokenExpiresAt = 0;
 }
 
+// Scoped 401 recovery for the STT token (mirrors useElevenLabsTTS). On a 401
+// we re-read the session — supabase-js's own ticker may have rotated it — and
+// only force ONE refreshSession() if the rejected token is still current. This
+// stays local: it never wires through onAuthStateChange, so it can't flip
+// AuthProvider `loading` / unmount the page (the regression that prompted
+// removing proactive refresh, commit 39b3db9). Returns a usable token distinct
+// from the rejected one, or null.
+async function refreshVoiceAccessToken(rejectedToken: string): Promise<string | null> {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const client = getSupabaseBrowserClient();
+    const { data } = await client.auth.getSession();
+    let candidate = data.session?.access_token ?? null;
+    if (!candidate || candidate === rejectedToken) {
+      const { data: refreshed } = await client.auth.refreshSession();
+      candidate = refreshed.session?.access_token ?? null;
+    }
+    return candidate && candidate !== rejectedToken ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchDeepgramTokenFresh(): Promise<string | null> {
   const doFetch = async (bearer: string) =>
     fetch(`${getSupabaseProjectUrl()}/functions/v1/deepgram-live-token`, {
@@ -153,16 +176,22 @@ async function fetchDeepgramTokenFresh(): Promise<string | null> {
         apikey: getSupabaseAnonKey(),
       },
     });
-  let bearer = await getBearerToken();
+  const bearer = await getBearerToken();
   if (!bearer) {
     if (import.meta.env.DEV) console.warn("[Cenaiva STT] no bearer token — user not signed in");
     return null;
   }
-  const res = await doFetch(bearer);
-  // NOTE: previously this path called `refreshSession()` on 401 and
-  // retried. That cascaded into the AuthProvider flicker (see
-  // getBearerToken comment above). We now fall back gracefully on 401
-  // and let supabase-js's auto-refresh handle session renewal.
+  let res = await doFetch(bearer);
+  // Scoped recovery on 401 (expired JWT): one targeted refresh + retry, inside
+  // this hook only. Recovers mobile's stale-token resilience without the global
+  // onAuthStateChange cascade that previously unmounted the page mid-turn. A
+  // genuine persistent rejection just 401s again and we fall back as before.
+  if (res.status === 401) {
+    const refreshedToken = await refreshVoiceAccessToken(bearer);
+    if (refreshedToken) {
+      res = await doFetch(refreshedToken);
+    }
+  }
   if (!res.ok) {
     if (import.meta.env.DEV) {
       const body = await res.text().catch(() => "<no body>");

@@ -78,6 +78,18 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-06-02 Cenaiva voice flakiness fix** — `elevenlabs-tts` now imports the shared
+  `_shared/elevenlabs.ts` config (`eleven_flash_v2_5` + `?output_format=mp3_44100_128`)
+  instead of the drifted hardcoded `eleven_turbo_v2_5`/no-format that fed a variable codec
+  into the client's reused `<audio>` (the "voice randomly changes" bug); **deployed prod
+  v146** (zod fn → `--import-map supabase/functions/deno.json`). Client: `useElevenLabsTTS`
+  gains a 4s first-audio watchdog + 30s hard cap (a stalled clip no longer pins
+  `isSpeaking`), a scoped refresh-on-401 (one targeted `refreshSession`+retry inside the
+  hook — NOT the global `onAuthStateChange` path that unmounted the page), and
+  `getLastTtsHttpStatus()`; `useDeepgramTranscription` gets the same scoped 401 refresh;
+  `useCenaivaVoice` logs the real HTTP status on Web-Speech fallback. `useCenaivaWakeWord.ts`
+  untouched. Reference docs added: `OWNER_DASHBOARD_REFERENCE.md` (web owner dashboard,
+  source of truth) + `MOBILE_OWNER_AUDIT.md` (mobile owner gaps vs web).
 - **2026-05-31 Mobile-responsive web pass (Track A, partial)** — makes the web app
   usable phone-width; all gated `sm:`/`md:` so desktop is preserved. New diner
   **bottom tab bar** (`DinerBottomNav` + shared `useDinerNavLinks`, mounted once in

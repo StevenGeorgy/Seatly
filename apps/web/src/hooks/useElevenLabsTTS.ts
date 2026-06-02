@@ -23,6 +23,14 @@ const TTS_CACHE_VERSION = "flash25-mp3-44100-128-v1";
 const TTS_DB_NAME = "cenaivaTtsCache";
 const TTS_DB_STORE = "phrases";
 
+// Playback watchdogs (mirror mobile useMobileTTS:455-456 + status poll). A clip
+// that stalls silently fires neither `onended` nor `onerror` and leaves
+// `currentTime` at 0 — without these timers it pins `isSpeaking=true` forever
+// and wedges runPlayer()/drainQueue(). The first-audio watchdog catches a clip
+// that never starts; the hard cap catches one that starts but never ends.
+const TTS_START_WATCHDOG_MS = 4_000;
+const TTS_HARD_CAP_MS = 30_000;
+
 const COMMON_TTS_CACHE_TEXTS: ReadonlyArray<string> = [
   "One moment please.",
   "What restaurant or area should I book?",
@@ -146,6 +154,39 @@ async function getBearerToken(): Promise<string | null> {
 // per minute. Reset on successful fetch (next 200 clears the set).
 const warnedStatuses = new Set<number>();
 
+// Last non-OK HTTP status from /elevenlabs-tts: a status code on failure,
+// 0 for a thrown network/DNS error, null when the last fetch was healthy.
+// useCenaivaVoice reads this via getLastTtsHttpStatus() to log WHY it fell
+// back to Web Speech — the speak() boolean alone can't carry the reason.
+let lastTtsHttpStatus: number | null = null;
+export function getLastTtsHttpStatus(): number | null {
+  return lastTtsHttpStatus;
+}
+
+// Scoped 401 recovery for the voice token. A 401 from the edge fn almost
+// always means the access token expired mid-session. We first re-read the
+// session (supabase-js's own auto-refresh ticker may have already rotated it)
+// and only force ONE refreshSession() if the rejected token is still current.
+// This stays entirely local: we never subscribe to or react through the global
+// onAuthStateChange path that previously flipped AuthProvider `loading` and
+// unmounted the page mid-turn (see getBearerToken). Returns a usable access
+// token distinct from the rejected one, or null.
+async function refreshVoiceAccessToken(rejectedToken: string): Promise<string | null> {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const client = getSupabaseBrowserClient();
+    const { data } = await client.auth.getSession();
+    let candidate = data.session?.access_token ?? null;
+    if (!candidate || candidate === rejectedToken) {
+      const { data: refreshed } = await client.auth.refreshSession();
+      candidate = refreshed.session?.access_token ?? null;
+    }
+    return candidate && candidate !== rejectedToken ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 // Module-level "already primed this session" guard, keyed by voiceId.
 // Without this, every time the assistant-shell subtree remounts (route
 // guard flips, AssistantInner re-renders) we'd re-run primeCache from
@@ -165,7 +206,7 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
     /* fall through to live fetch */
   }
 
-  let token = await getBearerToken();
+  const token = await getBearerToken();
   if (!token) {
     if (!warnedStatuses.has(401)) {
       console.warn("[Cenaiva TTS] no bearer token — user not signed in; skipping ElevenLabs");
@@ -184,14 +225,21 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
         },
         body: JSON.stringify({ text, voice_id: voiceId }),
       });
-    const res = await doFetch(token);
-    // NOTE: previously this path called `refreshSession()` on 401 and
-    // retried. That cascaded into the AuthProvider flicker (see
-    // getBearerToken comment) — and on a session the edge function
-    // genuinely rejects (key rotation, etc), the refresh + retry would
-    // 401 again, repeat. We now fall back to the OS voice on 401 and
-    // let supabase-js's auto-refresh handle session renewal on its own.
+    let res = await doFetch(token);
+    // Scoped recovery on 401 (expired JWT): do ONE targeted refresh + retry,
+    // entirely inside this hook via refreshVoiceAccessToken(). This recovers
+    // mobile's stale-token resilience WITHOUT the global onAuthStateChange
+    // cascade that previously flipped AuthProvider `loading` and unmounted the
+    // page mid-turn. If the genuine rejection persists (key rotation etc.), the
+    // retry just 401s again and we fall back to the OS voice as before.
+    if (res.status === 401) {
+      const refreshedToken = await refreshVoiceAccessToken(token);
+      if (refreshedToken) {
+        res = await doFetch(refreshedToken);
+      }
+    }
     if (!res.ok) {
+      lastTtsHttpStatus = res.status;
       // In dev: ALWAYS log every failure with the body so we can debug
       // intermittent failures. In prod: dedupe per-status to avoid spam.
       if (import.meta.env.DEV) {
@@ -205,6 +253,7 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
     }
     // Successful fetch clears the warn-once set so a recovered service can
     // emit a fresh warning if it later regresses.
+    lastTtsHttpStatus = null;
     if (warnedStatuses.size > 0) warnedStatuses.clear();
     const blob = await res.blob();
     // Best-effort cache write — never block playback on it.
@@ -213,6 +262,7 @@ async function fetchTTSBlob(text: string, voiceId?: string): Promise<Blob | null
     }
     return blob;
   } catch (err) {
+    lastTtsHttpStatus = 0;
     if (!warnedStatuses.has(0)) {
       console.warn("[Cenaiva TTS] /elevenlabs-tts fetch threw — network or DNS issue", err);
       warnedStatuses.add(0);
@@ -292,9 +342,13 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
         blobUrlRef.current = url;
         const audio = getAudio();
         audio.src = url;
+        let startWatch: ReturnType<typeof setTimeout> | null = null;
+        let hardCap: ReturnType<typeof setTimeout> | null = null;
         const cleanup = () => {
           audio.onended = null;
           audio.onerror = null;
+          if (startWatch) { clearTimeout(startWatch); startWatch = null; }
+          if (hardCap) { clearTimeout(hardCap); hardCap = null; }
           if (blobUrlRef.current === url) {
             URL.revokeObjectURL(url);
             blobUrlRef.current = null;
@@ -303,6 +357,22 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
         audio.onended = () => { cleanup(); resolve(); };
         audio.onerror = () => { cleanup(); resolve(); };
         audio.play().catch(() => { cleanup(); resolve(); });
+        // First-audio watchdog: if playback hasn't advanced past 0 within the
+        // window, the clip stalled silently — pause it and let the queue
+        // advance instead of hanging on this entry forever.
+        startWatch = setTimeout(() => {
+          if (audio.currentTime <= 0) {
+            try { audio.pause(); } catch { /* noop */ }
+            cleanup();
+            resolve();
+          }
+        }, TTS_START_WATCHDOG_MS);
+        // Hard cap: a clip that started but never fires onended.
+        hardCap = setTimeout(() => {
+          try { audio.pause(); } catch { /* noop */ }
+          cleanup();
+          resolve();
+        }, TTS_HARD_CAP_MS);
       }),
     [getAudio],
   );
@@ -409,9 +479,13 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
 
       let played = false;
       await new Promise<void>((resolve) => {
+        let startWatch: ReturnType<typeof setTimeout> | null = null;
+        let hardCap: ReturnType<typeof setTimeout> | null = null;
         const cleanup = () => {
           audio.onended = null;
           audio.onerror = null;
+          if (startWatch) { clearTimeout(startWatch); startWatch = null; }
+          if (hardCap) { clearTimeout(hardCap); hardCap = null; }
           if (blobUrlRef.current === url) {
             URL.revokeObjectURL(url);
             blobUrlRef.current = null;
@@ -433,6 +507,25 @@ export function useElevenLabsTTS(options?: UseElevenLabsTTSOptions) {
           cleanup();
           resolve();
         });
+        // First-audio watchdog: clip never started → leave `played` false so
+        // useCenaivaVoice retries / falls back instead of wedging here.
+        startWatch = setTimeout(() => {
+          if (audio.currentTime <= 0) {
+            try { audio.pause(); } catch { /* noop */ }
+            setIsSpeaking(false);
+            cleanup();
+            resolve();
+          }
+        }, TTS_START_WATCHDOG_MS);
+        // Hard cap: clip started but never ended. Count it as played only if it
+        // actually progressed (audio was heard), so we don't double-speak.
+        hardCap = setTimeout(() => {
+          try { audio.pause(); } catch { /* noop */ }
+          played = audio.currentTime > 0;
+          setIsSpeaking(false);
+          cleanup();
+          resolve();
+        }, TTS_HARD_CAP_MS);
       });
       return played;
     },
