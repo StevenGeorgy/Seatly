@@ -78,6 +78,20 @@ work to sub-agents.
 
 ## Current state (one-liners; see WORK_LOG.md for detail)
 
+- **2026-06-02 Discover card UI pass (3 changes, client-only/read-only)** — (1) the
+  per-slot time-chip grid on Discover cards (`GridCard`/`MapListCard`/`MapRestaurantPopup`
+  in `DiscoverPage.tsx`) is replaced by a single **Reserve Now** button (`ReserveNowButton`
+  → `handleReserveClick` navigates to `/:slug?people&date`); the slot pipeline +
+  `handleSlotClick` stay (preview modal still uses them). (2) Cards now render **ratings**
+  (`CardRating`: ★ avg + count, else "New") from the already-fetched
+  `avgRating`/`totalReviews` (`restaurant_review_summaries` RPC) — display only. (3) The
+  price meter ($/$$/$$$) now fills for every restaurant with a menu: `deriveRestaurantPriceLevel`
+  in `restaurant-price-level.ts` gained a fallback chain — Mains/Entrées median →
+  **owner-set `price_range` tier** → all-priced-items median → null — so steakhouses with no
+  "Mains" category still show their tier (e.g. `$$$`). Threaded through
+  `RestaurantPublicPage` + `RestaurantPreviewModal` (meter uses `eventPriceLevel`). No
+  backend/migration changes; server copy `_shared/menu-price-tiers.ts` intentionally
+  untouched. Unit test: `lib/__tests__/restaurant-price-level.test.ts`.
 - **2026-06-02 Cenaiva voice flakiness fix** — `elevenlabs-tts` now imports the shared
   `_shared/elevenlabs.ts` config (`eleven_flash_v2_5` + `?output_format=mp3_44100_128`)
   instead of the drifted hardcoded `eleven_turbo_v2_5`/no-format that fed a variable codec

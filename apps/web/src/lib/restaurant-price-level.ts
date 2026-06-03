@@ -68,45 +68,70 @@ export function averageMainEntreePrice(items: RestaurantPriceMenuItem[]): number
   return medianMainEntreePrice(items);
 }
 
+function isPricedActiveItem(item: RestaurantPriceMenuItem): boolean {
+  if (item.is_active === false || item.is_available === false) return false;
+  return numericPrice(item.price) != null;
+}
+
+function medianOfPrices(prices: number[]): number | null {
+  if (prices.length === 0) return null;
+  const sorted = [...prices].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 export function medianMainEntreePrice(items: RestaurantPriceMenuItem[]): number | null {
   const mainPrices = items
     .filter(isMainEntreeMenuItem)
     .map((item) => numericPrice(item.price))
-    .filter((price): price is number => price != null)
-    .sort((a, b) => a - b);
+    .filter((price): price is number => price != null);
+  return medianOfPrices(mainPrices);
+}
 
-  if (mainPrices.length === 0) return null;
-  const mid = Math.floor(mainPrices.length / 2);
-  return mainPrices.length % 2 === 0
-    ? (mainPrices[mid - 1] + mainPrices[mid]) / 2
-    : mainPrices[mid];
+// Fallback signal for the meter: the median of EVERY active, available, priced
+// item (any category). Used when a restaurant's menu has no "Mains/Entrées"
+// category so the meter still reflects roughly what diners pay.
+export function medianAllPricedItemsPrice(items: RestaurantPriceMenuItem[]): number | null {
+  const prices = items
+    .filter(isPricedActiveItem)
+    .map((item) => numericPrice(item.price))
+    .filter((price): price is number => price != null);
+  return medianOfPrices(prices);
+}
+
+// Customer-facing price meter, derived from menu data. Resolution order:
+//   1. Median price of "Mains/Entrées" items — the most accurate signal (what
+//      diners actually pay), so it always wins when those items exist.
+//   2. The owner-set price tier (`fallbackRange`, the `restaurants.price_range`
+//      column) — the owner's explicit signal, used when the menu has no
+//      "Mains/Entrées" category. Preferred over a whole-menu median because the
+//      latter skews low (it includes cheap apps/sides/desserts).
+//   3. Median of ALL active, available, priced items — a last-resort estimate so
+//      a restaurant with a menu but no owner tier still shows something.
+//   4. null — no menu at all; the component renders the empty 3-slot placeholder.
+function priceLevelFromMenuItems(
+  items: RestaurantPriceMenuItem[],
+  fallbackRange?: number | null,
+): RestaurantPriceLevel | null {
+  const mains = medianMainEntreePrice(items);
+  if (mains != null) return restaurantPriceLevelFromAverage(mains);
+  const ownerLevel = normalizeRestaurantPriceLevel(fallbackRange ?? null);
+  if (ownerLevel != null) return ownerLevel;
+  const all = medianAllPricedItemsPrice(items);
+  if (all != null) return restaurantPriceLevelFromAverage(all);
+  return null;
 }
 
 export function deriveRestaurantPriceLevel(
   items: RestaurantPriceMenuItem[],
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _fallbackRange?: number | null,
+  fallbackRange?: number | null,
 ): RestaurantPriceLevel | null {
-  // Menu data is the SOLE source of truth for the customer-facing price
-  // meter — the median price of items in a "Mains/Entrées" category is what
-  // diners will actually pay. The owner-set `price_range` column on
-  // `restaurants` is intentionally NOT consulted here: it was previously
-  // authoritative, which let stale or accidentally-set values override the
-  // actual menu-derived signal. (Owner-set value is still used by the voice
-  // orchestrator for `price_range_max` filtering and by promotions/events
-  // metadata — it just doesn't drive the customer meter.) When the menu has
-  // no items in a "Mains/Entrées" category, the meter returns null and the
-  // component renders an empty 3-slot placeholder so customers see "price
-  // not set" without an invented value. Owners can populate the meter by
-  // categorizing menu items under "Mains" or "Entrées".
-  const median = medianMainEntreePrice(items);
-  if (median != null) return restaurantPriceLevelFromAverage(median);
-  return null;
+  return priceLevelFromMenuItems(items, fallbackRange);
 }
 
 export function deriveRestaurantPriceLevelFromMenu(
   items: RestaurantPriceMenuItem[],
+  fallbackRange?: number | null,
 ): RestaurantPriceLevel | null {
-  const median = medianMainEntreePrice(items);
-  return median != null ? restaurantPriceLevelFromAverage(median) : null;
+  return priceLevelFromMenuItems(items, fallbackRange);
 }

@@ -22,6 +22,7 @@ import {
   CalendarDays,
   Clock,
   Users,
+  Star,
 } from "lucide-react";
 
 import { useUser } from "@/hooks/useUser";
@@ -366,49 +367,43 @@ function FavoriteButton({
   );
 }
 
-function AvailableTimes({
-  slots,
-  onBookSlot,
-  size = "md",
-}: {
-  slots: AvailabilitySlot[];
-  onBookSlot: (slot: AvailabilitySlot) => void;
-  size?: "md" | "lg";
-}) {
-  const visibleSlots = slots.slice(0, 6);
-  if (visibleSlots.length === 0) return null;
+function ReserveNowButton({ onReserve }: { onReserve: () => void }) {
   return (
-    <div
-      className={cn(
-        // On phones show a single row of 3 slots (hide the 2nd row) so cards
-        // stay short enough to see more than one; full 6 on sm+.
-        "grid grid-cols-3 [&>*:nth-child(n+4)]:hidden sm:[&>*:nth-child(n+4)]:flex",
-        size === "lg" ? "gap-2.5" : "gap-1 sm:gap-2",
-      )}
+    <button
+      type="button"
+      onClick={(event) => {
+        // Stop the click from bubbling to the card body (which opens the
+        // preview modal) so the button navigates straight to booking instead.
+        event.preventDefault();
+        event.stopPropagation();
+        onReserve();
+      }}
+      className="flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md bg-gold text-sm font-semibold text-black transition-colors hover:bg-gold/90 sm:min-h-11"
     >
-      {visibleSlots.map((slot) => (
-        <button
-          key={`${slot.shift_id}-${slot.date_time}`}
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onBookSlot(slot);
-          }}
-          className={cn(
-            "flex items-center justify-center rounded-md border border-gold/25 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold/60 hover:bg-gold/20",
-            size === "lg"
-              ? "min-h-12 px-3 text-base"
-              // Phones: 3 chips share a half-width card, so shrink text + padding
-              // so "12:30pm" stays inside its box. sm+ keeps the comfortable size.
-              : "min-h-10 px-0.5 text-[10px] tracking-tight sm:min-h-11 sm:px-2 sm:text-sm sm:tracking-normal",
-          )}
-        >
-          {formatCompactTimeLabel(slot.display_time)}
-        </button>
-      ))}
-    </div>
+      Reserve Now
+      <ArrowRight className="size-4" />
+    </button>
   );
+}
+
+function CardRating({
+  avgRating,
+  totalReviews,
+}: {
+  avgRating: number | null;
+  totalReviews: number;
+}) {
+  if (totalReviews > 0 && avgRating != null) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-gold">
+        <Star className="size-3 fill-gold text-gold" />
+        <span className="font-semibold">{avgRating.toFixed(1)}</span>
+        <span className="text-text-muted">({totalReviews})</span>
+      </span>
+    );
+  }
+  // No reviews yet — show a subtle "New" so the rating slot is never empty.
+  return <span className="text-text-muted">New</span>;
 }
 
 function SectionEyebrow({ children }: { children: React.ReactNode }) {
@@ -425,7 +420,7 @@ function GridCard({
   saved,
   onToggleFav,
   onToggleSave,
-  onBookSlot,
+  onReserve,
   onOpen,
   notifyDefaults,
 }: {
@@ -434,7 +429,7 @@ function GridCard({
   saved: boolean;
   onToggleFav: () => void;
   onToggleSave: () => void;
-  onBookSlot: (slot: AvailabilitySlot) => void;
+  onReserve: () => void;
   onOpen: () => void;
   notifyDefaults: { date: string; time: string; partySize: number };
 }) {
@@ -485,6 +480,7 @@ function GridCard({
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
+          <CardRating avgRating={r.avgRating} totalReviews={r.totalReviews} />
           {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
           {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
         </div>
@@ -495,7 +491,7 @@ function GridCard({
           </div>
         ) : null}
         {r.availableSlots.length > 0 ? (
-          <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
+          <ReserveNowButton onReserve={onReserve} />
         ) : (
           <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated/40 px-3 py-2 text-xs text-text-secondary">
@@ -526,7 +522,7 @@ function MapListCard({
   saved,
   onToggleFav,
   onToggleSave,
-  onBookSlot,
+  onReserve,
   onHover,
   highlighted,
   onSelect,
@@ -536,7 +532,7 @@ function MapListCard({
   saved: boolean;
   onToggleFav: () => void;
   onToggleSave: () => void;
-  onBookSlot: (slot: AvailabilitySlot) => void;
+  onReserve: () => void;
   onHover: (id: string | null) => void;
   highlighted: boolean;
   onSelect: () => void;
@@ -589,6 +585,7 @@ function MapListCard({
         <p className="font-serif text-xl text-white">{r.name}</p>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           <RestaurantPriceMeter level={r.priceLevel} />
+          <CardRating avgRating={r.avgRating} totalReviews={r.totalReviews} />
           {r.cuisine ? <span>{capitalizeWords(r.cuisine)}</span> : null}
           {r.area ? <span>{capitalizeWords(r.area)}</span> : null}
           {r.features.filter((feature) => !r.dietaryTags.some((tag) => feature === tag.replace(/_/g, "-"))).slice(0, 3).map((f) => (
@@ -600,7 +597,7 @@ function MapListCard({
             </span>
           ))}
         </div>
-        <AvailableTimes slots={r.availableSlots} onBookSlot={onBookSlot} />
+        {r.availableSlots.length > 0 ? <ReserveNowButton onReserve={onReserve} /> : null}
         <p className="text-xs text-text-muted">
           {r.acceptsWalkins ? "Walk-ins accepted when available" : "Reservations only"}
         </p>
@@ -983,7 +980,7 @@ function MapRestaurantPopup({
   restaurant,
   favorite,
   saved,
-  onBookSlot,
+  onReserve,
   onClose,
   onToggleFavorite,
   onToggleSave,
@@ -993,7 +990,7 @@ function MapRestaurantPopup({
   restaurant: RestaurantCard;
   favorite: boolean;
   saved: boolean;
-  onBookSlot: (slot: AvailabilitySlot) => void;
+  onReserve: () => void;
   onClose: () => void;
   onToggleFavorite: () => void;
   onToggleSave: () => void;
@@ -1062,11 +1059,12 @@ function MapRestaurantPopup({
         </p>
         <div className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
           <RestaurantPriceMeter level={restaurant.priceLevel} className="text-base" />
+          <CardRating avgRating={restaurant.avgRating} totalReviews={restaurant.totalReviews} />
           {restaurant.cuisine ? <span>{capitalizeWords(restaurant.cuisine)}</span> : null}
           {restaurant.area ? <span>{capitalizeWords(restaurant.area)}</span> : null}
         </div>
         {restaurant.availableSlots.length > 0 ? (
-          <AvailableTimes slots={restaurant.availableSlots} onBookSlot={onBookSlot} />
+          <ReserveNowButton onReserve={onReserve} />
         ) : (
           <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
             <p className="text-sm text-text-secondary">Booked up tonight.</p>
@@ -1690,6 +1688,18 @@ export default function DiscoverPage() {
       return;
     }
     navigateToSlot(refreshedSlot.date_time, refreshedSlot.shift_id, refreshedSlot.display_time);
+  };
+
+  // "Reserve Now" card CTA — no specific slot; the diner picks a time on the
+  // restaurant page via AvailabilityPanel. Carries the chosen date + party so
+  // that panel opens pre-filled. Mirrors handleSlotClick's URL/back convention.
+  const handleReserveClick = (r: RestaurantCard) => {
+    const backQuery = isDashboardPreview ? "&back=dashboard" : "";
+    const slotDate = dateParamFromSelection(dateId, customDate);
+    const partyCount = normalizePartySize(partySize);
+    navigate(
+      `/${r.slug ?? r.id}?people=${partyCount}&date=${encodeURIComponent(slotDate)}${backQuery}`,
+    );
   };
 
   const openRestaurantPreview = (r: RestaurantCard) => {
@@ -2454,7 +2464,7 @@ export default function DiscoverPage() {
                           saved={savedRestaurants.has(r.id)}
                           onToggleFav={() => toggleFavorite(r.id)}
                           onToggleSave={() => toggleSavedRestaurant(r.id)}
-                          onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
+                          onReserve={() => handleReserveClick(r)}
                           onOpen={() => openRestaurantPreview(r)}
                           notifyDefaults={{
                             date: selectedBookingDate,
@@ -2493,7 +2503,7 @@ export default function DiscoverPage() {
                     saved={savedRestaurants.has(r.id)}
                     onToggleFav={() => toggleFavorite(r.id)}
                     onToggleSave={() => toggleSavedRestaurant(r.id)}
-                    onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
+                    onReserve={() => handleReserveClick(r)}
                     onHover={setHoveredId}
                     highlighted={selectedId === r.id}
                     onSelect={() => setSelectedId(r.id)}
@@ -2553,7 +2563,7 @@ export default function DiscoverPage() {
                       restaurant={r}
                       favorite={favorites.has(r.id)}
                       saved={savedRestaurants.has(r.id)}
-                      onBookSlot={(slot) => void handleSlotClick(r, slot.date_time, partySize, slot.shift_id, slot.display_time, slot.booking_date)}
+                      onReserve={() => handleReserveClick(r)}
                       onClose={() => {
                         setSelectedId(null);
                         setHoveredId(null);

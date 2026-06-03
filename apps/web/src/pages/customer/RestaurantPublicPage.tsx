@@ -505,7 +505,7 @@ function RestaurantStaffPreview({
   );
   const availableTimes = useMemo(() => availableSlots.map((slot) => slot.display_time), [availableSlots]);
   const hoursRows = useMemo(() => formatRestaurantHoursRows(restaurant.hours_json), [restaurant.hours_json]);
-  const priceLevel = deriveRestaurantPriceLevelFromMenu(savedMenuItems);
+  const priceLevel = deriveRestaurantPriceLevelFromMenu(savedMenuItems, restaurant.price_range);
   const dietaryTags = normalizeRestaurantDietaryTags(restaurant.settings_json?.dietaryTags);
   const selectedTimeLabel = selectedTime ? formatCompactTimeLabel(selectedTime) : "";
   const selectedAvailabilitySlot = availableSlots.find((slot) => slot.display_time === selectedTime);

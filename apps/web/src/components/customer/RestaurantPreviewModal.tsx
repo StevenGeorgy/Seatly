@@ -576,7 +576,7 @@ export function RestaurantPreviewModal({
                       {restaurant.name}
                     </h2>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-secondary">
-                      <RestaurantPriceMeter level={priceLevel} />
+                      <RestaurantPriceMeter level={eventPriceLevel} />
                       {reviewSummary.totalReviews > 0 && reviewSummary.avgRating != null ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-gold/10 px-2 py-0.5 text-gold">
                           <Star className="size-3 fill-gold text-gold" />
